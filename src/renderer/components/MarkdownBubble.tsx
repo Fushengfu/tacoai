@@ -1,0 +1,181 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+
+/** 提取代码块纯文本（去掉末尾换行） */
+function extractText(children: React.ReactNode): string {
+  return String(children).replace(/\n$/, '')
+}
+
+/* ------------------------------------------------------------------ */
+/*  解析 <think> 标签                                                    */
+/* ------------------------------------------------------------------ */
+
+type ParsedContent = {
+  /** 思考过程内容（已去除 <think> 标签） */
+  thinking: string
+  /** 正文内容（去除 <think> 块后的文本） */
+  body: string
+  /** 思考是否已完成（有闭合 </think>，或根本没有 <think>） */
+  thinkingDone: boolean
+}
+
+/**
+ * 从内容中解析出 <think>...</think> 块。
+ * 支持流式场景（<think> 还未闭合时 thinkingDone=false）。
+ */
+function parseThinkTag(raw: string): ParsedContent {
+  const openIdx = raw.indexOf('<think>')
+  if (openIdx === -1) {
+    return { thinking: '', body: raw, thinkingDone: true }
+  }
+
+  const closeIdx = raw.indexOf('</think>', openIdx)
+  if (closeIdx === -1) {
+    // <think> 还未闭合 → 流式中
+    const thinking = raw.slice(openIdx + 7) // 7 = '<think>'.length
+    const body = raw.slice(0, openIdx).trim()
+    return { thinking, body, thinkingDone: false }
+  }
+
+  // 有完整的 <think>...</think>
+  const thinking = raw.slice(openIdx + 7, closeIdx)
+  const body = (raw.slice(0, openIdx) + raw.slice(closeIdx + 8)).trim() // 8 = '</think>'.length
+  return { thinking, body, thinkingDone: true }
+}
+
+/* ------------------------------------------------------------------ */
+/*  思考过程折叠组件                                                      */
+/* ------------------------------------------------------------------ */
+
+function ThinkingBlock({ content, done }: Readonly<{ content: string; done: boolean }>) {
+  const [expanded, setExpanded] = useState(!done)
+  const wasStreamingRef = useRef(!done)
+
+  // 思考完成后自动折叠
+  useEffect(() => {
+    if (done && wasStreamingRef.current) {
+      wasStreamingRef.current = false
+      // 稍作延迟再折叠，让用户有感知
+      const timer = setTimeout(() => setExpanded(false), 400)
+      return () => clearTimeout(timer)
+    }
+  }, [done])
+
+  if (!content.trim()) return null
+
+  return (
+    <div className={`thinking-block ${done ? 'done' : 'streaming'}`}>
+      <button
+        type="button"
+        className="thinking-block-header"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <span className={`thinking-block-chevron ${expanded ? 'open' : ''}`}>›</span>
+        <span className="thinking-block-label">
+          {done ? '思考过程' : '思考中...'}
+        </span>
+        {!done && <span className="dot-pulse inline" />}
+      </button>
+      {expanded && (
+        <div className="thinking-block-body">
+          {content}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  复制按钮 & MarkdownBubble                                           */
+/* ------------------------------------------------------------------ */
+
+function CopyButton({ text }: Readonly<{ text: string }>) {
+  const [copied, setCopied] = useState(false)
+  const timerRef = useRef<ReturnType<typeof setTimeout>>()
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true)
+      clearTimeout(timerRef.current)
+      timerRef.current = setTimeout(() => setCopied(false), 2000)
+    })
+  }, [text])
+
+  return (
+    <button
+      type="button"
+      className={`code-copy-btn${copied ? ' copied' : ''}`}
+      onClick={handleCopy}
+      title="复制代码"
+    >
+      {copied ? '✓ 已复制' : '复制'}
+    </button>
+  )
+}
+
+export function MarkdownBubble({ content, streaming }: Readonly<{ content: string; streaming?: boolean }>) {
+  const parsed = useMemo(() => parseThinkTag(content), [content])
+
+  // 思考完成状态：如果没有思考内容则忽略；流式中跟随 thinkingDone
+  const thinkingDone = parsed.thinkingDone || (!streaming && parsed.thinkingDone)
+
+  return (
+    <>
+      {parsed.thinking && (
+        <ThinkingBlock content={parsed.thinking} done={thinkingDone} />
+      )}
+      {parsed.body && (
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            a({ href, children, ...rest }) {
+              return (
+                <a
+                  href={href}
+                  rel="noopener noreferrer"
+                  onClick={(e) => {
+                    e.preventDefault()
+                    if (href) {
+                      // 通过 IPC 在外部浏览器窗口中打开链接
+                      window.taco.browser.openExternal(href)
+                    }
+                  }}
+                  {...rest}
+                >
+                  {children}
+                </a>
+              )
+            },
+            code({ className, children, ...rest }) {
+              const isBlock = /language-/.test(className ?? '')
+              if (isBlock) {
+                const lang = (className ?? '').replace('language-', '')
+                return (
+                  <div className="code-block-wrapper">
+                    <div className="code-block-header">
+                      {lang && <span className="code-block-lang">{lang}</span>}
+                      <CopyButton text={extractText(children)} />
+                    </div>
+                    <pre className="code-block">
+                      <code className={className} {...rest}>
+                        {children}
+                      </code>
+                    </pre>
+                  </div>
+                )
+              }
+              return (
+                <code className="inline-code" {...rest}>
+                  {children}
+                </code>
+              )
+            }
+          }}
+        >
+          {parsed.body}
+        </ReactMarkdown>
+      )}
+    </>
+  )
+}

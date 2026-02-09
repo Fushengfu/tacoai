@@ -1,0 +1,1988 @@
+/**
+ * 工具系统
+ *
+ * 定义 Agent 模式下 AI 可调用的工具及其执行器。
+ * 使用 OpenAI function calling 兼容格式。
+ *
+ * 【重要】所有工具执行器都是异步的，避免阻塞 Electron 主进程。
+ */
+
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import { exec } from 'node:child_process'
+import { log } from './logger'
+import { executeBrowserAction } from './browser'
+import type { BrowserActionType } from '../shared/ipc'
+import { saveScreenshot, getActiveMcpTools, callMcpTool } from './mcp'
+
+/* ------------------------------------------------------------------ */
+/*  Tool definitions (OpenAI function calling 格式)                     */
+/* ------------------------------------------------------------------ */
+
+export type ToolDefinition = {
+  type: 'function'
+  function: {
+    name: string
+    description: string
+    parameters: Record<string, unknown>
+  }
+}
+
+export const toolDefinitions: ToolDefinition[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'read_file',
+      description: '读取指定路径文件的内容。用于查看代码文件、配置文件、日志等。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '文件的绝对路径或相对路径' },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'write_file',
+      description: '将内容写入指定路径的文件。如果文件不存在则创建，存在则覆盖。用于创建或修改代码文件、配置文件等。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '文件的绝对路径或相对路径' },
+          content: { type: 'string', description: '要写入的完整文件内容' },
+        },
+        required: ['path', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_directory',
+      description: '查看目录结构（树形）。支持深度控制、隐藏文件过滤和目录/文件数量摘要。适合先整体理解项目结构再定位目标文件。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '目标目录（相对工作区或绝对路径），默认 "."' },
+          maxDepth: { type: 'number', description: '树形展示深度，默认 4，范围 1-12' },
+          includeFiles: { type: 'boolean', description: '是否显示文件。false 时仅显示目录骨架，默认 true' },
+          showFiles: { type: 'boolean', description: '兼容参数，等价于 includeFiles' },
+          includeHidden: { type: 'boolean', description: '是否包含隐藏文件/目录（以 . 开头），默认 false' },
+          maxEntries: { type: 'number', description: '扫描上限，默认 4000，范围 200-10000' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'run_command',
+      description: '在用户的系统上执行 shell 命令。用于运行构建工具、包管理器、git 操作、启动脚本等。',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: '要执行的 shell 命令' },
+          cwd: { type: 'string', description: '命令执行的工作目录（可选）' },
+        },
+        required: ['command'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_file',
+      description: '删除指定路径的文件。用于清理不需要的文件。删除前会自动保存旧内容以支持撤销。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '要删除的文件的绝对路径或相对路径' },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'propose_plan',
+      description: '向用户提出执行计划并等待确认。当需要执行多步骤的任务（如创建项目、重构代码、架构变更等）时，必须先调用此工具展示计划，得到用户确认后才能开始执行。单个简单操作（如读取文件、搜索代码）不需要调用此工具。',
+      parameters: {
+        type: 'object',
+        properties: {
+          summary: { type: 'string', description: '计划的简要概述（一句话）' },
+          steps: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '具体的执行步骤列表',
+          },
+          reasoning: { type: 'string', description: '选择此方案的理由（可选）' },
+        },
+        required: ['summary', 'steps'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_plan_progress',
+      description: '更新当前执行计划中某个步骤的状态。在执行计划的每一步之前调用（设为 in_progress），完成后再次调用（设为 done 或 failed）。此工具自动执行，无需用户确认。',
+      parameters: {
+        type: 'object',
+        properties: {
+          stepIndex: { type: 'number', description: '步骤的索引（从 0 开始，对应 propose_plan 中 steps 数组的下标）' },
+          status: {
+            type: 'string',
+            enum: ['in_progress', 'done', 'failed'],
+            description: '步骤的新状态：in_progress=正在执行，done=已完成，failed=执行失败',
+          },
+          note: { type: 'string', description: '可选的进度备注，如完成摘要或失败原因' },
+        },
+        required: ['stepIndex', 'status'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'find_file',
+      description: '按文件名或相对路径查找文件/目录。支持 fuzzy、glob、exact 三种匹配模式，并按相关性排序。',
+      parameters: {
+        type: 'object',
+        properties: {
+          pattern: { type: 'string', description: '搜索模式，如 "App.tsx"、"src/**/App.tsx"、"agent"（必填）' },
+          directory: { type: 'string', description: '限定搜索目录，默认 "."' },
+          type: { type: 'string', enum: ['file', 'directory', 'all'], description: '搜索类型，默认 file' },
+          mode: { type: 'string', enum: ['auto', 'fuzzy', 'glob', 'exact'], description: '匹配模式。auto 会自动识别（含 * ? {} 走 glob，否则 fuzzy）' },
+          includeHidden: { type: 'boolean', description: '是否包含隐藏文件/目录，默认 false' },
+          maxResults: { type: 'number', description: '最大返回条数，默认 50，范围 1-200' },
+        },
+        required: ['pattern'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'search_files',
+      description: '在文件内容中搜索关键词或正则表达式，返回匹配行及上下文。优先使用 rg (ripgrep)，自动尊重 .gitignore。结果按文件分组，紧凑高效。用于在代码中定位函数、变量、配置等。',
+      parameters: {
+        type: 'object',
+        properties: {
+          pattern: { type: 'string', description: '搜索关键词或正则表达式' },
+          directory: { type: 'string', description: '搜索目录（可选，默认项目根目录）' },
+          filePattern: { type: 'string', description: '限定文件类型，如 "*.ts"、"*.{ts,tsx}"（可选）' },
+          contextLines: { type: 'number', description: '每个匹配项显示的上下文行数，默认 2' },
+          maxResults: { type: 'number', description: '最大返回匹配数，默认 30' },
+          caseSensitive: { type: 'boolean', description: '是否区分大小写，默认 false' },
+        },
+        required: ['pattern'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'save_note',
+      description: '保存一条项目笔记/记忆到持久化存储。在对话过程中，当你从用户消息、代码文件、执行结果中识别到重要的项目上下文信息时（如代码规范、数据库配置、架构决策、技术栈偏好、团队约定等），应立即且主动调用此工具记录。笔记会在后续所有会话中自动注入系统提示词，让 AI 始终了解项目背景。无需征求用户许可即可调用。',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: '笔记标题（简洁概括）' },
+          content: { type: 'string', description: '笔记正文内容（详细描述）' },
+          category: {
+            type: 'string',
+            enum: ['convention', 'credential', 'architecture', 'config', 'other'],
+            description: '分类：convention(代码规范), credential(凭证/账号), architecture(架构设计), config(配置信息), other(其他)',
+          },
+        },
+        required: ['title', 'content', 'category'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_note',
+      description: '删除一条项目笔记/记忆。当用户要求删除某条笔记或某项记忆已过时时使用。',
+      parameters: {
+        type: 'object',
+        properties: {
+          noteId: { type: 'string', description: '要删除的笔记 ID' },
+        },
+        required: ['noteId'],
+      },
+    },
+  },
+
+  /* ---- 浏览器自动化工具 ---- */
+  {
+    type: 'function',
+    function: {
+      name: 'browser_navigate',
+      description: '在外部浏览器窗口中打开/导航到指定 URL。如果浏览器未打开会自动打开。可通过 appId 指定操作哪个浏览器实例（不同 appId 拥有独立的指纹和会话）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: '要导航到的 URL（支持 http/https）' },
+          appId: { type: 'string', description: '浏览器实例标识。不同 appId 对应独立的浏览器窗口、会话和指纹。不指定则使用 "default"' },
+        },
+        required: ['url'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_screenshot',
+      description: '截取当前浏览器页面的截图并获取页面元素信息。返回包含页面标题、URL、可见元素列表的结构化信息。',
+      parameters: {
+        type: 'object',
+        properties: {
+          appId: { type: 'string', description: '浏览器实例标识，不指定则使用 "default"' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_click',
+      description: '通过 CDP 模拟鼠标点击页面上指定的元素。支持 CSS 选择器或直接坐标两种定位方式。会模拟鼠标移动→按下→释放的完整操作。可选双击、右键点击。',
+      parameters: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS 选择器定位元素，如 "#login-btn", ".submit"。与 x/y 坐标二选一' },
+          x: { type: 'number', description: '直接指定点击的 X 坐标（视口像素）。需与 y 配合使用' },
+          y: { type: 'number', description: '直接指定点击的 Y 坐标（视口像素）。需与 x 配合使用' },
+          button: { type: 'string', enum: ['left', 'right', 'middle'], description: '鼠标按键，默认 left' },
+          clickCount: { type: 'number', description: '点击次数，2 为双击，默认 1' },
+          appId: { type: 'string', description: '浏览器实例标识，不指定则使用 "default"' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_type',
+      description: '通过 CDP 模拟键盘逐字符输入文字到指定输入框。模拟完整流程：鼠标移动到元素 → 点击聚焦 → 清空旧内容 → 逐字符按键输入（带随机延迟模拟真人打字节奏）。支持中文等非 ASCII 字符。',
+      parameters: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS 选择器，用于定位输入元素，如 "#username", "input[name=email]", "#kw"' },
+          text: { type: 'string', description: '要输入的文字' },
+          clear: { type: 'boolean', description: '是否在输入前清空已有内容，默认 true' },
+          submit: { type: 'boolean', description: '输入完成后是否模拟按下 Enter 键提交（适用于搜索框等场景），默认 false' },
+          appId: { type: 'string', description: '浏览器实例标识，不指定则使用 "default"' },
+        },
+        required: ['selector', 'text'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_scroll',
+      description: '通过 CDP 模拟鼠标滚轮滚动浏览器页面或指定元素。会分多步平滑滚动模拟真实滚轮操作。可指定元素进行局部滚动。',
+      parameters: {
+        type: 'object',
+        properties: {
+          direction: { type: 'string', enum: ['up', 'down', 'left', 'right'], description: '滚动方向，默认 down' },
+          amount: { type: 'number', description: '滚动像素数，默认 300' },
+          selector: { type: 'string', description: '可选，指定鼠标移到该元素上方再滚动（用于局部可滚动容器）。不提供则在页面中心滚动' },
+          appId: { type: 'string', description: '浏览器实例标识，不指定则使用 "default"' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_get_content',
+      description: '获取页面或指定元素的文本/HTML 内容。用于提取页面数据、验证显示内容。',
+      parameters: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: '可选的 CSS 选择器。不提供则获取 body 内容' },
+          type: { type: 'string', enum: ['text', 'html', 'value'], description: '内容类型：text(纯文本)、html(HTML源码)、value(表单值)，默认 text' },
+          appId: { type: 'string', description: '浏览器实例标识，不指定则使用 "default"' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_wait',
+      description: '等待指定的 CSS 选择器对应的元素出现在页面中。用于等待动态内容加载。',
+      parameters: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS 选择器，等待该元素出现' },
+          timeout: { type: 'number', description: '超时毫秒数，默认 5000' },
+          appId: { type: 'string', description: '浏览器实例标识，不指定则使用 "default"' },
+        },
+        required: ['selector'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_evaluate',
+      description: '在浏览器页面中执行任意 JavaScript 代码。返回执行结果。用于复杂的页面交互、数据提取、或验证操作。',
+      parameters: {
+        type: 'object',
+        properties: {
+          expression: { type: 'string', description: '要执行的 JavaScript 表达式或代码' },
+          appId: { type: 'string', description: '浏览器实例标识，不指定则使用 "default"' },
+        },
+        required: ['expression'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_get_info',
+      description: '获取当前浏览器页面的基本信息，包括 URL、标题、视口大小等。',
+      parameters: {
+        type: 'object',
+        properties: {
+          appId: { type: 'string', description: '浏览器实例标识，不指定则使用 "default"' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_hover',
+      description: '通过 CDP 模拟鼠标移动并悬停在页面上指定的元素上。触发该元素的 hover 效果（如 tooltip、下拉菜单等）。支持 CSS 选择器或坐标。',
+      parameters: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS 选择器定位元素。与 x/y 二选一' },
+          x: { type: 'number', description: '直接指定悬停的 X 坐标' },
+          y: { type: 'number', description: '直接指定悬停的 Y 坐标' },
+          appId: { type: 'string', description: '浏览器实例标识，不指定则使用 "default"' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_keypress',
+      description: '通过 CDP 模拟键盘按键操作。在当前聚焦的元素上按下键盘按键。支持特殊键（Tab、Escape、Enter、ArrowUp/Down/Left/Right、Backspace、Delete 等）和组合键（Ctrl+C、Cmd+V 等）。模拟完整的 keyDown + keyUp 序列。',
+      parameters: {
+        type: 'object',
+        properties: {
+          key: {
+            type: 'string',
+            description: '按键名称，如 "Enter", "Tab", "Escape", "ArrowDown", "ArrowUp", "Backspace", "Delete", "Space", "a", "1" 等。对应 KeyboardEvent.key',
+          },
+          modifiers: {
+            type: 'array',
+            items: { type: 'string', enum: ['ctrl', 'alt', 'shift', 'meta'] },
+            description: '修饰键列表，如 ["ctrl", "shift"] 表示 Ctrl+Shift 组合键。meta 在 macOS 上是 Cmd 键',
+          },
+          appId: { type: 'string', description: '浏览器实例标识，不指定则使用 "default"' },
+        },
+        required: ['key'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_drag',
+      description: '通过 CDP 模拟鼠标拖拽操作：鼠标移到起点 → 按下 → 多步平滑移动到终点 → 释放。可用选择器或坐标指定起点和终点。',
+      parameters: {
+        type: 'object',
+        properties: {
+          fromSelector: { type: 'string', description: '起点元素 CSS 选择器。与 fromX/fromY 二选一' },
+          fromX: { type: 'number', description: '起点 X 坐标' },
+          fromY: { type: 'number', description: '起点 Y 坐标' },
+          toSelector: { type: 'string', description: '终点元素 CSS 选择器。与 toX/toY 二选一' },
+          toX: { type: 'number', description: '终点 X 坐标' },
+          toY: { type: 'number', description: '终点 Y 坐标' },
+          steps: { type: 'number', description: '拖拽插值步数（越多越平滑），默认 10' },
+          appId: { type: 'string', description: '浏览器实例标识，不指定则使用 "default"' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_select',
+      description: '通过 CDP 模拟操作选择 <select> 下拉框中的选项。模拟流程：鼠标移动到下拉框 → 点击打开 → 键盘上下箭头导航 → 回车确认选择。通过 value 或显示文本匹配选项。',
+      parameters: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS 选择器定位 <select> 元素' },
+          value: { type: 'string', description: '选项的 value 属性值（优先匹配）' },
+          label: { type: 'string', description: '选项的显示文本（value 未匹配时使用）' },
+          appId: { type: 'string', description: '浏览器实例标识，不指定则使用 "default"' },
+        },
+        required: ['selector'],
+      },
+    },
+  },
+
+  /* ---- MCP 工具调用 ---- */
+  {
+    type: 'function',
+    function: {
+      name: 'mcp_call',
+      description: '调用 MCP (Model Context Protocol) 服务器提供的工具。使用前先通过 mcp_list_tools 查看可用工具。',
+      parameters: {
+        type: 'object',
+        properties: {
+          server_id: { type: 'string', description: 'MCP 服务器 ID（如 "minimax"）' },
+          tool_name: { type: 'string', description: '要调用的 MCP 工具名称（如 "web_search", "understand_image"）' },
+          arguments: {
+            type: 'object',
+            description: '传递给 MCP 工具的参数（JSON 对象）',
+          },
+        },
+        required: ['server_id', 'tool_name', 'arguments'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mcp_list_tools',
+      description: '列出所有已启用的 MCP 服务器及其提供的工具。用于发现可用的 MCP 工具。',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+    },
+  },
+]
+
+/**
+ * 获取完整的工具定义列表（静态工具 + 动态 MCP 工具描述）。
+ * Agent 每次调用时获取最新的工具列表。
+ */
+export function getAllToolDefinitions(): ToolDefinition[] {
+  // 基础工具始终可用
+  return [...toolDefinitions]
+}
+
+/* ------------------------------------------------------------------ */
+/*  Tool call types                                                    */
+/* ------------------------------------------------------------------ */
+
+export type ToolCall = {
+  id: string
+  type: 'function'
+  function: {
+    name: string
+    arguments: string
+  }
+}
+
+/** 文件变更信息（write_file / delete_file 时自动记录） */
+export type FileChange = {
+  filePath: string
+  oldContent: string | null  // null 表示新建文件
+  newContent: string | null  // null 表示文件被删除
+}
+
+export type ToolResult = {
+  tool_call_id: string
+  name: string
+  content: string
+  success: boolean
+  /** write_file 操作时记录文件变更 */
+  fileChange?: FileChange
+}
+
+/* ------------------------------------------------------------------ */
+/*  Workspace 安全检查                                                  */
+/* ------------------------------------------------------------------ */
+
+type ExecResult = { content: string; success: boolean }
+
+function makeAbortError(): Error {
+  const err = new Error('Aborted')
+  err.name = 'AbortError'
+  return err
+}
+
+function isAbortError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  return err.name === 'AbortError' || err.message === 'Aborted'
+}
+
+/** 解析路径：相对于 workspace，并检查是否在 workspace 内 */
+function resolveSafe(workspace: string, filePath: string): { resolved: string } | { error: string } {
+  const normalizedWs = path.normalize(workspace)
+
+  // ── 0) 如果是绝对路径且在 workspace 内，直接使用 ──
+  if (path.isAbsolute(filePath)) {
+    const normalizedFp = path.normalize(filePath)
+    if (normalizedFp.startsWith(normalizedWs + path.sep) || normalizedFp === normalizedWs) {
+      return { resolved: normalizedFp }
+    }
+    // 绝对路径但在 workspace 外 → 尝试提取相对部分
+    // AI 可能传了完整路径如 "/Users/foo/project/src/a.ts"
+    // 对于不在 workspace 的绝对路径，拒绝
+  }
+
+  // ── 路径清洗：修正 AI 常见的错误路径格式 ──
+  let cleaned = filePath
+
+  // 1) 去掉前导斜杠（AI 经常传 "/mobile" 导致变成系统根目录）
+  cleaned = cleaned.replace(/^\/+/, '')
+
+  // 2) 如果 AI 传了工作空间名作为前缀（如 "myproject/src" 但工作空间就是 myproject），去掉重复部分
+  const wsName = path.basename(workspace)
+  if (cleaned.startsWith(wsName + '/') || cleaned.startsWith(wsName + '\\')) {
+    const without = cleaned.slice(wsName.length + 1)
+    const testResolved = path.resolve(workspace, without)
+    if (testResolved.startsWith(normalizedWs)) {
+      cleaned = without
+    }
+  }
+
+  // 3) 去掉尾部斜杠
+  cleaned = cleaned.replace(/\/+$/, '')
+
+  // 空路径视为当前目录
+  if (!cleaned) cleaned = '.'
+
+  const resolved = path.resolve(workspace, cleaned)
+  const normalized = path.normalize(resolved)
+  if (!normalized.startsWith(normalizedWs)) {
+    return { error: `安全限制：路径 "${filePath}" 超出工作空间 "${workspace}"（解析为 ${normalized}）` }
+  }
+  return { resolved: normalized }
+}
+
+/**
+ * 智能路径解析：先尝试直接路径，如果找不到则在项目中搜索匹配的目录/文件。
+ * 解决 AI 经常只传目录名（如 "components"）而非完整相对路径（如 "src/renderer/components"）的问题。
+ *
+ * @returns { resolved, corrected? } — corrected 为纠正后的相对路径（仅在自动纠正时存在）
+ */
+async function resolveSmartPath(
+  workspace: string,
+  filePath: string,
+  kind: 'directory' | 'file' | 'any' = 'any',
+): Promise<{ resolved: string; corrected?: string } | { error: string }> {
+  // 1) 直接解析
+  const check = resolveSafe(workspace, filePath)
+  if ('error' in check) return check
+
+  // 2) 直接路径存在 → 直接返回
+  try {
+    const stat = await fs.stat(check.resolved)
+    if (kind === 'directory' && !stat.isDirectory()) {
+      // 期望目录但拿到了文件，继续搜索
+    } else if (kind === 'file' && !stat.isFile()) {
+      // 期望文件但拿到了目录，继续搜索
+    } else {
+      return { resolved: check.resolved }
+    }
+  } catch {
+    // 路径不存在，进入搜索
+  }
+
+  // 3) 在项目中搜索匹配的路径
+  const searchName = filePath.replace(/^\.\//, '').replace(/\/+$/, '')
+  if (!searchName || searchName === '.') return { error: `路径不存在: ${filePath}` }
+
+  let candidates: string[] = []
+
+  try {
+    // 优先 git ls-files
+    const { stdout } = await execAsync(
+      'git ls-files --cached --others --exclude-standard',
+      { cwd: workspace, timeout: 5000, maxBuffer: 4 * 1024 * 1024 }
+    )
+    const allFiles = stdout.trim().split('\n').filter(Boolean)
+
+    if (kind === 'file' || kind === 'any') {
+      // 匹配文件：尾部匹配
+      candidates = allFiles.filter((f) =>
+        f === searchName || f.endsWith('/' + searchName)
+      )
+    }
+
+    if ((kind === 'directory' || kind === 'any') && candidates.length === 0) {
+      // 匹配目录：从文件路径中提取所有目录，找尾部匹配的
+      const dirs = new Set<string>()
+      for (const f of allFiles) {
+        const parts = f.split('/')
+        for (let i = 1; i < parts.length; i++) {
+          dirs.add(parts.slice(0, i).join('/'))
+        }
+      }
+      candidates = [...dirs].filter((d) =>
+        d === searchName || d.endsWith('/' + searchName)
+      )
+    }
+  } catch {
+    // git 不可用，回退到 fs 搜索
+    try {
+      const found: string[] = []
+      const IGNORE = new Set(['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', '.cache', '.turbo', 'coverage', 'release'])
+      async function scan(dir: string, depth: number) {
+        if (depth > 8 || found.length >= 5) return
+        const items = await fs.readdir(dir, { withFileTypes: true })
+        for (const item of items) {
+          if (IGNORE.has(item.name)) continue
+          const rel = path.relative(workspace, path.join(dir, item.name))
+          if (item.isDirectory()) {
+            if (rel === searchName || rel.endsWith('/' + searchName) || rel.endsWith(path.sep + searchName)) {
+              found.push(rel)
+            }
+            await scan(path.join(dir, item.name), depth + 1)
+          } else if (kind !== 'directory') {
+            if (rel === searchName || rel.endsWith('/' + searchName) || rel.endsWith(path.sep + searchName)) {
+              found.push(rel)
+            }
+          }
+        }
+      }
+      await scan(workspace, 0)
+      candidates = found
+    } catch { /* ignore */ }
+  }
+
+  if (candidates.length === 0) {
+    // 列出顶层目录帮助 AI 自我纠正
+    let topDirs = ''
+    try {
+      const items = await fs.readdir(workspace, { withFileTypes: true })
+      const dirs = items.filter((i) => i.isDirectory() && !i.name.startsWith('.')).map((i) => i.name + '/').slice(0, 20)
+      if (dirs.length > 0) topDirs = `\n工作空间顶层目录: ${dirs.join(', ')}`
+    } catch { /* ignore */ }
+    return { error: `路径不存在: "${filePath}"（在工作空间 "${workspace}" 中未找到匹配的 "${searchName}"）${topDirs}\n请使用相对于工作空间根目录的路径，如 "src/components" 而非 "components"` }
+  }
+
+  // 4) 选最短路径（通常最接近用户意图）
+  candidates.sort((a, b) => a.length - b.length)
+  const best = candidates[0]
+  const bestResolved = path.resolve(workspace, best)
+
+  // 安全检查
+  if (!path.normalize(bestResolved).startsWith(path.normalize(workspace))) {
+    return { error: `安全限制：纠正后路径超出工作空间` }
+  }
+
+  // 有多个候选时把所有候选列出来供参考
+  const hint = candidates.length > 1
+    ? `\n（还有其他匹配: ${candidates.slice(1, 4).join(', ')}${candidates.length > 4 ? '...' : ''}）`
+    : ''
+
+  return { resolved: bestResolved, corrected: best + hint }
+}
+
+/* ------------------------------------------------------------------ */
+/*  异步 exec 包装                                                      */
+/* ------------------------------------------------------------------ */
+
+/** 异步执行 shell 命令，带超时和输出限制 */
+function execAsync(
+  command: string,
+  options: { cwd: string; timeout: number; maxBuffer?: number; signal?: AbortSignal }
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    if (options.signal?.aborted) {
+      reject(makeAbortError())
+      return
+    }
+
+    let settled = false
+    const child = exec(command, {
+      cwd: options.cwd,
+      timeout: options.timeout,
+      maxBuffer: options.maxBuffer ?? 1024 * 1024,
+      encoding: 'utf-8',
+    }, (err, stdout, stderr) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      if (err) {
+        // exec 错误也带上 stdout/stderr 供调用方使用
+        const error = err as Error & { stdout?: string; stderr?: string }
+        error.stdout = stdout ?? ''
+        error.stderr = stderr ?? ''
+        reject(error)
+      } else {
+        resolve({ stdout: stdout ?? '', stderr: stderr ?? '' })
+      }
+    })
+
+    // 额外保护：进程退出超时后强制 kill
+    const killTimer = setTimeout(() => {
+      try { child.kill('SIGKILL') } catch { /* ignore */ }
+    }, options.timeout + 5000)
+
+    const onAbort = () => {
+      if (settled) return
+      settled = true
+      try { child.kill('SIGTERM') } catch { /* ignore */ }
+      cleanup()
+      reject(makeAbortError())
+    }
+
+    const cleanup = () => {
+      clearTimeout(killTimer)
+      if (options.signal) options.signal.removeEventListener('abort', onAbort)
+    }
+
+    if (options.signal) options.signal.addEventListener('abort', onAbort, { once: true })
+
+    child.on('exit', cleanup)
+    child.on('error', cleanup)
+  })
+}
+
+/* ------------------------------------------------------------------ */
+/*  异步 Tool executors（所有文件操作限制在 workspace 内）                */
+/* ------------------------------------------------------------------ */
+
+async function executeTool(
+  name: string,
+  args: Record<string, unknown>,
+  workspace: string,
+  signal?: AbortSignal,
+  projectId?: string,
+): Promise<ExecResult & { fileChange?: FileChange }> {
+  try {
+    if (signal?.aborted) throw makeAbortError()
+    switch (name) {
+      case 'read_file':
+        return await execReadFile(args, workspace)
+      case 'write_file':
+        return await execWriteFile(args, workspace)
+      case 'delete_file':
+        return await execDeleteFile(args, workspace)
+      case 'list_directory':
+        return await execListDirectory(args, workspace)
+      case 'run_command':
+        return await execRunCommand(args, workspace, signal)
+      case 'find_file':
+        return await execFindFile(args, workspace)
+      case 'search_files':
+        return await execSearchFiles(args, workspace)
+      case 'save_note':
+        return await execSaveNote(args, workspace, projectId)
+      case 'delete_note':
+        return await execDeleteNote(args, workspace, projectId)
+      /* ---- 浏览器自动化 ---- */
+      case 'browser_navigate':
+        return await execBrowserAction('navigate', args)
+      case 'browser_screenshot':
+        return await execBrowserAction('screenshot', args)
+      case 'browser_click':
+        return await execBrowserAction('click', args)
+      case 'browser_type':
+        return await execBrowserAction('type', args)
+      case 'browser_scroll':
+        return await execBrowserAction('scroll', args)
+      case 'browser_get_content':
+        return await execBrowserAction('get_content', args)
+      case 'browser_wait':
+        return await execBrowserAction('wait', args)
+      case 'browser_evaluate':
+        return await execBrowserAction('evaluate', args)
+      case 'browser_get_info':
+        return await execBrowserAction('get_info', args)
+      case 'browser_hover':
+        return await execBrowserAction('hover', args)
+      case 'browser_keypress':
+        return await execBrowserAction('keypress', args)
+      case 'browser_drag':
+        return await execBrowserAction('drag', args)
+      case 'browser_select':
+        return await execBrowserAction('select', args)
+      /* ---- MCP ---- */
+      case 'mcp_call':
+        return await execMcpCall(args, signal)
+      case 'mcp_list_tools':
+        return await execMcpListTools()
+      default:
+        return { content: `Unknown tool: ${name}`, success: false }
+    }
+  } catch (err) {
+    if (isAbortError(err)) throw err
+    const msg = err instanceof Error ? err.message : String(err)
+    return { content: `Error: ${msg}`, success: false }
+  }
+}
+
+async function execReadFile(args: Record<string, unknown>, workspace: string): Promise<ExecResult> {
+  const filePath = String(args.path ?? '')
+  if (!filePath) return { content: 'Error: path is required', success: false }
+
+  const check = await resolveSmartPath(workspace, filePath, 'file')
+  if ('error' in check) return { content: check.error, success: false }
+  const resolved = check.resolved
+  const correctedNote = check.corrected ? `[自动纠正路径: "${filePath}" → "${check.corrected.split('\n')[0]}"]\n` : ''
+
+  try {
+    const stat = await fs.stat(resolved)
+    if (!stat.isFile()) return { content: `Error: Not a file: ${resolved}`, success: false }
+    if (stat.size > 1024 * 1024) return { content: `Error: File too large (${(stat.size / 1024 / 1024).toFixed(1)}MB), max 1MB`, success: false }
+    const content = await fs.readFile(resolved, 'utf-8')
+    return { content: correctedNote + content, success: true }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { content: `Error: File not found: ${resolved}`, success: false }
+    }
+    throw err
+  }
+}
+
+async function execWriteFile(args: Record<string, unknown>, workspace: string): Promise<ExecResult & { fileChange?: FileChange }> {
+  const filePath = String(args.path ?? '')
+  const fileContent = String(args.content ?? '')
+  if (!filePath) return { content: 'Error: path is required', success: false }
+  const check = resolveSafe(workspace, filePath)
+  if ('error' in check) return { content: check.error, success: false }
+  const resolved = check.resolved
+
+  // 记录旧内容（用于 diff）
+  let oldContent: string | null = null
+  try {
+    const stat = await fs.stat(resolved)
+    if (stat.isFile()) {
+      oldContent = await fs.readFile(resolved, 'utf-8')
+    }
+  } catch {
+    // 文件不存在 → 新建
+  }
+
+  const dir = path.dirname(resolved)
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(resolved, fileContent, 'utf-8')
+
+  // 返回相对路径用于前端展示
+  const relPath = path.relative(workspace, resolved)
+  return {
+    content: `File written: ${resolved} (${fileContent.length} chars)`,
+    success: true,
+    fileChange: { filePath: relPath, oldContent, newContent: fileContent },
+  }
+}
+
+async function execDeleteFile(args: Record<string, unknown>, workspace: string): Promise<ExecResult & { fileChange?: FileChange }> {
+  const filePath = String(args.path ?? '')
+  if (!filePath) return { content: 'Error: path is required', success: false }
+  const check = resolveSafe(workspace, filePath)
+  if ('error' in check) return { content: check.error, success: false }
+  const resolved = check.resolved
+
+  // 读取旧内容（用于支持撤销恢复）
+  let oldContent: string | null = null
+  try {
+    const stat = await fs.stat(resolved)
+    if (!stat.isFile()) return { content: `Error: Not a file: ${resolved}`, success: false }
+    oldContent = await fs.readFile(resolved, 'utf-8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { content: `Error: File not found: ${resolved}`, success: false }
+    }
+    throw err
+  }
+
+  await fs.unlink(resolved)
+
+  // 返回相对路径用于前端展示
+  const relPath = path.relative(workspace, resolved)
+  return {
+    content: `File deleted: ${resolved}`,
+    success: true,
+    fileChange: { filePath: relPath, oldContent, newContent: null },
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  共享文件收集工具                                                      */
+/* ------------------------------------------------------------------ */
+
+/** fs.readdir 递归时忽略的目录/文件名 */
+const FS_IGNORE = new Set([
+  '.git', 'node_modules', '.next', '__pycache__', '.venv', 'venv',
+  'dist', '.cache', '.turbo', 'coverage', 'release', '.nuxt',
+  '.output', '.svelte-kit', '.parcel-cache', '.DS_Store',
+])
+
+type WorkspaceEntryKind = 'file' | 'directory'
+
+type WorkspaceEntry = {
+  path: string
+  name: string
+  kind: WorkspaceEntryKind
+  depth: number
+}
+
+type CollectWorkspaceOptions = {
+  maxDepth?: number
+  includeHidden?: boolean
+  maxEntries?: number
+}
+
+type TreeRenderOptions = {
+  maxDepth: number
+  includeFiles: boolean
+  maxLines?: number
+}
+
+type TreeRenderResult = {
+  text: string
+  stats: {
+    directoryCount: number
+    fileCount: number
+    lineCount: number
+  }
+  truncated: boolean
+}
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, Math.min(max, Math.floor(parsed)))
+}
+
+function toPosixPath(input: string): string {
+  return input.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\.\//, '').replace(/\/$/, '')
+}
+
+function isHiddenPath(relPath: string): boolean {
+  return relPath.split('/').some((segment) => segment.startsWith('.'))
+}
+
+function shouldSkipName(name: string, includeHidden: boolean): boolean {
+  if (FS_IGNORE.has(name)) return true
+  if (!includeHidden && name.startsWith('.')) return true
+  return false
+}
+
+function addDirectoryAncestors(relPath: string, dirSet: Set<string>) {
+  const parts = relPath.split('/')
+  for (let i = 1; i < parts.length; i++) {
+    const dir = parts.slice(0, i).join('/')
+    if (dir) dirSet.add(dir)
+  }
+}
+
+function buildWorkspaceEntries(fileSet: Set<string>, dirSet: Set<string>): WorkspaceEntry[] {
+  const entries: WorkspaceEntry[] = []
+  for (const dir of dirSet) {
+    const clean = toPosixPath(dir)
+    if (!clean) continue
+    entries.push({
+      path: clean,
+      name: clean.split('/').pop() || clean,
+      kind: 'directory',
+      depth: clean.split('/').length,
+    })
+  }
+  for (const file of fileSet) {
+    const clean = toPosixPath(file)
+    if (!clean) continue
+    entries.push({
+      path: clean,
+      name: clean.split('/').pop() || clean,
+      kind: 'file',
+      depth: clean.split('/').length,
+    })
+  }
+  entries.sort((a, b) => a.path.localeCompare(b.path))
+  return entries
+}
+
+async function hasDirectoryContent(dir: string): Promise<boolean> {
+  try {
+    const items = await fs.readdir(dir)
+    return items.length > 0
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 统一的工作区索引收集器。
+ *
+ * 优先使用 git ls-files（快且尊重 .gitignore），失败时回退到 fs.readdir。
+ * 返回统一的 file/directory 条目，供 list_directory / find_file 复用。
+ */
+async function collectWorkspaceEntries(
+  rootDir: string,
+  options: CollectWorkspaceOptions = {},
+): Promise<{ entries: WorkspaceEntry[]; truncated: boolean }> {
+  const maxDepth = clampNumber(options.maxDepth, 1, 24, 12)
+  const maxEntries = clampNumber(options.maxEntries, 200, 10000, 4000)
+  const includeHidden = Boolean(options.includeHidden)
+  const fileSet = new Set<string>()
+  const dirSet = new Set<string>()
+  let truncated = false
+
+  // 方法一：git ls-files
+  try {
+    await execAsync('git rev-parse --show-toplevel', { cwd: rootDir, timeout: 3000 })
+    const { stdout } = await execAsync(
+      'git ls-files --cached --others --exclude-standard',
+      { cwd: rootDir, timeout: 6000, maxBuffer: 8 * 1024 * 1024 },
+    )
+    const files = stdout.trim().split('\n').filter(Boolean)
+    if (files.length > 0 || !(await hasDirectoryContent(rootDir))) {
+      for (const raw of files) {
+        if (fileSet.size + dirSet.size >= maxEntries) {
+          truncated = true
+          break
+        }
+        const relPath = toPosixPath(raw)
+        if (!relPath) continue
+        if (!includeHidden && isHiddenPath(relPath)) continue
+        if (relPath.split('/').length > maxDepth + 8) {
+          truncated = true
+          continue
+        }
+        fileSet.add(relPath)
+        addDirectoryAncestors(relPath, dirSet)
+      }
+      return { entries: buildWorkspaceEntries(fileSet, dirSet), truncated }
+    }
+  } catch {
+    // 非 git 仓库或 git 不可用，回退到 fs.readdir
+  }
+
+  // 方法二：fs.readdir 递归
+  const scanDepth = Math.min(maxDepth + 8, 24)
+  async function scan(absDir: string, relDir: string, depth: number) {
+    if (depth > scanDepth || fileSet.size + dirSet.size >= maxEntries) {
+      truncated = true
+      return
+    }
+    let items: Array<import('node:fs').Dirent>
+    try {
+      items = await fs.readdir(absDir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    items.sort((a, b) => a.name.localeCompare(b.name))
+
+    for (const item of items) {
+      if (shouldSkipName(item.name, includeHidden)) continue
+
+      const relPath = toPosixPath(relDir ? `${relDir}/${item.name}` : item.name)
+      if (!relPath) continue
+
+      if (item.isDirectory()) {
+        dirSet.add(relPath)
+        await scan(path.join(absDir, item.name), relPath, depth + 1)
+      } else if (item.isFile()) {
+        fileSet.add(relPath)
+        addDirectoryAncestors(relPath, dirSet)
+      }
+
+      if (fileSet.size + dirSet.size >= maxEntries) {
+        truncated = true
+        break
+      }
+    }
+  }
+
+  await scan(rootDir, '', 1)
+  return { entries: buildWorkspaceEntries(fileSet, dirSet), truncated }
+}
+
+function buildDirectoryTree(entries: WorkspaceEntry[], options: TreeRenderOptions): TreeRenderResult {
+  type TreeNode = {
+    name: string
+    path: string
+    kind: 'root' | WorkspaceEntryKind
+    children: Map<string, TreeNode>
+    fileCount: number
+    dirCount: number
+  }
+
+  const root: TreeNode = {
+    name: '.',
+    path: '',
+    kind: 'root',
+    children: new Map(),
+    fileCount: 0,
+    dirCount: 0,
+  }
+
+  for (const entry of entries) {
+    const parts = entry.path.split('/')
+    let cursor = root
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i]
+      const isLeaf = i === parts.length - 1
+      const childPath = parts.slice(0, i + 1).join('/')
+      const expectedKind: WorkspaceEntryKind = isLeaf ? entry.kind : 'directory'
+      let child = cursor.children.get(part)
+      if (!child) {
+        child = {
+          name: part,
+          path: childPath,
+          kind: expectedKind,
+          children: new Map(),
+          fileCount: 0,
+          dirCount: 0,
+        }
+        cursor.children.set(part, child)
+      } else if (child.kind === 'file' && expectedKind === 'directory') {
+        child.kind = 'directory'
+      }
+      cursor = child
+    }
+  }
+
+  function computeStats(node: TreeNode): { files: number; dirs: number } {
+    if (node.kind === 'file') {
+      node.fileCount = 1
+      node.dirCount = 0
+      return { files: 1, dirs: 0 }
+    }
+    let files = 0
+    let dirs = 0
+    for (const child of node.children.values()) {
+      const sub = computeStats(child)
+      files += sub.files
+      dirs += sub.dirs + (child.kind === 'directory' ? 1 : 0)
+    }
+    node.fileCount = files
+    node.dirCount = dirs
+    return { files, dirs }
+  }
+  computeStats(root)
+
+  const maxLines = clampNumber(options.maxLines, 20, 1200, 500)
+  const lines: string[] = []
+  let truncated = false
+
+  function renderChildren(node: TreeNode, prefix: string, depth: number) {
+    const children = [...node.children.values()].sort((a, b) => {
+      const aIsDir = a.kind === 'directory'
+      const bIsDir = b.kind === 'directory'
+      if (aIsDir !== bIsDir) return aIsDir ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
+
+    for (let i = 0; i < children.length; i++) {
+      if (lines.length >= maxLines) {
+        truncated = true
+        return
+      }
+      const child = children[i]
+      const isLast = i === children.length - 1
+      const connector = isLast ? '└── ' : '├── '
+      const nextPrefix = prefix + (isLast ? '    ' : '│   ')
+
+      if (child.kind === 'file') {
+        if (options.includeFiles) {
+          lines.push(`${prefix}${connector}${child.name}`)
+        }
+        continue
+      }
+
+      if (depth >= options.maxDepth) {
+        lines.push(
+          `${prefix}${connector}${child.name}/ (${child.dirCount} dirs, ${child.fileCount} files)`,
+        )
+        continue
+      }
+
+      lines.push(`${prefix}${connector}${child.name}/`)
+      renderChildren(child, nextPrefix, depth + 1)
+      if (truncated) return
+    }
+  }
+
+  renderChildren(root, '', 1)
+
+  return {
+    text: lines.join('\n'),
+    stats: {
+      directoryCount: root.dirCount,
+      fileCount: root.fileCount,
+      lineCount: lines.length,
+    },
+    truncated,
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  getWorkspaceTree / execListDirectory                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 获取工作空间的紧凑目录树（公共接口，供 agent 启动时注入上下文使用）
+ */
+export async function getWorkspaceTree(workspace: string, maxDepth = 6, showFiles = true): Promise<string> {
+  const depth = clampNumber(maxDepth, 1, 12, 6)
+  const { entries, truncated: scanTruncated } = await collectWorkspaceEntries(workspace, {
+    maxDepth: depth + 8,
+    includeHidden: false,
+    maxEntries: 5000,
+  })
+  const tree = buildDirectoryTree(entries, { maxDepth: depth, includeFiles: showFiles, maxLines: 600 })
+  const truncationNote = scanTruncated || tree.truncated ? '\n... (truncated)' : ''
+  const body = tree.text.trim() || '(empty)'
+  return `./ (${tree.stats.directoryCount} dirs, ${tree.stats.fileCount} files)\n${body}${truncationNote}`
+}
+
+async function execListDirectory(args: Record<string, unknown>, workspace: string): Promise<ExecResult> {
+  const dirPath = String(args.path ?? '.')
+  const maxDepth = clampNumber(args.maxDepth, 1, 12, 4)
+  const includeFiles = args.includeFiles === undefined ? args.showFiles !== false : Boolean(args.includeFiles)
+  const includeHidden = Boolean(args.includeHidden)
+  const maxEntries = clampNumber(args.maxEntries, 200, 10000, 4000)
+
+  const check = await resolveSmartPath(workspace, dirPath, 'directory')
+  if ('error' in check) return { content: check.error, success: false }
+  const resolved = check.resolved
+  const correctedNote = check.corrected
+    ? `[自动纠正路径: "${dirPath}" → "${check.corrected.split('\n')[0]}"]\n`
+    : ''
+
+  const relDir = path.relative(workspace, resolved) || '.'
+  const { entries, truncated: scanTruncated } = await collectWorkspaceEntries(resolved, {
+    maxDepth: maxDepth + 8,
+    includeHidden,
+    maxEntries,
+  })
+  const tree = buildDirectoryTree(entries, {
+    maxDepth,
+    includeFiles,
+    maxLines: 500,
+  })
+
+  if (entries.length === 0) {
+    return {
+      content: `${correctedNote}${relDir}/\nSummary: 0 dirs, 0 files\n(empty directory or ignored by filters)`,
+      success: true,
+    }
+  }
+
+  const notes: string[] = []
+  if (scanTruncated) notes.push(`scan truncated at ${maxEntries} entries`)
+  if (tree.truncated) notes.push('output truncated by line limit')
+
+  const lines = [
+    `${relDir}/`,
+    `Summary: ${tree.stats.directoryCount} dirs, ${tree.stats.fileCount} files`,
+    tree.text || '(empty)',
+  ]
+  if (notes.length > 0) lines.push(`Notes: ${notes.join('; ')}`)
+
+  return { content: correctedNote + lines.join('\n'), success: true }
+}
+
+async function execRunCommand(args: Record<string, unknown>, workspace: string, signal?: AbortSignal): Promise<ExecResult> {
+  const command = String(args.command ?? '')
+  if (!command) return { content: 'Error: command is required', success: false }
+  // cwd 默认为 workspace，如果指定了也必须在 workspace 内
+  let cwd = workspace
+  if (args.cwd) {
+    const check = resolveSafe(workspace, String(args.cwd))
+    if ('error' in check) return { content: check.error, success: false }
+    cwd = check.resolved
+  }
+  try {
+    const { stdout } = await execAsync(command, {
+      cwd,
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+      signal,
+    })
+    return { content: stdout || '(no output)', success: true }
+  } catch (err: unknown) {
+    if (isAbortError(err)) return { content: '命令执行已取消', success: false }
+    const execErr = err as { stderr?: string; stdout?: string; message?: string }
+    const stderr = execErr.stderr || ''
+    const stdout = execErr.stdout || ''
+    return { content: `Exit with error:\n${stderr || stdout || execErr.message || 'Unknown error'}`, success: false }
+  }
+}
+
+/* ---- find_file：按文件名 / glob 模式快速查找 ---- */
+
+type FindMode = 'auto' | 'fuzzy' | 'glob' | 'exact'
+
+function chooseFindMode(pattern: string, requested: FindMode): Exclude<FindMode, 'auto'> {
+  if (requested !== 'auto') return requested
+  return /[*?{]/.test(pattern) ? 'glob' : 'fuzzy'
+}
+
+function isSubsequence(query: string, text: string): boolean {
+  let qi = 0
+  let ti = 0
+  while (qi < query.length && ti < text.length) {
+    if (query[qi] === text[ti]) qi++
+    ti++
+  }
+  return qi === query.length
+}
+
+function scoreFindMatch(
+  entry: WorkspaceEntry,
+  pattern: string,
+  mode: Exclude<FindMode, 'auto'>,
+  globRe?: RegExp,
+): number {
+  const p = pattern.toLowerCase()
+  const name = entry.name.toLowerCase()
+  const full = entry.path.toLowerCase()
+  const hasPathSep = p.includes('/')
+
+  if (mode === 'exact') {
+    if (name === p) return 1200 - entry.depth * 2
+    if (full === p) return 1160 - entry.depth * 2
+    if (full.endsWith(`/${p}`)) return 1100 - entry.depth * 2
+    return -1
+  }
+
+  if (mode === 'glob') {
+    const re = globRe ?? globToRegex(pattern)
+    const matched = hasPathSep
+      ? re.test(full)
+      : re.test(name) || re.test(full)
+    if (!matched) return -1
+    const precisionBonus = full === p ? 80 : name === p ? 60 : 0
+    return 900 + precisionBonus - entry.depth * 2
+  }
+
+  // fuzzy
+  let score = -1
+  if (name === p) score = 1000
+  else if (full === p) score = 980
+  else if (name.startsWith(p)) score = 860
+  else if (name.includes(p)) score = 760
+  else if (isSubsequence(p, name)) score = 680
+  else if (full.includes(p)) score = 620
+  else if (isSubsequence(p, full)) score = 520
+
+  if (score < 0) return -1
+  // 目录结果略微提高权重，方便目录定位
+  if (entry.kind === 'directory') score += 15
+  return score - entry.depth * 2
+}
+
+async function execFindFile(args: Record<string, unknown>, workspace: string): Promise<ExecResult> {
+  const pattern = String(args.pattern ?? '').trim()
+  if (!pattern) return { content: 'Error: pattern is required', success: false }
+  const directory = String(args.directory ?? '.')
+  const searchType = String(args.type ?? 'file') as 'file' | 'directory' | 'all'
+  const mode = chooseFindMode(
+    pattern,
+    (['auto', 'fuzzy', 'glob', 'exact'].includes(String(args.mode))
+      ? String(args.mode)
+      : 'auto') as FindMode,
+  )
+  const includeHidden = Boolean(args.includeHidden)
+  const maxResults = clampNumber(args.maxResults, 1, 200, 50)
+
+  const check = await resolveSmartPath(workspace, directory, 'directory')
+  if ('error' in check) return { content: check.error, success: false }
+  const resolved = check.resolved
+  const correctedNote = check.corrected
+    ? `[自动纠正路径: "${directory}" → "${check.corrected.split('\n')[0]}"]\n`
+    : ''
+
+  const { entries, truncated: scanTruncated } = await collectWorkspaceEntries(resolved, {
+    maxDepth: 20,
+    includeHidden,
+    maxEntries: 10000,
+  })
+
+  let candidates = entries
+  if (searchType === 'file') candidates = candidates.filter((entry) => entry.kind === 'file')
+  else if (searchType === 'directory') candidates = candidates.filter((entry) => entry.kind === 'directory')
+
+  const globRe = mode === 'glob' ? globToRegex(pattern) : undefined
+  const scored = candidates
+    .map((entry) => ({
+      entry,
+      score: scoreFindMatch(entry, pattern, mode, globRe),
+    }))
+    .filter((item) => item.score >= 0)
+    .sort((a, b) => {
+      if (a.score !== b.score) return b.score - a.score
+      if (a.entry.path.length !== b.entry.path.length) return a.entry.path.length - b.entry.path.length
+      return a.entry.path.localeCompare(b.entry.path)
+    })
+
+  if (scored.length === 0) {
+    const scope = path.relative(workspace, resolved) || '.'
+    return {
+      content: correctedNote + `No ${searchType === 'all' ? '' : `${searchType} `}matches for "${pattern}" in ${scope}`,
+      success: true,
+    }
+  }
+
+  const total = scored.length
+  const visible = scored.slice(0, maxResults)
+  const scope = path.relative(workspace, resolved) || '.'
+  const lines = [
+    `Scope: ${scope}`,
+    `Mode: ${mode} | Type: ${searchType} | Matches: ${total}${total > visible.length ? ` (showing ${visible.length})` : ''}`,
+    ...visible.map(({ entry }) => `${entry.kind === 'directory' ? '[D]' : '[F]'} ${entry.path}${entry.kind === 'directory' ? '/' : ''}`),
+  ]
+  if (scanTruncated) lines.push('Notes: scan truncated at 10000 entries')
+
+  return { content: correctedNote + lines.join('\n'), success: true }
+}
+
+/**
+ * 将 glob 模式转换为正则表达式。
+ * 支持: * (单层任意字符), ** (跨目录任意路径), ? (单字符), {a,b} (可选项)
+ */
+function globToRegex(glob: string): RegExp {
+  let re = ''
+  let i = 0
+  while (i < glob.length) {
+    const ch = glob[i]
+    if (ch === '*') {
+      if (glob[i + 1] === '*') {
+        // ** 匹配任意层级目录
+        if (glob[i + 2] === '/') {
+          re += '(?:.+/)?'   // **/ 匹配零或多层目录
+          i += 3
+        } else {
+          re += '.*'          // ** 后不跟斜杠时匹配任意字符
+          i += 2
+        }
+      } else {
+        re += '[^/]*'         // * 仅匹配单层内字符（不跨越 /）
+        i++
+      }
+    } else if (ch === '?') {
+      re += '[^/]'            // ? 匹配单个非斜杠字符
+      i++
+    } else if (ch === '{') {
+      const end = glob.indexOf('}', i)
+      if (end > i) {
+        const alts = glob.slice(i + 1, end)
+          .split(',')
+          .map((s) => s.replace(/[.+^$|[\]\\()]/g, '\\$&'))
+          .join('|')
+        re += `(${alts})`
+        i = end + 1
+      } else {
+        re += '\\{'
+        i++
+      }
+    } else if ('.+^$|[]\\()'.includes(ch)) {
+      re += '\\' + ch
+      i++
+    } else {
+      re += ch
+      i++
+    }
+  }
+  return new RegExp(`^${re}$`, 'i')
+}
+
+/* ---- search_files：内容搜索 (ripgrep 优先) ---- */
+
+/** rg 可用性缓存（避免每次调用都 fork 进程检测） */
+let _rgAvailable: boolean | null = null
+
+async function execSearchFiles(args: Record<string, unknown>, workspace: string): Promise<ExecResult> {
+  const pattern = String(args.pattern ?? '').trim()
+  if (!pattern) return { content: 'Error: pattern is required', success: false }
+  const directory = String(args.directory ?? '.')
+  const filePattern = args.filePattern ? String(args.filePattern) : undefined
+  const contextLines = Math.min(Number(args.contextLines) || 2, 5)
+  const maxResults = Math.min(Number(args.maxResults) || 30, 80)
+  const caseSensitive = Boolean(args.caseSensitive)
+
+  const check = await resolveSmartPath(workspace, directory, 'directory')
+  if ('error' in check) return { content: check.error, success: false }
+  const resolved = check.resolved
+  const correctedNote = check.corrected
+    ? `[自动纠正路径: "${directory}" → "${check.corrected.split('\n')[0]}"]\n`
+    : ''
+
+  // 转义 shell 单引号
+  const safePattern = pattern.replace(/'/g, "'\\''")
+
+  // 缓存 rg 可用性检测
+  if (_rgAvailable === null) {
+    _rgAvailable = await checkCommand('rg --version')
+  }
+
+  try {
+    let cmd: string
+    const caseFlag = caseSensitive ? '-s' : '-i'
+
+    if (_rgAvailable) {
+      const globFlag = filePattern ? `--glob '${filePattern}'` : ''
+      cmd = [
+        'rg', '-n', '--heading', '--color=never',
+        caseFlag,
+        `-C ${contextLines}`,
+        '--max-count=10',         // 单文件最多 10 个匹配
+        '--max-columns=200',      // 截断超长行避免 token 浪费
+        '--max-columns-preview',  // 超长行显示截断预览
+        globFlag,
+        `-- '${safePattern}' '${resolved}'`,
+        '2>/dev/null',
+        `| head -${Math.min(maxResults * 8, 400)}`,  // 按结果数动态限制总行数
+      ].filter(Boolean).join(' ')
+    } else {
+      // grep 回退
+      const defaultIncludes = [
+        '*.ts', '*.tsx', '*.js', '*.jsx', '*.json', '*.css',
+        '*.html', '*.md', '*.py', '*.go', '*.rs', '*.vue', '*.svelte',
+      ]
+      const includeFlags = filePattern
+        ? `--include='${filePattern}'`
+        : defaultIncludes.map((g) => `--include='${g}'`).join(' ')
+      cmd = `grep -rn ${caseFlag} -C ${contextLines} ${includeFlags} '${safePattern}' '${resolved}' 2>/dev/null | head -200`
+    }
+
+    const { stdout } = await execAsync(cmd, {
+      cwd: workspace,
+      timeout: 15_000,
+      maxBuffer: 1024 * 1024,
+    })
+
+    if (!stdout.trim()) {
+      return { content: correctedNote + `No matches found for "${pattern}"`, success: true }
+    }
+
+    // 后处理：将绝对路径替换为相对路径，更紧凑
+    const output = stdout
+      .split('\n')
+      .map((line) => {
+        if (line.startsWith(resolved)) return line.slice(resolved.length + 1)
+        if (line.startsWith(workspace)) return line.slice(workspace.length + 1)
+        return line
+      })
+      .join('\n')
+
+    // 统计匹配文件数
+    const fileSet = new Set<string>()
+    for (const line of output.split('\n')) {
+      const m = line.match(/^([^:]+):\d+[:-]/)
+      if (m) fileSet.add(m[1])
+    }
+    const header = `Found matches in ${fileSet.size || '?'} file(s):\n`
+
+    return { content: correctedNote + header + output, success: true }
+  } catch {
+    return { content: correctedNote + `No matches found for "${pattern}"`, success: true }
+  }
+}
+
+/** 检测命令是否可用 */
+async function checkCommand(cmd: string): Promise<boolean> {
+  try {
+    await execAsync(cmd, { cwd: '/tmp', timeout: 5_000 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  项目笔记工具                                                        */
+/* ------------------------------------------------------------------ */
+
+async function execSaveNote(args: Record<string, unknown>, workspace: string, projectId?: string): Promise<ExecResult> {
+  const title = String(args.title ?? '').trim()
+  const content = String(args.content ?? '').trim()
+  const category = String(args.category ?? 'other') as import('../shared/ipc').NoteCategory
+  if (!title) return { content: 'Error: title is required', success: false }
+  if (!content) return { content: 'Error: content is required', success: false }
+
+  const { saveNote } = await import('./notes')
+  const id = `note-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const now = new Date().toISOString()
+  const saved = await saveNote(workspace, {
+    id,
+    title,
+    content,
+    category,
+    createdAt: now,
+    updatedAt: now,
+  }, projectId)
+  return { content: `项目笔记已保存：「${saved.title}」(${saved.id})`, success: true }
+}
+
+async function execDeleteNote(args: Record<string, unknown>, workspace: string, projectId?: string): Promise<ExecResult> {
+  const noteId = String(args.noteId ?? '').trim()
+  if (!noteId) return { content: 'Error: noteId is required', success: false }
+
+  const { deleteNote } = await import('./notes')
+  await deleteNote(workspace, noteId, projectId)
+  return { content: `项目笔记已删除：${noteId}`, success: true }
+}
+
+/* ------------------------------------------------------------------ */
+/*  浏览器自动化执行器                                                    */
+/* ------------------------------------------------------------------ */
+
+async function execBrowserAction(action: BrowserActionType, args: Record<string, unknown>): Promise<ExecResult> {
+  const appId = args.appId ? String(args.appId) : undefined
+  log(`Browser action: ${action} [appId=${appId || 'default'}]`, args)
+  const result = await executeBrowserAction({ action, params: args }, appId)
+  if (result.success) {
+    // screenshot：保存图片到本地 + 返回文件路径和页面信息
+    if (action === 'screenshot' && result.data) {
+      try {
+        const parsed = JSON.parse(result.data)
+        const pageInfo = parsed.page ?? {}
+        const screenshotDataUrl = parsed.screenshot || parsed.dataUrl
+
+        // 保存截图到本地文件
+        let screenshotPath = ''
+        if (screenshotDataUrl) {
+          try {
+            screenshotPath = await saveScreenshot(screenshotDataUrl, appId || 'default')
+          } catch (err) {
+            log('SCREENSHOT_SAVE_FAIL', { error: err instanceof Error ? err.message : String(err) })
+          }
+        }
+
+        return {
+          content: JSON.stringify({
+            screenshotPath: screenshotPath || undefined,
+            title: pageInfo.title,
+            url: pageInfo.url,
+            viewport: pageInfo.viewport,
+            visibleElements: pageInfo.elements ?? [],
+            hint: screenshotPath
+              ? '截图已保存到本地。如需调用 MiniMax MCP 分析图片，请先用 mcp_list_tools 确认 understand_image 的参数定义，再用 mcp_call 传入 screenshotPath。'
+              : undefined,
+          }, null, 2),
+          success: true,
+        }
+      } catch {
+        return { content: result.data ?? '截图成功', success: true }
+      }
+    }
+    return { content: result.data ?? '操作成功', success: true }
+  }
+  return { content: `浏览器操作失败: ${result.error}`, success: false }
+}
+
+/* ------------------------------------------------------------------ */
+/*  MCP 工具执行器                                                      */
+/* ------------------------------------------------------------------ */
+
+async function execMcpCall(args: Record<string, unknown>, signal?: AbortSignal): Promise<ExecResult> {
+  const serverId = String(args.server_id ?? '').trim()
+  const toolName = String(args.tool_name ?? '').trim()
+  const toolArgs = (args.arguments ?? {}) as Record<string, unknown>
+
+  if (!serverId) return { content: 'Error: server_id is required', success: false }
+  if (!toolName) return { content: 'Error: tool_name is required', success: false }
+  if (signal?.aborted) throw makeAbortError()
+
+  try {
+    const result = await callMcpTool(serverId, toolName, toolArgs)
+
+    // 将 MCP 响应转为文本
+    const texts: string[] = []
+    for (const item of result.content ?? []) {
+      if (item.type === 'text' && item.text) {
+        texts.push(item.text)
+      } else if (item.type === 'image' && item.data) {
+        // 图片结果，保存并返回路径
+        try {
+          const imgPath = await saveScreenshot(`data:image/png;base64,${item.data}`)
+          texts.push(`[图片已保存: ${imgPath}]`)
+        } catch {
+          texts.push('[图片数据接收成功但保存失败]')
+        }
+      } else if (item.type === 'resource') {
+        texts.push(`[Resource: ${JSON.stringify(item)}]`)
+      }
+    }
+
+    const content = texts.join('\n') || '(MCP 工具返回空结果)'
+    return { content, success: !result.isError }
+  } catch (err) {
+    return { content: `MCP 调用失败: ${err instanceof Error ? err.message : String(err)}`, success: false }
+  }
+}
+
+async function execMcpListTools(): Promise<ExecResult> {
+  const mcpTools = getActiveMcpTools()
+
+  if (mcpTools.length === 0) {
+    return {
+      content: '当前没有已启用的 MCP 服务器或没有可用工具。请在设置中启用 MCP 服务器并配置 API Key。',
+      success: true,
+    }
+  }
+
+  // 按 serverId 分组展示
+  const groups: Record<string, Array<{ name: string; description?: string; inputSchema: Record<string, unknown> }>> = {}
+  for (const tool of mcpTools) {
+    if (!groups[tool.serverId]) groups[tool.serverId] = []
+    groups[tool.serverId].push({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema })
+  }
+
+  const lines: string[] = ['已启用的 MCP 工具列表：', '']
+  for (const [serverId, tools] of Object.entries(groups)) {
+    lines.push(`## 服务器: ${serverId}`)
+    for (const tool of tools) {
+      lines.push(`- **${tool.name}**: ${tool.description ?? '(无描述)'}`)
+      if (tool.inputSchema?.properties) {
+        const props = tool.inputSchema.properties as Record<string, { type?: string; description?: string }>
+        const required = (tool.inputSchema.required ?? []) as string[]
+        for (const [key, val] of Object.entries(props)) {
+          const req = required.includes(key) ? ' (必需)' : ' (可选)'
+          lines.push(`  - \`${key}\` (${val.type ?? 'any'}${req}): ${val.description ?? ''}`)
+        }
+      }
+    }
+    lines.push('')
+  }
+
+  lines.push('使用 mcp_call 工具来调用上述工具，传入 server_id、tool_name 和 arguments。')
+
+  return { content: lines.join('\n'), success: true }
+}
+
+/* ------------------------------------------------------------------ */
+/*  风险评估                                                            */
+/* ------------------------------------------------------------------ */
+
+export type RiskLevel = 'safe' | 'warning' | 'danger'
+
+export type RiskInfo = {
+  toolCallId: string
+  toolName: string
+  level: RiskLevel
+  reason: string
+  /** 触发风险的关键信息（如命令内容） */
+  detail: string
+}
+
+/** 风险分类 ID */
+export type RiskCategory =
+  | 'package_install'  // 安装依赖
+  | 'privilege_cmd'    // 权限提升
+  | 'destructive_cmd'  // 文件系统危险操作
+  | 'system_modify'    // 系统修改
+  | 'git_force'        // Git 强制操作
+  | 'network_script'   // 网络脚本
+  | 'git_ops'          // Git 常规操作
+  | 'docker_ops'       // Docker 操作
+  | 'browser_ops'      // 浏览器操作
+
+/** 风险分类信息（供 UI 展示用） */
+export const RISK_CATEGORY_INFO: { id: RiskCategory; label: string; description: string; level: 'danger' | 'warning' }[] = [
+  { id: 'package_install', label: '安装依赖', description: 'npm install, pip install 等包管理器操作', level: 'danger' },
+  { id: 'privilege_cmd', label: '权限提升', description: 'sudo, su 等需要 root 权限的命令', level: 'danger' },
+  { id: 'destructive_cmd', label: '删除/权限操作', description: 'rm -rf, chmod, chown 等破坏性命令', level: 'danger' },
+  { id: 'system_modify', label: '系统修改', description: 'mkfs, dd 等磁盘级操作', level: 'danger' },
+  { id: 'git_force', label: 'Git 强制操作', description: 'git push --force, git reset --hard', level: 'danger' },
+  { id: 'network_script', label: '网络脚本', description: 'curl | sh 等下载并执行的命令', level: 'danger' },
+  { id: 'git_ops', label: 'Git 操作', description: 'git push, git merge, git rebase 等', level: 'warning' },
+  { id: 'docker_ops', label: 'Docker 操作', description: 'docker run, docker build 等容器操作', level: 'warning' },
+  { id: 'browser_ops', label: '浏览器操作', description: 'AI 操控浏览器执行自动化', level: 'warning' },
+]
+
+/** 危险命令关键词匹配表：[正则, 描述, 分类] */
+const DANGER_PATTERNS: [RegExp, string, RiskCategory][] = [
+  // 包安装
+  [/\b(npm|pnpm|yarn|bun)\s+(install|add|i)\b/i, '安装 npm 包', 'package_install'],
+  [/\bpip3?\s+install\b/i, '安装 Python 包', 'package_install'],
+  [/\b(brew|apt|apt-get|yum|dnf|pacman|apk)\s+install\b/i, '安装系统软件', 'package_install'],
+  [/\bcargo\s+(install|add)\b/i, '安装 Rust 包', 'package_install'],
+  [/\bgo\s+(install|get)\b/i, '安装 Go 包', 'package_install'],
+  [/\bgem\s+install\b/i, '安装 Ruby Gem', 'package_install'],
+  // 权限提升
+  [/\bsudo\b/i, '使用 sudo 提权', 'privilege_cmd'],
+  [/\bsu\s/i, '切换用户', 'privilege_cmd'],
+  // 破坏性操作
+  [/\brm\s+(-[a-zA-Z]*r|-[a-zA-Z]*f|--recursive|--force)/i, '递归/强制删除文件', 'destructive_cmd'],
+  [/\brm\s+-rf\b/i, '递归强制删除', 'destructive_cmd'],
+  [/\brmdir\b/i, '删除目录', 'destructive_cmd'],
+  // 系统修改
+  [/\bchmod\b/i, '修改文件权限', 'system_modify'],
+  [/\bchown\b/i, '修改文件所有者', 'system_modify'],
+  [/\bmkfs\b/i, '格式化磁盘', 'system_modify'],
+  [/\bdd\s+if=/i, '磁盘级写入', 'system_modify'],
+  // Git 危险操作
+  [/\bgit\s+(push\s+(-[a-zA-Z]*f|--force)|reset\s+--hard)/i, 'Git 强制操作', 'git_force'],
+  // 网络相关
+  [/\bcurl\b.*\|\s*(sh|bash)\b/i, '下载并执行脚本', 'network_script'],
+  [/\bwget\b.*\|\s*(sh|bash)\b/i, '下载并执行脚本', 'network_script'],
+]
+
+/** 警告级别的命令模式：[正则, 描述, 分类] */
+const WARNING_PATTERNS: [RegExp, string, RiskCategory][] = [
+  [/\bgit\s+push\b/i, 'Git push', 'git_ops'],
+  [/\bgit\s+checkout\s+(-b|--orphan)/i, 'Git 创建分支', 'git_ops'],
+  [/\bgit\s+merge\b/i, 'Git merge', 'git_ops'],
+  [/\bgit\s+rebase\b/i, 'Git rebase', 'git_ops'],
+  [/\bdocker\s+(run|build|pull|push)\b/i, 'Docker 操作', 'docker_ops'],
+]
+
+/** 浏览器操作工具名前缀 */
+const BROWSER_TOOL_PREFIX = 'browser_'
+
+/** 是否已在本次会话中确认过浏览器接管 */
+let browserAutoApproved = false
+
+/** 外部可调用：设置浏览器全局接管（从设置页面调用） */
+export function setBrowserAutoApproved(approved: boolean) {
+  browserAutoApproved = approved
+}
+
+/** 获取浏览器接管状态 */
+export function isBrowserAutoApproved() {
+  return browserAutoApproved
+}
+
+/** 已自动授权的风险分类集合 */
+const autoApproveCategories = new Set<RiskCategory>()
+
+/** 设置自动授权分类列表（从设置页面调用） */
+export function setAutoApproveCategories(categories: RiskCategory[]) {
+  autoApproveCategories.clear()
+  for (const cat of categories) autoApproveCategories.add(cat)
+  // browser_ops 同步到 browserAutoApproved
+  if (autoApproveCategories.has('browser_ops')) {
+    browserAutoApproved = true
+  }
+}
+
+/** 获取当前自动授权分类列表 */
+export function getAutoApproveCategories(): RiskCategory[] {
+  return [...autoApproveCategories]
+}
+
+/** 评估一批工具调用的风险等级 */
+export function assessToolCallsRisk(toolCalls: ToolCall[]): RiskInfo[] {
+  const risks: RiskInfo[] = []
+
+  for (const tc of toolCalls) {
+    let args: Record<string, unknown> = {}
+    try { args = JSON.parse(tc.function.arguments) } catch { continue }
+
+    const toolName = tc.function.name
+
+    // 浏览器工具：首次需要确认，确认后本次会话自动放行
+    if (toolName.startsWith(BROWSER_TOOL_PREFIX) && !browserAutoApproved && !autoApproveCategories.has('browser_ops')) {
+      const url = String(args.url ?? args.selector ?? args.expression ?? '')
+      risks.push({
+        toolCallId: tc.id,
+        toolName,
+        level: 'warning',
+        reason: `浏览器操作: ${toolName.replace(BROWSER_TOOL_PREFIX, '')}`,
+        detail: url || '(无参数)',
+      })
+      continue
+    }
+
+    if (toolName === 'run_command') {
+      const command = String(args.command ?? '')
+      if (!command) continue
+
+      // 先检查危险级别
+      for (const [pattern, reason, category] of DANGER_PATTERNS) {
+        if (pattern.test(command)) {
+          // 如果该分类已自动授权，跳过
+          if (autoApproveCategories.has(category)) break
+          risks.push({
+            toolCallId: tc.id,
+            toolName,
+            level: 'danger',
+            reason,
+            detail: command,
+          })
+          break // 一个命令只报最高级别
+        }
+      }
+
+      // 未命中 danger 则检查 warning
+      if (!risks.some((r) => r.toolCallId === tc.id)) {
+        for (const [pattern, reason, category] of WARNING_PATTERNS) {
+          if (pattern.test(command)) {
+            // 如果该分类已自动授权，跳过
+            if (autoApproveCategories.has(category)) break
+            risks.push({
+              toolCallId: tc.id,
+              toolName,
+              level: 'warning',
+              reason,
+              detail: command,
+            })
+            break
+          }
+        }
+      }
+    }
+  }
+
+  return risks
+}
+
+/* ------------------------------------------------------------------ */
+/*  Public API                                                         */
+/* ------------------------------------------------------------------ */
+
+/** 异步执行一批 tool calls，返回结果。workspace 为安全边界。 */
+export async function executeToolCalls(
+  toolCalls: ToolCall[],
+  workspace: string,
+  signal?: AbortSignal,
+  logScope?: string,
+  projectId?: string,
+): Promise<ToolResult[]> {
+  const results: ToolResult[] = []
+
+  for (const tc of toolCalls) {
+    if (signal?.aborted) break
+    let args: Record<string, unknown> = {}
+    try {
+      args = JSON.parse(tc.function.arguments)
+    } catch {
+      results.push({
+        tool_call_id: tc.id,
+        name: tc.function.name,
+        content: `Error: Invalid JSON arguments: ${tc.function.arguments}`,
+        success: false,
+      })
+      continue
+    }
+
+    log('TOOL_CALL', { id: tc.id, name: tc.function.name, arguments: args, workspace }, logScope)
+
+    let result: ExecResult & { fileChange?: FileChange }
+    try {
+      result = await executeTool(tc.function.name, args, workspace, signal, projectId)
+    } catch (err) {
+      if (isAbortError(err)) break
+      const msg = err instanceof Error ? err.message : String(err)
+      result = { content: `Error: ${msg}`, success: false }
+    }
+
+    log('TOOL_RESULT', { id: tc.id, name: tc.function.name, success: result.success, content: result.content }, logScope)
+
+    results.push({
+      tool_call_id: tc.id,
+      name: tc.function.name,
+      ...result,
+    })
+  }
+
+  return results
+}
