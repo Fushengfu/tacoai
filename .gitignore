@@ -1,4 +1,7 @@
 node_modules/
 dist/
 dist-preload/
+dist-main/
 .env
+release
+.DS_Store
