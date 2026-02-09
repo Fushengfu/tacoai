@@ -3,5 +3,5 @@ dist/
 dist-preload/
 dist-main/
 .env
-release
+release/
 .DS_Store
