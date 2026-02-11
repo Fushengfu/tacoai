@@ -4,14 +4,14 @@
  * 将所有 ipcMain handler 集中管理，main.ts 只需调用 registerIpcHandlers() 即可。
  */
 
-import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { BrowserWindow, Notification, dialog, ipcMain, shell } from 'electron'
 import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron'
 import { exec } from 'node:child_process'
 import * as fs from 'node:fs/promises'
 import { watch as fsWatch, type FSWatcher } from 'node:fs'
 import * as nodePath from 'node:path'
 import { IpcChannel, editorCommands } from '../shared/ipc'
-import type { ChatSendPayload, ChatStreamPayload, AgentStreamPayload, AgentConfirmPayload, EditorId, ProjectNote, McpServerInfo } from '../shared/ipc'
+import type { AppNotifyPayload, ChatSendPayload, ChatStreamPayload, AgentStreamPayload, AgentConfirmPayload, EditorId, ProjectNote, McpServerInfo, GuiPlusConfig } from '../shared/ipc'
 import { setBrowserAutoApproved, setAutoApproveCategories } from './tools'
 import type { RiskCategory } from './tools'
 import type { ProviderKey, ProviderOverrides } from './llm'
@@ -21,6 +21,7 @@ import { gitLog, gitCommit, gitRollback, gitCommitFiles } from './git'
 import { initSkills, listSkills, installSkill, uninstallSkill, toggleSkill } from './skills'
 import { listNotes, saveNote, deleteNote } from './notes'
 import { initMcp, listMcpServers, saveMcpServer, removeMcpServer, toggleMcpServer, saveScreenshot } from './mcp'
+import { getGuiPlusConfig, saveGuiPlusConfig } from './gui-plus'
 import { getLogDir } from './logger'
 import { log } from './logger'
 import { handleTerminalSpawn, handleTerminalInput, handleTerminalResize, handleTerminalKill } from './terminal'
@@ -88,6 +89,27 @@ async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload)
   } finally {
     chatAbortControllers.delete(requestId)
   }
+}
+
+async function handleGuiPlusGet(): Promise<GuiPlusConfig> {
+  return await getGuiPlusConfig()
+}
+
+async function handleGuiPlusSave(_event: IpcMainInvokeEvent, config: GuiPlusConfig): Promise<void> {
+  await saveGuiPlusConfig(config)
+}
+
+async function handleAppNotify(_event: IpcMainInvokeEvent, payload: AppNotifyPayload): Promise<boolean> {
+  if (!Notification.isSupported()) return false
+  const title = payload.title?.trim() || 'Taco AI'
+  const body = payload.body?.trim() || '任务执行完成'
+  const notification = new Notification({
+    title,
+    body,
+    silent: payload.silent ?? false,
+  })
+  notification.show()
+  return true
 }
 
 /* ── Chat abort 管理 ── */
@@ -421,6 +443,9 @@ export function registerIpcHandlers() {
     const logScope = buildLogScope(scope?.projectId, scope?.workspace)
     return shell.openPath(getLogDir(logScope))
   })
+  ipcMain.handle(IpcChannel.APP_NOTIFY, handleAppNotify)
+  ipcMain.handle(IpcChannel.GUI_PLUS_GET, handleGuiPlusGet)
+  ipcMain.handle(IpcChannel.GUI_PLUS_SAVE, handleGuiPlusSave)
   ipcMain.handle(IpcChannel.FILE_REVERT, handleFileRevert)
   ipcMain.handle(IpcChannel.FILE_DELETE, handleFileDelete)
   ipcMain.handle(IpcChannel.FILE_READ, handleFileRead)

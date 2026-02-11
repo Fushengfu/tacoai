@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IpcChannel } from '../shared/ipc'
-import type { ChatSendPayload, ChatStreamPayload, ChatChunkData, AgentStreamPayload, AgentEventData, EditorId, TacoApi, SystemInfo, ProjectNote, McpServerInfo, ExternalBrowserStatus } from '../shared/ipc'
+import type { ChatSendPayload, ChatStreamPayload, ChatChunkData, AgentStreamPayload, AgentEventData, EditorId, TacoApi, SystemInfo, ProjectNote, McpServerInfo, ExternalBrowserStatus, GuiPlusConfig, AppNotifyPayload } from '../shared/ipc'
 
 // 沙盒化 preload 无法使用 os 模块，用 process 和环境变量替代
 const systemInfo: SystemInfo = {
@@ -23,6 +23,8 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.OPEN_IN_EDITOR, filePath, editor),
     openLogDir: (scope?: { projectId?: string; workspace?: string }) =>
       ipcRenderer.invoke(IpcChannel.OPEN_LOG_DIR, scope),
+    notify: (payload: AppNotifyPayload) =>
+      ipcRenderer.invoke(IpcChannel.APP_NOTIFY, payload),
   },
   chat: {
     send: (payload: ChatSendPayload) =>
@@ -203,6 +205,12 @@ const tacoApi: TacoApi = {
         ipcRenderer.removeListener(IpcChannel.EXTERNAL_BROWSER_STATUS, handler)
       }
     },
+  },
+  guiPlus: {
+    getConfig: (): Promise<GuiPlusConfig> =>
+      ipcRenderer.invoke(IpcChannel.GUI_PLUS_GET),
+    saveConfig: (config: GuiPlusConfig): Promise<void> =>
+      ipcRenderer.invoke(IpcChannel.GUI_PLUS_SAVE, config),
   }
 }
 

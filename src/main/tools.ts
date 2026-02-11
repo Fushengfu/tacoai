@@ -10,10 +10,70 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { exec } from 'node:child_process'
+import { desktopCapturer, systemPreferences, screen, nativeImage } from 'electron'
 import { log } from './logger'
 import { executeBrowserAction } from './browser'
 import type { BrowserActionType } from '../shared/ipc'
 import { saveScreenshot, getActiveMcpTools, callMcpTool } from './mcp'
+import { fileToDataUrl, getGuiPlusConfig, runGuiPlus } from './gui-plus'
+import { callDesktopService } from './desktop-service'
+
+type DesktopScreenshotMeta = {
+  screenshotPath: string
+  screenshotWidth: number
+  screenshotHeight: number
+  displayId: string
+  displayWidth: number
+  displayHeight: number
+  displayBoundsX: number
+  displayBoundsY: number
+  displayScaleFactor: number
+}
+
+// 用于将 GUI-Plus 的截图内坐标映射到屏幕绝对坐标（按截图路径关联）
+const desktopScreenshotMetaByPath = new Map<string, DesktopScreenshotMeta>()
+
+type GuiPlusPoint = { x: number; y: number; source: 'xy' | 'x_array' | 'point' | 'xyxy_center' }
+type GuiPlusMappedPoint = {
+  action: unknown
+  x: number
+  y: number
+  coordinateSpace: 'screen-absolute' | 'image-local'
+  localX: number
+  localY: number
+  originalWidth: number
+  originalHeight: number
+  scaledWidth: number
+  scaledHeight: number
+  minPixels: number
+  maxPixels: number
+  factor: number
+  displayId?: string
+  displayBoundsX?: number
+  displayBoundsY?: number
+  displayWidth?: number
+  displayHeight?: number
+  displayScaleFactor?: number
+}
+
+type GuiPlusClickCandidate = {
+  imagePath: string
+  x: number
+  y: number
+  timestamp: number
+}
+
+type GuiPlusClickGuard = {
+  x: number
+  y: number
+  unstable: boolean
+  reason?: string
+  imagePath?: string
+  timestamp: number
+}
+
+const lastGuiPlusClickByImagePath = new Map<string, GuiPlusClickCandidate>()
+const pendingGuiPlusClickGuardByScope = new Map<string, GuiPlusClickGuard>()
 
 /* ------------------------------------------------------------------ */
 /*  Tool definitions (OpenAI function calling 格式)                     */
@@ -245,6 +305,69 @@ export const toolDefinitions: ToolDefinition[] = [
         properties: {
           appId: { type: 'string', description: '浏览器实例标识，不指定则使用 "default"' },
         },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'desktop_screenshot',
+      description: '截取当前桌面屏幕截图。默认使用实际屏幕分辨率，仅返回本地文件路径与尺寸元信息，供后续视觉识别使用。',
+      parameters: {
+        type: 'object',
+        properties: {
+          displayId: { type: 'string', description: '指定屏幕 ID（可选），不传则使用主屏' },
+          width: { type: 'number', description: '截图宽度（可选，传入时应为实际屏幕宽度）' },
+          height: { type: 'number', description: '截图高度（可选，传入时应为实际屏幕高度）' },
+          appId: { type: 'string', description: '截图保存目录标识（可选，默认 "desktop"）' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'gui_plus_analyze',
+      description: '调用 GUI-Plus 模型分析截图并返回可执行的 GUI 原子操作 JSON。若传 imagePath 且来源于 desktop_screenshot，返回的 mapped.x/mapped.y 为可直接用于 desktop_action 的屏幕绝对坐标。',
+      parameters: {
+        type: 'object',
+        properties: {
+          instruction: { type: 'string', description: '对截图的操作指令（必填）' },
+          imageDataUrl: { type: 'string', description: '截图 data URL（与 imagePath 二选一）' },
+          imagePath: { type: 'string', description: '截图文件路径（与 imageDataUrl 二选一）' },
+          minPixels: { type: 'number', description: '图像最小像素阈值（可选）' },
+          maxPixels: { type: 'number', description: '图像最大像素阈值（可选）' },
+        },
+        required: ['instruction'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'desktop_action',
+      description: '调用本地 Node 原生桌面能力执行鼠标/键盘/文本输入等操作。用户明确给出坐标、按键或输入内容时应直接调用此工具，无需先截图。兼容动作别名（如 INPUT/TYPE_TEXT/KEY_PRESS）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['move', 'click', 'double_click', 'scroll', 'type', 'key'], description: '操作类型（double_click 会自动映射为 click + clicks=2）' },
+          x: { type: 'number', description: '屏幕坐标 X（move/click）' },
+          y: { type: 'number', description: '屏幕坐标 Y（move/click）' },
+          button: { type: 'string', enum: ['left', 'right', 'middle'], description: '鼠标按键（click）' },
+          clicks: { type: 'number', description: '点击次数（click），默认 1' },
+          clickCount: { type: 'number', description: '兼容字段，等价于 clicks' },
+          double: { type: 'boolean', description: '是否双击（兼容字段，true 时等价 clicks=2）' },
+          dx: { type: 'number', description: '水平滚动像素（scroll）' },
+          dy: { type: 'number', description: '垂直滚动像素（scroll）' },
+          direction: { type: 'string', enum: ['up', 'down', 'left', 'right'], description: '滚动方向（scroll）' },
+          amount: { type: 'string', description: '滚动幅度（small/medium/large 或数字像素）' },
+          text: { type: 'string', description: '输入文本（type）。兼容 input/value/content/message 字段作为回退。' },
+          needs_enter: { type: 'boolean', description: '输入后是否回车（type，可选）' },
+          key: { type: 'string', description: '按键（key），如 enter/tab/esc/left/right/up/down/f4。支持组合写法，如 "cmd+s"、"command s"。' },
+          modifiers: { type: 'array', items: { type: 'string', enum: ['cmd', 'ctrl', 'alt', 'shift'] }, description: '修饰键（key）' },
+          delay_ms: { type: 'number', description: '操作前延迟毫秒（可选）' },
+        },
+        required: ['action'],
       },
     },
   },
@@ -760,6 +883,7 @@ async function executeTool(
   workspace: string,
   signal?: AbortSignal,
   projectId?: string,
+  logScope?: string,
 ): Promise<ExecResult & { fileChange?: FileChange }> {
   try {
     if (signal?.aborted) throw makeAbortError()
@@ -787,6 +911,8 @@ async function executeTool(
         return await execBrowserAction('navigate', args)
       case 'browser_screenshot':
         return await execBrowserAction('screenshot', args)
+      case 'desktop_screenshot':
+        return await execDesktopScreenshot(args, logScope)
       case 'browser_click':
         return await execBrowserAction('click', args)
       case 'browser_type':
@@ -809,6 +935,10 @@ async function executeTool(
         return await execBrowserAction('drag', args)
       case 'browser_select':
         return await execBrowserAction('select', args)
+      case 'gui_plus_analyze':
+        return await execGuiPlusAnalyze(args, signal, logScope)
+      case 'desktop_action':
+        return await execDesktopAction(args, signal, logScope)
       /* ---- MCP ---- */
       case 'mcp_call':
         return await execMcpCall(args, signal)
@@ -1758,6 +1888,735 @@ async function execMcpListTools(): Promise<ExecResult> {
   return { content: lines.join('\n'), success: true }
 }
 
+async function execDesktopScreenshot(args: Record<string, unknown>, logScope?: string): Promise<ExecResult> {
+  const rawWidth = args.width
+  const rawHeight = args.height
+  const width = rawWidth === undefined ? undefined : Number(rawWidth)
+  const height = rawHeight === undefined ? undefined : Number(rawHeight)
+  const displayId = typeof args.displayId === 'string' ? args.displayId : undefined
+  const appId = typeof args.appId === 'string' && args.appId.trim() ? args.appId.trim() : 'desktop'
+
+  if ((width !== undefined && !Number.isFinite(width)) || (height !== undefined && !Number.isFinite(height))) {
+    return { content: 'Error: width/height must be numbers', success: false }
+  }
+  if ((width !== undefined && width <= 0) || (height !== undefined && height <= 0)) {
+    return { content: 'Error: width/height must be positive', success: false }
+  }
+
+  if (process.platform === 'darwin') {
+    try {
+      const status = systemPreferences.getMediaAccessStatus?.('screen')
+      if (status && status !== 'granted') {
+        try { systemPreferences.openSystemPreferences?.('privacy', 'ScreenRecording') } catch { /* ignore */ }
+        return {
+          content:
+            `Error: Screen Recording permission is ${status}. ` +
+            'Please allow Taco AI in System Settings > Privacy & Security > Screen Recording, then restart the app.',
+          success: false,
+        }
+      }
+    } catch {
+      // ignore permission check failures
+    }
+  }
+
+  const displays = screen.getAllDisplays()
+  const targetDisplay = displayId
+    ? displays.find((d) => String(d.id) === displayId)
+    : screen.getPrimaryDisplay()
+  const display = targetDisplay ?? displays[0]
+  if (!display) {
+    return { content: 'Error: no display found', success: false }
+  }
+
+  const targetWidth = width ?? display.size.width
+  const targetHeight = height ?? display.size.height
+
+  log('DESKTOP_SCREENSHOT_REQUEST', {
+    args,
+    resolved: {
+      displayId,
+      width: targetWidth,
+      height: targetHeight,
+      appId,
+      displayWidth: display.size.width,
+      displayHeight: display.size.height,
+    },
+  }, logScope)
+
+  let sources: Electron.DesktopCapturerSource[]
+  try {
+    sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: Math.max(1, Math.floor(targetWidth)), height: Math.max(1, Math.floor(targetHeight)) },
+      fetchWindowIcons: false,
+    })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (process.platform === 'darwin') {
+      try { systemPreferences.openSystemPreferences?.('privacy', 'ScreenRecording') } catch { /* ignore */ }
+    }
+    return {
+      content: `Error: Failed to get sources. ${msg}\n` +
+        'If you are on macOS, enable Screen Recording permission for Taco AI in System Settings > Privacy & Security > Screen Recording, then restart the app.',
+      success: false,
+    }
+  }
+
+  if (sources.length === 0) {
+    return { content: 'Error: no screen sources available', success: false }
+  }
+
+  const source = displayId
+    ? sources.find((s) => s.display_id === displayId)
+    : sources.find((s) => String(display.id) === s.display_id) ?? sources[0]
+
+  if (!source) {
+    return { content: `Error: displayId not found: ${displayId}`, success: false }
+  }
+
+  const dataUrl = source.thumbnail.toDataURL()
+  const screenshotPath = await saveScreenshot(dataUrl, appId)
+  const size = source.thumbnail.getSize()
+
+  const payload = {
+    displayId: source.display_id,
+    screenshotPath,
+    width: size.width,
+    height: size.height,
+    displayWidth: display.size.width,
+    displayHeight: display.size.height,
+    displayBoundsX: display.bounds.x,
+    displayBoundsY: display.bounds.y,
+    displayScaleFactor: display.scaleFactor,
+  }
+
+  desktopScreenshotMetaByPath.set(screenshotPath, {
+    screenshotPath,
+    screenshotWidth: size.width,
+    screenshotHeight: size.height,
+    displayId: source.display_id,
+    displayWidth: display.size.width,
+    displayHeight: display.size.height,
+    displayBoundsX: display.bounds.x,
+    displayBoundsY: display.bounds.y,
+    displayScaleFactor: display.scaleFactor,
+  })
+
+  log('DESKTOP_SCREENSHOT_RESULT', {
+    success: true,
+    displayId: payload.displayId,
+    screenshotPath: payload.screenshotPath,
+    width: payload.width,
+    height: payload.height,
+    displayWidth: payload.displayWidth,
+    displayHeight: payload.displayHeight,
+    displayBoundsX: payload.displayBoundsX,
+    displayBoundsY: payload.displayBoundsY,
+    displayScaleFactor: payload.displayScaleFactor,
+    dataUrlLength: typeof dataUrl === 'string' ? dataUrl.length : 0,
+  }, logScope)
+
+  return {
+    success: true,
+    content: JSON.stringify(payload),
+  }
+}
+
+async function execGuiPlusAnalyze(args: Record<string, unknown>, signal?: AbortSignal, logScope?: string): Promise<ExecResult> {
+  const instruction = String(args.instruction ?? '').trim()
+  if (!instruction) return { content: 'Error: instruction is required', success: false }
+
+  const imageDataUrl = typeof args.imageDataUrl === 'string' ? args.imageDataUrl : ''
+  const imagePath = typeof args.imagePath === 'string' ? args.imagePath : ''
+
+  let dataUrl = imageDataUrl
+  if (!dataUrl && imagePath) {
+    try {
+      dataUrl = await fileToDataUrl(imagePath)
+    } catch (err) {
+      return { content: `Error: failed to read imagePath (${imagePath}): ${String(err)}`, success: false }
+    }
+  }
+  if (!dataUrl) return { content: 'Error: imageDataUrl or imagePath is required', success: false }
+
+  const config = await getGuiPlusConfig()
+  const reqMinPixels = args.minPixels !== undefined ? Number(args.minPixels) : undefined
+  const reqMaxPixels = args.maxPixels !== undefined ? Number(args.maxPixels) : undefined
+  const configMinPixels = Number.isFinite(config.minPixels) ? Number(config.minPixels) : undefined
+  const configMaxPixels = Number.isFinite(config.maxPixels) ? Number(config.maxPixels) : undefined
+  // 映射参数必须与真实请求一致，否则会导致回写坐标偏移
+  const effectiveMinPixels = Number.isFinite(reqMinPixels) ? Number(reqMinPixels) : configMinPixels
+  const effectiveMaxPixels = Number.isFinite(reqMaxPixels) ? Number(reqMaxPixels) : configMaxPixels
+
+  log('GUI_PLUS_REQUEST', {
+    instruction,
+    imagePath: imagePath || undefined,
+    imageDataUrlLength: dataUrl ? dataUrl.length : 0,
+    requestMinPixels: Number.isFinite(reqMinPixels) ? reqMinPixels : undefined,
+    requestMaxPixels: Number.isFinite(reqMaxPixels) ? reqMaxPixels : undefined,
+    effectiveMinPixels,
+    effectiveMaxPixels,
+    highResolution: Boolean(config.highResolution),
+  }, logScope)
+
+  const result = await runGuiPlus(config, instruction, dataUrl, {
+    minPixels: effectiveMinPixels,
+    maxPixels: effectiveMaxPixels,
+    signal,
+  })
+
+  if (result.usage) {
+    log('GUI_PLUS_USAGE', {
+      promptTokens: result.usage.promptTokens,
+      completionTokens: result.usage.completionTokens,
+      totalTokens: result.usage.totalTokens,
+      cachedTokens: result.usage.cachedTokens,
+    }, logScope)
+  }
+
+  const parsedObj = (result.parsed && typeof result.parsed === 'object')
+    ? (result.parsed as { action?: string; parameters?: Record<string, unknown>; thought?: unknown })
+    : null
+  const extractedPoint = extractGuiPlusPoint(parsedObj?.parameters ?? {})
+  const mapped = mapGuiPlusCoordinates(
+    result.parsed,
+    dataUrl,
+    imagePath,
+    {
+      minPixels: effectiveMinPixels,
+      maxPixels: effectiveMaxPixels,
+      highResolution: config.highResolution,
+    }
+  )
+
+  const scopeKey = getGuiPlusScopeKey(logScope)
+  const parsedAction = typeof parsedObj?.action === 'string' ? parsedObj.action.toUpperCase() : ''
+  let unstableClick = false
+  let unstableReason: string | undefined
+  if (parsedAction === 'CLICK' && mapped && imagePath) {
+    const prev = lastGuiPlusClickByImagePath.get(imagePath)
+    if (prev) {
+      const distance = Math.hypot(mapped.x - prev.x, mapped.y - prev.y)
+      const diagonal = Math.hypot(mapped.originalWidth, mapped.originalHeight)
+      const threshold = Math.max(160, diagonal * 0.12)
+      if (distance > threshold) {
+        unstableClick = true
+        unstableReason = `same image click drift ${distance.toFixed(1)}px exceeds threshold ${threshold.toFixed(1)}px`
+      }
+    }
+    lastGuiPlusClickByImagePath.set(imagePath, {
+      imagePath,
+      x: mapped.x,
+      y: mapped.y,
+      timestamp: Date.now(),
+    })
+  }
+  if (parsedAction === 'CLICK' && mapped) {
+    pendingGuiPlusClickGuardByScope.set(scopeKey, {
+      x: mapped.x,
+      y: mapped.y,
+      unstable: unstableClick,
+      reason: unstableReason,
+      imagePath: imagePath || undefined,
+      timestamp: Date.now(),
+    })
+  } else {
+    pendingGuiPlusClickGuardByScope.delete(scopeKey)
+  }
+
+  const rawX = extractedPoint?.x
+  const rawY = extractedPoint?.y
+  if (mapped || rawX !== undefined || rawY !== undefined || unstableClick) {
+    log('GUI_PLUS_COORD_MAP', {
+      action: parsedObj?.action ?? null,
+      rawX,
+      rawY,
+      rawSource: extractedPoint?.source,
+      unstableClick,
+      unstableReason,
+      mapped: mapped ?? null,
+    }, logScope)
+  }
+
+  const warnings: string[] = []
+  if (extractedPoint?.source === 'x_array') {
+    warnings.push('GUI-Plus returned coordinates as parameters.x array; auto-converted to x/y')
+  } else if (extractedPoint?.source === 'xyxy_center') {
+    warnings.push('GUI-Plus returned coordinates as [x1,y1,x2,y2]; auto-converted to center point')
+  }
+  if (unstableClick && unstableReason) warnings.push(`Unstable click candidate: ${unstableReason}`)
+
+  const payload = {
+    parsed: compactGuiPlusParsed(result.parsed),
+    mapped: compactGuiPlusMapped(mapped),
+    rawLength: result.raw.length,
+    ...(warnings.length ? { warnings } : {}),
+    ...(unstableClick ? { requiresRecheck: true } : {}),
+  }
+
+  log('GUI_PLUS_RESULT', {
+    parsed: payload.parsed,
+    rawLength: result.raw.length,
+    usage: result.usage ?? null,
+    mapped: payload.mapped ?? null,
+    warnings,
+    requiresRecheck: unstableClick,
+  }, logScope)
+
+  return {
+    success: true,
+    content: JSON.stringify(payload),
+  }
+}
+
+async function execDesktopAction(args: Record<string, unknown>, signal?: AbortSignal, logScope?: string): Promise<ExecResult> {
+  const rawAction = String(args.action ?? '').trim()
+  if (!rawAction) return { content: 'Error: action is required', success: false }
+  const normalizedAction = normalizeDesktopAction(rawAction)
+  if (!normalizedAction) {
+    return {
+      content: `Error: unsupported action "${rawAction}". Supported actions: move/click/scroll/type/key`,
+      success: false,
+    }
+  }
+  const action = normalizedAction.action
+
+  let dx = Number.isFinite(Number(args.dx)) ? Number(args.dx) : undefined
+  let dy = Number.isFinite(Number(args.dy)) ? Number(args.dy) : undefined
+  const direction = typeof args.direction === 'string' ? args.direction.toLowerCase() : ''
+  if (action === 'scroll' && (dx === undefined || dy === undefined) && direction) {
+    const rawAmount = args.amount
+    let amount = 240
+    if (typeof rawAmount === 'number' && Number.isFinite(rawAmount)) amount = rawAmount
+    if (typeof rawAmount === 'string') {
+      const lower = rawAmount.toLowerCase()
+      if (lower === 'small') amount = 160
+      else if (lower === 'medium') amount = 320
+      else if (lower === 'large') amount = 520
+      else if (Number.isFinite(Number(lower))) amount = Number(lower)
+    }
+    switch (direction) {
+      case 'up': dy = -amount; dx = 0; break
+      case 'down': dy = amount; dx = 0; break
+      case 'left': dx = -amount; dy = 0; break
+      case 'right': dx = amount; dy = 0; break
+    }
+  }
+
+  const parsedKeyCombo = parseDesktopKeyCombo(typeof args.key === 'string' ? args.key : '')
+  const explicitModifiers = normalizeDesktopModifiers(args.modifiers)
+  const mergedModifiersSet = new Set<'cmd' | 'ctrl' | 'alt' | 'shift'>([
+    ...(parsedKeyCombo.modifiers ?? []),
+    ...(explicitModifiers ?? []),
+  ])
+  const clicks = resolveDesktopClicks(args, action, normalizedAction.impliedClicks)
+
+  const payload = {
+    action: action as 'move' | 'click' | 'scroll' | 'type' | 'key',
+    x: Number.isFinite(Number(args.x)) ? Number(args.x) : undefined,
+    y: Number.isFinite(Number(args.y)) ? Number(args.y) : undefined,
+    button: typeof args.button === 'string' ? (args.button as 'left' | 'right' | 'middle') : undefined,
+    clicks,
+    dx,
+    dy,
+    text: pickDesktopInputText(args),
+    key: parsedKeyCombo.key ?? (typeof args.key === 'string' ? args.key.trim() : undefined),
+    modifiers: mergedModifiersSet.size > 0 ? [...mergedModifiersSet] : undefined,
+    delay_ms: Number.isFinite(Number(args.delay_ms)) ? Number(args.delay_ms) : undefined,
+  }
+
+  const scopeKey = getGuiPlusScopeKey(logScope)
+  const guard = pendingGuiPlusClickGuardByScope.get(scopeKey)
+  if (
+    action === 'click' &&
+    guard &&
+    Date.now() - guard.timestamp < 60_000 &&
+    Number.isFinite(payload.x) &&
+    Number.isFinite(payload.y)
+  ) {
+    const distance = Math.hypot(Number(payload.x) - guard.x, Number(payload.y) - guard.y)
+    if (distance <= 8 && guard.unstable) {
+      log('DESKTOP_ACTION_BLOCKED', {
+        reason: 'unstable_gui_plus_click',
+        guard,
+        payload,
+      }, logScope)
+      return {
+        content: `Error: blocked unstable GUI click candidate (${guard.reason ?? 'coordinate drift too large'}). Please take a new screenshot and re-analyze before clicking.`,
+        success: false,
+      }
+    }
+    if (distance <= 8 && !guard.unstable) {
+      pendingGuiPlusClickGuardByScope.delete(scopeKey)
+    }
+  }
+
+  log('DESKTOP_ACTION_REQUEST', {
+    action: payload.action,
+    x: payload.x,
+    y: payload.y,
+    button: payload.button,
+    clicks: payload.clicks,
+    dx: payload.dx,
+    dy: payload.dy,
+    key: payload.key,
+    textLength: payload.text ? payload.text.length : 0,
+    guiClickGuard: guard ?? null,
+  }, logScope)
+
+  const result = await callDesktopService(payload, signal)
+  log('DESKTOP_ACTION_RESULT', {
+    ok: result.ok,
+    error: result.error,
+    message: result.message,
+    cursorBefore: result.cursorBefore ?? null,
+    cursorAfter: result.cursorAfter ?? null,
+    target: (Number.isFinite(payload.x) && Number.isFinite(payload.y))
+      ? { x: Number(payload.x), y: Number(payload.y) }
+      : null,
+    targetOffsetAfter: (
+      Number.isFinite(payload.x) &&
+      Number.isFinite(payload.y) &&
+      result.cursorAfter &&
+      Number.isFinite(result.cursorAfter.x) &&
+      Number.isFinite(result.cursorAfter.y)
+    ) ? {
+      dx: Number(result.cursorAfter.x) - Number(payload.x),
+      dy: Number(result.cursorAfter.y) - Number(payload.y),
+    } : null,
+  }, logScope)
+  if (!result.ok) {
+    return { content: `Error: ${result.error ?? 'desktop action failed'}`, success: false }
+  }
+
+  const needsEnter = Boolean(args.needs_enter)
+  if (action === 'type' && needsEnter) {
+    const enterResult = await callDesktopService({ action: 'key', key: 'enter' }, signal)
+    if (!enterResult.ok) {
+      return { content: `Error: ${enterResult.error ?? 'enter key failed'}`, success: false }
+    }
+    return { content: JSON.stringify({ ...result, followUp: enterResult }), success: true }
+  }
+
+  return { content: JSON.stringify(result), success: true }
+}
+
+function normalizeDesktopAction(action: string): { action: 'move' | 'click' | 'scroll' | 'type' | 'key'; impliedClicks?: number } | null {
+  const normalized = action.trim().toUpperCase().replace(/[\s-]+/g, '_')
+  const map: Record<string, { action: 'move' | 'click' | 'scroll' | 'type' | 'key'; impliedClicks?: number }> = {
+    MOVE: { action: 'move' },
+    HOVER: { action: 'move' },
+    CLICK: { action: 'click' },
+    TAP: { action: 'click' },
+    DOUBLE_CLICK: { action: 'click', impliedClicks: 2 },
+    DOUBLECLICK: { action: 'click', impliedClicks: 2 },
+    DBLCLICK: { action: 'click', impliedClicks: 2 },
+    DOUBLE_TAP: { action: 'click', impliedClicks: 2 },
+    SCROLL: { action: 'scroll' },
+    TYPE: { action: 'type' },
+    INPUT: { action: 'type' },
+    TEXT: { action: 'type' },
+    TYPE_TEXT: { action: 'type' },
+    INPUT_TEXT: { action: 'type' },
+    KEY: { action: 'key' },
+    KEY_PRESS: { action: 'key' },
+    PRESS_KEY: { action: 'key' },
+    HOTKEY: { action: 'key' },
+    KEYBOARD_INPUT: { action: 'key' },
+    KEYBOARD: { action: 'key' },
+  }
+  return map[normalized] ?? null
+}
+
+function parseBool(value: unknown): boolean {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'y'
+  }
+  if (typeof value === 'number') return value !== 0
+  return false
+}
+
+function resolveDesktopClicks(
+  args: Record<string, unknown>,
+  action: 'move' | 'click' | 'scroll' | 'type' | 'key',
+  impliedClicks?: number,
+): number | undefined {
+  if (action !== 'click') return undefined
+  const clicksRaw = Number(args.clicks)
+  const clickCountRaw = Number(args.clickCount)
+  const clicks = Number.isFinite(clicksRaw) ? Math.max(1, Math.round(clicksRaw)) : undefined
+  const clickCount = Number.isFinite(clickCountRaw) ? Math.max(1, Math.round(clickCountRaw)) : undefined
+  const isDouble =
+    parseBool(args.double) ||
+    parseBool(args.double_click) ||
+    parseBool(args.dblclick)
+  if (isDouble) return 2
+  return clicks ?? clickCount ?? impliedClicks
+}
+
+function pickDesktopInputText(args: Record<string, unknown>): string | undefined {
+  const candidates = [args.text, args.input, args.value, args.content, args.message]
+  for (const item of candidates) {
+    if (typeof item !== 'string') continue
+    if (!item.trim()) continue
+    return item
+  }
+  return undefined
+}
+
+function normalizeDesktopModifier(mod: string): 'cmd' | 'ctrl' | 'alt' | 'shift' | null {
+  const m = mod.trim().toLowerCase()
+  if (m === 'cmd' || m === 'command' || m === 'meta' || m === 'win' || m === 'windows' || m === 'super') return 'cmd'
+  if (m === 'ctrl' || m === 'control' || m === 'ctl') return 'ctrl'
+  if (m === 'alt' || m === 'option' || m === 'opt') return 'alt'
+  if (m === 'shift') return 'shift'
+  return null
+}
+
+function normalizeDesktopModifiers(raw: unknown): Array<'cmd' | 'ctrl' | 'alt' | 'shift'> | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const set = new Set<'cmd' | 'ctrl' | 'alt' | 'shift'>()
+  for (const item of raw) {
+    if (typeof item !== 'string') continue
+    const normalized = normalizeDesktopModifier(item)
+    if (normalized) set.add(normalized)
+  }
+  return set.size > 0 ? [...set] : undefined
+}
+
+function parseDesktopKeyCombo(raw: string): {
+  key?: string
+  modifiers?: Array<'cmd' | 'ctrl' | 'alt' | 'shift'>
+} {
+  const text = raw.trim()
+  if (!text) return {}
+
+  const tokens = text
+    .replace(/[＋]/g, '+')
+    .split(/[+\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+
+  if (tokens.length === 0) return {}
+
+  const mods: Array<'cmd' | 'ctrl' | 'alt' | 'shift'> = []
+  const keys: string[] = []
+  for (const token of tokens) {
+    const mod = normalizeDesktopModifier(token)
+    if (mod) mods.push(mod)
+    else keys.push(token)
+  }
+
+  const key = keys.length > 0 ? keys[keys.length - 1] : (mods.length === tokens.length ? undefined : tokens[tokens.length - 1])
+  return {
+    ...(key ? { key } : {}),
+    ...(mods.length > 0 ? { modifiers: [...new Set(mods)] } : {}),
+  }
+}
+
+function getGuiPlusScopeKey(logScope?: string): string {
+  const key = (logScope ?? '').trim()
+  return key || '__global__'
+}
+
+function asNumberArray(value: unknown): number[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((item) => Number(item))
+    .filter((num) => Number.isFinite(num))
+}
+
+function extractGuiPlusPoint(parameters: Record<string, unknown>): GuiPlusPoint | null {
+  const x = parameters.x
+  const y = parameters.y
+  if (typeof x === 'number' && typeof y === 'number') {
+    return { x, y, source: 'xy' }
+  }
+
+  const xArray = asNumberArray(x)
+  if (xArray.length >= 4) {
+    return {
+      x: (xArray[0] + xArray[2]) / 2,
+      y: (xArray[1] + xArray[3]) / 2,
+      source: 'xyxy_center',
+    }
+  }
+  if (xArray.length >= 2) {
+    return { x: xArray[0], y: xArray[1], source: 'x_array' }
+  }
+
+  const pointCandidate = (
+    (parameters.point && typeof parameters.point === 'object' ? parameters.point : null) ??
+    (parameters.position && typeof parameters.position === 'object' ? parameters.position : null) ??
+    (parameters.coordinate && typeof parameters.coordinate === 'object' ? parameters.coordinate : null)
+  ) as Record<string, unknown> | null
+
+  if (pointCandidate) {
+    const px = Number(pointCandidate.x)
+    const py = Number(pointCandidate.y)
+    if (Number.isFinite(px) && Number.isFinite(py)) {
+      return { x: px, y: py, source: 'point' }
+    }
+  }
+
+  return null
+}
+
+function compactGuiPlusParsed(parsed: unknown): Record<string, unknown> | null {
+  if (!parsed || typeof parsed !== 'object') return null
+  const obj = parsed as { action?: unknown; thought?: unknown; parameters?: unknown }
+  const out: Record<string, unknown> = {}
+
+  if (typeof obj.action === 'string') out.action = obj.action.toUpperCase()
+  if (typeof obj.thought === 'string' && obj.thought.trim()) {
+    const thought = obj.thought.trim()
+    out.thought = thought.length > 160 ? `${thought.slice(0, 160)}...` : thought
+  }
+
+  if (obj.parameters && typeof obj.parameters === 'object') {
+    const p = obj.parameters as Record<string, unknown>
+    const keepKeys = ['x', 'y', 'text', 'needs_enter', 'direction', 'amount', 'key', 'description', 'message', 'reason']
+    const compactParams: Record<string, unknown> = {}
+    for (const key of keepKeys) {
+      if (p[key] !== undefined) compactParams[key] = p[key]
+    }
+    if (Object.keys(compactParams).length > 0) out.parameters = compactParams
+  }
+
+  return Object.keys(out).length > 0 ? out : null
+}
+
+function compactGuiPlusMapped(mapped: GuiPlusMappedPoint | null): Record<string, unknown> | null {
+  if (!mapped) return null
+  return {
+    action: mapped.action ?? null,
+    x: mapped.x,
+    y: mapped.y,
+    coordinateSpace: mapped.coordinateSpace,
+    localX: mapped.localX,
+    localY: mapped.localY,
+    ...(mapped.displayId ? { displayId: mapped.displayId } : {}),
+    ...(mapped.displayBoundsX !== undefined ? { displayBoundsX: mapped.displayBoundsX } : {}),
+    ...(mapped.displayBoundsY !== undefined ? { displayBoundsY: mapped.displayBoundsY } : {}),
+  }
+}
+
+function getImageSize(dataUrl: string, imagePath?: string): { width: number; height: number } | null {
+  if (dataUrl) {
+    try {
+      const img = nativeImage.createFromDataURL(dataUrl)
+      const size = img.getSize()
+      if (size.width > 0 && size.height > 0) return { width: size.width, height: size.height }
+    } catch {
+      // ignore
+    }
+  }
+  if (imagePath) {
+    try {
+      const img = nativeImage.createFromPath(imagePath)
+      const size = img.getSize()
+      if (size.width > 0 && size.height > 0) return { width: size.width, height: size.height }
+    } catch {
+      // ignore
+    }
+  }
+  return null
+}
+
+function computeScaledSize(
+  width: number,
+  height: number,
+  minPixels?: number,
+  maxPixels?: number,
+  highResolution?: boolean,
+  factor = 28,
+) {
+  const minPx = minPixels ?? (4 * 28 * 28)
+  const maxPx = highResolution ? (16384 * 28 * 28) : (maxPixels ?? 1003520)
+
+  let hBar = Math.round(height / factor) * factor
+  let wBar = Math.round(width / factor) * factor
+
+  if (hBar * wBar > maxPx) {
+    const beta = Math.sqrt((height * width) / maxPx)
+    hBar = Math.floor(height / beta / factor) * factor
+    wBar = Math.floor(width / beta / factor) * factor
+  } else if (hBar * wBar < minPx) {
+    const beta = Math.sqrt(minPx / (height * width))
+    hBar = Math.ceil(height * beta / factor) * factor
+    wBar = Math.ceil(width * beta / factor) * factor
+  }
+
+  return { width: wBar, height: hBar, minPixels: minPx, maxPixels: maxPx, factor }
+}
+
+function mapGuiPlusCoordinates(
+  parsed: unknown,
+  dataUrl: string,
+  imagePath: string,
+  options: { minPixels?: number; maxPixels?: number; highResolution?: boolean },
+): GuiPlusMappedPoint | null {
+  if (!parsed || typeof parsed !== 'object') return null
+  const obj = parsed as { action?: string; parameters?: Record<string, unknown> }
+  const params = obj.parameters ?? {}
+  const point = extractGuiPlusPoint(params)
+  if (!point) return null
+
+  const size = getImageSize(dataUrl, imagePath)
+  if (!size) return null
+
+  const scaled = computeScaledSize(size.width, size.height, options.minPixels, options.maxPixels, options.highResolution)
+  if (scaled.width <= 0 || scaled.height <= 0) return null
+
+  const clampedX = Math.max(0, Math.min(point.x, Math.max(0, scaled.width - 1)))
+  const clampedY = Math.max(0, Math.min(point.y, Math.max(0, scaled.height - 1)))
+  const mappedX = Math.max(0, Math.min(size.width - 1, Math.floor((clampedX / Math.max(1, scaled.width)) * size.width)))
+  const mappedY = Math.max(0, Math.min(size.height - 1, Math.floor((clampedY / Math.max(1, scaled.height)) * size.height)))
+
+  const meta = imagePath ? desktopScreenshotMetaByPath.get(imagePath) : undefined
+  let absoluteX = mappedX
+  let absoluteY = mappedY
+  if (meta && meta.screenshotWidth > 0 && meta.screenshotHeight > 0 && meta.displayWidth > 0 && meta.displayHeight > 0) {
+    const screenshotXSpan = Math.max(1, meta.screenshotWidth - 1)
+    const screenshotYSpan = Math.max(1, meta.screenshotHeight - 1)
+    const displayXSpan = Math.max(0, meta.displayWidth - 1)
+    const displayYSpan = Math.max(0, meta.displayHeight - 1)
+    const rx = mappedX / screenshotXSpan
+    const ry = mappedY / screenshotYSpan
+    absoluteX = Math.round(meta.displayBoundsX + rx * displayXSpan)
+    absoluteY = Math.round(meta.displayBoundsY + ry * displayYSpan)
+    absoluteX = Math.max(meta.displayBoundsX, Math.min(meta.displayBoundsX + displayXSpan, absoluteX))
+    absoluteY = Math.max(meta.displayBoundsY, Math.min(meta.displayBoundsY + displayYSpan, absoluteY))
+  }
+
+  return {
+    action: obj.action ?? null,
+    x: absoluteX,
+    y: absoluteY,
+    coordinateSpace: meta ? 'screen-absolute' : 'image-local',
+    localX: mappedX,
+    localY: mappedY,
+    originalWidth: size.width,
+    originalHeight: size.height,
+    scaledWidth: scaled.width,
+    scaledHeight: scaled.height,
+    minPixels: scaled.minPixels,
+    maxPixels: scaled.maxPixels,
+    factor: scaled.factor,
+    ...(meta ? {
+      displayId: meta.displayId,
+      displayBoundsX: meta.displayBoundsX,
+      displayBoundsY: meta.displayBoundsY,
+      displayWidth: meta.displayWidth,
+      displayHeight: meta.displayHeight,
+      displayScaleFactor: meta.displayScaleFactor,
+    } : {}),
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /*  风险评估                                                            */
 /* ------------------------------------------------------------------ */
@@ -1784,6 +2643,7 @@ export type RiskCategory =
   | 'git_ops'          // Git 常规操作
   | 'docker_ops'       // Docker 操作
   | 'browser_ops'      // 浏览器操作
+  | 'desktop_ops'      // 桌面操作
 
 /** 风险分类信息（供 UI 展示用） */
 export const RISK_CATEGORY_INFO: { id: RiskCategory; label: string; description: string; level: 'danger' | 'warning' }[] = [
@@ -1796,6 +2656,7 @@ export const RISK_CATEGORY_INFO: { id: RiskCategory; label: string; description:
   { id: 'git_ops', label: 'Git 操作', description: 'git push, git merge, git rebase 等', level: 'warning' },
   { id: 'docker_ops', label: 'Docker 操作', description: 'docker run, docker build 等容器操作', level: 'warning' },
   { id: 'browser_ops', label: '浏览器操作', description: 'AI 操控浏览器执行自动化', level: 'warning' },
+  { id: 'desktop_ops', label: '桌面操作', description: 'AI 操控鼠标/键盘/输入等桌面自动化', level: 'warning' },
 ]
 
 /** 危险命令关键词匹配表：[正则, 描述, 分类] */
@@ -1837,9 +2698,13 @@ const WARNING_PATTERNS: [RegExp, string, RiskCategory][] = [
 
 /** 浏览器操作工具名前缀 */
 const BROWSER_TOOL_PREFIX = 'browser_'
+/** 桌面操作工具名前缀 */
+const DESKTOP_TOOL_PREFIX = 'desktop_'
 
 /** 是否已在本次会话中确认过浏览器接管 */
 let browserAutoApproved = false
+/** 是否已在本次会话中确认过桌面接管 */
+let desktopAutoApproved = false
 
 /** 外部可调用：设置浏览器全局接管（从设置页面调用） */
 export function setBrowserAutoApproved(approved: boolean) {
@@ -1849,6 +2714,14 @@ export function setBrowserAutoApproved(approved: boolean) {
 /** 获取浏览器接管状态 */
 export function isBrowserAutoApproved() {
   return browserAutoApproved
+}
+
+export function setDesktopAutoApproved(approved: boolean) {
+  desktopAutoApproved = approved
+}
+
+export function isDesktopAutoApproved() {
+  return desktopAutoApproved
 }
 
 /** 已自动授权的风险分类集合 */
@@ -1861,6 +2734,10 @@ export function setAutoApproveCategories(categories: RiskCategory[]) {
   // browser_ops 同步到 browserAutoApproved
   if (autoApproveCategories.has('browser_ops')) {
     browserAutoApproved = true
+  }
+  // desktop_ops 同步到 desktopAutoApproved
+  if (autoApproveCategories.has('desktop_ops')) {
+    desktopAutoApproved = true
   }
 }
 
@@ -1888,6 +2765,18 @@ export function assessToolCallsRisk(toolCalls: ToolCall[]): RiskInfo[] {
         level: 'warning',
         reason: `浏览器操作: ${toolName.replace(BROWSER_TOOL_PREFIX, '')}`,
         detail: url || '(无参数)',
+      })
+      continue
+    }
+
+    if (toolName.startsWith(DESKTOP_TOOL_PREFIX) && !desktopAutoApproved && !autoApproveCategories.has('desktop_ops')) {
+      const info = String(args.action ?? args.key ?? args.text ?? '')
+      risks.push({
+        toolCallId: tc.id,
+        toolName,
+        level: 'warning',
+        reason: `桌面操作: ${toolName.replace(DESKTOP_TOOL_PREFIX, '')}`,
+        detail: info || '(无参数)',
       })
       continue
     }
@@ -1968,7 +2857,7 @@ export async function executeToolCalls(
 
     let result: ExecResult & { fileChange?: FileChange }
     try {
-      result = await executeTool(tc.function.name, args, workspace, signal, projectId)
+      result = await executeTool(tc.function.name, args, workspace, signal, projectId, logScope)
     } catch (err) {
       if (isAbortError(err)) break
       const msg = err instanceof Error ? err.message : String(err)

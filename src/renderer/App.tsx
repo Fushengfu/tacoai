@@ -6,6 +6,7 @@ import { loadJson, saveJson } from './lib/storage'
 import { useThreads } from './hooks/useThreads'
 import { useChat } from './hooks/useChat'
 import { useProviderSettings } from './hooks/useProviderSettings'
+import { useGuiPlusSettings } from './hooks/useGuiPlusSettings'
 import { Sidebar } from './components/Sidebar'
 import { ChatPanel } from './components/ChatPanel'
 import { DetailPanel } from './components/DetailPanel'
@@ -44,6 +45,7 @@ export default function App() {
   const threadStore = useThreads()
   const chat = useChat()
   const providerSettings = useProviderSettings()
+  const guiPlusSettings = useGuiPlusSettings()
   const { width: detailWidth, handleMouseDown: handleResizeMouseDown } = useResize(
     300, 200, 600, 'taco.detailPanelWidth'
   )
@@ -610,6 +612,15 @@ export default function App() {
     providerSettings.setActiveProvider(id)
   }
 
+  const notifyTaskCompleted = useCallback((threadTitle?: string) => {
+    if (currentMode !== 'agent') return
+    const title = 'Taco AI 任务完成'
+    const body = threadTitle?.trim()
+      ? `项目「${threadTitle.trim()}」已执行完成`
+      : '当前任务已执行完成'
+    void window.taco.shell.notify({ title, body, silent: false })
+  }, [currentMode])
+
   /** 实际执行发送（使用 sessionId 作为消息存储 key） */
   function doSend(content: string, images?: import('../types').AttachedImage[]) {
     const threadId = threadStore.ensureActiveThread()
@@ -629,8 +640,10 @@ export default function App() {
       maxTokens,
       onFirstMessage: (title) =>
         threadStore.updateThread(threadId, { title, updatedAt: Date.now() }),
-      onComplete: () =>
-        threadStore.updateThread(threadId, { updatedAt: Date.now() }),
+      onComplete: () => {
+        threadStore.updateThread(threadId, { updatedAt: Date.now() })
+        notifyTaskCompleted(thread?.title)
+      },
     })
   }
   // 保持 ref 指向最新的 doSend
@@ -649,7 +662,10 @@ export default function App() {
       providerForms: providerSettings.providerForms,
       mode: currentMode,
       workspace: currentWorkspace,
-      onComplete: () => threadStore.updateThread(tid, { updatedAt: Date.now() }),
+      onComplete: () => {
+        threadStore.updateThread(tid, { updatedAt: Date.now() })
+        notifyTaskCompleted(threadStore.activeThread?.title)
+      },
     })
   }
 
@@ -668,7 +684,10 @@ export default function App() {
       providerForms: providerSettings.providerForms,
       mode: currentMode,
       workspace: currentWorkspace,
-      onComplete: () => threadStore.updateThread(tid, { updatedAt: Date.now() }),
+      onComplete: () => {
+        threadStore.updateThread(tid, { updatedAt: Date.now() })
+        notifyTaskCompleted(threadStore.activeThread?.title)
+      },
     })
   }
 
@@ -785,6 +804,8 @@ export default function App() {
             <SettingsPage
               providerForms={providerSettings.providerForms}
               onUpdateField={providerSettings.updateField}
+              guiPlusForm={guiPlusSettings.guiPlusForm}
+              onUpdateGuiPlusField={guiPlusSettings.updateGuiPlusField}
               onClose={() => { setShowSettings(false); setMiddleView('chat') }}
               workspace={currentWorkspace}
               projectId={tid}

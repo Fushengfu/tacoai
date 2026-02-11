@@ -12,7 +12,7 @@
 import type { ChatMessage, ProviderOverrides } from './llm'
 import type { ProviderKey } from './llm'
 import { requestChatCompletion, requestStreamWithTools } from './llm'
-import { getAllToolDefinitions, executeToolCalls, assessToolCallsRisk, setBrowserAutoApproved, getWorkspaceTree } from './tools'
+import { getAllToolDefinitions, executeToolCalls, assessToolCallsRisk, setBrowserAutoApproved, setDesktopAutoApproved, getWorkspaceTree } from './tools'
 import type { ToolCall, ToolResult, RiskInfo } from './tools'
 import { log } from './logger'
 import { gitCommit, gitEnsureRepo } from './git'
@@ -655,6 +655,11 @@ export async function runAgent(
       if (hasBrowserRisk) {
         setBrowserAutoApproved(true)
         log('BROWSER_AUTO_APPROVED', { msg: '用户已确认浏览器操作，后续自动放行' }, logScope)
+      }
+      const hasDesktopRisk = risks.some((r) => r.toolName.startsWith('desktop_'))
+      if (hasDesktopRisk) {
+        setDesktopAutoApproved(true)
+        log('DESKTOP_AUTO_APPROVED', { msg: '用户已确认桌面操作，后续自动放行' }, logScope)
       }
     }
 

@@ -1,19 +1,23 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ProviderId, Session, Thread } from '../types'
 import { loadJson, saveJson } from '../lib/storage'
+import { providers } from '../constants'
 
 /** 迁移旧数据：为没有 sessions 字段的线程补充默认会话 */
 function migrateThreads(saved: Thread[]): Thread[] {
+  const validProviders = new Set(providers.map((p) => p.id))
   return saved.map((t) => {
+    const provider = t.provider && validProviders.has(t.provider) ? t.provider : undefined
     if (!t.sessions || t.sessions.length === 0) {
       // 使用 threadId 作为首个 sessionId，这样旧的消息存储键无需迁移
       return {
         ...t,
+        provider,
         sessions: [{ id: t.id, title: '会话 1', createdAt: t.updatedAt }],
         activeSessionId: t.id,
       }
     }
-    return t
+    return provider === t.provider ? t : { ...t, provider }
   })
 }
 

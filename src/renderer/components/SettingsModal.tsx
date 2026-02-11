@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import type { ProviderId, ProviderForm, ProviderForms } from '../types'
+import type { ProviderId, ProviderForm, ProviderForms, GuiPlusForm } from '../types'
 import type { SkillInfo, ProjectNote, NoteCategory, McpServerInfo } from '../../shared/ipc'
 import { providers, providerPlaceholders } from '../constants'
 
@@ -14,6 +14,8 @@ const NOTE_CATEGORIES: { value: NoteCategory; label: string }[] = [
 type SettingsPageProps = {
   providerForms: ProviderForms
   onUpdateField: (id: ProviderId, field: keyof ProviderForm, value: string) => void
+  guiPlusForm: GuiPlusForm
+  onUpdateGuiPlusField: <K extends keyof GuiPlusForm>(key: K, value: GuiPlusForm[K]) => void
   onClose: () => void
   workspace?: string | null
   projectId?: string
@@ -24,12 +26,15 @@ type SettingsTab = 'general' | 'models' | 'skills' | 'notes' | 'mcp'
 export function SettingsPage({
   providerForms,
   onUpdateField,
+  guiPlusForm,
+  onUpdateGuiPlusField,
   onClose,
   workspace,
   projectId,
 }: Readonly<SettingsPageProps>) {
   const [tab, setTab] = useState<SettingsTab>('models')
   const [revealApiKey, setRevealApiKey] = useState<Record<string, boolean>>({})
+  const [revealGuiPlusKey, setRevealGuiPlusKey] = useState(false)
 
   // Skills 状态
   const [skills, setSkills] = useState<SkillInfo[]>([])
@@ -63,6 +68,13 @@ export function SettingsPage({
       return saved ? new Set(JSON.parse(saved) as string[]) : new Set()
     } catch { return new Set() }
   })
+
+  const updateAutoApproveCategories = useCallback((next: Set<string>) => {
+    setAutoApproveCategoriesState(next)
+    const arr = [...next]
+    localStorage.setItem('taco.autoApproveCategories', JSON.stringify(arr))
+    window.taco.agent.setAutoApprove(arr)
+  }, [])
 
   // MCP 状态
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
@@ -365,6 +377,24 @@ export function SettingsPage({
                 />
               </label>
 
+              <label className="settings-toggle-row">
+                <span className="settings-toggle-label">
+                  <strong>桌面自动化免确认授权</strong>
+                  <small>开启后，AI 执行鼠标/键盘/输入等桌面自动化时不再弹出聊天区授权确认。</small>
+                </span>
+                <input
+                  type="checkbox"
+                  className="settings-toggle"
+                  checked={autoApproveCategories.has('desktop_ops')}
+                  onChange={(e) => {
+                    const next = new Set(autoApproveCategories)
+                    if (e.target.checked) next.add('desktop_ops')
+                    else next.delete('desktop_ops')
+                    updateAutoApproveCategories(next)
+                  }}
+                />
+              </label>
+
             </div>
 
             {/* 系统维护 */}
@@ -401,6 +431,7 @@ export function SettingsPage({
                 { id: 'system_modify', label: '系统修改', desc: 'mkfs, dd 等磁盘级操作', level: 'danger' },
                 { id: 'network_script', label: '网络脚本', desc: 'curl | sh 等下载并执行的命令', level: 'danger' },
                 { id: 'browser_ops', label: '浏览器操作', desc: 'AI 操控浏览器的所有自动化操作', level: 'warning' },
+                { id: 'desktop_ops', label: '桌面操作', desc: 'AI 操控鼠标/键盘/输入等桌面自动化', level: 'warning' },
               ].map((cat) => (
                 <label key={cat.id} className="settings-toggle-row">
                   <span className="settings-toggle-label">
@@ -418,10 +449,7 @@ export function SettingsPage({
                       const next = new Set(autoApproveCategories)
                       if (e.target.checked) next.add(cat.id)
                       else next.delete(cat.id)
-                      setAutoApproveCategoriesState(next)
-                      const arr = [...next]
-                      localStorage.setItem('taco.autoApproveCategories', JSON.stringify(arr))
-                      window.taco.agent.setAutoApprove(arr)
+                      updateAutoApproveCategories(next)
                       // 浏览器分类同步到独立的浏览器接管设置
                       if (cat.id === 'browser_ops') {
                         setBrowserAutoTakeover(e.target.checked)
@@ -486,6 +514,97 @@ export function SettingsPage({
               </div>
             )
           })}
+
+          {tab === 'models' && (
+            <div className="settings-card">
+              <div className="settings-card-title">GUI-Plus（桌面识别工具）</div>
+              <div className="settings-card-desc">仅用于截图分析工具，不参与模型选择</div>
+              <div className="settings-grid">
+                <label className="settings-field">
+                  <span>Base URL</span>
+                  <input
+                    value={guiPlusForm.baseUrl}
+                    onChange={(e) => onUpdateGuiPlusField('baseUrl', e.target.value)}
+                    placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>API Key</span>
+                  <div className="api-key-row">
+                    <input
+                      type={revealGuiPlusKey ? 'text' : 'password'}
+                      value={guiPlusForm.apiKey}
+                      onChange={(e) => onUpdateGuiPlusField('apiKey', e.target.value)}
+                      placeholder="sk-..."
+                      aria-label="GUI-Plus API Key"
+                    />
+                    <button
+                      type="button"
+                      className="reveal-btn"
+                      title={revealGuiPlusKey ? '隐藏 API Key' : '显示 API Key'}
+                      onClick={() => setRevealGuiPlusKey((prev) => !prev)}
+                    >
+                      {revealGuiPlusKey ? '隐藏' : '显示'}
+                    </button>
+                  </div>
+                </label>
+                <label className="settings-field">
+                  <span>Model</span>
+                  <input
+                    value={guiPlusForm.model}
+                    onChange={(e) => onUpdateGuiPlusField('model', e.target.value)}
+                    placeholder="gui-plus"
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>Min Pixels</span>
+                  <input
+                    type="number"
+                    value={guiPlusForm.minPixels}
+                    onChange={(e) => onUpdateGuiPlusField('minPixels', e.target.value)}
+                    placeholder="3136"
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>Max Pixels</span>
+                  <input
+                    type="number"
+                    value={guiPlusForm.maxPixels}
+                    onChange={(e) => onUpdateGuiPlusField('maxPixels', e.target.value)}
+                    placeholder="1003520"
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>High Resolution</span>
+                  <div className="settings-toggle-row">
+                    <label className="settings-toggle-label">
+                      <strong>{guiPlusForm.highResolution ? '开启' : '关闭'}</strong>
+                    </label>
+                    <input
+                      className="settings-toggle"
+                      type="checkbox"
+                      checked={guiPlusForm.highResolution}
+                      onChange={(e) => onUpdateGuiPlusField('highResolution', e.target.checked)}
+                    />
+                  </div>
+                </label>
+                <label className="settings-field">
+                  <span>Include Usage</span>
+                  <div className="settings-toggle-row">
+                    <label className="settings-toggle-label">
+                      <strong>{guiPlusForm.includeUsage ? '开启' : '关闭'}</strong>
+                    </label>
+                    <input
+                      className="settings-toggle"
+                      type="checkbox"
+                      checked={guiPlusForm.includeUsage}
+                      onChange={(e) => onUpdateGuiPlusField('includeUsage', e.target.checked)}
+                    />
+                  </div>
+                </label>
+              </div>
+            </div>
+          )}
 
           {/* ── Skills 管理 ── */}
           {tab === 'skills' && (

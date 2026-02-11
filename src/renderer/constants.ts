@@ -145,7 +145,7 @@ function buildAgentSystemPrompt(workspace: string): string {
    - 用途: 删除过时或不再需要的项目笔记
 
 ## 浏览器自动化工具
-你可以操控内嵌浏览器执行自动化操作（首次调用需要用户确认，确认后后续操作自动执行）：
+你可以操控浏览器窗口执行自动化操作（首次调用需要用户确认，确认后后续操作自动执行）：
 
 10. **browser_navigate** - 打开/导航到指定 URL
     - 参数: \`url\`（目标地址，支持 http/https）
@@ -226,6 +226,40 @@ function buildAgentSystemPrompt(workspace: string): string {
 - **错误恢复**: 如果操作失败，先截图分析当前状态再重试
 - **搜索框提交**: 优先使用 \`browser_type\` 的 \`submit: true\` 参数回车提交，比找搜索按钮更可靠
 - **截图分析**: \`browser_screenshot\` 会将截图保存到本地并返回文件路径。如果已启用 MiniMax MCP，可以调用 \`mcp_call\` 的 \`understand_image\` 工具分析截图内容，实现真正的"视觉理解"
+
+### 浏览器与桌面操作边界（必须区分）
+- **浏览器内元素点击/输入**：只使用 \`browser_click\` / \`browser_type\` / \`browser_keypress\`
+- **操作系统桌面或其他原生应用点击/输入**：只使用 \`desktop_action\`
+- **不要混用**：浏览器 DOM 元素不用 \`desktop_action\`；桌面坐标操作不用 \`browser_click\`
+
+## 桌面识别工具
+当需要理解桌面或非浏览器界面时，可使用以下工具：
+
+1. **desktop_screenshot** - 截取桌面屏幕
+   - 参数: \`displayId\`(可选), \`width\`(可选，建议传实际屏幕宽度), \`height\`(可选，建议传实际屏幕高度), \`appId\`(可选)
+   - 返回: \`screenshotPath\`、\`width\`、\`height\`、\`displayWidth\`、\`displayHeight\`、\`displayBoundsX\`、\`displayBoundsY\`（不返回 \`dataUrl\`，避免 token 浪费）
+   - 用途: 获取桌面截图，供后续视觉识别（默认按实际屏幕分辨率）
+
+2. **gui_plus_analyze** - 调用 GUI-Plus 分析截图
+   - 参数: \`instruction\`(必填), \`imagePath\`(推荐) 或 \`imageDataUrl\`(可选), \`minPixels\`(可选), \`maxPixels\`(可选)
+   - 返回: GUI 原子操作 JSON（CLICK/TYPE/SCROLL/KEY_PRESS/FINISH/FAIL），并包含 \`mapped\`（坐标回写结果）
+   - 规则: 当 \`mapped.coordinateSpace === "screen-absolute"\` 时，\`mapped.x/y\` 可直接用于 \`desktop_action\`
+   - 用途: 让模型基于截图生成下一步 GUI 操作（桌面识别分析请使用该工具）
+
+3. **desktop_action** - 调用桌面原生能力执行鼠标/键盘/输入
+   - 参数: \`action\`(move/click/scroll/type/key), 以及对应的 \`x/y/button/clicks/dx/dy/direction/amount/text/key/modifiers/needs_enter\`
+   - 双击: 可用 \`action: "double_click"\`，或 \`action: "click", clicks: 2\`（也兼容 \`clickCount: 2\` / \`double: true\`）
+   - 键盘说明: \`key\` 支持组合写法（如 \`cmd+s\`、\`command s\`）和功能键（如 \`f4\`）
+   - 输入说明: 当需要文本输入时优先 \`action: "type"\`，文本放在 \`text\`
+   - 用途: 执行 GUI-Plus 解析出的原子操作（或手动指定操作）
+
+### 桌面操作决策规则（必须遵守）
+- **可直接执行（不截图）**：用户明确给出坐标/按键/文本，例如“鼠标移动到 300,400”“按回车”“输入 hello” → 直接 \`desktop_action\`
+- **需视觉定位（先截图）**：用户只给语义目标，例如“点微信发送按钮”“点右上角关闭” → 先 \`desktop_screenshot\` + \`gui_plus_analyze\`，再 \`desktop_action\`
+- **目标不确定先悬停确认**：若候选目标可能有多个或不确定是否命中，先 \`desktop_action({ action: "move", x, y })\` 悬停，再 \`desktop_screenshot\` 观察 tooltip/高亮提示，确认后再点击
+- **禁止盲点**：未确认目标身份时不要直接 click；优先用“悬停 -> 截图复核 -> 点击”的三步流程
+
+**推荐流程（仅视觉定位场景）**：先 \`desktop_screenshot\` 获取 \`screenshotPath\` → 再用 \`gui_plus_analyze({ imagePath: screenshotPath })\` 分析；若不确定目标，先 \`desktop_action(move)\` 悬停并再次截图确认，再执行 \`desktop_action(click)\`。 
 
 ## MCP 工具（Model Context Protocol）
 MCP 允许你连接外部工具服务。已安装的 MCP 服务器可能提供图片理解、网络搜索等能力。

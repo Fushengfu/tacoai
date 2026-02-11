@@ -137,6 +137,16 @@ export type ProviderForm = {
 
 export type ProviderForms = Record<ProviderId, ProviderForm>
 
+export type GuiPlusForm = {
+  baseUrl: string
+  apiKey: string
+  model: string
+  minPixels: string
+  maxPixels: string
+  highResolution: boolean
+  includeUsage: boolean
+}
+
 export type QueuedMessage = {
   id: string
   content: string

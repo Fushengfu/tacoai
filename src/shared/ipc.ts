@@ -109,6 +109,12 @@ export const IpcChannel = {
 
   /** renderer → main, 打开日志目录 */
   OPEN_LOG_DIR: 'app:open-log-dir',
+  /** renderer → main, 触发系统通知 */
+  APP_NOTIFY: 'app:notify',
+
+  /** GUI-Plus 配置 */
+  GUI_PLUS_GET: 'gui-plus:get',
+  GUI_PLUS_SAVE: 'gui-plus:save',
 
   /** 窗口拖拽 — 手动实现以获取自定义光标控制 */
   WINDOW_DRAG_START: 'window:drag-start',
@@ -388,6 +394,22 @@ export type BrowserActionResult = {
   error?: string
 }
 
+export type GuiPlusConfig = {
+  baseUrl: string
+  apiKey: string
+  model: string
+  minPixels?: number
+  maxPixels?: number
+  highResolution?: boolean
+  includeUsage?: boolean
+}
+
+export type AppNotifyPayload = {
+  title: string
+  body: string
+  silent?: boolean
+}
+
 export type TacoApi = {
   version: string
   system: SystemInfo
@@ -396,6 +418,8 @@ export type TacoApi = {
     openInEditor: (filePath: string, editor: EditorId) => Promise<void>
     /** 在系统文件管理器中打开日志目录 */
     openLogDir: (scope?: { projectId?: string; workspace?: string }) => Promise<void>
+    /** 触发操作系统通知 */
+    notify: (payload: AppNotifyPayload) => Promise<boolean>
   }
   chat: {
     /** 非流式请求，返回完整回复 */
@@ -518,6 +542,10 @@ export type TacoApi = {
     focusExternal: (appId?: string) => Promise<void>
     /** 监听外部浏览器状态变化 (opened/closed/navigated) */
     onExternalStatus: (callback: (status: ExternalBrowserStatus) => void) => () => void
+  }
+  guiPlus: {
+    getConfig: () => Promise<GuiPlusConfig>
+    saveConfig: (config: GuiPlusConfig) => Promise<void>
   }
 }
 

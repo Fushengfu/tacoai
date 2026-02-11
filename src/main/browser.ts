@@ -43,6 +43,7 @@ export function setBrowserHiddenMode(enabled: boolean) {
       if (!inst.win.isVisible()) inst.win.showInactive()
     }
   }
+  syncMainWindowPriority()
 }
 
 // 注册 IPC 监听
@@ -858,6 +859,23 @@ function sendExternalStatus(status: ExternalBrowserStatus) {
   }
 }
 
+function getMainWindow(): BrowserWindow | null {
+  const mainWin = BrowserWindow.getAllWindows().find(w => !browserInstances.has(getAppIdByWin(w)))
+  if (mainWin && !mainWin.isDestroyed()) return mainWin
+  return null
+}
+
+function setMainWindowPriority(enabled: boolean) {
+  const mainWin = getMainWindow()
+  if (!mainWin) return
+  mainWin.setAlwaysOnTop(enabled, 'floating')
+  if (enabled) mainWin.moveTop()
+}
+
+function syncMainWindowPriority() {
+  setMainWindowPriority(browserInstances.size > 0 && !browserHiddenMode)
+}
+
 /** 通过 BrowserWindow 反查 appId */
 function getAppIdByWin(win: BrowserWindow): string {
   for (const [id, inst] of browserInstances) {
@@ -1215,11 +1233,13 @@ export function openExternalBrowser(url: string, appId: string = DEFAULT_APP_ID)
         existing.win.show()
         existing.win.focus()
       }
+      syncMainWindowPriority()
       return
     }
     console.log(`[Browser] 已有窗口导航到: ${url}`)
     existing.win.loadURL(url)
     if (!browserHiddenMode) existing.win.focus()
+    syncMainWindowPriority()
     return
   }
 
@@ -1245,6 +1265,7 @@ export function openExternalBrowser(url: string, appId: string = DEFAULT_APP_ID)
     ua: profile.ua,
   }
   browserInstances.set(appId, instance)
+  syncMainWindowPriority()
 
   const wc = win.webContents
 
@@ -1365,6 +1386,7 @@ export function openExternalBrowser(url: string, appId: string = DEFAULT_APP_ID)
     } catch { /* ignore */ }
     browserInstances.delete(appId)
     sendExternalStatus({ type: 'closed', appId })
+    syncMainWindowPriority()
   })
 
   sendExternalStatus({ type: 'opened', url, appId })
@@ -1382,6 +1404,7 @@ export function closeExternalBrowser(appId: string = DEFAULT_APP_ID) {
     inst.win.close()
   }
   browserInstances.delete(appId)
+  syncMainWindowPriority()
 }
 
 /** 在指定 appId 的浏览器窗口中导航 */
