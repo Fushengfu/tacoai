@@ -62,10 +62,11 @@ function shouldRequireToolCall(messages: ChatMessage[], assistantText: string): 
   const user = lastUser.trim().toLowerCase()
   if (!user) return false
 
-  const actionPattern = /(修改|修复|排查|检查|查看|搜索|查找|运行|执行|安装|构建|测试|重构|创建|删除|新增|调整|优化|打开|点击|输入|截图|浏览器|桌面|文件|目录|日志|报错|问题|mcp|read|write|edit|fix|debug|check|inspect|search|find|run|execute|install|build|test|refactor|create|delete|open|click|type|screenshot|browser|desktop|file|folder|log|error|issue|bug)/i
+  const actionPattern = /(修改|修复|排查|检查|查看|搜索|查找|运行|执行|安装|构建|测试|重构|创建|删除|新增|调整|优化|打开|点击|输入|截图|浏览器|桌面|文件|目录|日志|报错|问题|继续|接着|mcp|read|write|edit|fix|debug|check|inspect|search|find|run|execute|install|build|test|refactor|create|delete|open|click|type|screenshot|browser|desktop|file|folder|log|error|issue|bug|continue|go on)/i
   const directivePattern = /(请|帮我|麻烦|去|把|给我|立即|继续|重新|再|开始|执行|点击|打开|运行|修复|修改|创建|删除|输入|截图|please|help|do|run|open|click|fix|create|delete|type|screenshot|execute)/i
   const qaPattern = /(是什么|什么意思|为什么|怎么理解|解释一下|介绍一下|原理|区别|是什么原因|what is|explain|why|meaning|difference)/i
   const metaChatPattern = /^(你|你这|你现在|你又|你是不是|你怎么|别|不要|停止|停下|先别|不用|不需要)/i
+  const continuationOnlyPattern = /^(继续|接着|继续执行|继续处理|继续优化|继续完善|开始执行|执行任务|执行任务呀|go on|continue)$/i
   const hasPathHint = /([/\\][\w.-]+)|(\.[a-z0-9]{1,8}\b)/i.test(user)
   const asksExecution = actionPattern.test(user) || hasPathHint
   const hasDirective = directivePattern.test(user) || hasPathHint
@@ -74,6 +75,12 @@ function shouldRequireToolCall(messages: ChatMessage[], assistantText: string): 
 
   if (pureQa) return false
   if (isMetaChat) return false
+  if (continuationOnlyPattern.test(user)) {
+    const priorActionable = messages
+      .slice(0, -1)
+      .some((m) => m.role === 'user' && actionPattern.test(m.content.toLowerCase()))
+    if (priorActionable) return true
+  }
   if (!asksExecution) return false
   if (!hasDirective) return false
 
@@ -83,6 +90,30 @@ function shouldRequireToolCall(messages: ChatMessage[], assistantText: string): 
   if (assistant && blockedPattern.test(assistant)) return false
 
   return true
+}
+
+function looksLikePseudoExecution(text: string): boolean {
+  const normalized = text.trim().toLowerCase()
+  if (!normalized) return false
+  const codeBlockPattern = /```(?:bash|sh|shell|zsh|cmd|powershell)?[\s\S]*?```/i
+  const commandLikePattern = /\b(cd\s+\/|go test\b|go build\b|npm run\b|make\s+\w+|cat\s+>|sed\s+-n|rg\s+-n|git\s+\w+)\b/i
+  const narrationPattern = /(让我|现在我来|第一步|第二步|执行结果|任务执行完成|我将|立即执行)/i
+  return (codeBlockPattern.test(text) && commandLikePattern.test(text)) ||
+    (narrationPattern.test(text) && commandLikePattern.test(text))
+}
+
+function looksLikeFinalCompletion(text: string): boolean {
+  const normalized = text.trim().toLowerCase()
+  if (!normalized) return false
+  const completionPattern = /(任务已完成|已完成任务|处理完成|完成了|all done|task completed|completed)/i
+  const negativePattern = /(未完成|没完成|无法完成|不能完成|失败|error|aborted|取消|中断)/i
+  return completionPattern.test(normalized) && !negativePattern.test(normalized)
+}
+
+function hasMeaningfulExecutedTool(messages: ChatMessage[]): boolean {
+  // 仅以 tool 消息是否出现作为“至少执行过一次动作”的保守判定。
+  // note/progress 也属于执行，但完成态避免强制重试时这个判定足够安全。
+  return messages.some((m) => m.role === 'tool')
 }
 
 /** 外部调用：用户响应了确认请求 */
@@ -397,7 +428,8 @@ export async function runAgent(
     let toolCalls: ToolCall[] = []
 
     try {
-      const toolChoice = forceToolChoiceThisRound ? 'required' : 'auto'
+      const mustUseToolsThisRound = forceToolChoiceThisRound || shouldRequireToolCall(workingMessages, '')
+      const toolChoice = mustUseToolsThisRound ? 'required' : 'auto'
       forceToolChoiceThisRound = false
       for await (const event of requestStreamWithTools(
         provider,
@@ -451,11 +483,20 @@ export async function runAgent(
 
     // 如果没有 tool_calls → 纯文本回复，循环结束
     if (toolCalls.length === 0) {
-      if (shouldRequireToolCall(workingMessages, textContent) && forceToolRetryCount < 1) {
+      const completionText = looksLikeFinalCompletion(textContent)
+      const executedAnyTool = hasMeaningfulExecutedTool(workingMessages)
+      const pseudoExecutionText = looksLikePseudoExecution(textContent)
+      const shouldForceRetry = shouldRequireToolCall(workingMessages, textContent) &&
+        !(completionText && executedAnyTool)
+      const shouldForceRetryByPseudo = pseudoExecutionText && !completionText
+
+      if ((shouldForceRetry || shouldForceRetryByPseudo) && forceToolRetryCount < 2) {
         forceToolRetryCount++
         log('AGENT_FORCE_TOOL_RETRY', {
           round,
-          reason: 'actionable request produced no tool_calls',
+          reason: shouldForceRetryByPseudo
+            ? 'pseudo execution text produced no tool_calls'
+            : 'actionable request produced no tool_calls',
           retry: forceToolRetryCount,
         }, logScope)
         workingMessages.push({
@@ -464,11 +505,21 @@ export async function runAgent(
         })
         workingMessages.push({
           role: 'system',
-          content: '你上一轮没有调用任何工具。对于可执行任务，必须至少先调用一个工具再继续，不要只做口头说明。',
+          content: '你上一轮没有调用任何工具。对于可执行任务，下一轮必须直接返回 tool_calls；不要输出命令示例代码块，不要只做口头说明。',
         })
         forceToolChoiceThisRound = true
         continue
       }
+
+      if (shouldForceRetry || shouldForceRetryByPseudo) {
+        onEvent?.({ type: 'error', message: '模型未按要求调用工具（仅输出文字/命令示例），本轮已停止。请重试或切换模型。' })
+        return
+      }
+
+      if (!shouldForceRetry && completionText && executedAnyTool) {
+        log('AGENT_COMPLETE_NO_FORCE_RETRY', { round, reason: 'completion text after executed tools' }, logScope)
+      }
+
       await autoCommit()
       onEvent?.({ type: 'done' })
       return

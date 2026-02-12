@@ -2439,6 +2439,49 @@ body.is-dragging * {
   border-color: var(--accent, #7c6cf0);
 }
 
+.mobile-bridge-qr-wrap {
+  margin-top: 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px dashed rgba(76, 123, 255, 0.35);
+  background: rgba(76, 123, 255, 0.05);
+  display: grid;
+  gap: 8px;
+}
+.mobile-bridge-qr-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.84);
+}
+.mobile-bridge-qr-hint {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+}
+.mobile-bridge-qr-content {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.mobile-bridge-qr-image {
+  width: 132px;
+  height: 132px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(0, 0, 0, 0.2);
+  flex-shrink: 0;
+}
+.mobile-bridge-qr-meta {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+.mobile-bridge-qr-meta small {
+  display: block;
+  color: rgba(255, 255, 255, 0.62);
+  line-height: 1.45;
+  word-break: break-all;
+}
+
 /* ── Settings Toggle ── */
 .settings-toggle-row {
   display: flex;
@@ -3472,8 +3515,90 @@ body.is-dragging * {
 
 /* ---- Steps list ---- */
 
-.agent-steps {
+.agent-steps-group {
   margin-bottom: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+.agent-steps-group.active {
+  border-color: rgba(76, 123, 255, 0.22);
+}
+.agent-steps-group-header {
+  width: 100%;
+  border: none;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.015));
+  color: var(--text);
+  padding: 9px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  transition: background 0.18s ease;
+}
+.agent-steps-group-header:hover {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.025));
+}
+.agent-steps-group-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.agent-steps-group-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  flex-shrink: 0;
+}
+.agent-steps-group-op {
+  min-width: 0;
+  max-width: 46%;
+  font-size: 12px;
+  color: var(--text);
+  opacity: 0.92;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-steps-group-count {
+  font-size: 11px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.agent-steps-group-summary {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-steps-group-chevron {
+  font-size: 16px;
+  color: var(--muted);
+  transition: transform 0.2s ease;
+  transform: rotate(0deg);
+}
+.agent-steps-group-chevron.open {
+  transform: rotate(90deg);
+}
+.agent-steps-group-body {
+  padding: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.agent-steps {
+  display: grid;
+  gap: 2px;
+  max-height: 360px;
+  overflow-y: auto;
+  margin-bottom: 0;
+  padding-right: 2px;
 }
 
 /* ---- Individual step cards ---- */
@@ -3481,7 +3606,7 @@ body.is-dragging * {
 .agent-step {
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 8px;
-  margin-bottom: 4px;
+  margin-bottom: 0;
   overflow: hidden;
   transition: border-color 0.2s ease;
 }
@@ -3509,7 +3634,7 @@ body.is-dragging * {
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
-  padding: 7px 0 7px 12px;
+  padding: 6px 0 6px 10px;
   background: none;
   border: none;
   cursor: pointer;
@@ -3559,7 +3684,7 @@ body.is-dragging * {
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
   font-size: 12px;
   font-weight: 400;
-  padding: 7px 4px;
+  padding: 6px 4px;
   cursor: pointer;
   min-width: 0;
 }
@@ -3582,7 +3707,7 @@ body.is-dragging * {
   align-items: center;
   justify-content: center;
   width: 28px;
-  padding: 7px 0;
+  padding: 6px 0;
   background: none;
   border: none;
   cursor: pointer;
@@ -3600,7 +3725,7 @@ body.is-dragging * {
 
 /* Step body (expanded) */
 .agent-step-body {
-  padding: 6px 12px 10px;
+  padding: 5px 10px 8px;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
   font-size: 12px;
 }
@@ -3614,7 +3739,7 @@ body.is-dragging * {
 
 /* ---- Agent Step 内的思考块 ---- */
 .step-thinking-block {
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.02);
   border: 1px solid rgba(255, 255, 255, 0.06);
@@ -5487,6 +5612,33 @@ body.is-dragging * {
   border-top: 1px solid var(--border);
   background: #0d0e11;
   min-height: 0;
+}
+
+.terminal-panel-resize-handle {
+  height: 10px;
+  cursor: ns-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.terminal-panel-resize-line {
+  width: 56px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  transition: background 0.15s ease, width 0.15s ease;
+}
+
+.terminal-panel-resize-handle:hover .terminal-panel-resize-line {
+  width: 72px;
+  background: rgba(86, 217, 197, 0.55);
+}
+
+.terminal-panel-resize-handle:active .terminal-panel-resize-line {
+  width: 86px;
+  background: rgba(86, 217, 197, 0.85);
 }
 
 .terminal-panel-header {

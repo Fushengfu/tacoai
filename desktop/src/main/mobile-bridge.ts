@@ -6,9 +6,13 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import type {
   MobileBridgeAbortData,
   MobileBridgeCommandData,
+  MobileBridgeClearSessionData,
   MobileBridgeConfig,
+  MobileBridgeConfirmData,
   MobileBridgeContextSnapshot,
+  MobileBridgeNewSessionData,
   MobileBridgeSelectData,
+  FileTreeEntry,
 } from '../shared/ipc'
 import { logError, logInfo } from './logger'
 
@@ -18,6 +22,12 @@ const DEFAULT_CONFIG: MobileBridgeConfig = {
   token: 'taco-mobile',
 }
 const SCREENSHOTS_ROOT = path.join(app.getPath('home'), '.taco', 'screenshots')
+const WORKSPACE_TREE_MAX_DEPTH = 8
+const WORKSPACE_TREE_MAX_ENTRIES = 4000
+const WORKSPACE_EXCLUDED_DIRS = new Set([
+  'node_modules', '.git', '.svn', '.hg', '.DS_Store',
+  '__pycache__', '.cache', 'coverage', '.idea',
+])
 
 let currentConfig: MobileBridgeConfig = { ...DEFAULT_CONFIG }
 let server: http.Server | null = null
@@ -25,6 +35,9 @@ let initialized = false
 let commandHandler: ((data: MobileBridgeCommandData) => void) | null = null
 let selectHandler: ((data: MobileBridgeSelectData) => void) | null = null
 let abortHandler: ((data: MobileBridgeAbortData) => void) | null = null
+let confirmHandler: ((data: MobileBridgeConfirmData) => void) | null = null
+let newSessionHandler: ((data: MobileBridgeNewSessionData) => void) | null = null
+let clearSessionHandler: ((data: MobileBridgeClearSessionData) => void) | null = null
 let wsServer: WebSocketServer | null = null
 const wsClients = new Set<WebSocket>()
 let latestContextDigest = ''
@@ -169,10 +182,18 @@ function sanitizeContext(raw: MobileBridgeContextSnapshot): MobileBridgeContextS
         const safeSteps = rawSteps.slice(0, 30).map((step) => {
           const rawToolCalls = Array.isArray(step.toolCalls) ? step.toolCalls : []
           const rawToolResults = Array.isArray(step.toolResults) ? step.toolResults : []
+          const rawRisks = Array.isArray(step.risks) ? step.risks : []
           return {
             round: Number.isFinite(step.round) ? Math.max(0, Math.trunc(step.round)) : 0,
             thinking: trimText(step.thinking, 4000),
             status: sanitizeAgentStepStatus(step.status),
+            confirmId: trimText(step.confirmId, 128) || undefined,
+            risks: rawRisks.slice(0, 10).map((risk) => ({
+              toolName: trimText(risk.toolName, 128),
+              reason: trimText(risk.reason, 1000),
+              detail: trimText(risk.detail, 2000),
+              level: risk.level === 'safe' || risk.level === 'danger' ? risk.level : 'warning',
+            })),
             toolCalls: rawToolCalls.slice(0, 30).map((tc) => ({
               id: trimText(tc.id, 128),
               name: trimText(tc.name, 128),
@@ -183,6 +204,13 @@ function sanitizeContext(raw: MobileBridgeContextSnapshot): MobileBridgeContextS
               name: trimText(tr.name, 128),
               content: trimText(tr.content, 3000),
               success: Boolean(tr.success),
+              fileChange: tr.fileChange && typeof tr.fileChange === 'object'
+                ? {
+                  filePath: trimText(tr.fileChange.filePath, 1024),
+                  oldContent: tr.fileChange.oldContent == null ? null : trimText(tr.fileChange.oldContent, 12000),
+                  newContent: tr.fileChange.newContent == null ? null : trimText(tr.fileChange.newContent, 12000),
+                }
+                : undefined,
             })),
           }
         })
@@ -334,6 +362,289 @@ function handleAbortRequest(req: http.IncomingMessage, res: http.ServerResponse,
   writeJson(res, 200, { ok: true, id: abort.id })
 }
 
+function handleConfirmRequest(req: http.IncomingMessage, res: http.ServerResponse, body: unknown): void {
+  const data = (body && typeof body === 'object' ? body : {}) as {
+    threadId?: unknown
+    sessionId?: unknown
+    confirmId?: unknown
+    approved?: unknown
+  }
+  const threadId = trimText(data.threadId, 128) || undefined
+  const sessionId = trimText(data.sessionId, 128) || undefined
+  const confirmId = trimText(data.confirmId, 128)
+  if (!confirmId) {
+    writeJson(res, 400, { ok: false, error: 'confirmId is required' })
+    return
+  }
+  const confirm: MobileBridgeConfirmData = {
+    id: `mobile-confirm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    receivedAt: Date.now(),
+    remoteAddr: req.socket.remoteAddress,
+    threadId,
+    sessionId,
+    confirmId,
+    approved: data.approved === true,
+  }
+  confirmHandler?.(confirm)
+  logInfo('MOBILE_BRIDGE_CONFIRM', '收到移动端确认响应', {
+    id: confirm.id,
+    threadId: confirm.threadId,
+    sessionId: confirm.sessionId,
+    confirmId: confirm.confirmId,
+    approved: confirm.approved,
+    remoteAddr: confirm.remoteAddr,
+  })
+  writeJson(res, 200, { ok: true, id: confirm.id })
+}
+
+function handleSessionNewRequest(req: http.IncomingMessage, res: http.ServerResponse, body: unknown): void {
+  const data = (body && typeof body === 'object' ? body : {}) as { threadId?: unknown }
+  const threadId = trimText(data.threadId, 128) || trimText(latestContext.activeThreadId, 128) || trimText(latestContext.threads[0]?.threadId, 128)
+  if (!threadId) {
+    writeJson(res, 400, { ok: false, error: 'threadId is required' })
+    return
+  }
+  const payload: MobileBridgeNewSessionData = {
+    id: `mobile-session-new-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    receivedAt: Date.now(),
+    remoteAddr: req.socket.remoteAddress,
+    threadId,
+  }
+  newSessionHandler?.(payload)
+  logInfo('MOBILE_BRIDGE_SESSION_NEW', '收到移动端新建会话请求', {
+    id: payload.id,
+    threadId: payload.threadId,
+    remoteAddr: payload.remoteAddr,
+  })
+  writeJson(res, 200, { ok: true, id: payload.id })
+}
+
+function handleSessionClearRequest(req: http.IncomingMessage, res: http.ServerResponse, body: unknown): void {
+  const data = (body && typeof body === 'object' ? body : {}) as {
+    threadId?: unknown
+    sessionId?: unknown
+  }
+  const threadId = trimText(data.threadId, 128) || trimText(latestContext.activeThreadId, 128) || undefined
+  const sessionId = trimText(data.sessionId, 128) || trimText(latestContext.activeSessionId, 128) || undefined
+  if (!threadId && !sessionId) {
+    writeJson(res, 400, { ok: false, error: 'threadId or sessionId is required' })
+    return
+  }
+  const payload: MobileBridgeClearSessionData = {
+    id: `mobile-session-clear-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    receivedAt: Date.now(),
+    remoteAddr: req.socket.remoteAddress,
+    threadId,
+    sessionId,
+  }
+  clearSessionHandler?.(payload)
+  logInfo('MOBILE_BRIDGE_SESSION_CLEAR', '收到移动端清空会话请求', {
+    id: payload.id,
+    threadId: payload.threadId,
+    sessionId: payload.sessionId,
+    remoteAddr: payload.remoteAddr,
+  })
+  writeJson(res, 200, { ok: true, id: payload.id })
+}
+
+function resolveContextThread(threadId?: string, sessionId?: string): MobileBridgeContextSnapshot['threads'][number] | null {
+  const safeThreadId = trimText(threadId, 128)
+  if (safeThreadId) {
+    const byThread = latestContext.threads.find((thread) => thread.threadId === safeThreadId)
+    if (byThread) return byThread
+  }
+  const safeSessionId = trimText(sessionId, 128)
+  if (safeSessionId) {
+    const bySession = latestContext.threads.find((thread) =>
+      thread.sessions.some((session) => session.sessionId === safeSessionId)
+    )
+    if (bySession) return bySession
+  }
+  const activeThreadId = trimText(latestContext.activeThreadId, 128)
+  if (activeThreadId) {
+    const active = latestContext.threads.find((thread) => thread.threadId === activeThreadId)
+    if (active) return active
+  }
+  return latestContext.threads[0] ?? null
+}
+
+function resolveWorkspaceRoot(threadId?: string, sessionId?: string): string | null {
+  const thread = resolveContextThread(threadId, sessionId)
+  const workspace = trimText(thread?.workspace, 2048)
+  if (!workspace) return null
+  return path.resolve(workspace)
+}
+
+function normalizeRelativeWorkspacePath(rawPath: unknown): string | null {
+  const source = String(rawPath ?? '').trim()
+  if (!source) return null
+  const withSlash = source.replace(/\\/g, '/').replace(/^\/+/, '')
+  const normalized = path.posix.normalize(withSlash)
+  if (!normalized || normalized === '.' || normalized.startsWith('../') || normalized === '..') return null
+  return normalized
+}
+
+function resolveWorkspaceFilePath(workspaceRoot: string, rawPath: unknown): { relativePath: string; absolutePath: string } | null {
+  const relativePath = normalizeRelativeWorkspacePath(rawPath)
+  if (!relativePath) return null
+  const absolutePath = path.resolve(workspaceRoot, relativePath)
+  if (!(absolutePath === workspaceRoot || absolutePath.startsWith(`${workspaceRoot}${path.sep}`))) return null
+  return { relativePath, absolutePath }
+}
+
+function isBinaryBuffer(buf: Buffer): boolean {
+  const len = Math.min(buf.length, 8192)
+  for (let i = 0; i < len; i++) {
+    if (buf[i] === 0) return true
+  }
+  return false
+}
+
+async function readWorkspaceTree(
+  workspaceRoot: string,
+  dir: string,
+  basePath: string,
+  depth: number,
+  counter: { value: number },
+): Promise<FileTreeEntry[]> {
+  if (depth > WORKSPACE_TREE_MAX_DEPTH || counter.value >= WORKSPACE_TREE_MAX_ENTRIES) return []
+  let entries: Awaited<ReturnType<typeof fs.readdir>>
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const sorted = entries.sort((a, b) => {
+    if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1
+    return a.name.localeCompare(b.name)
+  })
+
+  const result: FileTreeEntry[] = []
+  for (const entry of sorted) {
+    if (counter.value >= WORKSPACE_TREE_MAX_ENTRIES) break
+    if (WORKSPACE_EXCLUDED_DIRS.has(entry.name)) continue
+    const relativePath = basePath ? `${basePath}/${entry.name}` : entry.name
+    const absolutePath = path.join(dir, entry.name)
+    if (!(absolutePath === workspaceRoot || absolutePath.startsWith(`${workspaceRoot}${path.sep}`))) continue
+    counter.value += 1
+    if (entry.isDirectory()) {
+      const children = await readWorkspaceTree(workspaceRoot, absolutePath, relativePath, depth + 1, counter)
+      result.push({ name: entry.name, path: relativePath, isDirectory: true, children })
+    } else {
+      result.push({ name: entry.name, path: relativePath, isDirectory: false })
+    }
+  }
+  return result
+}
+
+async function handleWorkspaceTreeRequest(req: http.IncomingMessage, res: http.ServerResponse, reqUrl: URL): Promise<void> {
+  const threadId = trimText(reqUrl.searchParams.get('threadId'), 128) || undefined
+  const sessionId = trimText(reqUrl.searchParams.get('sessionId'), 128) || undefined
+  const workspaceRoot = resolveWorkspaceRoot(threadId, sessionId)
+  if (!workspaceRoot) {
+    writeJson(res, 400, { ok: false, error: 'workspace not found' })
+    return
+  }
+  try {
+    const stat = await fs.stat(workspaceRoot)
+    if (!stat.isDirectory()) {
+      writeJson(res, 404, { ok: false, error: 'workspace not found' })
+      return
+    }
+    const entries = await readWorkspaceTree(workspaceRoot, workspaceRoot, '', 0, { value: 0 })
+    writeJson(res, 200, { ok: true, workspace: workspaceRoot, entries })
+  } catch {
+    writeJson(res, 404, { ok: false, error: 'workspace not found' })
+  }
+}
+
+async function handleWorkspaceFileReadRequest(_req: http.IncomingMessage, res: http.ServerResponse, body: unknown): Promise<void> {
+  const data = (body && typeof body === 'object' ? body : {}) as {
+    threadId?: unknown
+    sessionId?: unknown
+    path?: unknown
+  }
+  const workspaceRoot = resolveWorkspaceRoot(trimText(data.threadId, 128), trimText(data.sessionId, 128))
+  if (!workspaceRoot) {
+    writeJson(res, 400, { ok: false, error: 'workspace not found' })
+    return
+  }
+  const resolved = resolveWorkspaceFilePath(workspaceRoot, data.path)
+  if (!resolved) {
+    writeJson(res, 403, { ok: false, error: 'invalid path' })
+    return
+  }
+  try {
+    const stat = await fs.stat(resolved.absolutePath)
+    if (!stat.isFile()) {
+      writeJson(res, 404, { ok: false, error: 'file not found' })
+      return
+    }
+    const size = stat.size
+    if (size > 5 * 1024 * 1024) {
+      writeJson(res, 200, {
+        ok: true,
+        path: resolved.relativePath,
+        isBinary: true,
+        size,
+        content: null,
+      })
+      return
+    }
+    const buf = Buffer.from(await fs.readFile(resolved.absolutePath))
+    if (isBinaryBuffer(buf)) {
+      writeJson(res, 200, {
+        ok: true,
+        path: resolved.relativePath,
+        isBinary: true,
+        size,
+        content: null,
+      })
+      return
+    }
+    writeJson(res, 200, {
+      ok: true,
+      path: resolved.relativePath,
+      isBinary: false,
+      size,
+      content: buf.toString('utf-8'),
+    })
+  } catch {
+    writeJson(res, 404, { ok: false, error: 'file not found' })
+  }
+}
+
+async function handleWorkspaceFileWriteRequest(_req: http.IncomingMessage, res: http.ServerResponse, body: unknown): Promise<void> {
+  const data = (body && typeof body === 'object' ? body : {}) as {
+    threadId?: unknown
+    sessionId?: unknown
+    path?: unknown
+    content?: unknown
+  }
+  const workspaceRoot = resolveWorkspaceRoot(trimText(data.threadId, 128), trimText(data.sessionId, 128))
+  if (!workspaceRoot) {
+    writeJson(res, 400, { ok: false, error: 'workspace not found' })
+    return
+  }
+  const resolved = resolveWorkspaceFilePath(workspaceRoot, data.path)
+  if (!resolved) {
+    writeJson(res, 403, { ok: false, error: 'invalid path' })
+    return
+  }
+  const content = typeof data.content === 'string' ? data.content : ''
+  try {
+    await fs.mkdir(path.dirname(resolved.absolutePath), { recursive: true })
+    await fs.writeFile(resolved.absolutePath, content, 'utf-8')
+    writeJson(res, 200, {
+      ok: true,
+      path: resolved.relativePath,
+      size: Buffer.byteLength(content, 'utf-8'),
+    })
+  } catch (err) {
+    writeJson(res, 500, { ok: false, error: err instanceof Error ? err.message : 'write failed' })
+  }
+}
+
 async function handleScreenshotRequest(req: http.IncomingMessage, res: http.ServerResponse, reqUrl: URL): Promise<void> {
   if (!isAuthorized(req, reqUrl)) {
     writeJson(res, 401, { ok: false, error: 'unauthorized' })
@@ -438,6 +749,65 @@ function createServer(): http.Server {
         return
       }
 
+      if (reqUrl.pathname === '/confirm' && req.method === 'POST') {
+        if (!isAuthorized(req, reqUrl)) {
+          writeJson(res, 401, { ok: false, error: 'unauthorized' })
+          return
+        }
+        const body = await readJsonBody(req)
+        handleConfirmRequest(req, res, body)
+        return
+      }
+
+      if (reqUrl.pathname === '/session/new' && req.method === 'POST') {
+        if (!isAuthorized(req, reqUrl)) {
+          writeJson(res, 401, { ok: false, error: 'unauthorized' })
+          return
+        }
+        const body = await readJsonBody(req)
+        handleSessionNewRequest(req, res, body)
+        return
+      }
+
+      if (reqUrl.pathname === '/session/clear' && req.method === 'POST') {
+        if (!isAuthorized(req, reqUrl)) {
+          writeJson(res, 401, { ok: false, error: 'unauthorized' })
+          return
+        }
+        const body = await readJsonBody(req)
+        handleSessionClearRequest(req, res, body)
+        return
+      }
+
+      if (reqUrl.pathname === '/workspace/tree' && req.method === 'GET') {
+        if (!isAuthorized(req, reqUrl)) {
+          writeJson(res, 401, { ok: false, error: 'unauthorized' })
+          return
+        }
+        await handleWorkspaceTreeRequest(req, res, reqUrl)
+        return
+      }
+
+      if (reqUrl.pathname === '/workspace/file/read' && req.method === 'POST') {
+        if (!isAuthorized(req, reqUrl)) {
+          writeJson(res, 401, { ok: false, error: 'unauthorized' })
+          return
+        }
+        const body = await readJsonBody(req)
+        await handleWorkspaceFileReadRequest(req, res, body)
+        return
+      }
+
+      if (reqUrl.pathname === '/workspace/file/write' && req.method === 'POST') {
+        if (!isAuthorized(req, reqUrl)) {
+          writeJson(res, 401, { ok: false, error: 'unauthorized' })
+          return
+        }
+        const body = await readJsonBody(req)
+        await handleWorkspaceFileWriteRequest(req, res, body)
+        return
+      }
+
       if (reqUrl.pathname === '/screenshot' && req.method === 'GET') {
         await handleScreenshotRequest(req, res, reqUrl)
         return
@@ -529,10 +899,16 @@ export async function initMobileBridge(
   onCommand: (data: MobileBridgeCommandData) => void,
   onSelect: (data: MobileBridgeSelectData) => void,
   onAbort: (data: MobileBridgeAbortData) => void,
+  onConfirm: (data: MobileBridgeConfirmData) => void,
+  onNewSession: (data: MobileBridgeNewSessionData) => void,
+  onClearSession: (data: MobileBridgeClearSessionData) => void,
 ): Promise<MobileBridgeConfig> {
   commandHandler = onCommand
   selectHandler = onSelect
   abortHandler = onAbort
+  confirmHandler = onConfirm
+  newSessionHandler = onNewSession
+  clearSessionHandler = onClearSession
   if (!initialized) {
     currentConfig = await loadConfigFile()
     initialized = true

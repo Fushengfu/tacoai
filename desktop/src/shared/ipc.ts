@@ -123,6 +123,12 @@ export const IpcChannel = {
   MOBILE_BRIDGE_SELECT: 'mobile-bridge:select',
   /** main → renderer, 移动端下发停止请求 */
   MOBILE_BRIDGE_ABORT: 'mobile-bridge:abort',
+  /** main → renderer, 移动端下发确认响应 */
+  MOBILE_BRIDGE_CONFIRM: 'mobile-bridge:confirm',
+  /** main → renderer, 移动端请求在当前项目新建会话 */
+  MOBILE_BRIDGE_NEW_SESSION: 'mobile-bridge:new-session',
+  /** main → renderer, 移动端请求清空会话记录 */
+  MOBILE_BRIDGE_CLEAR_SESSION: 'mobile-bridge:clear-session',
 
   /** GUI-Plus 配置 */
   GUI_PLUS_GET: 'gui-plus:get',
@@ -455,6 +461,44 @@ export type MobileBridgeAbortData = {
   sessionId?: string
 }
 
+export type MobileBridgeConfirmData = {
+  id: string
+  receivedAt: number
+  remoteAddr?: string
+  threadId?: string
+  sessionId?: string
+  confirmId: string
+  approved: boolean
+}
+
+export type MobileBridgeNewSessionData = {
+  id: string
+  receivedAt: number
+  remoteAddr?: string
+  threadId?: string
+}
+
+export type MobileBridgeClearSessionData = {
+  id: string
+  receivedAt: number
+  remoteAddr?: string
+  threadId?: string
+  sessionId?: string
+}
+
+export type MobileBridgeRiskInfo = {
+  toolName: string
+  reason: string
+  detail: string
+  level?: 'safe' | 'warning' | 'danger'
+}
+
+export type MobileBridgeFileChange = {
+  filePath: string
+  oldContent: string | null
+  newContent: string | null
+}
+
 export type MobileBridgeMessage = {
   id?: string
   role: ChatRole
@@ -480,6 +524,7 @@ export type MobileBridgeToolResult = {
   name: string
   content: string
   success: boolean
+  fileChange?: MobileBridgeFileChange
 }
 
 export type MobileBridgeAgentStep = {
@@ -488,6 +533,8 @@ export type MobileBridgeAgentStep = {
   toolCalls: MobileBridgeToolCall[]
   toolResults: MobileBridgeToolResult[]
   status: 'calling' | 'running' | 'confirm' | 'done'
+  risks?: MobileBridgeRiskInfo[]
+  confirmId?: string
 }
 
 export type MobileBridgePlanStep = {
@@ -556,6 +603,12 @@ export type TacoApi = {
     onSelect: (callback: (data: MobileBridgeSelectData) => void) => () => void
     /** 监听移动端下发的停止请求 */
     onAbort: (callback: (data: MobileBridgeAbortData) => void) => () => void
+    /** 监听移动端下发的确认响应 */
+    onConfirm: (callback: (data: MobileBridgeConfirmData) => void) => () => void
+    /** 监听移动端下发的新建会话请求 */
+    onNewSession: (callback: (data: MobileBridgeNewSessionData) => void) => () => void
+    /** 监听移动端下发的清空会话请求 */
+    onClearSession: (callback: (data: MobileBridgeClearSessionData) => void) => () => void
   }
   chat: {
     /** 非流式请求，返回完整回复 */

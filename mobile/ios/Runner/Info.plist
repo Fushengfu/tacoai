@@ -45,5 +45,7 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>用于扫描桌面端提供的连接二维码，自动导入手机端连接配置。</string>
 </dict>
 </plist>

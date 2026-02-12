@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import QRCode from 'qrcode'
 import type { ProviderId, ProviderForm, ProviderForms, GuiPlusForm } from '../types'
 import type { SkillInfo, ProjectNote, NoteCategory, McpServerInfo, MobileBridgeConfig } from '../../shared/ipc'
 import { providers, providerPlaceholders } from '../constants'
@@ -89,6 +90,11 @@ export function SettingsPage({
   const [mcpSaving, setMcpSaving] = useState(false)
   const [mobileBridge, setMobileBridge] = useState<MobileBridgeConfig>(DEFAULT_MOBILE_BRIDGE_CONFIG)
   const [mobileBridgeSaving, setMobileBridgeSaving] = useState(false)
+  const [mobileBridgeConnectHost, setMobileBridgeConnectHost] = useState(() =>
+    localStorage.getItem('taco.mobileBridgeConnectHost') ?? ''
+  )
+  const [mobileBridgeQrDataUrl, setMobileBridgeQrDataUrl] = useState('')
+  const [mobileBridgeQrPayload, setMobileBridgeQrPayload] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -103,6 +109,40 @@ export function SettingsPage({
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const host = mobileBridgeConnectHost.trim()
+    const token = mobileBridge.token.trim() || DEFAULT_MOBILE_BRIDGE_CONFIG.token
+    if (!host || !mobileBridge.enabled) {
+      setMobileBridgeQrDataUrl('')
+      setMobileBridgeQrPayload('')
+      return () => {
+        cancelled = true
+      }
+    }
+
+    const payload = `taco-mobile://bridge/connect?host=${encodeURIComponent(host)}&port=${mobileBridge.port}&token=${encodeURIComponent(token)}`
+    setMobileBridgeQrPayload(payload)
+
+    QRCode.toDataURL(payload, {
+      margin: 1,
+      width: 220,
+      color: {
+        dark: '#EAF0FF',
+        light: '#00000000',
+      },
+    }).then((dataUrl) => {
+      if (!cancelled) setMobileBridgeQrDataUrl(dataUrl)
+    }).catch((err) => {
+      console.error('生成移动端连接二维码失败:', err)
+      if (!cancelled) setMobileBridgeQrDataUrl('')
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [mobileBridge.enabled, mobileBridge.port, mobileBridge.token, mobileBridgeConnectHost])
 
   const saveMobileBridge = useCallback(async (next: MobileBridgeConfig) => {
     setMobileBridgeSaving(true)
@@ -477,6 +517,47 @@ export function SettingsPage({
                     placeholder="taco-mobile"
                   />
                 </label>
+                <label className="settings-field">
+                  <span>扫码连接地址（IP / 域名 / 穿透地址）</span>
+                  <input
+                    value={mobileBridgeConnectHost}
+                    onChange={(e) => {
+                      const next = e.target.value
+                      setMobileBridgeConnectHost(next)
+                      localStorage.setItem('taco.mobileBridgeConnectHost', next)
+                    }}
+                    placeholder="例如 192.168.1.100 或 https://xxx.ngrok.app"
+                  />
+                </label>
+              </div>
+              <div className="mobile-bridge-qr-wrap">
+                <div className="mobile-bridge-qr-title">手机扫码自动导入连接配置</div>
+                {!mobileBridge.enabled && (
+                  <div className="mobile-bridge-qr-hint">请先开启移动端桥接。</div>
+                )}
+                {mobileBridge.enabled && !mobileBridgeConnectHost.trim() && (
+                  <div className="mobile-bridge-qr-hint">请先填写“扫码连接地址”。</div>
+                )}
+                {mobileBridge.enabled && mobileBridgeConnectHost.trim() && mobileBridgeQrDataUrl && (
+                  <div className="mobile-bridge-qr-content">
+                    <img src={mobileBridgeQrDataUrl} alt="mobile-bridge-qr" className="mobile-bridge-qr-image" />
+                    <div className="mobile-bridge-qr-meta">
+                      <small>手机端「连接配置」页面点击“扫码导入”即可自动填充。</small>
+                      <small>二维码内容：{mobileBridgeQrPayload}</small>
+                      <button
+                        type="button"
+                        className="settings-action-btn"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(mobileBridgeQrPayload).catch((err) => {
+                            console.error('复制扫码配置失败:', err)
+                          })
+                        }}
+                      >
+                        复制配置串
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="settings-action-row" style={{ marginTop: 8 }}>
                 <div className="settings-action-info">

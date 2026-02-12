@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IpcChannel } from '../shared/ipc'
-import type { ChatSendPayload, ChatStreamPayload, ChatChunkData, AgentStreamPayload, AgentEventData, EditorId, TacoApi, SystemInfo, ProjectNote, McpServerInfo, ExternalBrowserStatus, GuiPlusConfig, AppNotifyPayload, MobileBridgeConfig, MobileBridgeCommandData, MobileBridgeContextSnapshot, MobileBridgeSelectData, MobileBridgeAbortData } from '../shared/ipc'
+import type { ChatSendPayload, ChatStreamPayload, ChatChunkData, AgentStreamPayload, AgentEventData, EditorId, TacoApi, SystemInfo, ProjectNote, McpServerInfo, ExternalBrowserStatus, GuiPlusConfig, AppNotifyPayload, MobileBridgeConfig, MobileBridgeCommandData, MobileBridgeContextSnapshot, MobileBridgeSelectData, MobileBridgeAbortData, MobileBridgeConfirmData, MobileBridgeNewSessionData, MobileBridgeClearSessionData } from '../shared/ipc'
 
 // 沙盒化 preload 无法使用 os 模块，用 process 和环境变量替代
 const systemInfo: SystemInfo = {
@@ -52,6 +52,27 @@ const tacoApi: TacoApi = {
       ipcRenderer.on(IpcChannel.MOBILE_BRIDGE_ABORT, handler)
       return () => {
         ipcRenderer.removeListener(IpcChannel.MOBILE_BRIDGE_ABORT, handler)
+      }
+    },
+    onConfirm: (callback: (data: MobileBridgeConfirmData) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: MobileBridgeConfirmData) => callback(data)
+      ipcRenderer.on(IpcChannel.MOBILE_BRIDGE_CONFIRM, handler)
+      return () => {
+        ipcRenderer.removeListener(IpcChannel.MOBILE_BRIDGE_CONFIRM, handler)
+      }
+    },
+    onNewSession: (callback: (data: MobileBridgeNewSessionData) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: MobileBridgeNewSessionData) => callback(data)
+      ipcRenderer.on(IpcChannel.MOBILE_BRIDGE_NEW_SESSION, handler)
+      return () => {
+        ipcRenderer.removeListener(IpcChannel.MOBILE_BRIDGE_NEW_SESSION, handler)
+      }
+    },
+    onClearSession: (callback: (data: MobileBridgeClearSessionData) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: MobileBridgeClearSessionData) => callback(data)
+      ipcRenderer.on(IpcChannel.MOBILE_BRIDGE_CLEAR_SESSION, handler)
+      return () => {
+        ipcRenderer.removeListener(IpcChannel.MOBILE_BRIDGE_CLEAR_SESSION, handler)
       }
     },
   },

@@ -9,7 +9,7 @@
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { exec } from 'node:child_process'
+import { exec, execFile } from 'node:child_process'
 import { desktopCapturer, systemPreferences, screen, nativeImage } from 'electron'
 import { log } from './logger'
 import { executeBrowserAction } from './browser'
@@ -816,10 +816,113 @@ async function resolveSmartPath(
 /*  异步 exec 包装                                                      */
 /* ------------------------------------------------------------------ */
 
+let commandEnvCache: NodeJS.ProcessEnv | null = null
+let commandEnvLoadingPromise: Promise<NodeJS.ProcessEnv> | null = null
+
+function parseNulSeparatedEnv(raw: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+  for (const item of raw.split('\0')) {
+    if (!item) continue
+    const eq = item.indexOf('=')
+    if (eq <= 0) continue
+    const key = item.slice(0, eq)
+    const value = item.slice(eq + 1)
+    if (!key) continue
+    env[key] = value
+  }
+  return env
+}
+
+function mergePathValue(primary: string, secondary: string): string {
+  const sep = process.platform === 'win32' ? ';' : ':'
+  const seen = new Set<string>()
+  const normalize = (p: string) => process.platform === 'win32'
+    ? p.toLowerCase().replace(/[/\\]+$/, '')
+    : p
+  const merged: string[] = []
+  for (const raw of `${primary}${sep}${secondary}`.split(sep)) {
+    const p = raw.trim()
+    if (!p) continue
+    const key = normalize(p)
+    if (seen.has(key)) continue
+    seen.add(key)
+    merged.push(p)
+  }
+  return merged.join(sep)
+}
+
+async function loadLoginShellEnv(): Promise<NodeJS.ProcessEnv> {
+  if (process.platform === 'win32') return {}
+  const shell = process.env.SHELL || '/bin/zsh'
+  const attempts: Array<{ args: string[]; mode: string }> = [
+    { args: ['-ilc', 'env -0'], mode: 'login-interactive' },
+    { args: ['-lc', 'env -0'], mode: 'login' },
+  ]
+
+  for (const attempt of attempts) {
+    try {
+      const output = await new Promise<string>((resolve, reject) => {
+        execFile(shell, attempt.args, {
+          encoding: 'utf8',
+          timeout: 8000,
+          maxBuffer: 8 * 1024 * 1024,
+          env: { ...process.env },
+        }, (err, stdout) => {
+          if (err) {
+            reject(err)
+            return
+          }
+          resolve(stdout ?? '')
+        })
+      })
+      const parsed = parseNulSeparatedEnv(output)
+      if (Object.keys(parsed).length > 0) {
+        log('RUN_COMMAND_ENV_READY', { mode: attempt.mode, shell, envKeys: Object.keys(parsed).length })
+        return parsed
+      }
+    } catch (err) {
+      log('RUN_COMMAND_ENV_LOAD_FAIL', {
+        mode: attempt.mode,
+        shell,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+  return {}
+}
+
+async function getRunCommandEnv(): Promise<NodeJS.ProcessEnv> {
+  if (commandEnvCache) return commandEnvCache
+  if (commandEnvLoadingPromise) return commandEnvLoadingPromise
+
+  commandEnvLoadingPromise = (async () => {
+    const systemEnv: NodeJS.ProcessEnv = { ...process.env }
+    const shellEnv = await loadLoginShellEnv()
+    const merged: NodeJS.ProcessEnv = { ...systemEnv, ...shellEnv }
+
+    const shellPath = shellEnv.PATH || shellEnv.Path
+    const systemPath = systemEnv.PATH || systemEnv.Path
+    if (shellPath && systemPath) {
+      const pathValue = mergePathValue(shellPath, systemPath)
+      merged.PATH = pathValue
+      merged.Path = pathValue
+    }
+
+    commandEnvCache = merged
+    return merged
+  })()
+
+  try {
+    return await commandEnvLoadingPromise
+  } finally {
+    commandEnvLoadingPromise = null
+  }
+}
+
 /** 异步执行 shell 命令，带超时和输出限制 */
 function execAsync(
   command: string,
-  options: { cwd: string; timeout: number; maxBuffer?: number; signal?: AbortSignal }
+  options: { cwd: string; timeout: number; maxBuffer?: number; signal?: AbortSignal; env?: NodeJS.ProcessEnv }
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     if (options.signal?.aborted) {
@@ -833,6 +936,7 @@ function execAsync(
       timeout: options.timeout,
       maxBuffer: options.maxBuffer ?? 1024 * 1024,
       encoding: 'utf-8',
+      env: options.env,
     }, (err, stdout, stderr) => {
       if (settled) return
       settled = true
@@ -1429,11 +1533,13 @@ async function execRunCommand(args: Record<string, unknown>, workspace: string, 
     cwd = check.resolved
   }
   try {
+    const env = await getRunCommandEnv()
     const { stdout } = await execAsync(command, {
       cwd,
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
       signal,
+      env,
     })
     return { content: stdout || '(no output)', success: true }
   } catch (err: unknown) {

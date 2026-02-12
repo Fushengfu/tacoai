@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../models/bridge_models.dart';
 import '../services/bridge_client.dart';
+import 'bridge_qr_scanner_page.dart';
 
 class BridgeSettingsPage extends StatefulWidget {
   const BridgeSettingsPage({super.key, required this.initialConfig});
@@ -26,7 +27,8 @@ class _BridgeSettingsPageState extends State<BridgeSettingsPage> {
   void initState() {
     super.initState();
     _hostController = TextEditingController(text: widget.initialConfig.host);
-    _portController = TextEditingController(text: widget.initialConfig.port.toString());
+    _portController =
+        TextEditingController(text: widget.initialConfig.port.toString());
     _tokenController = TextEditingController(text: widget.initialConfig.token);
   }
 
@@ -48,6 +50,21 @@ class _BridgeSettingsPageState extends State<BridgeSettingsPage> {
     );
   }
 
+  Future<void> _scanQrImport() async {
+    final scanned = await Navigator.of(context).push<BridgeConfig>(
+      MaterialPageRoute(
+        builder: (_) => BridgeQrScannerPage(fallbackConfig: _buildConfig()),
+      ),
+    );
+    if (scanned == null) return;
+    setState(() {
+      _hostController.text = scanned.host;
+      _portController.text = scanned.port.toString();
+      _tokenController.text = scanned.token;
+      _healthResult = '已从二维码导入配置';
+    });
+  }
+
   Future<void> _checkHealth() async {
     if (_checking) return;
     setState(() {
@@ -59,7 +76,8 @@ class _BridgeSettingsPageState extends State<BridgeSettingsPage> {
       final client = BridgeClient(config: _buildConfig());
       final resp = await client.health();
       setState(() {
-        _healthResult = resp.statusCode == 200 ? '连接成功' : '连接失败: ${resp.statusCode}';
+        _healthResult =
+            resp.statusCode == 200 ? '连接成功' : '连接失败: ${resp.statusCode}';
       });
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -91,9 +109,17 @@ class _BridgeSettingsPageState extends State<BridgeSettingsPage> {
             TextField(
               controller: _hostController,
               decoration: const InputDecoration(
-                labelText: '桌面端 IP',
-                hintText: '例如 192.168.1.10',
+                labelText: '桌面端地址 / 域名',
+                hintText: '例如 192.168.1.10 或 https://xxx.ngrok.app',
                 border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '支持局域网 IP、域名、穿透地址（可带 http/https）。',
+              style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),
             ),
             const SizedBox(height: 12),
@@ -118,7 +144,15 @@ class _BridgeSettingsPageState extends State<BridgeSettingsPage> {
               children: [
                 Expanded(
                   child: FilledButton.tonal(
-                    onPressed: _checking ? null : () => unawaited(_checkHealth()),
+                    onPressed: () => unawaited(_scanQrImport()),
+                    child: const Text('扫码导入'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton.tonal(
+                    onPressed:
+                        _checking ? null : () => unawaited(_checkHealth()),
                     child: Text(_checking ? '检查中...' : '健康检查'),
                   ),
                 ),

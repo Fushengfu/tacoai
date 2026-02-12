@@ -50,6 +50,7 @@ type DesktopActionResponse = {
 let nutModule: NutModule | null = null
 let loadingNut: Promise<NutModule> | null = null
 let lastMousePos: { x: number; y: number } | null = null
+let lastDesktopClickAt = 0
 const runtimeRequire = createRequire(__filename)
 
 function sleep(ms: number): Promise<void> {
@@ -273,6 +274,7 @@ export async function callDesktopService(payload: DesktopActionRequest, signal?:
           // 双击/多击时保留短间隔，提升系统识别率
           if (i < clicks - 1) await sleep(40)
         }
+        lastDesktopClickAt = Date.now()
         const cursorAfter = await getCurrentMousePos(mouse)
         return { ok: true, message: 'mouse clicked', cursorBefore, cursorAfter }
       }
@@ -299,6 +301,9 @@ export async function callDesktopService(payload: DesktopActionRequest, signal?:
       case 'type': {
         const text = String(payload.text ?? '')
         if (!text) return { ok: false, error: 'text is required for type action', cursorBefore }
+        // 点击后给系统留出焦点切换时间，避免输入丢失
+        const elapsed = Date.now() - lastDesktopClickAt
+        if (elapsed >= 0 && elapsed < 1000) await sleep(1000 - elapsed)
         await keyboard.type(text)
         const cursorAfter = await getCurrentMousePos(mouse)
         return { ok: true, message: 'text typed', cursorBefore, cursorAfter }

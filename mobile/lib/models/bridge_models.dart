@@ -224,6 +224,8 @@ class DesktopBridgeAgentStep {
     required this.status,
     required this.toolCalls,
     required this.toolResults,
+    this.confirmId,
+    this.risks = const <DesktopBridgeRiskInfo>[],
   });
 
   final int round;
@@ -231,12 +233,16 @@ class DesktopBridgeAgentStep {
   final String status;
   final List<DesktopBridgeToolCall> toolCalls;
   final List<DesktopBridgeToolResult> toolResults;
+  final String? confirmId;
+  final List<DesktopBridgeRiskInfo> risks;
 
   factory DesktopBridgeAgentStep.fromJson(Map<String, dynamic> json) {
     final rawToolCalls = json['toolCalls'];
     final rawToolResults = json['toolResults'];
+    final rawRisks = json['risks'];
     final toolCallList = rawToolCalls is List ? rawToolCalls : <dynamic>[];
     final toolResultList = rawToolResults is List ? rawToolResults : <dynamic>[];
+    final riskList = rawRisks is List ? rawRisks : <dynamic>[];
     return DesktopBridgeAgentStep(
       round: (json['round'] as num?)?.toInt() ?? 0,
       thinking: json['thinking']?.toString() ?? '',
@@ -248,6 +254,11 @@ class DesktopBridgeAgentStep {
       toolResults: toolResultList
           .whereType<Map>()
           .map((item) => DesktopBridgeToolResult.fromJson(Map<String, dynamic>.from(item)))
+          .toList(),
+      confirmId: json['confirmId']?.toString(),
+      risks: riskList
+          .whereType<Map>()
+          .map((item) => DesktopBridgeRiskInfo.fromJson(Map<String, dynamic>.from(item)))
           .toList(),
     );
   }
@@ -279,12 +290,14 @@ class DesktopBridgeToolResult {
     required this.name,
     required this.content,
     required this.success,
+    this.fileChange,
   });
 
   final String toolCallId;
   final String name;
   final String content;
   final bool success;
+  final DesktopBridgeFileChange? fileChange;
 
   factory DesktopBridgeToolResult.fromJson(Map<String, dynamic> json) {
     return DesktopBridgeToolResult(
@@ -292,6 +305,52 @@ class DesktopBridgeToolResult {
       name: json['name']?.toString() ?? '',
       content: json['content']?.toString() ?? '',
       success: json['success'] == true,
+      fileChange: json['fileChange'] is Map
+          ? DesktopBridgeFileChange.fromJson(Map<String, dynamic>.from(json['fileChange'] as Map))
+          : null,
+    );
+  }
+}
+
+class DesktopBridgeFileChange {
+  const DesktopBridgeFileChange({
+    required this.filePath,
+    this.oldContent,
+    this.newContent,
+  });
+
+  final String filePath;
+  final String? oldContent;
+  final String? newContent;
+
+  factory DesktopBridgeFileChange.fromJson(Map<String, dynamic> json) {
+    return DesktopBridgeFileChange(
+      filePath: json['filePath']?.toString() ?? '',
+      oldContent: json['oldContent']?.toString(),
+      newContent: json['newContent']?.toString(),
+    );
+  }
+}
+
+class DesktopBridgeRiskInfo {
+  const DesktopBridgeRiskInfo({
+    required this.toolName,
+    required this.reason,
+    required this.detail,
+    required this.level,
+  });
+
+  final String toolName;
+  final String reason;
+  final String detail;
+  final String level;
+
+  factory DesktopBridgeRiskInfo.fromJson(Map<String, dynamic> json) {
+    return DesktopBridgeRiskInfo(
+      toolName: json['toolName']?.toString() ?? '',
+      reason: json['reason']?.toString() ?? '',
+      detail: json['detail']?.toString() ?? '',
+      level: json['level']?.toString() ?? 'warning',
     );
   }
 }
@@ -337,6 +396,81 @@ class DesktopBridgePlanStep {
       text: json['text']?.toString() ?? '',
       status: json['status']?.toString() ?? 'pending',
       note: json['note']?.toString() ?? '',
+    );
+  }
+}
+
+class BridgeWorkspaceTreeResponse {
+  const BridgeWorkspaceTreeResponse({
+    required this.workspace,
+    required this.entries,
+  });
+
+  final String workspace;
+  final List<BridgeWorkspaceEntry> entries;
+
+  factory BridgeWorkspaceTreeResponse.fromJson(Map<String, dynamic> json) {
+    final rawEntries = json['entries'];
+    final list = rawEntries is List ? rawEntries : <dynamic>[];
+    return BridgeWorkspaceTreeResponse(
+      workspace: json['workspace']?.toString() ?? '',
+      entries: list
+          .whereType<Map>()
+          .map((item) =>
+              BridgeWorkspaceEntry.fromJson(Map<String, dynamic>.from(item)))
+          .toList(),
+    );
+  }
+}
+
+class BridgeWorkspaceEntry {
+  const BridgeWorkspaceEntry({
+    required this.name,
+    required this.path,
+    required this.isDirectory,
+    required this.children,
+  });
+
+  final String name;
+  final String path;
+  final bool isDirectory;
+  final List<BridgeWorkspaceEntry> children;
+
+  factory BridgeWorkspaceEntry.fromJson(Map<String, dynamic> json) {
+    final rawChildren = json['children'];
+    final list = rawChildren is List ? rawChildren : <dynamic>[];
+    return BridgeWorkspaceEntry(
+      name: json['name']?.toString() ?? '',
+      path: json['path']?.toString() ?? '',
+      isDirectory: json['isDirectory'] == true,
+      children: list
+          .whereType<Map>()
+          .map((item) =>
+              BridgeWorkspaceEntry.fromJson(Map<String, dynamic>.from(item)))
+          .toList(),
+    );
+  }
+}
+
+class BridgeWorkspaceFileContent {
+  const BridgeWorkspaceFileContent({
+    required this.path,
+    required this.content,
+    required this.size,
+    required this.isBinary,
+  });
+
+  final String path;
+  final String? content;
+  final int size;
+  final bool isBinary;
+
+  factory BridgeWorkspaceFileContent.fromJson(Map<String, dynamic> json) {
+    return BridgeWorkspaceFileContent(
+      path: json['path']?.toString() ?? '',
+      content: json['content']?.toString(),
+      size: (json['size'] as num?)?.toInt() ?? 0,
+      isBinary: json['isBinary'] == true,
     );
   }
 }

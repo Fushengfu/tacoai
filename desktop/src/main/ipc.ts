@@ -577,6 +577,27 @@ export function registerIpcHandlers() {
         }
       }
     },
+    (confirm) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) {
+          win.webContents.send(IpcChannel.MOBILE_BRIDGE_CONFIRM, confirm)
+        }
+      }
+    },
+    (newSession) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) {
+          win.webContents.send(IpcChannel.MOBILE_BRIDGE_NEW_SESSION, newSession)
+        }
+      }
+    },
+    (clearSession) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) {
+          win.webContents.send(IpcChannel.MOBILE_BRIDGE_CLEAR_SESSION, clearSession)
+        }
+      }
+    },
   ).catch((err) => {
     console.error('移动端桥接初始化失败:', err)
   })

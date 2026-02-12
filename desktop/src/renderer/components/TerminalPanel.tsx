@@ -1,4 +1,5 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
+import type { MouseEvent as ReactMouseEvent } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
@@ -14,6 +15,18 @@ export function TerminalPanel({ cwd, onClose }: Readonly<TerminalPanelProps>) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
+  const [panelHeight, setPanelHeight] = useState<number>(() => {
+    try {
+      const saved = Number(localStorage.getItem('taco.terminalPanelHeight') || '')
+      if (Number.isFinite(saved) && saved >= 180 && saved <= 900) return saved
+    } catch { /* ignore */ }
+    return 280
+  })
+  const panelHeightRef = useRef(panelHeight)
+  useEffect(() => {
+    panelHeightRef.current = panelHeight
+    try { localStorage.setItem('taco.terminalPanelHeight', String(panelHeight)) } catch { /* ignore */ }
+  }, [panelHeight])
 
   // 初始化 xterm + 连接 IPC（合并为单个 effect，避免时序和 StrictMode 问题）
   useEffect(() => {
@@ -127,6 +140,34 @@ export function TerminalPanel({ cwd, onClose }: Readonly<TerminalPanelProps>) {
     return () => observer.disconnect()
   }, [handleResize])
 
+  const handleResizeStart = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    const startY = e.clientY
+    const startHeight = panelHeightRef.current
+    const minHeight = 180
+    const maxHeight = Math.max(320, Math.floor(window.innerHeight * 0.75))
+
+    document.body.style.cursor = 'ns-resize'
+    document.body.classList.add('is-resizing')
+
+    const onMove = (ev: MouseEvent) => {
+      const delta = startY - ev.clientY
+      const nextHeight = Math.max(minHeight, Math.min(maxHeight, startHeight + delta))
+      panelHeightRef.current = nextHeight
+      setPanelHeight(nextHeight)
+    }
+
+    const onUp = () => {
+      document.body.style.cursor = ''
+      document.body.classList.remove('is-resizing')
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [])
+
   // 重启终端
   const handleRestart = useCallback(() => {
     window.taco.terminal.kill()
@@ -142,7 +183,10 @@ export function TerminalPanel({ cwd, onClose }: Readonly<TerminalPanelProps>) {
   }, [cwd])
 
   return (
-    <div className="terminal-panel">
+    <div className="terminal-panel" style={{ height: panelHeight }}>
+      <div className="terminal-panel-resize-handle" onMouseDown={handleResizeStart}>
+        <div className="terminal-panel-resize-line" />
+      </div>
       <div className="terminal-panel-header">
         <span className="terminal-panel-title">终端</span>
         <div className="terminal-panel-actions">

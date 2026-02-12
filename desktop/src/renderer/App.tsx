@@ -96,7 +96,7 @@ export default function App() {
   const providerSettings = useProviderSettings()
   const guiPlusSettings = useGuiPlusSettings()
   const { width: detailWidth, handleMouseDown: handleResizeMouseDown } = useResize(
-    300, 200, 600, 'taco.detailPanelWidth'
+    340, 260, 700, 'taco.detailPanelWidth'
   )
 
   /* ---- local UI state ---- */
@@ -785,6 +785,52 @@ export default function App() {
     return unsubscribe
   }, [tid, threadStore, providerSettings, sessionId, chat])
 
+  // 移动端桥接：确认/拒绝当前风险步骤（恢复 agent 执行）
+  useEffect(() => {
+    const unsubscribe = window.taco.mobileBridge.onConfirm((evt) => {
+      applyMobileSelection({
+        threadId: evt.threadId,
+        sessionId: evt.sessionId,
+      })
+      if (!evt.confirmId) return
+      window.taco.agent.confirmResponse(evt.confirmId, evt.approved === true)
+    })
+    return unsubscribe
+  }, [tid, threadStore, providerSettings])
+
+  // 移动端桥接：在同一项目内新建会话
+  useEffect(() => {
+    const unsubscribe = window.taco.mobileBridge.onNewSession((evt) => {
+      const selected = applyMobileSelection({ threadId: evt.threadId })
+      const targetThreadId = selected.threadId ?? evt.threadId ?? tid
+      if (!targetThreadId) return
+      const exists = threadStore.threads.some((thread) => thread.id === targetThreadId)
+      if (!exists) return
+      threadStore.switchThread(targetThreadId)
+      threadStore.createSession(targetThreadId)
+    })
+    return unsubscribe
+  }, [tid, threadStore, providerSettings])
+
+  // 移动端桥接：清空会话记录（不删除会话本身）
+  useEffect(() => {
+    const unsubscribe = window.taco.mobileBridge.onClearSession((evt) => {
+      const selected = applyMobileSelection({
+        threadId: evt.threadId,
+        sessionId: evt.sessionId,
+      })
+      const targetThreadId = selected.threadId ?? evt.threadId
+      const targetSessionId =
+        selected.sessionId ??
+        evt.sessionId ??
+        (targetThreadId ? threadStore.threads.find((t) => t.id === targetThreadId)?.activeSessionId : undefined) ??
+        sessionId
+      if (!targetSessionId) return
+      chat.clearMessages(targetSessionId)
+    })
+    return unsubscribe
+  }, [tid, threadStore, providerSettings, sessionId, chat])
+
   // 移动端桥接：将桌面端当前会话历史/上下文同步到主进程缓存，供手机端查询
   useEffect(() => {
     const snapshot: MobileBridgeContextSnapshot = {
@@ -811,6 +857,13 @@ export default function App() {
                   round: step.round,
                   thinking: step.thinking.slice(0, 4000),
                   status: step.status,
+                  confirmId: step.confirmId?.slice(0, 128),
+                  risks: step.risks?.map((r) => ({
+                    toolName: r.toolName.slice(0, 128),
+                    reason: r.reason.slice(0, 1000),
+                    detail: r.detail.slice(0, 2000),
+                    level: r.level,
+                  })),
                   toolCalls: step.toolCalls.map((tc) => ({
                     id: tc.id,
                     name: tc.name,
@@ -821,6 +874,11 @@ export default function App() {
                     name: tr.name,
                     content: tr.content.slice(0, 3000),
                     success: tr.success,
+                    fileChange: tr.fileChange ? {
+                      filePath: tr.fileChange.filePath.slice(0, 1024),
+                      oldContent: tr.fileChange.oldContent?.slice(0, 12000) ?? null,
+                      newContent: tr.fileChange.newContent?.slice(0, 12000) ?? null,
+                    } : undefined,
                   })),
                 }))
                 : undefined,
@@ -947,7 +1005,7 @@ export default function App() {
 
   /* ---- render ---- */
   const gridStyle = {
-    gridTemplateColumns: `280px minmax(0, 1fr) 0px minmax(180px, ${detailWidth}px)`,
+    gridTemplateColumns: `280px minmax(0, 1fr) 0px minmax(260px, ${detailWidth}px)`,
   }
 
   return (

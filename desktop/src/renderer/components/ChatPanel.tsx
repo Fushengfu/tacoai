@@ -254,6 +254,8 @@ export function ChatPanel({
   const [expandedToolBlocks, setExpandedToolBlocks] = useState<Set<string>>(new Set())
   // 展开的思考块
   const [expandedThinkBlocks, setExpandedThinkBlocks] = useState<Set<string>>(new Set())
+  // 每条 assistant 消息的「步骤总卡片」折叠状态
+  const [stepGroupExpandedMap, setStepGroupExpandedMap] = useState<Record<string, boolean>>({})
   // 自动化截图预览
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null)
 
@@ -338,6 +340,14 @@ export function ChatPanel({
     })
   }
 
+  function toggleStepGroup(messageId: string, fallbackExpanded: boolean) {
+    setStepGroupExpandedMap((prev) => {
+      const hasExplicit = Object.prototype.hasOwnProperty.call(prev, messageId)
+      const current = hasExplicit ? prev[messageId] : fallbackExpanded
+      return { ...prev, [messageId]: !current }
+    })
+  }
+
   function stepStatusIcon(step: AgentStep): string {
     if (step.status === 'calling') return '⏳'
     if (step.status === 'running') return '⚡'
@@ -397,6 +407,20 @@ export function ChatPanel({
     // 多工具：显示数量
     const names = [...new Set(step.toolCalls.map((tc) => toolCallSummary(tc).label))]
     return { label: names.join(' + '), detail: `(${step.toolCalls.length} 个操作)` }
+  }
+
+  /** 步骤总卡片标题：显示当前（或最近）正在执行的操作 */
+  function stepGroupOperationSummary(steps: AgentStep[]): string {
+    if (steps.length === 0) return '暂无操作'
+    const active = [...steps].reverse().find((s) =>
+      s.status === 'running' || s.status === 'calling' || s.status === 'confirm'
+    )
+    const recent = active
+      ?? [...steps].reverse().find((s) => s.toolCalls.length > 0 || s.toolResults.length > 0)
+      ?? steps[steps.length - 1]
+    const summary = stepHeaderSummary(recent)
+    if (summary.detail.trim()) return `${summary.label} · ${summary.detail}`
+    return summary.label
   }
 
   /** 用选中的编辑器打开文件路径 */
@@ -731,6 +755,19 @@ export function ChatPanel({
                   <div className="bubble">
                     {/* Agent 步骤 + PlanTracker 插入在计划确认和执行步骤之间 */}
                     {msg.agentSteps && msg.agentSteps.length > 0 && (() => {
+                      const stepCount = msg.agentSteps.length
+                      const activeCount = msg.agentSteps.filter((s) => s.status === 'running' || s.status === 'calling' || s.status === 'confirm').length
+                      const doneCount = msg.agentSteps.filter((s) => s.status === 'done').length
+                      const failedCount = msg.agentSteps.filter((s) => s.status === 'done' && s.toolResults.some((r) => !r.success)).length
+                      const hasActiveSteps = activeCount > 0
+                      const defaultExpanded = hasActiveSteps || stepCount <= 4
+                      const hasExplicitExpanded = Object.prototype.hasOwnProperty.call(stepGroupExpandedMap, msg.id)
+                      const isStepsExpanded = hasExplicitExpanded ? stepGroupExpandedMap[msg.id] : defaultExpanded
+                      const groupOperation = stepGroupOperationSummary(msg.agentSteps)
+                      const groupSummary = hasActiveSteps
+                        ? `${activeCount} 个执行中`
+                        : `${doneCount}/${stepCount} 已完成${failedCount > 0 ? ` · ${failedCount} 异常` : ''}`
+
                       // 找到计划确认步骤的位置
                       const planStepIdx = msg.agentSteps.findIndex((s) =>
                         s.risks?.some((r) => r.toolName === 'propose_plan')
@@ -773,9 +810,28 @@ export function ChatPanel({
                       }
 
                       return (
-                        <div className="agent-steps">
-                          {beforePlan.map(renderStep)}
-                          {afterPlan.map(renderStep)}
+                        <div className={`agent-steps-group ${isStepsExpanded ? 'open' : 'closed'} ${hasActiveSteps ? 'active' : ''}`}>
+                          <button
+                            type="button"
+                            className="agent-steps-group-header"
+                            onClick={() => toggleStepGroup(msg.id, defaultExpanded)}
+                          >
+                            <span className="agent-steps-group-main">
+                              <span className="agent-steps-group-title">执行步骤</span>
+                              <span className="agent-steps-group-op" title={groupOperation}>{groupOperation}</span>
+                              <span className="agent-steps-group-count">{stepCount} 条</span>
+                              <span className="agent-steps-group-summary">{groupSummary}</span>
+                            </span>
+                            <span className={`agent-steps-group-chevron ${isStepsExpanded ? 'open' : ''}`}>›</span>
+                          </button>
+                          {isStepsExpanded && (
+                            <div className="agent-steps-group-body">
+                              <div className="agent-steps">
+                                {beforePlan.map(renderStep)}
+                                {afterPlan.map(renderStep)}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )
                     })()}

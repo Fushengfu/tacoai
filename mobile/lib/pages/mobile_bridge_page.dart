@@ -8,6 +8,7 @@ import '../models/bridge_models.dart';
 import '../services/bridge_client.dart';
 import '../widgets/message_bubble.dart';
 import 'bridge_settings_page.dart';
+import 'mobile_workspace_page.dart';
 
 class MobileBridgePage extends StatefulWidget {
   const MobileBridgePage({super.key});
@@ -41,6 +42,7 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
   String? _selectedSessionId;
   String? _selectedProviderId;
   List<QueuedMobileCommand> _outgoingQueue = const <QueuedMobileCommand>[];
+  final Map<String, bool> _respondedConfirms = <String, bool>{};
 
   BridgeClient get _client => BridgeClient(config: _config);
 
@@ -241,6 +243,24 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
     _showNotice('连接配置已更新');
     await _connectContextSocket(forceReconnect: true);
     await _checkHealth(notify: false);
+  }
+
+  Future<void> _openWorkspacePage() async {
+    final thread = _currentThread();
+    if (thread == null) {
+      _showNotice('请先选择项目');
+      return;
+    }
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => MobileWorkspacePage(
+          config: _config,
+          threadId: thread.threadId,
+          sessionId: _selectedSessionId,
+          threadTitle: thread.title,
+        ),
+      ),
+    );
   }
 
   List<DesktopBridgeProvider> _providerOptions() {
@@ -479,6 +499,84 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
     }
   }
 
+  Future<void> _createSession() async {
+    final thread = _currentThread();
+    if (thread == null) {
+      _showNotice('请先选择项目');
+      return;
+    }
+    try {
+      final resp = await _client.createSession(threadId: thread.threadId);
+      if (resp.statusCode == 200) {
+        _showNotice('已请求新建会话');
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        await _fetchContext(silent: true);
+      } else {
+        _showNotice('新建会话失败: ${resp.statusCode}');
+      }
+    } catch (err) {
+      _showNotice('新建会话异常: $err');
+    }
+  }
+
+  Future<void> _clearCurrentSession() async {
+    final thread = _currentThread();
+    final session = _currentSession();
+    if (thread == null || session == null) {
+      _showNotice('请先选择会话');
+      return;
+    }
+    try {
+      final resp = await _client.clearSession(
+        threadId: thread.threadId,
+        sessionId: session.sessionId,
+      );
+      if (resp.statusCode == 200) {
+        _showNotice('已清空会话记录');
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        await _fetchContext(silent: true);
+      } else {
+        _showNotice('清空失败: ${resp.statusCode}');
+      }
+    } catch (err) {
+      _showNotice('清空异常: $err');
+    }
+  }
+
+  Future<void> _confirmStep(String confirmId, bool approved) async {
+    final session = _currentSession();
+    if (session == null) {
+      _showNotice('请先选择会话');
+      return;
+    }
+    setState(() {
+      _respondedConfirms[confirmId] = approved;
+    });
+    try {
+      final resp = await _client.confirm(
+        confirmId: confirmId,
+        approved: approved,
+        threadId: _selectedThreadId,
+        sessionId: session.sessionId,
+      );
+      if (resp.statusCode == 200) {
+        _showNotice(approved ? '已确认执行' : '已要求调整');
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        await _fetchContext(silent: true);
+      } else {
+        setState(() {
+          _respondedConfirms.remove(confirmId);
+        });
+        _showNotice('确认失败: ${resp.statusCode}');
+      }
+    } catch (err) {
+      setState(() {
+        _respondedConfirms.remove(confirmId);
+      });
+      _showNotice('确认异常: $err');
+    }
+  }
+
   DesktopBridgeThread? _currentThread() {
     final context = _context;
     final id = _selectedThreadId;
@@ -553,10 +651,20 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
 
   PopupMenuButton<String> _buildSessionMenu() {
     final currentThread = _currentThread();
+    const actionNew = '__action_new_session__';
+    const actionClear = '__action_clear_session__';
 
     return PopupMenuButton<String>(
       tooltip: '选择会话',
       onSelected: (value) {
+        if (value == actionNew) {
+          unawaited(_createSession());
+          return;
+        }
+        if (value == actionClear) {
+          unawaited(_clearCurrentSession());
+          return;
+        }
         setState(() {
           _selectedSessionId = value;
         });
@@ -571,18 +679,37 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
         if (sessions.isEmpty) {
           return [
             const PopupMenuItem<String>(
+              value: actionNew,
+              child: Text('新建会话'),
+            ),
+            const PopupMenuItem<String>(
+              value: actionClear,
+              child: Text('清空当前会话'),
+            ),
+            const PopupMenuDivider(),
+            const PopupMenuItem<String>(
               enabled: false,
               value: '__empty__',
               child: Text('暂无会话'),
             ),
           ];
         }
-        return sessions
-            .map((s) => PopupMenuItem<String>(
-                  value: s.sessionId,
-                  child: Text(s.title),
-                ))
-            .toList();
+        return [
+          const PopupMenuItem<String>(
+            value: actionNew,
+            child: Text('新建会话'),
+          ),
+          PopupMenuItem<String>(
+            value: actionClear,
+            enabled: sessions.isNotEmpty,
+            child: const Text('清空当前会话'),
+          ),
+          const PopupMenuDivider(),
+          ...sessions.map((s) => PopupMenuItem<String>(
+                value: s.sessionId,
+                child: Text(s.title),
+              )),
+        ];
       },
       child: _MenuIcon(
         icon: Icons.forum_outlined,
@@ -667,6 +794,8 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
             activePlan: msg.activePlan,
             screenshotUrls: screenshotUrls,
             onOpenImage: (url) => unawaited(_openImagePreview(url)),
+            onConfirmStep: (confirmId, approved) => _confirmStep(confirmId, approved),
+            confirmStates: _respondedConfirms,
           );
         },
       ),
@@ -731,6 +860,11 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
             tooltip: '连接配置',
             onPressed: _openSettingsPage,
             icon: const Icon(Icons.settings),
+          ),
+          IconButton(
+            tooltip: '代码工作区',
+            onPressed: _openWorkspacePage,
+            icon: const Icon(Icons.code),
           ),
         ],
       ),

@@ -72,6 +72,58 @@ export type RequestOptions = {
   toolChoice?: 'auto' | 'required'
 }
 
+function maskBearerToken(raw: string): string {
+  const text = raw.trim()
+  const lower = text.toLowerCase()
+  if (!lower.startsWith('bearer ')) return '[redacted]'
+  const token = text.slice(7).trim()
+  if (!token) return 'Bearer [redacted]'
+  const tail = token.slice(-4)
+  return `Bearer ***${tail}`
+}
+
+function sanitizeHeadersForLog(headers: HeadersInit | undefined): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (!headers) return out
+  const h = new Headers(headers)
+  for (const [k, v] of h.entries()) {
+    if (k.toLowerCase() === 'authorization') {
+      out[k] = maskBearerToken(v)
+    } else {
+      out[k] = v
+    }
+  }
+  return out
+}
+
+function sanitizeTextForLog(text: string): string {
+  let next = text.replace(/sk-[a-zA-Z0-9_-]{16,}/g, 'sk-***')
+  if (next.includes('data:image/')) {
+    next = next.replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]+/g, '[data-url omitted]')
+  }
+  return next
+}
+
+function sanitizeBodyForLog(body: BodyInit | null | undefined): unknown {
+  if (typeof body !== 'string') return body ?? null
+  const safeText = sanitizeTextForLog(body)
+  try {
+    const parsed = JSON.parse(safeText) as Record<string, unknown>
+    const messages = Array.isArray(parsed.messages) ? parsed.messages : []
+    parsed.messages = messages.map((m) => {
+      if (!m || typeof m !== 'object') return m
+      const msg = { ...(m as Record<string, unknown>) }
+      if (typeof msg.content === 'string') {
+        msg.content = sanitizeTextForLog(msg.content).slice(0, 2000)
+      }
+      return msg
+    })
+    return parsed
+  } catch {
+    return safeText
+  }
+}
+
 function buildRequest(config: ProviderConfig, messages: ChatMessage[], stream: boolean, options?: RequestOptions) {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -122,7 +174,12 @@ export async function requestChatCompletion(
   const startTime = Date.now()
 
   // ── 记录完整请求 ──
-  log('REQUEST', { url, method: init.method, headers: init.headers, body: init.body }, logScope)
+  log('REQUEST', {
+    url,
+    method: init.method,
+    headers: sanitizeHeadersForLog(init.headers),
+    body: sanitizeBodyForLog(init.body),
+  }, logScope)
 
   let response: Response
   try {
@@ -173,7 +230,12 @@ export async function* requestChatCompletionStream(
   const startTime = Date.now()
 
   // ── 记录完整请求 ──
-  log('REQUEST', { url, method: init.method, headers: init.headers, body: init.body }, logScope)
+  log('REQUEST', {
+    url,
+    method: init.method,
+    headers: sanitizeHeadersForLog(init.headers),
+    body: sanitizeBodyForLog(init.body),
+  }, logScope)
 
   let response: Response
   try {
@@ -326,7 +388,12 @@ export async function* requestStreamWithTools(
   const { url, init } = buildRequest(config, messages, true, options)
   const startTime = Date.now()
 
-  log('REQUEST', { url, method: init.method, headers: init.headers, body: init.body }, logScope)
+  log('REQUEST', {
+    url,
+    method: init.method,
+    headers: sanitizeHeadersForLog(init.headers),
+    body: sanitizeBodyForLog(init.body),
+  }, logScope)
 
   let response: Response
   try {
@@ -350,6 +417,8 @@ export async function* requestStreamWithTools(
   const decoder = new TextDecoder()
   let buffer = ''
   let accumulated = ''
+  let lastTextChunk = ''
+  let repeatedTextChunkCount = 0
   // 累积 tool_calls（流式 delta 中分片到达）
   const toolCallsMap = new Map<number, { id: string; type: 'function'; function: { name: string; arguments: string } }>()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -388,8 +457,29 @@ export async function* requestStreamWithTools(
 
           // 文本内容
           if (delta?.content) {
-            accumulated += delta.content
-            yield { type: 'text', content: delta.content }
+            const content = String(delta.content)
+            if (content === lastTextChunk && content.trim().length > 0) {
+              repeatedTextChunkCount++
+              // 某些 provider 在异常情况下会持续重复发送同一文本块，触发保护提前结束本轮流式
+              if (repeatedTextChunkCount >= 40) {
+                log('STREAM_REPEAT_GUARD_TRIGGERED', {
+                  provider,
+                  repeatedTextChunkCount,
+                  sample: content.slice(0, 120),
+                }, logScope)
+                if (toolCallsMap.size > 0) {
+                  const toolCalls = Array.from(toolCallsMap.values())
+                  yield { type: 'tool_calls', toolCalls }
+                }
+                logMergedStreamResponse(url, response.status, Date.now() - startTime, firstChunk, lastChunk, accumulated, logScope)
+                return
+              }
+            } else {
+              lastTextChunk = content
+              repeatedTextChunkCount = 0
+            }
+            accumulated += content
+            yield { type: 'text', content }
           }
 
           // tool_calls delta（流式分片累积）
