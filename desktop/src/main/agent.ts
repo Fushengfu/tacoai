@@ -164,6 +164,27 @@ function estimateTokens(text: string): number {
 /** 单条消息内容的最大字符数（超过则截断，约 8K tokens） */
 const MAX_SINGLE_MSG_CHARS = 32000
 
+function truncateToolResultForContext(result: ToolResult): string {
+  if (result.content.length <= MAX_SINGLE_MSG_CHARS) return result.content
+
+  // `read_file` 已支持分块读取。若仍超长，优先保留元信息/续读提示，压缩正文部分。
+  if (result.name === 'read_file') {
+    const marker = '\n\n'
+    const firstBreak = result.content.indexOf(marker)
+    if (firstBreak > 0) {
+      const meta = result.content.slice(0, firstBreak)
+      const body = result.content.slice(firstBreak + marker.length)
+      const suffix = '\n\n[...read_file 输出正文已截断；请优先使用上方 next_chunk_hint/previous_chunk_hint 继续分块读取...]'
+      const available = MAX_SINGLE_MSG_CHARS - meta.length - marker.length - suffix.length
+      if (available > 256) {
+        return `${meta}${marker}${body.slice(0, available)}${suffix}`
+      }
+    }
+  }
+
+  return result.content.slice(0, MAX_SINGLE_MSG_CHARS) + '\n\n[...输出已截断，共 ' + result.content.length + ' 字符]'
+}
+
 /**
  * 调用 LLM 为一组早期消息生成摘要。
  *
@@ -280,7 +301,7 @@ async function compressAgentContext(
 
   // ── 第五步：用摘要替换旧消息 ──
   const summaryMsg: ChatMessage = {
-    role: 'system',
+    role: 'assistant',
     content: `[对话历史摘要 — 以下是之前 ${compressCount} 条消息的 AI 总结]\n\n${summary}\n\n[摘要结束 — 请基于以上摘要和后续的最新消息继续工作]`,
   }
 
@@ -396,6 +417,7 @@ export async function runAgent(
   let contextRetries = 0
   let forceToolChoiceThisRound = false
   let forceToolRetryCount = 0
+  let forcePlanProgressRetryCount = 0
 
   while (round < MAX_TOOL_ROUNDS) {
     // ── 检查是否被中断 ──
@@ -483,6 +505,52 @@ export async function runAgent(
 
     // 如果没有 tool_calls → 纯文本回复，循环结束
     if (toolCalls.length === 0) {
+      const unfinishedPlanSteps = currentPlan
+        ? currentPlan.steps
+            .map((step, index) => ({ step, index }))
+            .filter(({ step }) => step.status === 'pending' || step.status === 'in_progress')
+        : []
+      if (unfinishedPlanSteps.length > 0) {
+        if (forcePlanProgressRetryCount < 2) {
+          forcePlanProgressRetryCount++
+          log('AGENT_FORCE_PLAN_PROGRESS_RETRY', {
+            round,
+            retry: forcePlanProgressRetryCount,
+            unfinishedCount: unfinishedPlanSteps.length,
+            unfinished: unfinishedPlanSteps.slice(0, 6).map(({ index, step }) => ({
+              stepIndex: index,
+              status: step.status,
+              text: step.text,
+            })),
+          }, logScope)
+          workingMessages.push({
+            role: 'assistant',
+            content: textContent || '（上一轮未更新执行计划状态）',
+          })
+          const unfinishedText = unfinishedPlanSteps
+            .slice(0, 8)
+            .map(({ index, step }) => `${index}: ${step.text} [${step.status}]`)
+            .join('\n')
+          workingMessages.push({
+            role: 'user',
+            content:
+              '[继续执行约束]\n你还有执行计划步骤未完成状态更新。给出最终总结前，必须先调用 update_plan_progress 将剩余步骤逐个标记为 done 或 failed（必要时填写 note），然后再继续回复。\n未完成步骤（stepIndex 从 0 开始）:\n' +
+              unfinishedText,
+          })
+          forceToolChoiceThisRound = true
+          continue
+        }
+
+        // 兜底：避免前端显示“计划未完成”但模型已经结束时完全无标识
+        for (const { index, step } of unfinishedPlanSteps) {
+          const status: PlanStepStatus = 'failed'
+          const note = `模型结束前未更新该步骤状态（原状态: ${step.status}）`
+          currentPlan.steps[index].status = status
+          currentPlan.steps[index].note = note
+          onEvent?.({ type: 'plan_progress', stepIndex: index, status, note })
+        }
+      }
+
       const completionText = looksLikeFinalCompletion(textContent)
       const executedAnyTool = hasMeaningfulExecutedTool(workingMessages)
       const pseudoExecutionText = looksLikePseudoExecution(textContent)
@@ -504,8 +572,8 @@ export async function runAgent(
           content: textContent || '（上一轮未产出可执行工具调用）',
         })
         workingMessages.push({
-          role: 'system',
-          content: '你上一轮没有调用任何工具。对于可执行任务，下一轮必须直接返回 tool_calls；不要输出命令示例代码块，不要只做口头说明。',
+          role: 'user',
+          content: '[继续执行约束]\n你上一轮没有调用任何工具。对于可执行任务，下一轮必须直接返回 tool_calls；不要输出命令示例代码块，不要只做口头说明。',
         })
         forceToolChoiceThisRound = true
         continue
@@ -526,6 +594,7 @@ export async function runAgent(
     }
 
     forceToolRetryCount = 0
+    forcePlanProgressRetryCount = 0
 
     // ── 有 tool_calls：检查 propose_plan / 风险评估 → 可能需要确认 → 执行工具 ──
 
@@ -789,13 +858,9 @@ export async function runAgent(
 
     // 追加 tool 结果消息（对超长结果进行截断以避免上下文膨胀）
     for (const result of results) {
-      let content = result.content
-      if (content.length > MAX_SINGLE_MSG_CHARS) {
-        content = content.slice(0, MAX_SINGLE_MSG_CHARS) + '\n\n[...输出已截断，共 ' + result.content.length + ' 字符]'
-      }
       workingMessages.push({
         role: 'tool',
-        content,
+        content: truncateToolResultForContext(result),
         tool_call_id: result.tool_call_id,
       })
     }

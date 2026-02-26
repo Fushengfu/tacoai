@@ -93,11 +93,14 @@ export const toolDefinitions: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'read_file',
-      description: '读取指定路径文件的内容。用于查看代码文件、配置文件、日志等。',
+      description: '读取指定路径文件内容。支持按行范围读取（startLine/endLine）与分块读取，适合查看大文件代码并逐段分析。',
       parameters: {
         type: 'object',
         properties: {
           path: { type: 'string', description: '文件的绝对路径或相对路径' },
+          startLine: { type: 'number', description: '起始行号（1-based，可选）' },
+          endLine: { type: 'number', description: '结束行号（1-based，包含，可选）' },
+          maxChars: { type: 'number', description: '最大返回字符数（可选，系统会限制上限，建议 <= 24000）' },
         },
         required: ['path'],
       },
@@ -1061,6 +1064,9 @@ async function executeTool(
 async function execReadFile(args: Record<string, unknown>, workspace: string): Promise<ExecResult> {
   const filePath = String(args.path ?? '')
   if (!filePath) return { content: 'Error: path is required', success: false }
+  const rawStartLine = Number(args.startLine)
+  const rawEndLine = Number(args.endLine)
+  const rawMaxChars = Number(args.maxChars)
 
   const check = await resolveSmartPath(workspace, filePath, 'file')
   if ('error' in check) return { content: check.error, success: false }
@@ -1071,8 +1077,75 @@ async function execReadFile(args: Record<string, unknown>, workspace: string): P
     const stat = await fs.stat(resolved)
     if (!stat.isFile()) return { content: `Error: Not a file: ${resolved}`, success: false }
     if (stat.size > 1024 * 1024) return { content: `Error: File too large (${(stat.size / 1024 / 1024).toFixed(1)}MB), max 1MB`, success: false }
-    const content = await fs.readFile(resolved, 'utf-8')
-    return { content: correctedNote + content, success: true }
+    const fullContent = await fs.readFile(resolved, 'utf-8')
+    const lines = fullContent.split('\n')
+    const totalLines = lines.length
+
+    const DEFAULT_MAX_CHARS = 24000
+    const HARD_MAX_CHARS = 28000
+    const maxChars = Number.isFinite(rawMaxChars) && rawMaxChars > 0
+      ? Math.min(Math.floor(rawMaxChars), HARD_MAX_CHARS)
+      : DEFAULT_MAX_CHARS
+
+    let startLine = Number.isFinite(rawStartLine) && rawStartLine > 0 ? Math.floor(rawStartLine) : 1
+    let endLine = Number.isFinite(rawEndLine) && rawEndLine > 0 ? Math.floor(rawEndLine) : totalLines
+    startLine = Math.max(1, Math.min(startLine, Math.max(1, totalLines)))
+    endLine = Math.max(startLine, Math.min(endLine, Math.max(1, totalLines)))
+
+    let actualEndLine = endLine
+    let chunk = lines.slice(startLine - 1, endLine).join('\n')
+    let truncatedByChars = false
+    if (chunk.length > maxChars) {
+      truncatedByChars = true
+      let acc = ''
+      actualEndLine = startLine - 1
+      for (let i = startLine - 1; i < endLine; i++) {
+        const line = lines[i] ?? ''
+        const next = acc ? `${acc}\n${line}` : line
+        if (next.length > maxChars) {
+          if (!acc) {
+            // 极端情况：单行超长，至少返回一段并标记当前行
+            acc = next.slice(0, maxChars)
+            actualEndLine = i + 1
+          }
+          break
+        }
+        acc = next
+        actualEndLine = i + 1
+      }
+      chunk = acc
+    }
+
+    const hasRemainingBefore = startLine > 1
+    const hasRemainingAfter = actualEndLine < totalLines
+    const partial = hasRemainingBefore || hasRemainingAfter || truncatedByChars
+
+    const nextStartLine = Math.min(totalLines, actualEndLine + 1)
+    const nextEndLine = Math.min(totalLines, nextStartLine + 199)
+    const prevEndLine = startLine - 1
+    const prevStartLine = Math.max(1, prevEndLine - 199)
+
+    const meta: string[] = [
+      `[read_file] path: ${resolved}`,
+      `[read_file] lines: ${startLine}-${actualEndLine}/${totalLines}`,
+      `[read_file] chars: ${chunk.length}/${fullContent.length}`,
+      `[read_file] partial: ${partial ? 'yes' : 'no'}`,
+    ]
+    if (hasRemainingBefore) {
+      meta.push(`[read_file] previous_chunk_hint: read_file(path="${filePath}", startLine=${prevStartLine}, endLine=${prevEndLine})`)
+    }
+    if (hasRemainingAfter) {
+      meta.push(`[read_file] next_chunk_hint: read_file(path="${filePath}", startLine=${nextStartLine}, endLine=${nextEndLine})`)
+    }
+
+    const guidance = partial
+      ? '\n\n[提示] 当前仅返回文件的部分内容。继续编码前，请按需调用 read_file 的 startLine/endLine 分块读取剩余范围。'
+      : ''
+
+    return {
+      content: correctedNote + meta.join('\n') + '\n\n' + chunk + guidance,
+      success: true,
+    }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       return { content: `Error: File not found: ${resolved}`, success: false }

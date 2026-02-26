@@ -38,6 +38,7 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
   bool _isBinary = false;
   bool _silentApplyingText = false;
   Timer? _syncTimer;
+  double _treePaneHeight = 260;
 
   @override
   void initState() {
@@ -48,6 +49,7 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
       if (!_dirty) setState(() => _dirty = true);
     });
     unawaited(_reloadTree());
+    // 轻量轮询同步：仅在未编辑、未保存、未手动加载时生效，避免输入闪烁。
     _syncTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       if (_selectedPath == null || _dirty || _loadingFile || _saving) return;
       unawaited(_reloadSelectedFile(silent: true));
@@ -65,7 +67,9 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message)));
+      ..showSnackBar(
+        SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+      );
   }
 
   Future<void> _reloadTree() async {
@@ -99,14 +103,16 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
     }
     setState(() {
       _selectedPath = relativePath;
+      _isBinary = false;
     });
     await _reloadSelectedFile(silent: false);
   }
 
   Future<void> _reloadSelectedFile({required bool silent}) async {
     final targetPath = _selectedPath;
-    if (targetPath == null || targetPath.isEmpty || _loadingFile) return;
-    setState(() => _loadingFile = true);
+    if (targetPath == null || targetPath.isEmpty) return;
+    if (_loadingFile && !silent) return;
+    if (!silent) setState(() => _loadingFile = true);
     try {
       final file = await _client.readWorkspaceFile(
         path: targetPath,
@@ -115,19 +121,25 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
       );
       if (!mounted || _selectedPath != targetPath) return;
       final nextText = file.content ?? '';
-      if (_editorController.text != nextText) {
+      final hasChanged = _editorController.text != nextText;
+      if (hasChanged) {
         _silentApplyingText = true;
-        _editorController.text = nextText;
+        _editorController.value = TextEditingValue(
+          text: nextText,
+          selection: TextSelection.collapsed(offset: nextText.length),
+        );
         _silentApplyingText = false;
       }
-      setState(() {
-        _isBinary = file.isBinary;
-        _dirty = false;
-      });
+      if (!silent || hasChanged || _isBinary != file.isBinary || _dirty) {
+        setState(() {
+          _isBinary = file.isBinary;
+          if (hasChanged || !silent) _dirty = false;
+        });
+      }
     } catch (err) {
       if (!silent) _showNotice('读取文件失败: $err');
     } finally {
-      if (mounted) setState(() => _loadingFile = false);
+      if (!silent && mounted) setState(() => _loadingFile = false);
     }
   }
 
@@ -158,6 +170,7 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
   }
 
   Widget _buildTreePane() {
+    final scheme = Theme.of(context).colorScheme;
     if (_loadingTree && _entries.isEmpty) {
       return const Center(child: CircularProgressIndicator(strokeWidth: 2));
     }
@@ -167,7 +180,7 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
           padding: const EdgeInsets.all(12),
           child: Text(
             _status,
-            style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+            style: TextStyle(color: scheme.onSurfaceVariant),
           ),
         ),
       );
@@ -175,6 +188,7 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
     return RefreshIndicator(
       onRefresh: _reloadTree,
       child: ListView(
+        padding: const EdgeInsets.symmetric(vertical: 4),
         children: _entries
             .map((entry) => _WorkspaceNode(
                   entry: entry,
@@ -188,11 +202,12 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
   }
 
   Widget _buildEditorPane() {
+    final scheme = Theme.of(context).colorScheme;
     if (_selectedPath == null) {
       return Center(
         child: Text(
           '从上方目录选择文件开始编辑',
-          style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+          style: TextStyle(color: scheme.onSurfaceVariant),
         ),
       );
     }
@@ -200,7 +215,7 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
       return Center(
         child: Text(
           '该文件为二进制或过大文件，暂不支持编辑',
-          style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+          style: TextStyle(color: scheme.onSurfaceVariant),
           textAlign: TextAlign.center,
         ),
       );
@@ -210,20 +225,39 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
         Container(
           width: double.infinity,
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          decoration: BoxDecoration(
+            color: const Color(0xFF0F172A),
+            border: Border(
+              bottom: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.6)),
+            ),
+          ),
           child: Row(
             children: [
+              const Icon(Icons.description_outlined, size: 14, color: Color(0xFF60A5FA)),
+              const SizedBox(width: 6),
               Expanded(
                 child: Text(
                   _selectedPath!,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFFE2E8F0),
+                  ),
                 ),
               ),
               IconButton(
                 tooltip: '刷新',
-                onPressed: _loadingFile ? null : () => unawaited(_reloadSelectedFile(silent: false)),
+                onPressed: _loadingFile || _saving
+                    ? null
+                    : () {
+                        if (_dirty) {
+                          _showNotice('文件有未保存修改，不能覆盖刷新');
+                          return;
+                        }
+                        unawaited(_reloadSelectedFile(silent: false));
+                      },
                 icon: const Icon(Icons.refresh, size: 18),
               ),
               FilledButton.tonal(
@@ -234,23 +268,42 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
           ),
         ),
         Expanded(
-          child: Padding(
+          child: Container(
+            color: const Color(0xFF020817),
             padding: const EdgeInsets.all(8),
             child: TextField(
               controller: _editorController,
-              readOnly: _loadingFile || _saving,
+              readOnly: _saving || _loadingFile,
               expands: true,
               minLines: null,
               maxLines: null,
+              cursorColor: const Color(0xFF60A5FA),
               style: const TextStyle(
                 fontFamily: 'SF Mono',
                 fontSize: 13,
-                height: 1.35,
+                height: 1.45,
+                color: Color(0xFFE2E8F0),
               ),
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
+              decoration: InputDecoration(
+                isDense: true,
+                filled: true,
+                fillColor: const Color(0xFF0B1220),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.6)),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5)),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: const BorderSide(color: Color(0xFF3B82F6)),
+                ),
                 hintText: '在这里编辑代码...',
+                hintStyle: const TextStyle(color: Color(0xFF64748B)),
                 alignLabelWithHint: true,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
               ),
             ),
           ),
@@ -259,11 +312,38 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
     );
   }
 
+  Widget _buildDragDivider(double minTreeHeight, double maxTreeHeight) {
+    final scheme = Theme.of(context).colorScheme;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onVerticalDragUpdate: (details) {
+        setState(() {
+          _treePaneHeight = (_treePaneHeight + details.delta.dy)
+              .clamp(minTreeHeight, maxTreeHeight);
+        });
+      },
+      child: Container(
+        height: 16,
+        alignment: Alignment.center,
+        child: Container(
+          width: 54,
+          height: 6,
+          decoration: BoxDecoration(
+            color: scheme.outlineVariant.withValues(alpha: 0.9),
+            borderRadius: BorderRadius.circular(999),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final title = widget.threadTitle?.trim().isNotEmpty == true
         ? '代码工作区 · ${widget.threadTitle}'
         : '代码工作区';
+    final scheme = Theme.of(context).colorScheme;
+
     return Scaffold(
       appBar: AppBar(
         title: Text(title),
@@ -281,7 +361,7 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
             Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              color: Theme.of(context).colorScheme.surfaceContainer,
+              color: scheme.surfaceContainer,
               child: Text(
                 _workspace.isEmpty ? _status : '工作区: $_workspace',
                 maxLines: 1,
@@ -289,12 +369,66 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
                 style: const TextStyle(fontSize: 12),
               ),
             ),
-            SizedBox(
-              height: 220,
-              child: _buildTreePane(),
+            Expanded(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final minTreeHeight = 140.0;
+                  final maxTreeHeight = (constraints.maxHeight - 180).clamp(minTreeHeight, constraints.maxHeight);
+                  final treeHeight = _treePaneHeight.clamp(minTreeHeight, maxTreeHeight);
+
+                  return Column(
+                    children: [
+                      SizedBox(
+                        height: treeHeight,
+                        child: Container(
+                          margin: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF0A1220),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.55)),
+                          ),
+                          child: Column(
+                            children: [
+                              Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                decoration: BoxDecoration(
+                                  border: Border(
+                                    bottom: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.6)),
+                                  ),
+                                ),
+                                child: const Text(
+                                  '文件目录',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                    color: Color(0xFFE2E8F0),
+                                  ),
+                                ),
+                              ),
+                              Expanded(child: _buildTreePane()),
+                            ],
+                          ),
+                        ),
+                      ),
+                      _buildDragDivider(minTreeHeight, maxTreeHeight),
+                      Expanded(
+                        child: Container(
+                          margin: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF0A1220),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.55)),
+                          ),
+                          clipBehavior: Clip.antiAlias,
+                          child: _buildEditorPane(),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
             ),
-            Divider(height: 1, color: Theme.of(context).colorScheme.outlineVariant),
-            Expanded(child: _buildEditorPane()),
           ],
         ),
       ),
@@ -325,7 +459,7 @@ class _WorkspaceNode extends StatelessWidget {
           initiallyExpanded: depth < 1,
           tilePadding: EdgeInsets.only(left: 8 + depth * 12, right: 8),
           minTileHeight: 34,
-          leading: const Icon(Icons.folder_outlined, size: 16),
+          leading: const Icon(Icons.folder_outlined, size: 16, color: Color(0xFFFBBF24)),
           title: Text(
             entry.name,
             maxLines: 1,
@@ -344,19 +478,69 @@ class _WorkspaceNode extends StatelessWidget {
       );
     }
 
+    final icon = _fileIcon(entry.name);
+    final selected = selectedPath == entry.path;
     return ListTile(
       dense: true,
-      selected: selectedPath == entry.path,
+      selected: selected,
+      selectedTileColor: const Color(0xFF1E293B),
       minTileHeight: 32,
       contentPadding: EdgeInsets.only(left: 14 + depth * 12, right: 10),
-      leading: const Icon(Icons.description_outlined, size: 15),
+      leading: Icon(icon.icon, size: 15, color: icon.color),
       title: Text(
         entry.name,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontSize: 12),
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+        ),
       ),
       onTap: () => onSelectFile(entry.path),
     );
+  }
+}
+
+class _FileIconSpec {
+  const _FileIconSpec(this.icon, this.color);
+
+  final IconData icon;
+  final Color color;
+}
+
+_FileIconSpec _fileIcon(String filename) {
+  final parts = filename.toLowerCase().split('.');
+  final ext = parts.length > 1 ? parts.last : '';
+
+  switch (ext) {
+    case 'ts':
+    case 'tsx':
+      return const _FileIconSpec(Icons.javascript, Color(0xFF38BDF8));
+    case 'js':
+    case 'jsx':
+      return const _FileIconSpec(Icons.javascript, Color(0xFFFACC15));
+    case 'json':
+      return const _FileIconSpec(Icons.data_object, Color(0xFFFB923C));
+    case 'md':
+      return const _FileIconSpec(Icons.description_outlined, Color(0xFFA78BFA));
+    case 'css':
+    case 'scss':
+    case 'less':
+      return const _FileIconSpec(Icons.style, Color(0xFF60A5FA));
+    case 'html':
+      return const _FileIconSpec(Icons.language, Color(0xFFF97316));
+    case 'go':
+      return const _FileIconSpec(Icons.code, Color(0xFF22D3EE));
+    case 'yml':
+    case 'yaml':
+      return const _FileIconSpec(Icons.settings_suggest, Color(0xFF10B981));
+    case 'png':
+    case 'jpg':
+    case 'jpeg':
+    case 'webp':
+    case 'gif':
+      return const _FileIconSpec(Icons.image_outlined, Color(0xFFF472B6));
+    default:
+      return const _FileIconSpec(Icons.description_outlined, Color(0xFF94A3B8));
   }
 }

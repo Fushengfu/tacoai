@@ -111,6 +111,9 @@ class BridgeClient {
           'sessionId': cmd.sessionId,
         if (cmd.provider != null && cmd.provider!.isNotEmpty)
           'provider': cmd.provider,
+        if (cmd.mode != null &&
+            (cmd.mode == 'chat' || cmd.mode == 'agent'))
+          'mode': cmd.mode,
       },
     );
   }
@@ -119,6 +122,7 @@ class BridgeClient {
     String? threadId,
     String? sessionId,
     String? provider,
+    String? mode,
   }) {
     return _request(
       method: 'POST',
@@ -128,6 +132,7 @@ class BridgeClient {
         if (threadId != null && threadId.isNotEmpty) 'threadId': threadId,
         if (sessionId != null && sessionId.isNotEmpty) 'sessionId': sessionId,
         if (provider != null && provider.isNotEmpty) 'provider': provider,
+        if (mode == 'chat' || mode == 'agent') 'mode': mode,
       },
     );
   }

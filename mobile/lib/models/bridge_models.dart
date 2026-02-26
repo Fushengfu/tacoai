@@ -37,6 +37,7 @@ class QueuedMobileCommand {
     this.threadId,
     this.sessionId,
     this.provider,
+    this.mode,
   });
 
   final String id;
@@ -45,6 +46,7 @@ class QueuedMobileCommand {
   final String? threadId;
   final String? sessionId;
   final String? provider;
+  final String? mode;
 }
 
 class DesktopBridgeContext {

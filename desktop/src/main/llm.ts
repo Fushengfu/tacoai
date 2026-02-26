@@ -32,22 +32,22 @@ const providerConfigs: Record<ProviderKey, ProviderConfig> = {
   deepseek: {
     baseUrl: process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com',
     apiKey: process.env.DEEPSEEK_API_KEY ?? '',
-    model: process.env.DEEPSEEK_MODEL ?? 'deepseek-chat'
+    model: process.env.DEEPSEEK_MODEL ?? ''
   },
   kimi: {
     baseUrl: process.env.KIMI_BASE_URL ?? 'https://api.moonshot.cn/v1',
     apiKey: process.env.KIMI_API_KEY ?? '',
-    model: process.env.KIMI_MODEL ?? 'kimi-k2.5'
+    model: process.env.KIMI_MODEL ?? ''
   },
   minimax: {
     baseUrl: process.env.MINIMAX_BASE_URL ?? 'https://api.minimaxi.com/v1',
     apiKey: process.env.MINIMAX_API_KEY ?? '',
-    model: process.env.MINIMAX_MODEL ?? 'MiniMax-M2.1'
+    model: process.env.MINIMAX_MODEL ?? ''
   },
   glm: {
     baseUrl: process.env.GLM_BASE_URL ?? 'https://open.bigmodel.cn/api/paas/v4',
     apiKey: process.env.GLM_API_KEY ?? '',
-    model: process.env.GLM_MODEL ?? 'glm-4.7'
+    model: process.env.GLM_MODEL ?? ''
   }
 }
 
@@ -70,6 +70,39 @@ function getProviderConfig(
 export type RequestOptions = {
   tools?: ToolDefinition[]
   toolChoice?: 'auto' | 'required'
+}
+
+function normalizeMessages(messages: ChatMessage[]): ChatMessage[] {
+  let firstSystemIdx = -1
+  const extraSystem: string[] = []
+  const out: ChatMessage[] = []
+
+  for (const msg of messages) {
+    if (msg.role !== 'system') {
+      out.push(msg)
+      continue
+    }
+    if (firstSystemIdx === -1) {
+      firstSystemIdx = out.length
+      out.push(msg)
+      continue
+    }
+    if (msg.content?.trim()) extraSystem.push(msg.content.trim())
+  }
+
+  if (extraSystem.length === 0) return out
+
+  if (firstSystemIdx === -1) {
+    out.unshift({ role: 'system', content: extraSystem.join('\n\n') })
+    return out
+  }
+
+  const first = out[firstSystemIdx]
+  out[firstSystemIdx] = {
+    ...first,
+    content: [first.content?.trim() ?? '', ...extraSystem].filter(Boolean).join('\n\n'),
+  }
+  return out
 }
 
 function maskBearerToken(raw: string): string {
@@ -125,6 +158,7 @@ function sanitizeBodyForLog(body: BodyInit | null | undefined): unknown {
 }
 
 function buildRequest(config: ProviderConfig, messages: ChatMessage[], stream: boolean, options?: RequestOptions) {
+  const normalizedMessages = normalizeMessages(messages)
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${config.apiKey}`,
@@ -138,7 +172,7 @@ function buildRequest(config: ProviderConfig, messages: ChatMessage[], stream: b
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const body: Record<string, any> = {
     model: config.model,
-    messages,
+    messages: normalizedMessages,
     temperature: 0.1,
     stream,
   }

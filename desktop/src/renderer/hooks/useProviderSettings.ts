@@ -4,9 +4,16 @@ import { providers, defaultProviderForms } from '../constants'
 import { loadJson, saveJson } from '../lib/storage'
 
 export function useProviderSettings() {
-  const [providerForms, setProviderForms] = useState<ProviderForms>(() =>
-    loadJson('taco.providers', defaultProviderForms())
-  )
+  const [providerForms, setProviderForms] = useState<ProviderForms>(() => {
+    const defaults = defaultProviderForms()
+    const saved = loadJson<Partial<ProviderForms>>('taco.providers', defaults as Partial<ProviderForms>)
+    return {
+      deepseek: { ...defaults.deepseek, ...(saved.deepseek ?? {}) },
+      kimi: { ...defaults.kimi, ...(saved.kimi ?? {}) },
+      minimax: { ...defaults.minimax, ...(saved.minimax ?? {}) },
+      glm: { ...defaults.glm, ...(saved.glm ?? {}) },
+    }
+  })
   const [activeProvider, setActiveProvider] = useState<ProviderId>('deepseek')
 
   // 持久化

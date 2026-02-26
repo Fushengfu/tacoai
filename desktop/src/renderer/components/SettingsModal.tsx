@@ -687,6 +687,17 @@ export function SettingsPage({
                       placeholder={placeholder.model}
                     />
                   </label>
+                  <label className="settings-field">
+                    <span>Max Tokens</span>
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={form.maxTokens}
+                      onChange={(e) => onUpdateField(item.id, 'maxTokens', e.target.value)}
+                      placeholder={placeholder.maxTokens}
+                    />
+                  </label>
                 </div>
               </div>
             )

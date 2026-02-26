@@ -98,6 +98,10 @@ export type ActivePlan = {
   summary: string
   reasoning?: string
   steps: PlanStepInfo[]
+  /** 计划开始时间（毫秒时间戳） */
+  startedAt?: number
+  /** 计划结束时间（毫秒时间戳） */
+  endedAt?: number
 }
 
 /** 用户附带的图片 */
@@ -133,6 +137,7 @@ export type ProviderForm = {
   baseUrl: string
   apiKey: string
   model: string
+  maxTokens: string
 }
 
 export type ProviderForms = Record<ProviderId, ProviderForm>

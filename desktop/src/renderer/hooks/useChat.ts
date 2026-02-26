@@ -3,6 +3,15 @@ import type { ActivePlan, AgentStep, AttachedImage, ChatMsg, ProviderId, Provide
 import { buildSystemPrompt } from '../constants'
 import { loadJson, saveJson, uid } from '../lib/storage'
 
+function normalizePlanStatus(status: string): 'pending' | 'in_progress' | 'done' | 'failed' {
+  const s = String(status ?? '').trim().toLowerCase()
+  if (s === 'in-progress' || s === 'inprogress' || s === 'running') return 'in_progress'
+  if (s === 'complete' || s === 'completed' || s === 'success' || s === 'succeeded') return 'done'
+  if (s === 'error') return 'failed'
+  if (s === 'pending' || s === 'in_progress' || s === 'done' || s === 'failed') return s
+  return 'pending'
+}
+
 export type SendMessageParams = {
   threadId: string
   /** 项目标识（用于项目级日志与笔记隔离） */
@@ -291,12 +300,18 @@ export function useChat() {
 
           // 辅助：更新 agent 消息（追加或更新）
           const flushAgentMsg = (finalContent?: string) => {
+            const nextContent = finalContent ?? accumulated
+            const hasRenderableContent = Boolean(nextContent.trim())
+            const hasRenderableMeta = steps.length > 0 || Boolean(activePlan) || Boolean(commitHash)
             setMessages(threadId, (prev) => {
               const idx = prev.findIndex((m) => m.id === agentMsgId)
+              if (idx === -1 && !hasRenderableContent && !hasRenderableMeta) {
+                return prev
+              }
               const msg: ChatMsg = {
                 id: agentMsgId,
                 role: 'assistant',
-                content: finalContent ?? accumulated,
+                content: nextContent,
                 agentSteps: steps.length > 0 ? [...steps] : undefined,
                 gitCommitHash: commitHash,
                 activePlan: activePlan ? { ...activePlan, steps: activePlan.steps.map((s) => ({ ...s })) } : undefined,
@@ -377,21 +392,24 @@ export function useChat() {
                 summary: event.summary,
                 reasoning: event.reasoning,
                 steps: event.steps.map((text) => ({ text, status: 'pending' as const })),
+                startedAt: Date.now(),
               }
               flushAgentMsg()
             } else if (event.type === 'plan_progress') {
               // 计划步骤进度更新
               if (activePlan && event.stepIndex >= 0 && event.stepIndex < activePlan.steps.length) {
-                activePlan.steps[event.stepIndex].status = event.status
+                activePlan.steps[event.stepIndex].status = normalizePlanStatus(event.status)
                 if (event.note) activePlan.steps[event.stepIndex].note = event.note
               }
               flushAgentMsg()
             } else if (event.type === 'done') {
               // 最终回复写入 content
+              if (activePlan && !activePlan.endedAt) activePlan.endedAt = Date.now()
               flushAgentMsg(accumulated)
               cleanup()
               resolve()
             } else if (event.type === 'error') {
+              if (activePlan && !activePlan.endedAt) activePlan.endedAt = Date.now()
               flushAgentMsg(accumulated)
               cleanup()
               reject(new Error(event.message))
@@ -543,8 +561,10 @@ export function useChat() {
 
       abortRejectRefs.current.delete(threadId)
       requestIdRefs.current.delete(threadId)
-      const assistantMsg: ChatMsg = { id: uid(), role: 'assistant', content: accumulated }
-      setMessages(threadId, (prev) => [...prev, assistantMsg])
+      if (accumulated) {
+        const assistantMsg: ChatMsg = { id: uid(), role: 'assistant', content: accumulated }
+        setMessages(threadId, (prev) => [...prev, assistantMsg])
+      }
       onComplete?.()
     } catch (error) {
       abortRejectRefs.current.delete(threadId)

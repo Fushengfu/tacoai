@@ -225,6 +225,10 @@ const tacoApi: TacoApi = {
 
     toggleMaximize: () =>
       ipcRenderer.send(IpcChannel.WINDOW_TOGGLE_MAXIMIZE),
+    minimize: () =>
+      ipcRenderer.send(IpcChannel.WINDOW_MINIMIZE),
+    close: () =>
+      ipcRenderer.send(IpcChannel.WINDOW_CLOSE),
   },
   browser: {
     onOpenUrl: (callback: (url: string) => void) => {

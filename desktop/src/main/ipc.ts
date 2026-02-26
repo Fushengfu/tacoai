@@ -443,6 +443,18 @@ function handleWindowToggleMaximize(event: IpcMainEvent) {
   else win.maximize()
 }
 
+function handleWindowMinimize(event: IpcMainEvent) {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win) return
+  win.minimize()
+}
+
+function handleWindowClose(event: IpcMainEvent) {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win) return
+  win.close()
+}
+
 /* ------------------------------------------------------------------ */
 /*  Registration                                                       */
 /* ------------------------------------------------------------------ */
@@ -504,6 +516,8 @@ export function registerIpcHandlers() {
   ipcMain.on(IpcChannel.WINDOW_DRAGGING, handleWindowDragging)
   ipcMain.on(IpcChannel.WINDOW_DRAG_END, handleWindowDragEnd)
   ipcMain.on(IpcChannel.WINDOW_TOGGLE_MAXIMIZE, handleWindowToggleMaximize)
+  ipcMain.on(IpcChannel.WINDOW_MINIMIZE, handleWindowMinimize)
+  ipcMain.on(IpcChannel.WINDOW_CLOSE, handleWindowClose)
 
   // Skills 管理
   initSkills().catch((err) => console.error('Skills 初始化失败:', err))

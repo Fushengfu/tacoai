@@ -101,6 +101,7 @@ function buildAgentSystemPrompt(workspace: string): string {
 - 默认流程：定位 -> 修改 -> 验证 -> 总结。
 - 找文件优先 \`find_file\`，找内容优先 \`search_files\`，看结构用 \`list_directory\`。
 - 修改前先读原文（\`read_file\`），修改后用 \`write_file\` 落地。
+- 大文件必须分块读取：优先 \`search_files\` 定位，再用 \`read_file(path, startLine, endLine)\` 按行范围读取；当 \`read_file\` 返回 partial/hint 时继续补读，不要在未读全关键范围时直接修改。
 - 可验证时优先运行 \`run_command\`（测试/构建/lint）；不可验证需说明原因和手工验证步骤。
 
 ## 2) 内部浏览器自动化（browser）
@@ -181,10 +182,10 @@ export function buildSystemPrompt(options?: { mode?: ThreadMode; workspace?: str
 }
 
 export const providers: readonly { id: ProviderId; label: string; maxTokens: number }[] = [
-  { id: 'deepseek', label: 'DeepSeek (V3.2)', maxTokens: 131072 },
-  { id: 'kimi', label: 'Kimi K2.5', maxTokens: 131072 },
-  { id: 'minimax', label: 'MiniMax M2.1', maxTokens: 1048576 },
-  { id: 'glm', label: 'GLM-4.7', maxTokens: 131072 }
+  { id: 'deepseek', label: 'DeepSeek', maxTokens: 131072 },
+  { id: 'kimi', label: 'Kimi', maxTokens: 131072 },
+  { id: 'minimax', label: 'MiniMax', maxTokens: 1048576 },
+  { id: 'glm', label: 'GLM', maxTokens: 131072 }
 ]
 
 /**
@@ -201,17 +202,28 @@ export function estimateTokens(text: string): number {
 }
 
 export const providerPlaceholders: Record<ProviderId, ProviderForm> = {
-  deepseek: { baseUrl: 'https://api.deepseek.com', apiKey: 'sk-...', model: 'deepseek-chat' },
-  kimi: { baseUrl: 'https://api.moonshot.cn/v1', apiKey: 'sk-...', model: 'kimi-k2.5' },
-  minimax: { baseUrl: 'https://api.minimaxi.com/v1', apiKey: 'sk-...', model: 'MiniMax-M2.1' },
-  glm: { baseUrl: 'https://open.bigmodel.cn/api/paas/v4', apiKey: 'sk-...', model: 'glm-4.7' }
+  deepseek: { baseUrl: 'https://api.deepseek.com', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '131072（示例）' },
+  kimi: { baseUrl: 'https://api.moonshot.cn/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '131072（示例）' },
+  minimax: { baseUrl: 'https://api.minimaxi.com/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '1048576（示例）' },
+  glm: { baseUrl: 'https://open.bigmodel.cn/api/paas/v4', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '131072（示例）' }
 }
 
 export function defaultProviderForms(): ProviderForms {
   return {
-    deepseek: { baseUrl: '', apiKey: '', model: '' },
-    kimi: { baseUrl: '', apiKey: '', model: '' },
-    minimax: { baseUrl: '', apiKey: '', model: '' },
-    glm: { baseUrl: '', apiKey: '', model: '' }
+    deepseek: { baseUrl: '', apiKey: '', model: '', maxTokens: '' },
+    kimi: { baseUrl: '', apiKey: '', model: '', maxTokens: '' },
+    minimax: { baseUrl: '', apiKey: '', model: '', maxTokens: '' },
+    glm: { baseUrl: '', apiKey: '', model: '', maxTokens: '' }
   }
+}
+
+export function resolveProviderMaxTokens(providerId: ProviderId, form?: Partial<ProviderForm>): number {
+  const fallback = providers.find((p) => p.id === providerId)?.maxTokens ?? 65536
+  const raw = String(form?.maxTokens ?? '').trim()
+  if (!raw) return fallback
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed)) return fallback
+  const n = Math.floor(parsed)
+  if (n <= 0) return fallback
+  return n
 }

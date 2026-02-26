@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ActivePlan, AgentStep, AttachedImage, ChatMsg, FileChangeInfo, FileChangeStatus, ProviderId, QueuedMessage, Session, ThreadMode } from '../types'
 import type { EditorId } from '../../shared/ipc'
 import { editorCommands } from '../../shared/ipc'
@@ -20,18 +20,49 @@ const planStepIcons: Record<string, string> = {
   failed: '✗',
 }
 
+function normalizePlanStepStatus(status: string): 'pending' | 'in_progress' | 'done' | 'failed' {
+  const s = String(status ?? '').trim().toLowerCase()
+  if (s === 'in-progress' || s === 'inprogress' || s === 'running') return 'in_progress'
+  if (s === 'complete' || s === 'completed' || s === 'success' || s === 'succeeded') return 'done'
+  if (s === 'error') return 'failed'
+  if (s === 'pending' || s === 'in_progress' || s === 'done' || s === 'failed') return s
+  return 'pending'
+}
+
+function formatElapsedHms(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000))
+  const h = Math.floor(totalSeconds / 3600)
+  const m = Math.floor((totalSeconds % 3600) / 60)
+  const s = totalSeconds % 60
+  return `${h}h${m}m${s}s`
+}
+
 function PlanTracker({ plan }: { plan: ActivePlan }) {
-  const doneCount = plan.steps.filter((s) => s.status === 'done').length
-  const failedCount = plan.steps.filter((s) => s.status === 'failed').length
+  const [nowTs, setNowTs] = useState(() => Date.now())
+  useEffect(() => {
+    if (plan.endedAt) return
+    const timer = window.setInterval(() => setNowTs(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [plan.endedAt])
+
+  const normalizedSteps = plan.steps.map((s) => ({
+    ...s,
+    status: normalizePlanStepStatus(s.status),
+  }))
+  const doneCount = normalizedSteps.filter((s) => s.status === 'done').length
+  const failedCount = normalizedSteps.filter((s) => s.status === 'failed').length
   const totalCount = plan.steps.length
   const progress = totalCount > 0 ? Math.round(((doneCount + failedCount) / totalCount) * 100) : 0
   const allDone = doneCount + failedCount === totalCount && totalCount > 0
+  const startedAt = plan.startedAt ?? nowTs
+  const endedAt = plan.endedAt ?? nowTs
+  const elapsedText = formatElapsedHms(Math.max(0, endedAt - startedAt))
 
   return (
     <div className={`plan-tracker ${allDone ? 'completed' : ''}`}>
       <div className="plan-tracker-header">
-        <span className="plan-tracker-icon">{allDone ? '✅' : '📋'}</span>
         <span className="plan-tracker-title">执行计划</span>
+        <span className="plan-tracker-elapsed">耗时 {elapsedText}</span>
         <span className="plan-tracker-progress">{doneCount}/{totalCount}</span>
       </div>
       {plan.summary && (
@@ -44,7 +75,7 @@ function PlanTracker({ plan }: { plan: ActivePlan }) {
         />
       </div>
       <ol className="plan-tracker-steps">
-        {plan.steps.map((step, i) => (
+        {normalizedSteps.map((step, i) => (
           <li key={i} className={`plan-tracker-step ${step.status}`}>
             <span className={`plan-step-icon ${step.status}`}>{planStepIcons[step.status]}</span>
             <span className="plan-step-text">{step.text}</span>
@@ -164,6 +195,7 @@ export function ChatPanel({
 }: Readonly<ChatPanelProps>) {
   const hasProviders = configuredProviders.length > 0
   const drag = useDrag()
+  const showWindowControls = globalThis.window.taco.system.platform === 'win32'
 
   // ── 图片附件状态 ──
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([])
@@ -450,6 +482,7 @@ export function ChatPanel({
     setEditingMsgId(null)
   }
 
+  const showPendingThinkingHint = sending && !showStreamBubble && !selectedFileChange && !viewingFile
   /* ---- Agent 步骤内部渲染辅助函数 ---- */
 
   function renderStepThinking(msg: ChatMsg, step: AgentStep, isStepRunning: boolean) {
@@ -655,6 +688,37 @@ export function ChatPanel({
           <button className="pill new-session-btn" type="button" onClick={onNewSession} title="在当前项目中新建会话">
             + 新建会话
           </button>
+          {showWindowControls && (
+            <div className="window-controls">
+              <button
+                type="button"
+                className="window-control-btn"
+                onClick={() => globalThis.window.taco.window.minimize()}
+                title="最小化"
+                aria-label="最小化"
+              >
+                _
+              </button>
+              <button
+                type="button"
+                className="window-control-btn"
+                onClick={() => globalThis.window.taco.window.toggleMaximize()}
+                title="最大化/还原"
+                aria-label="最大化"
+              >
+                □
+              </button>
+              <button
+                type="button"
+                className="window-control-btn close"
+                onClick={() => globalThis.window.taco.window.close()}
+                title="关闭"
+                aria-label="关闭"
+              >
+                ✕
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
@@ -859,14 +923,6 @@ export function ChatPanel({
                         </div>
                       )
                     })()}
-                    {/* Agent 正在处理中的加载指示器 */}
-                    {sending && msg === messages[messages.length - 1] && msg.role === 'assistant' && (
-                      msg.agentSteps?.some((s) => s.status === 'running' || s.status === 'calling') && (
-                        <div className="agent-loading-indicator">
-                          <span className="dot-pulse" />
-                        </div>
-                      )
-                    )}
                   </div>
                 ) : isEditing ? (
                   <div className="bubble editing">
@@ -972,7 +1028,17 @@ export function ChatPanel({
               </div>
             </div>
           )}
+
+          {showPendingThinkingHint && (
+            <div className="chat-row assistant">
+              <div className="assistant-thinking-inline" aria-live="polite">
+                <span>思考中</span>
+                <span className="dot-pulse inline" />
+              </div>
+            </div>
+          )}
         </div>
+
       </section>
 
       {/* Terminal（打开时显示在对话区域下方） */}

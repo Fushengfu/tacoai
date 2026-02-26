@@ -140,6 +140,10 @@ export const IpcChannel = {
   WINDOW_DRAG_END: 'window:drag-end',
   /** renderer → main, 双击顶栏切换最大化 */
   WINDOW_TOGGLE_MAXIMIZE: 'window:toggle-maximize',
+  /** renderer → main, 最小化主窗口 */
+  WINDOW_MINIMIZE: 'window:minimize',
+  /** renderer → main, 关闭主窗口 */
+  WINDOW_CLOSE: 'window:close',
 } as const
 
 /* ------------------------------------------------------------------ */
@@ -442,6 +446,7 @@ export type MobileBridgeCommandData = {
   threadId?: string
   sessionId?: string
   provider?: string
+  mode?: 'chat' | 'agent'
 }
 
 export type MobileBridgeSelectData = {
@@ -451,6 +456,7 @@ export type MobileBridgeSelectData = {
   threadId?: string
   sessionId?: string
   provider?: string
+  mode?: 'chat' | 'agent'
 }
 
 export type MobileBridgeAbortData = {
@@ -701,6 +707,10 @@ export type TacoApi = {
     dragEnd: () => void
     /** 双击顶栏切换最大化/还原 */
     toggleMaximize: () => void
+    /** 最小化窗口 */
+    minimize: () => void
+    /** 关闭窗口 */
+    close: () => void
   }
   mcp: {
     /** 列出所有 MCP 服务器 */

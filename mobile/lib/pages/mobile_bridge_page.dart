@@ -41,6 +41,7 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
   String? _selectedThreadId;
   String? _selectedSessionId;
   String? _selectedProviderId;
+  String? _selectedMode;
   List<QueuedMobileCommand> _outgoingQueue = const <QueuedMobileCommand>[];
   final Map<String, bool> _respondedConfirms = <String, bool>{};
 
@@ -354,13 +355,20 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
     String? threadId,
     String? sessionId,
     String? provider,
+    String? mode,
   }) async {
-    if (threadId == null && sessionId == null && provider == null) return;
+    if (threadId == null &&
+        sessionId == null &&
+        provider == null &&
+        mode == null) {
+      return;
+    }
     try {
       await _client.syncSelection(
         threadId: threadId,
         sessionId: sessionId,
         provider: provider,
+        mode: mode,
       );
     } catch (_) {
       // ignore silent selection sync failures
@@ -387,6 +395,7 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
 
     String? selectedSessionId;
     String? selectedProviderId = _selectedProviderId;
+    String? selectedMode = _selectedMode;
     if (selectedThread != null) {
       final sessionIds = selectedThread.sessions.map((s) => s.sessionId).toSet();
       final fallbackSessionId = selectedThread.activeSessionId.isNotEmpty
@@ -402,6 +411,9 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
         selectedProviderId = selectedThread.provider.isNotEmpty
             ? selectedThread.provider
             : context.activeProvider;
+      }
+      if (selectedThread.mode == 'chat' || selectedThread.mode == 'agent') {
+        selectedMode = selectedThread.mode;
       }
     }
 
@@ -419,6 +431,7 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
       _selectedThreadId = selectedThreadId;
       _selectedSessionId = selectedSessionId;
       _selectedProviderId = selectedProviderId;
+      _selectedMode = selectedMode;
     });
   }
 
@@ -436,6 +449,7 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
       threadId: _selectedThreadId,
       sessionId: _selectedSessionId,
       provider: _selectedProviderId,
+      mode: _selectedMode,
     );
 
     setState(() {
@@ -613,15 +627,21 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
         }
         final nextProvider =
             (selected?.provider ?? '').isNotEmpty ? selected!.provider : _selectedProviderId;
+        final nextMode =
+            (selected?.mode ?? '').isNotEmpty ? selected!.mode : _selectedMode;
         setState(() {
           _selectedThreadId = value;
           _selectedSessionId = selected?.activeSessionId;
           _selectedProviderId = nextProvider;
+          _selectedMode = nextMode == 'chat' || nextMode == 'agent'
+              ? nextMode
+              : _selectedMode;
         });
         unawaited(_syncSelectionToDesktop(
           threadId: value,
           sessionId: selected?.activeSessionId,
           provider: nextProvider,
+          mode: nextMode,
         ));
       },
       itemBuilder: (ctx) {
@@ -672,6 +692,7 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
           threadId: _selectedThreadId,
           sessionId: value,
           provider: _selectedProviderId,
+          mode: _selectedMode,
         ));
       },
       itemBuilder: (ctx) {
@@ -731,6 +752,7 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
           threadId: _selectedThreadId,
           sessionId: _selectedSessionId,
           provider: value,
+          mode: _selectedMode,
         ));
       },
       itemBuilder: (ctx) {
@@ -752,6 +774,40 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
       },
       child: _MenuIcon(
         icon: Icons.smart_toy_outlined,
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      ),
+    );
+  }
+
+  PopupMenuButton<String> _buildModeMenu() {
+    return PopupMenuButton<String>(
+      tooltip: '选择模式',
+      onSelected: (value) {
+        if (value != 'chat' && value != 'agent') return;
+        setState(() {
+          _selectedMode = value;
+        });
+        unawaited(_syncSelectionToDesktop(
+          threadId: _selectedThreadId,
+          sessionId: _selectedSessionId,
+          provider: _selectedProviderId,
+          mode: value,
+        ));
+      },
+      itemBuilder: (ctx) => [
+        const PopupMenuItem<String>(
+          value: 'chat',
+          child: Text('聊天模式'),
+        ),
+        const PopupMenuItem<String>(
+          value: 'agent',
+          child: Text('代理模式'),
+        ),
+      ],
+      child: _MenuIcon(
+        icon: _selectedMode == 'agent'
+            ? Icons.auto_awesome
+            : Icons.chat_bubble_outline,
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
       ),
     );
@@ -851,6 +907,8 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
           _buildSessionMenu(),
           const SizedBox(width: 6),
           _buildProviderMenu(),
+          const SizedBox(width: 6),
+          _buildModeMenu(),
           IconButton(
             tooltip: '同步上下文',
             onPressed: _syncing ? null : () => unawaited(_fetchContext(silent: false)),
@@ -881,7 +939,7 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
                   Text('桌面会话历史 | 状态: $_status', style: const TextStyle(fontSize: 12)),
                   const SizedBox(height: 2),
                   Text(
-                    '项目: ${currentThread?.title ?? "-"} | 会话: ${currentSession?.title ?? "-"} | 模型: ${_selectedProviderId ?? currentThread?.provider ?? "-"}',
+                    '项目: ${currentThread?.title ?? "-"} | 会话: ${currentSession?.title ?? "-"} | 模型: ${_selectedProviderId ?? currentThread?.provider ?? "-"} | 模式: ${_selectedMode == "agent" ? "代理" : "聊天"}',
                     style: const TextStyle(fontSize: 12),
                   ),
                 ],

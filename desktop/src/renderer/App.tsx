@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ChatMsg, FileChangeInfo, FileChangeStatus, GitVersionCommit, ProviderId, ThreadMode } from './types'
 import type { EditorId, FileTreeEntry, BrowserConsoleLevel, MobileBridgeContextSnapshot } from '../shared/ipc'
-import { providers, estimateTokens, buildSystemPrompt } from './constants'
+import { providers, estimateTokens, buildSystemPrompt, resolveProviderMaxTokens } from './constants'
 import { loadJson, saveJson } from './lib/storage'
 import { useThreads } from './hooks/useThreads'
 import { useChat } from './hooks/useChat'
@@ -125,7 +125,7 @@ export default function App() {
   const pendingBrowserErrorsRef = useRef<string[]>([])
   const browserErrorTimerRef = useRef<ReturnType<typeof setTimeout>>()
   /** doSend 的 ref，避免 useEffect 闭包捕获旧引用 */
-  type MobileTarget = { threadId?: string; sessionId?: string; provider?: ProviderId }
+  type MobileTarget = { threadId?: string; sessionId?: string; provider?: ProviderId; mode?: ThreadMode }
   const doSendRef = useRef<(content: string, images?: import('../types').AttachedImage[], target?: MobileTarget) => void>(() => {})
   /** 中间区域当前视图：chat / settings */
   type MiddleView = 'chat' | 'settings'
@@ -167,7 +167,7 @@ export default function App() {
   // 上下文窗口使用量
   const usedTokens = estimateTokens(buildSystemPrompt()) +
     messages.reduce((sum, m) => sum + estimateTokens(m.content), 0)
-  const maxTokens = activeProviderInfo?.maxTokens ?? 65536
+  const maxTokens = resolveProviderMaxTokens(currentProvider, providerSettings.providerForms[currentProvider])
   const contextPercent = Math.min(Math.round((usedTokens / maxTokens) * 100), 100)
 
   /** 判断某项目（线程）是否有任何会话正在发送 */
@@ -702,6 +702,13 @@ export default function App() {
         next.provider = provider
       }
     }
+    if (target.mode === 'chat' || target.mode === 'agent') {
+      const threadId = next.threadId ?? tid
+      if (threadId) {
+        threadStore.updateThread(threadId, { mode: target.mode })
+        next.mode = target.mode
+      }
+    }
     return next
   }
 
@@ -714,8 +721,7 @@ export default function App() {
     const provider = target?.provider ?? thread?.provider ?? providerSettings.activeProvider
     const mode: ThreadMode = thread?.mode ?? 'chat'
     const workspace = thread?.workspace ?? ''
-    const providerInfo = providers.find((p) => p.id === provider)
-    const targetMaxTokens = providerInfo?.maxTokens ?? 65536
+    const targetMaxTokens = resolveProviderMaxTokens(provider, providerSettings.providerForms[provider])
 
     chat.sendMessage({
       threadId: sid,
@@ -747,6 +753,7 @@ export default function App() {
         threadId: cmd.threadId,
         sessionId: cmd.sessionId,
         provider: cmd.provider as ProviderId | undefined,
+        mode: cmd.mode as ThreadMode | undefined,
       })
       doSendRef.current(text, undefined, selected)
     })
@@ -760,6 +767,7 @@ export default function App() {
         threadId: sel.threadId,
         sessionId: sel.sessionId,
         provider: sel.provider as ProviderId | undefined,
+        mode: sel.mode as ThreadMode | undefined,
       })
     })
     return unsubscribe

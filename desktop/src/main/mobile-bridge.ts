@@ -277,6 +277,7 @@ function handleCommandRequest(req: http.IncomingMessage, res: http.ServerRespons
     threadId?: unknown
     sessionId?: unknown
     provider?: unknown
+    mode?: unknown
   }
   const text = typeof data.text === 'string' ? data.text.trim() : ''
   if (!text) {
@@ -292,6 +293,7 @@ function handleCommandRequest(req: http.IncomingMessage, res: http.ServerRespons
     threadId: trimText(data.threadId, 128) || undefined,
     sessionId: trimText(data.sessionId, 128) || undefined,
     provider: trimText(data.provider, 64) || undefined,
+    mode: data.mode === 'agent' ? 'agent' : data.mode === 'chat' ? 'chat' : undefined,
   }
   commandHandler?.(cmd)
   logInfo('MOBILE_BRIDGE_COMMAND', '收到移动端指令', {
@@ -307,12 +309,14 @@ function handleSelectRequest(req: http.IncomingMessage, res: http.ServerResponse
     threadId?: unknown
     sessionId?: unknown
     provider?: unknown
+    mode?: unknown
   }
   const threadId = trimText(data.threadId, 128) || undefined
   const sessionId = trimText(data.sessionId, 128) || undefined
   const provider = trimText(data.provider, 64) || undefined
-  if (!threadId && !sessionId && !provider) {
-    writeJson(res, 400, { ok: false, error: 'threadId or sessionId or provider is required' })
+  const mode = data.mode === 'agent' ? 'agent' : data.mode === 'chat' ? 'chat' : undefined
+  if (!threadId && !sessionId && !provider && !mode) {
+    writeJson(res, 400, { ok: false, error: 'threadId or sessionId or provider or mode is required' })
     return
   }
   const select: MobileBridgeSelectData = {
@@ -322,6 +326,7 @@ function handleSelectRequest(req: http.IncomingMessage, res: http.ServerResponse
     threadId,
     sessionId,
     provider,
+    mode,
   }
   selectHandler?.(select)
   logInfo('MOBILE_BRIDGE_SELECT', '收到移动端选择同步', {
@@ -329,6 +334,7 @@ function handleSelectRequest(req: http.IncomingMessage, res: http.ServerResponse
     threadId: select.threadId,
     sessionId: select.sessionId,
     provider: select.provider,
+    mode: select.mode,
     remoteAddr: select.remoteAddr,
   })
   writeJson(res, 200, { ok: true, id: select.id })
