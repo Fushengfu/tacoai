@@ -121,9 +121,9 @@ export default function App() {
   const [browserConsoleLogs, setBrowserConsoleLogs] = useState<BrowserConsoleEntry[]>([])
   const consoleIdRef = useRef(0)
   const browserWindowsRef = useRef<Map<string, string>>(new Map())
-  /** 浏览器致命错误待发送队列 */
-  const pendingBrowserErrorsRef = useRef<string[]>([])
-  const browserErrorTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  /** 外部浏览器异常缓存（仅保留权重最高且最新的 3 条，按需再发送给 AI） */
+  type BrowserErrorCandidate = BrowserConsoleEntry & { weight: number; fingerprint: string }
+  const browserErrorCandidatesRef = useRef<BrowserErrorCandidate[]>([])
   /** doSend 的 ref，避免 useEffect 闭包捕获旧引用 */
   type MobileTarget = { threadId?: string; sessionId?: string; provider?: ProviderId; mode?: ThreadMode }
   const doSendRef = useRef<(content: string, images?: import('../types').AttachedImage[], target?: MobileTarget) => void>(() => {})
@@ -134,6 +134,31 @@ export default function App() {
     (localStorage.getItem('taco.editor') as EditorId) || 'cursor'
   )
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  const scoreBrowserError = useCallback((entry: BrowserConsoleEntry): number => {
+    let score = 0
+    const msg = entry.message || ''
+    if (entry.level === 'error') score += 50
+    if (entry.level === 'network') score += 40
+    if (msg.startsWith('[页面加载失败]')) score += 60
+    if (/Uncaught|Unhandled/i.test(msg)) score += 45
+    if (/TypeError|ReferenceError|SyntaxError|RangeError/i.test(msg)) score += 35
+    if (/CORS|ERR_|Failed to fetch|NetworkError/i.test(msg)) score += 25
+    return score
+  }, [])
+
+  const rememberBrowserErrorCandidate = useCallback((entry: BrowserConsoleEntry) => {
+    const weight = scoreBrowserError(entry)
+    const fingerprint = `${entry.appId}|${entry.level}|${entry.message}|${entry.source ?? ''}|${entry.line ?? ''}`
+    const withScore: BrowserErrorCandidate = { ...entry, weight, fingerprint }
+
+    const deduped = browserErrorCandidatesRef.current.filter((e) => e.fingerprint !== fingerprint)
+    const ranked = [...deduped, withScore]
+      .sort((a, b) => (b.weight - a.weight) || (b.timestamp - a.timestamp))
+      .slice(0, 3)
+
+    browserErrorCandidatesRef.current = ranked
+  }, [scoreBrowserError])
 
   function handleEditorChange(id: EditorId) {
     setEditor(id)
@@ -320,22 +345,23 @@ export default function App() {
         const pageUrl = browserWindowsRef.current.get(appId) || ''
         const fromDevEnv = isDevBrowserUrl(pageUrl) || isDevBrowserUrl(status.consoleSource)
 
+        const entry: BrowserConsoleEntry = {
+          id: ++consoleIdRef.current,
+          appId,
+          level,
+          message,
+          source: status.consoleSource,
+          line: status.consoleLine,
+          timestamp: Date.now(),
+        }
+
         // 存储日志
         setBrowserConsoleLogs(prev => {
-          const entry: BrowserConsoleEntry = {
-            id: ++consoleIdRef.current,
-            appId,
-            level,
-            message,
-            source: status.consoleSource,
-            line: status.consoleLine,
-            timestamp: Date.now(),
-          }
           const next = [...prev, entry]
           return next.length > 500 ? next.slice(-500) : next
         })
 
-        // 致命错误（页面加载失败、JS 运行时异常）自动反馈给 AI
+        // 致命错误（页面加载失败、JS 运行时异常）仅记录候选；不再自动发送给 AI
         const isFatal = level === 'error' && (
           message.startsWith('[页面加载失败]') ||
           message.includes('Uncaught') ||
@@ -346,16 +372,7 @@ export default function App() {
           message.includes('ERR_')
         )
         if (isFatal && fromDevEnv) {
-          pendingBrowserErrorsRef.current.push(`[浏览器:${appId}] ${message}`)
-          // 批量延迟 3 秒发送，合并多个错误
-          clearTimeout(browserErrorTimerRef.current)
-          browserErrorTimerRef.current = setTimeout(() => {
-            const errors = pendingBrowserErrorsRef.current.splice(0)
-            if (errors.length > 0) {
-              const errorText = `[系统自动反馈] 浏览器出现以下错误:\n${errors.join('\n')}`
-              doSendRef.current(errorText)
-            }
-          }, 3000)
+          rememberBrowserErrorCandidate(entry)
         }
         return
       }
@@ -373,7 +390,7 @@ export default function App() {
       })
     })
     return unsubscribe
-  }, [])
+  }, [rememberBrowserErrorCandidate])
 
   useEffect(() => {
     browserWindowsRef.current = browserWindows
