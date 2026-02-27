@@ -5,6 +5,11 @@ import 'package:flutter/material.dart';
 import '../models/bridge_models.dart';
 import '../services/bridge_client.dart';
 
+const Color _kWorkspacePaneBg = Color(0xFF0A1220);
+const Color _kWorkspaceEditorBg = Color(0xFF020817);
+const Color _kWorkspacePaneText = Color(0xFFE2E8F0);
+const Color _kWorkspacePaneTextMuted = Color(0xFF94A3B8);
+
 class MobileWorkspacePage extends StatefulWidget {
   const MobileWorkspacePage({
     super.key,
@@ -170,7 +175,6 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
   }
 
   Widget _buildTreePane() {
-    final scheme = Theme.of(context).colorScheme;
     if (_loadingTree && _entries.isEmpty) {
       return const Center(child: CircularProgressIndicator(strokeWidth: 2));
     }
@@ -180,7 +184,7 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
           padding: const EdgeInsets.all(12),
           child: Text(
             _status,
-            style: TextStyle(color: scheme.onSurfaceVariant),
+            style: const TextStyle(color: _kWorkspacePaneTextMuted),
           ),
         ),
       );
@@ -226,7 +230,7 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
           width: double.infinity,
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           decoration: BoxDecoration(
-            color: const Color(0xFF0F172A),
+            color: _kWorkspacePaneBg,
             border: Border(
               bottom: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.6)),
             ),
@@ -243,7 +247,7 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
                   style: const TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
-                    color: Color(0xFFE2E8F0),
+                    color: _kWorkspacePaneText,
                   ),
                 ),
               ),
@@ -269,7 +273,7 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
         ),
         Expanded(
           child: Container(
-            color: const Color(0xFF020817),
+            color: _kWorkspaceEditorBg,
             padding: const EdgeInsets.all(8),
             child: TextField(
               controller: _editorController,
@@ -282,12 +286,12 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
                 fontFamily: 'SF Mono',
                 fontSize: 13,
                 height: 1.45,
-                color: Color(0xFFE2E8F0),
+                color: _kWorkspacePaneText,
               ),
               decoration: InputDecoration(
                 isDense: true,
                 filled: true,
-                fillColor: const Color(0xFF0B1220),
+                fillColor: _kWorkspacePaneBg,
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(8),
                   borderSide: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.6)),
@@ -301,7 +305,7 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
                   borderSide: const BorderSide(color: Color(0xFF3B82F6)),
                 ),
                 hintText: '在这里编辑代码...',
-                hintStyle: const TextStyle(color: Color(0xFF64748B)),
+                hintStyle: const TextStyle(color: _kWorkspacePaneTextMuted),
                 alignLabelWithHint: true,
                 contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
               ),
@@ -383,7 +387,7 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
                         child: Container(
                           margin: const EdgeInsets.fromLTRB(8, 8, 8, 0),
                           decoration: BoxDecoration(
-                            color: const Color(0xFF0A1220),
+                            color: _kWorkspacePaneBg,
                             borderRadius: BorderRadius.circular(10),
                             border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.55)),
                           ),
@@ -402,7 +406,7 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
                                   style: TextStyle(
                                     fontSize: 12,
                                     fontWeight: FontWeight.w700,
-                                    color: Color(0xFFE2E8F0),
+                                    color: _kWorkspacePaneText,
                                   ),
                                 ),
                               ),
@@ -416,7 +420,7 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
                         child: Container(
                           margin: const EdgeInsets.fromLTRB(8, 0, 8, 8),
                           decoration: BoxDecoration(
-                            color: const Color(0xFF0A1220),
+                            color: _kWorkspacePaneBg,
                             borderRadius: BorderRadius.circular(10),
                             border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.55)),
                           ),
@@ -457,6 +461,10 @@ class _WorkspaceNode extends StatelessWidget {
         child: ExpansionTile(
           key: PageStorageKey<String>('dir-${entry.path}'),
           initiallyExpanded: depth < 1,
+          iconColor: _kWorkspacePaneTextMuted,
+          collapsedIconColor: _kWorkspacePaneTextMuted,
+          textColor: _kWorkspacePaneText,
+          collapsedTextColor: _kWorkspacePaneText,
           tilePadding: EdgeInsets.only(left: 8 + depth * 12, right: 8),
           minTileHeight: 34,
           leading: const Icon(Icons.folder_outlined, size: 16, color: Color(0xFFFBBF24)),
@@ -464,7 +472,7 @@ class _WorkspaceNode extends StatelessWidget {
             entry.name,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: _kWorkspacePaneText),
           ),
           children: entry.children
               .map((child) => _WorkspaceNode(
@@ -494,6 +502,7 @@ class _WorkspaceNode extends StatelessWidget {
         style: TextStyle(
           fontSize: 12,
           fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+          color: selected ? Colors.white : _kWorkspacePaneText,
         ),
       ),
       onTap: () => onSelectFile(entry.path),
