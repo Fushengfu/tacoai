@@ -44,6 +44,8 @@ function normalizeScreenshotPath(raw: unknown): string | null {
   const text = String(raw ?? '').trim()
   if (!text) return null
   if (text.startsWith('/')) return text
+  if (/^[a-zA-Z]:[\\/]/.test(text)) return text
+  if (text.startsWith('\\\\')) return text
   return null
 }
 
@@ -87,6 +89,40 @@ function collectMessageScreenshotPaths(msg: ChatMsg): string[] {
     }
   }
   return Array.from(paths)
+}
+
+function normalizeSlashPath(input: string): string {
+  return String(input ?? '').trim().replace(/[\\/]+/g, '/').replace(/\/+/g, '/')
+}
+
+function normalizeWorkspaceRelativePath(filePath: string, workspace?: string | null): string {
+  const normalizedFilePath = normalizeSlashPath(filePath).replace(/^\.\//, '')
+  if (!normalizedFilePath) return normalizedFilePath
+  if (!workspace) return normalizedFilePath
+
+  const normalizedWorkspace = normalizeSlashPath(workspace).replace(/\/+$/, '')
+  if (!normalizedWorkspace) return normalizedFilePath
+
+  const lowerFilePath = normalizedFilePath.toLowerCase()
+  const lowerWorkspace = normalizedWorkspace.toLowerCase()
+  if (lowerFilePath === lowerWorkspace) return ''
+  if (lowerFilePath.startsWith(`${lowerWorkspace}/`)) {
+    return normalizedFilePath.slice(normalizedWorkspace.length + 1)
+  }
+  return normalizedFilePath
+}
+
+function normalizeFileStatusMap(
+  raw: Record<string, FileChangeStatus>,
+  workspace?: string | null,
+): Record<string, FileChangeStatus> {
+  const normalized: Record<string, FileChangeStatus> = {}
+  for (const [filePath, status] of Object.entries(raw ?? {})) {
+    const key = normalizeWorkspaceRelativePath(filePath, workspace)
+    if (!key) continue
+    normalized[key] = status
+  }
+  return normalized
 }
 
 export default function App() {
@@ -226,12 +262,19 @@ export default function App() {
       if (!msg.agentSteps) continue
       for (const step of msg.agentSteps) {
         for (const tr of step.toolResults) {
-          if (tr.fileChange) changes.push(tr.fileChange)
+          if (tr.fileChange) {
+            const normalizedPath = normalizeWorkspaceRelativePath(tr.fileChange.filePath, currentWorkspace)
+            if (!normalizedPath) continue
+            changes.push({
+              ...tr.fileChange,
+              filePath: normalizedPath,
+            })
+          }
         }
       }
     }
     return changes
-  }, [messages, currentMode])
+  }, [messages, currentMode, currentWorkspace])
 
   // 去重合并：同一文件多次变更 → 保留首次 oldContent + 最终 newContent
   const dedupedFileChanges = useMemo(() => {
@@ -439,8 +482,16 @@ export default function App() {
   // 按 sessionId 持久化到 localStorage
   const fileStatusKey = `taco.fileStatuses.${sessionId}`
   const [fileStatuses, setFileStatuses] = useState<Record<string, FileChangeStatus>>(() =>
-    loadJson(fileStatusKey, {})
+    normalizeFileStatusMap(loadJson(fileStatusKey, {}), currentWorkspace)
   )
+
+  const readFileStatus = useCallback((filePath: string): FileChangeStatus => {
+    return (
+      fileStatuses[filePath]
+      ?? fileStatuses[filePath.replace(/\//g, '\\')]
+      ?? 'pending'
+    )
+  }, [fileStatuses])
 
   /** 保存（接受）单个文件变更 */
   const handleAcceptFile = useCallback((filePath: string) => {
@@ -450,9 +501,17 @@ export default function App() {
   /** 将相对路径解析为绝对路径 */
   const resolveFilePath = useCallback((filePath: string) => {
     // 如果已经是绝对路径则直接返回
-    if (filePath.startsWith('/')) return filePath
+    if (filePath.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(filePath) || filePath.startsWith('\\\\')) {
+      return filePath
+    }
     // 否则拼接工作空间路径
-    if (currentWorkspace) return `${currentWorkspace}/${filePath}`
+    if (currentWorkspace) {
+      const base = currentWorkspace.replace(/[\\/]+$/, '')
+      const rel = normalizeSlashPath(filePath).replace(/^\.\//, '')
+      const isWindowsWorkspace = /[a-zA-Z]:[\\/]/.test(base) || base.includes('\\')
+      if (isWindowsWorkspace) return `${base}\\${rel.replace(/\//g, '\\')}`
+      return `${base}/${rel}`
+    }
     return filePath
   }, [currentWorkspace])
 
@@ -495,7 +554,7 @@ export default function App() {
   /** 撤销所有 pending 变更 */
   const handleRejectAll = useCallback(async () => {
     const pending = dedupedFileChanges.filter(
-      (fc) => !fileStatuses[fc.filePath] || fileStatuses[fc.filePath] === 'pending'
+      (fc) => readFileStatus(fc.filePath) === 'pending'
     )
     for (const change of pending) {
       const absPath = resolveFilePath(change.filePath)
@@ -516,7 +575,7 @@ export default function App() {
       }
     }
     refreshGitLog()
-  }, [dedupedFileChanges, fileStatuses, resolveFilePath, refreshGitLog])
+  }, [dedupedFileChanges, readFileStatus, resolveFilePath, refreshGitLog])
 
   /** 回退到指定 Git 版本 */
   const handleGitRollback = useCallback(async (hash: string) => {
@@ -569,9 +628,9 @@ export default function App() {
   // 切换会话时从 localStorage 加载该会话的审核状态
   useEffect(() => {
     if (sessionId) {
-      setFileStatuses(loadJson(`taco.fileStatuses.${sessionId}`, {}))
+      setFileStatuses(normalizeFileStatusMap(loadJson(`taco.fileStatuses.${sessionId}`, {}), currentWorkspace))
     }
-  }, [sessionId])
+  }, [sessionId, currentWorkspace])
 
   /* ---- smart auto-scroll ---- */
   // 用户是否在底部附近（50px 阈值），只有在底部时才自动滚动

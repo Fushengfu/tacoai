@@ -51,16 +51,22 @@ function normalizeTrayIcon(image: Electron.NativeImage): Electron.NativeImage {
 function resolveTrayIcon() {
   const candidates = [
     path.join(process.cwd(), 'desktop', 'build', 'icon.png'),
+    path.join(process.cwd(), 'desktop', 'build', 'icon.ico'),
     path.join(process.cwd(), 'desktop', 'build', 'icon.icns'),
     path.join(process.cwd(), 'build', 'icon.png'),
+    path.join(process.cwd(), 'build', 'icon.ico'),
     path.join(process.cwd(), 'build', 'icon.icns'),
     path.join(__dirname, '../../build/icon.png'),
+    path.join(__dirname, '../../build/icon.ico'),
     path.join(__dirname, '../../build/icon.icns'),
     path.join(app.getAppPath(), 'build', 'icon.png'),
+    path.join(app.getAppPath(), 'build', 'icon.ico'),
     path.join(app.getAppPath(), 'build', 'icon.icns'),
     path.join(process.resourcesPath, 'build', 'icon.png'),
+    path.join(process.resourcesPath, 'build', 'icon.ico'),
     path.join(process.resourcesPath, 'build', 'icon.icns'),
     path.join(process.resourcesPath, 'icon.png'),
+    path.join(process.resourcesPath, 'icon.ico'),
     path.join(process.resourcesPath, 'icon.icns'),
   ]
   for (const iconPath of candidates) {
@@ -68,6 +74,13 @@ function resolveTrayIcon() {
     const img = nativeImage.createFromPath(iconPath)
     if (!img.isEmpty()) return normalizeTrayIcon(img)
   }
+
+  // Windows 打包场景兜底：直接使用 exe 自带图标，避免托盘空白
+  if (process.platform === 'win32') {
+    const exeIcon = nativeImage.createFromPath(process.execPath)
+    if (!exeIcon.isEmpty()) return normalizeTrayIcon(exeIcon)
+  }
+
   return normalizeTrayIcon(nativeImage.createEmpty())
 }
 
@@ -135,7 +148,8 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       webviewTag: true,
-      preload: path.join(__dirname, '../dist-preload/index.cjs')
+      preload: path.join(__dirname, '../dist-preload/index.cjs'),
+      additionalArguments: [`--taco-version=${app.getVersion()}`],
     }
   })
 

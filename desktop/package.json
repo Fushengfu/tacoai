@@ -31,6 +31,7 @@
       "dist/**/*",
       "dist-main/**/*",
       "dist-preload/**/*",
+      "build/icon.*",
       "node_modules/node-pty/**/*",
       "package.json"
     ],
@@ -72,6 +73,10 @@
       "allowToChangeInstallationDirectory": true
     },
     "asar": true,
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ],
     "asarUnpack": [
       "node_modules/node-pty/**/*"
     ]

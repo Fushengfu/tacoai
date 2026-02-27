@@ -116,6 +116,16 @@ function hasMeaningfulExecutedTool(messages: ChatMessage[]): boolean {
   return messages.some((m) => m.role === 'tool')
 }
 
+function isCodeMutationIntent(messages: ChatMessage[]): boolean {
+  const lastUser = [...messages].reverse().find((m) => m.role === 'user')?.content ?? ''
+  const user = lastUser.trim().toLowerCase()
+  if (!user) return false
+
+  const codeObjectPattern = /(代码|文件|接口|前端|后端|函数|组件|页面|脚本|配置|sql|schema|api|code|file|endpoint|function|component|page|config|schema)/i
+  const mutationPattern = /(修改|修复|新增|添加|删除|重构|实现|完善|调整|优化|改|fix|modify|update|create|add|delete|remove|refactor|implement|rewrite)/i
+  return codeObjectPattern.test(user) && mutationPattern.test(user)
+}
+
 /** 外部调用：用户响应了确认请求 */
 export function resolveConfirm(confirmId: string, approved: boolean) {
   const resolver = pendingConfirms.get(confirmId)
@@ -554,26 +564,35 @@ export async function runAgent(
       const completionText = looksLikeFinalCompletion(textContent)
       const executedAnyTool = hasMeaningfulExecutedTool(workingMessages)
       const pseudoExecutionText = looksLikePseudoExecution(textContent)
+      const codeMutationIntent = isCodeMutationIntent(workingMessages)
+      const completionWithoutFileChanges = codeMutationIntent && completionText && !hasFileChanges
       const shouldForceRetry = shouldRequireToolCall(workingMessages, textContent) &&
         !(completionText && executedAnyTool)
       const shouldForceRetryByPseudo = pseudoExecutionText && !completionText
 
-      if ((shouldForceRetry || shouldForceRetryByPseudo) && forceToolRetryCount < 2) {
+      if ((shouldForceRetry || shouldForceRetryByPseudo || completionWithoutFileChanges) && forceToolRetryCount < 2) {
         forceToolRetryCount++
         log('AGENT_FORCE_TOOL_RETRY', {
           round,
-          reason: shouldForceRetryByPseudo
+          reason: completionWithoutFileChanges
+            ? 'code mutation intent but no file changes before completion'
+            : shouldForceRetryByPseudo
             ? 'pseudo execution text produced no tool_calls'
             : 'actionable request produced no tool_calls',
           retry: forceToolRetryCount,
         }, logScope)
-        ephemeralRoundConstraint = '[执行约束]\n你上一轮没有调用任何工具。对于可执行任务，下一轮必须直接返回 tool_calls；不要输出命令示例代码块，不要只做口头说明。'
+        ephemeralRoundConstraint = completionWithoutFileChanges
+          ? '[执行约束]\n你刚刚声称任务完成，但当前任务属于代码/文件改动，且还没有任何文件变更证据。下一轮必须继续执行必要工具（至少产生真实文件变更或明确失败原因），不要直接给“已完成/已修复”结论。'
+          : '[执行约束]\n你上一轮没有调用任何工具。对于可执行任务，下一轮必须直接返回 tool_calls；不要输出命令示例代码块，不要只做口头说明。'
         forceToolChoiceThisRound = true
         continue
       }
 
-      if (shouldForceRetry || shouldForceRetryByPseudo) {
-        onEvent?.({ type: 'error', message: '模型未按要求调用工具（仅输出文字/命令示例），本轮已停止。请重试或切换模型。' })
+      if (shouldForceRetry || shouldForceRetryByPseudo || completionWithoutFileChanges) {
+        const errMessage = completionWithoutFileChanges
+          ? '模型声称任务已完成，但未检测到文件变更证据，本轮已停止。请重试或切换模型。'
+          : '模型未按要求调用工具（仅输出文字/命令示例），本轮已停止。请重试或切换模型。'
+        onEvent?.({ type: 'error', message: errMessage })
         return
       }
 

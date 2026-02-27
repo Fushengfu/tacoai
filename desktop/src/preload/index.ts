@@ -38,8 +38,18 @@ const systemInfo: SystemInfo = {
   locale: Intl.DateTimeFormat().resolvedOptions().locale,
 }
 
+function resolveAppVersion(): string {
+  const prefix = '--taco-version='
+  const arg = process.argv.find((item) => item.startsWith(prefix))
+  if (!arg) return '0.0.0'
+  const value = arg.slice(prefix.length).trim()
+  return value || '0.0.0'
+}
+
+const appVersion = resolveAppVersion()
+
 const tacoApi: TacoApi = {
-  version: '0.1.0',
+  version: appVersion,
   system: systemInfo,
   shell: {
     openInEditor: (filePath: string, editor: EditorId) =>

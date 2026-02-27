@@ -291,10 +291,15 @@ export function ChatPanel({
   // 自动化截图预览
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null)
 
+  function isWindowsAbsolutePath(text: string): boolean {
+    return /^[a-zA-Z]:[\\/]/.test(text) || text.startsWith('\\\\')
+  }
+
   function normalizeScreenshotPath(raw: unknown): string | null {
     const text = String(raw ?? '').trim()
     if (!text) return null
-    return text.startsWith('/') ? text : null
+    if (text.startsWith('/') || isWindowsAbsolutePath(text)) return text
+    return null
   }
 
   function extractScreenshotPathsFromResultContent(content: string): string[] {
@@ -326,6 +331,14 @@ export function ChatPanel({
   function toImageUrl(raw: string): string {
     if (raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('data:') || raw.startsWith('file://')) {
       return raw
+    }
+    if (raw.startsWith('\\\\')) {
+      const uncPath = raw.replace(/^\\\\+/, '').replace(/\\/g, '/')
+      return `file://${encodeURI(uncPath)}`
+    }
+    if (/^[a-zA-Z]:[\\/]/.test(raw)) {
+      const winPath = raw.replace(/\\/g, '/')
+      return `file:///${encodeURI(winPath)}`
     }
     if (raw.startsWith('/')) return `file://${encodeURI(raw)}`
     return raw

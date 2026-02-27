@@ -1202,8 +1202,8 @@ async function execWriteFile(args: Record<string, unknown>, workspace: string): 
   await fs.mkdir(dir, { recursive: true })
   await fs.writeFile(resolved, fileContent, 'utf-8')
 
-  // 返回相对路径用于前端展示
-  const relPath = path.relative(workspace, resolved)
+  // 返回相对路径用于前端展示（统一为 /，避免 Windows 下路径分隔符导致树结构展示异常）
+  const relPath = toPosixPath(path.relative(workspace, resolved))
   return {
     content: `File written: ${resolved} (${fileContent.length} chars)`,
     success: true,
@@ -1233,8 +1233,8 @@ async function execDeleteFile(args: Record<string, unknown>, workspace: string):
 
   await fs.unlink(resolved)
 
-  // 返回相对路径用于前端展示
-  const relPath = path.relative(workspace, resolved)
+  // 返回相对路径用于前端展示（统一为 /，避免 Windows 下路径分隔符导致树结构展示异常）
+  const relPath = toPosixPath(path.relative(workspace, resolved))
   return {
     content: `File deleted: ${resolved}`,
     success: true,

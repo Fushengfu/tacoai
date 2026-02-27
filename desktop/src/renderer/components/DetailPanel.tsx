@@ -112,6 +112,27 @@ function getFileIcon(name: string): { color: string; label: string } {
   }
 }
 
+function normalizeSlashPath(input: string): string {
+  return String(input ?? '').trim().replace(/[\\/]+/g, '/').replace(/\/+/g, '/').replace(/^\.\//, '').replace(/\/$/, '')
+}
+
+function normalizeWorkspaceRelativePath(filePath: string, workspace?: string): string {
+  const normalizedFilePath = normalizeSlashPath(filePath)
+  if (!normalizedFilePath) return normalizedFilePath
+  if (!workspace) return normalizedFilePath
+
+  const normalizedWorkspace = normalizeSlashPath(workspace).replace(/\/+$/, '')
+  if (!normalizedWorkspace) return normalizedFilePath
+
+  const lowerFilePath = normalizedFilePath.toLowerCase()
+  const lowerWorkspace = normalizedWorkspace.toLowerCase()
+  if (lowerFilePath === lowerWorkspace) return ''
+  if (lowerFilePath.startsWith(`${lowerWorkspace}/`)) {
+    return normalizedFilePath.slice(normalizedWorkspace.length + 1)
+  }
+  return normalizedFilePath
+}
+
 /* ------------------------------------------------------------------ */
 /*  从文件路径列表构建树结构（fallback 用）                               */
 /* ------------------------------------------------------------------ */
@@ -128,7 +149,10 @@ function buildTreeFromPaths(changes: FileChangeInfo[]): FileTreeEntry[] {
   const root: TmpNode = { name: '', path: '', isDirectory: true, children: new Map() }
 
   for (const fc of changes) {
-    const parts = fc.filePath.split('/')
+    const normalizedPath = normalizeSlashPath(fc.filePath)
+    if (!normalizedPath) continue
+    const parts = normalizedPath.split('/').filter(Boolean)
+    if (parts.length === 0) continue
     let current = root
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i]
@@ -360,7 +384,11 @@ function WsTreeNode({
   const change = changesMap.get(entry.path)
   const isChanged = !!change
   const isActive = selectedPath === entry.path || viewingPath === entry.path
-  const status: FileChangeStatus = fileStatuses[entry.path] || 'pending'
+  const status: FileChangeStatus = (
+    fileStatuses[entry.path]
+    ?? fileStatuses[entry.path.replace(/\//g, '\\')]
+    ?? 'pending'
+  )
   const icon = getFileIcon(entry.name)
 
   // 变更类型
@@ -477,20 +505,30 @@ export function DetailPanel({
     try { await onGitRollback(hash) } finally { setRollingBack(null) }
   }
 
+  const readStatus = useCallback((filePath: string): FileChangeStatus => {
+    return (
+      fileStatuses[filePath]
+      ?? fileStatuses[filePath.replace(/\//g, '\\')]
+      ?? 'pending'
+    )
+  }, [fileStatuses])
+
   // 去重合并文件变更
   const dedupedChanges = useMemo(() => {
     if (!fileChanges || fileChanges.length === 0) return []
     const map = new Map<string, FileChangeInfo>()
     for (const fc of fileChanges) {
-      const existing = map.get(fc.filePath)
+      const normalizedPath = normalizeWorkspaceRelativePath(fc.filePath, workspace)
+      if (!normalizedPath) continue
+      const existing = map.get(normalizedPath)
       if (existing) {
-        map.set(fc.filePath, { filePath: fc.filePath, oldContent: existing.oldContent, newContent: fc.newContent })
+        map.set(normalizedPath, { filePath: normalizedPath, oldContent: existing.oldContent, newContent: fc.newContent })
       } else {
-        map.set(fc.filePath, { ...fc })
+        map.set(normalizedPath, { ...fc, filePath: normalizedPath })
       }
     }
     return Array.from(map.values()).filter((fc) => fc.oldContent !== fc.newContent)
-  }, [fileChanges])
+  }, [fileChanges, workspace])
 
   // 变更文件映射（path → change）
   const changesMap = useMemo(() => {
@@ -504,9 +542,9 @@ export function DetailPanel({
   // pending 文件数
   const pendingCount = useMemo(() => {
     return dedupedChanges.filter(
-      (fc) => !fileStatuses[fc.filePath] || fileStatuses[fc.filePath] === 'pending'
+      (fc) => readStatus(fc.filePath) === 'pending'
     ).length
-  }, [dedupedChanges, fileStatuses])
+  }, [dedupedChanges, readStatus])
 
   const hasTree = workspaceTree && workspaceTree.length > 0
 
@@ -525,16 +563,16 @@ export function DetailPanel({
 
   // 按状态分组变更文件
   const pendingChanges = useMemo(
-    () => dedupedChanges.filter((fc) => !fileStatuses[fc.filePath] || fileStatuses[fc.filePath] === 'pending'),
-    [dedupedChanges, fileStatuses],
+    () => dedupedChanges.filter((fc) => readStatus(fc.filePath) === 'pending'),
+    [dedupedChanges, readStatus],
   )
   const acceptedChanges = useMemo(
-    () => dedupedChanges.filter((fc) => fileStatuses[fc.filePath] === 'accepted'),
-    [dedupedChanges, fileStatuses],
+    () => dedupedChanges.filter((fc) => readStatus(fc.filePath) === 'accepted'),
+    [dedupedChanges, readStatus],
   )
   const rejectedChanges = useMemo(
-    () => dedupedChanges.filter((fc) => fileStatuses[fc.filePath] === 'rejected'),
-    [dedupedChanges, fileStatuses],
+    () => dedupedChanges.filter((fc) => readStatus(fc.filePath) === 'rejected'),
+    [dedupedChanges, readStatus],
   )
 
   // 为每个状态分组构建目录树
@@ -584,7 +622,11 @@ export function DetailPanel({
   /** 用外部编辑器打开文件（双击时） */
   const handleOpenExternal = useCallback((filePath: string) => {
     if (!editor || !workspace) return
-    const fullPath = filePath.startsWith('/') ? filePath : `${workspace}/${filePath}`
+    const isAbs = filePath.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(filePath) || filePath.startsWith('\\\\')
+    const sep = /[a-zA-Z]:[\\/]/.test(workspace) || workspace.includes('\\') ? '\\' : '/'
+    const fullPath = isAbs
+      ? filePath
+      : `${workspace.replace(/[\\/]+$/, '')}${sep}${filePath.replace(/[\\/]/g, sep)}`
     globalThis.window.taco.shell.openInEditor(fullPath, editor).catch(() => {})
   }, [editor, workspace])
 
@@ -712,9 +754,9 @@ export function DetailPanel({
                 <div className="ws-tree-deleted-section">
                   <div className="ws-tree-deleted-label">已删除</div>
                   {deletedFiles.map((fc) => {
-                    const fileName = fc.filePath.split('/').pop() || fc.filePath
+                    const fileName = normalizeSlashPath(fc.filePath).split('/').pop() || fc.filePath
                     const icon = getFileIcon(fileName)
-                    const status = fileStatuses[fc.filePath] || 'pending'
+                    const status = readStatus(fc.filePath)
                     return (
                       <div
                         key={fc.filePath}

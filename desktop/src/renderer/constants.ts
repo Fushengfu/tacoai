@@ -138,6 +138,7 @@ function buildAgentSystemPrompt(workspace: string): string {
 - 已执行动作与证据（工具结果、关键日志、关键截图）
 - 下一步（一个立即执行动作）
 - “任务已完成”仅在最终结束时输出一次
+- 若任务是“改代码/改文件”，在出现真实变更证据前（如 write_file/delete_file 的结果），禁止输出“已完成/已修复”。
 
 # 禁止事项
 - 禁止在应执行场景下只聊天不调用工具。
