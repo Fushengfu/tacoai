@@ -276,6 +276,15 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
     return map.values.toList();
   }
 
+  String _resolveProviderLabel(String? providerId) {
+    final id = providerId?.trim() ?? '';
+    if (id.isEmpty) return '-';
+    for (final option in _providerOptions()) {
+      if (option.id == id) return option.label;
+    }
+    return id;
+  }
+
   String _buildScreenshotUrl(String screenshotPath) {
     final path = screenshotPath.trim();
     if (path.startsWith('http://') || path.startsWith('https://')) return path;
@@ -939,7 +948,7 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
                   Text('桌面会话历史 | 状态: $_status', style: const TextStyle(fontSize: 12)),
                   const SizedBox(height: 2),
                   Text(
-                    '项目: ${currentThread?.title ?? "-"} | 会话: ${currentSession?.title ?? "-"} | 模型: ${_selectedProviderId ?? currentThread?.provider ?? "-"} | 模式: ${_selectedMode == "agent" ? "代理" : "聊天"}',
+                    '项目: ${currentThread?.title ?? "-"} | 会话: ${currentSession?.title ?? "-"} | 模型: ${_resolveProviderLabel(_selectedProviderId ?? currentThread?.provider)} | 模式: ${_selectedMode == "agent" ? "代理" : "聊天"}',
                     style: const TextStyle(fontSize: 12),
                   ),
                 ],

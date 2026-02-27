@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ActivePlan, AgentStep, AttachedImage, ChatMsg, ProviderId, ProviderForms, QueuedMessage, RiskInfo, ThreadMode, ToolCallInfo, ToolResultInfo } from '../types'
+import type { PromptConfig } from '../../shared/ipc'
 import { buildSystemPrompt } from '../constants'
 import { loadJson, saveJson, uid } from '../lib/storage'
 
@@ -67,11 +68,33 @@ export function useChat() {
   const inFlightThreadsRef = useRef<Set<string>>(new Set())
   // 始终指向最新的 sendMessage 函数
   const sendMessageRef = useRef<(params: SendMessageParams) => Promise<void>>()
+  // Prompt 配置（来自 ~/.taco/prompt-config.json，不存在时回退硬编码）
+  const promptConfigRef = useRef<PromptConfig | null>(null)
+  const promptConfigLoadedRef = useRef(false)
 
   // 持久化
   useEffect(() => {
     saveJson('taco.messages', threadMessages)
   }, [threadMessages])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!window.taco.prompt?.getConfig) return
+    window.taco.prompt.getConfig()
+      .then((config) => {
+        if (cancelled) return
+        promptConfigRef.current = config
+        promptConfigLoadedRef.current = true
+      })
+      .catch(() => {
+        if (cancelled) return
+        promptConfigRef.current = null
+        promptConfigLoadedRef.current = true
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   /* ------------------------------------------------------------------ */
   /*  Per-thread accessors                                               */
@@ -206,6 +229,23 @@ export function useChat() {
     })
   }
 
+  async function ensurePromptConfigLoaded(): Promise<PromptConfig | null> {
+    if (promptConfigLoadedRef.current) return promptConfigRef.current
+    if (!window.taco.prompt?.getConfig) {
+      promptConfigLoadedRef.current = true
+      promptConfigRef.current = null
+      return null
+    }
+    try {
+      promptConfigRef.current = await window.taco.prompt.getConfig()
+    } catch {
+      promptConfigRef.current = null
+    } finally {
+      promptConfigLoadedRef.current = true
+    }
+    return promptConfigRef.current
+  }
+
   /* ------------------------------------------------------------------ */
   /*  Send message (per-thread, non-blocking)                            */
   /* ------------------------------------------------------------------ */
@@ -248,8 +288,16 @@ export function useChat() {
       onFirstMessage(title)
     }
 
-    // 构造 API 消息（system prompt 含当前系统环境 + Agent 模式含工作空间信息）
-    const systemContent = buildSystemPrompt({ mode, workspace })
+    // 构造 API 消息（支持 provider/model 差异化 + 配置文件可选覆盖）
+    const promptConfig = await ensurePromptConfigLoaded()
+    const model = String(providerForms[provider]?.model ?? '').trim() || undefined
+    const systemContent = buildSystemPrompt({
+      mode,
+      workspace,
+      provider,
+      model,
+      promptConfig,
+    })
     const chatMsgs = updatedMsgs.map((m) => ({ role: m.role, content: m.content }))
 
     // ── 初始上下文预检：截断超长单条消息，防止极端情况下直接超限 ──
@@ -514,7 +562,7 @@ export function useChat() {
    * 用于「编辑后重发」或「原样重发」场景：先由外部修改好 messages，再调用此方法。
    */
   async function resendFromExisting(params: Omit<SendMessageParams, 'content'>) {
-    const { threadId, projectId, provider, providerForms, mode, workspace, onFirstMessage, onComplete } = params
+    const { threadId, projectId, provider, providerForms, mode, workspace, maxTokens, onFirstMessage, onComplete } = params
 
     const currentMsgs = threadMessagesRef.current[threadId] ?? []
     if (currentMsgs.length === 0) return
@@ -527,8 +575,10 @@ export function useChat() {
     setSendingThreads((prev) => ({ ...prev, [threadId]: true }))
     setStreamingContents((prev) => ({ ...prev, [threadId]: '' }))
 
+    const promptConfig = await ensurePromptConfigLoaded()
+    const model = String(providerForms[provider]?.model ?? '').trim() || undefined
     const apiMessages = [
-      { role: 'system' as const, content: buildSystemPrompt({ mode, workspace }) },
+      { role: 'system' as const, content: buildSystemPrompt({ mode, workspace, provider, model, promptConfig }) },
       ...currentMsgs.map((m) => ({ role: m.role, content: m.content }))
     ]
 
@@ -540,28 +590,157 @@ export function useChat() {
       }
     }
 
+    const isAgent = mode === 'agent'
     let accumulated = ''
     try {
       const requestId = `req-${Date.now()}-${threadId}`
       requestIdRefs.current.set(threadId, requestId)
 
-      await new Promise<void>((resolve, reject) => {
-        abortRejectRefs.current.set(threadId, reject)
+      if (isAgent) {
+        await new Promise<void>((resolve, reject) => {
+          abortRejectRefs.current.set(threadId, reject)
 
-        const cleanup = window.taco.chat.onChunk((data) => {
-          if (data.requestId !== requestId) return
-          if (data.error) { cleanup(); reject(new Error(data.error)); return }
-          if (data.done) { cleanup(); resolve(); return }
-          accumulated += data.chunk
-          setStreamingContents((prev) => ({ ...prev, [threadId]: accumulated }))
+          const agentMsgId = uid()
+          const steps: AgentStep[] = []
+          let currentRound = 0
+          let commitHash: string | undefined
+          let activePlan: ActivePlan | undefined
+
+          const flushAgentMsg = (finalContent?: string) => {
+            const nextContent = finalContent ?? accumulated
+            const hasRenderableContent = Boolean(nextContent.trim())
+            const hasRenderableMeta = steps.length > 0 || Boolean(activePlan) || Boolean(commitHash)
+            setMessages(threadId, (prev) => {
+              const idx = prev.findIndex((m) => m.id === agentMsgId)
+              if (idx === -1 && !hasRenderableContent && !hasRenderableMeta) return prev
+              const msg: ChatMsg = {
+                id: agentMsgId,
+                role: 'assistant',
+                content: nextContent,
+                agentSteps: steps.length > 0 ? [...steps] : undefined,
+                gitCommitHash: commitHash,
+                activePlan: activePlan ? { ...activePlan, steps: activePlan.steps.map((s) => ({ ...s })) } : undefined,
+              }
+              if (idx === -1) return [...prev, msg]
+              const next = [...prev]
+              next[idx] = msg
+              return next
+            })
+          }
+
+          const cleanup = window.taco.agent.onEvent((evt) => {
+            if (evt.requestId !== requestId) return
+
+            if (evt.type === 'text') {
+              accumulated += evt.content
+              flushAgentMsg()
+            } else if (evt.type === 'tool_calls') {
+              currentRound++
+              const toolCalls: ToolCallInfo[] = evt.toolCalls.map((tc) => ({
+                id: tc.id,
+                name: tc.function.name,
+                arguments: tc.function.arguments,
+              }))
+              steps.push({
+                round: currentRound,
+                thinking: accumulated,
+                toolCalls,
+                toolResults: [],
+                status: 'running',
+              })
+              accumulated = ''
+              flushAgentMsg()
+            } else if (evt.type === 'confirm') {
+              const lastStep = steps[steps.length - 1]
+              if (lastStep) {
+                lastStep.status = 'confirm'
+                lastStep.confirmId = evt.confirmId
+                lastStep.risks = evt.risks.map((r) => ({
+                  toolCallId: r.toolCallId,
+                  toolName: r.toolName,
+                  level: r.level,
+                  reason: r.reason,
+                  detail: r.detail,
+                }))
+              }
+              flushAgentMsg()
+            } else if (evt.type === 'tool_results') {
+              const results: ToolResultInfo[] = evt.results.map((r) => ({
+                tool_call_id: r.tool_call_id,
+                name: r.name,
+                content: r.content,
+                success: r.success,
+                fileChange: r.fileChange ? {
+                  filePath: r.fileChange.filePath,
+                  oldContent: r.fileChange.oldContent,
+                  newContent: r.fileChange.newContent,
+                } : undefined,
+              }))
+              const lastStep = steps[steps.length - 1]
+              if (lastStep) {
+                lastStep.toolResults = results
+                lastStep.status = 'done'
+              }
+              flushAgentMsg()
+            } else if (evt.type === 'git_commit') {
+              commitHash = evt.hash
+              flushAgentMsg()
+            } else if (evt.type === 'plan_init') {
+              activePlan = {
+                summary: evt.summary,
+                reasoning: evt.reasoning,
+                steps: evt.steps.map((text) => ({ text, status: 'pending' as const })),
+                startedAt: Date.now(),
+              }
+              flushAgentMsg()
+            } else if (evt.type === 'plan_progress') {
+              if (activePlan && evt.stepIndex >= 0 && evt.stepIndex < activePlan.steps.length) {
+                activePlan.steps[evt.stepIndex].status = normalizePlanStatus(evt.status)
+                if (evt.note) activePlan.steps[evt.stepIndex].note = evt.note
+              }
+              flushAgentMsg()
+            } else if (evt.type === 'done') {
+              if (activePlan && !activePlan.endedAt) activePlan.endedAt = Date.now()
+              flushAgentMsg(accumulated)
+              cleanup()
+              resolve()
+            } else if (evt.type === 'error') {
+              if (activePlan && !activePlan.endedAt) activePlan.endedAt = Date.now()
+              flushAgentMsg(accumulated)
+              cleanup()
+              reject(new Error(evt.message))
+            }
+          })
+          streamCleanupRefs.current.set(threadId, cleanup)
+          window.taco.agent.stream({
+            requestId,
+            provider,
+            messages: apiMessages,
+            overrides,
+            projectId,
+            workspace: workspace ?? '',
+            maxTokens,
+          })
         })
-        streamCleanupRefs.current.set(threadId, cleanup)
-        window.taco.chat.stream({ requestId, provider, messages: apiMessages, overrides, projectId, workspace })
-      })
+      } else {
+        await new Promise<void>((resolve, reject) => {
+          abortRejectRefs.current.set(threadId, reject)
+
+          const cleanup = window.taco.chat.onChunk((data) => {
+            if (data.requestId !== requestId) return
+            if (data.error) { cleanup(); reject(new Error(data.error)); return }
+            if (data.done) { cleanup(); resolve(); return }
+            accumulated += data.chunk
+            setStreamingContents((prev) => ({ ...prev, [threadId]: accumulated }))
+          })
+          streamCleanupRefs.current.set(threadId, cleanup)
+          window.taco.chat.stream({ requestId, provider, messages: apiMessages, overrides, projectId, workspace })
+        })
+      }
 
       abortRejectRefs.current.delete(threadId)
       requestIdRefs.current.delete(threadId)
-      if (accumulated) {
+      if (!isAgent && accumulated) {
         const assistantMsg: ChatMsg = { id: uid(), role: 'assistant', content: accumulated }
         setMessages(threadId, (prev) => [...prev, assistantMsg])
       }
@@ -571,7 +750,19 @@ export function useChat() {
       requestIdRefs.current.delete(threadId)
       const errMsg = error instanceof Error ? error.message : '请求失败'
       if (errMsg === '__stopped__') {
-        if (accumulated) {
+        if (isAgent) {
+          if (accumulated) {
+            setMessages(threadId, (prev) => {
+              const last = prev[prev.length - 1]
+              if (last?.role === 'assistant') {
+                const updated = [...prev]
+                updated[prev.length - 1] = { ...last, content: (last.content || accumulated) + '\n\n*[已停止]*' }
+                return updated
+              }
+              return [...prev, { id: uid(), role: 'assistant', content: accumulated + '\n\n*[已停止]*' }]
+            })
+          }
+        } else if (accumulated) {
           const stoppedMsg: ChatMsg = { id: uid(), role: 'assistant', content: accumulated + '\n\n*[已停止]*' }
           setMessages(threadId, (prev) => [...prev, stoppedMsg])
         }

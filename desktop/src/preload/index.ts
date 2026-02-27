@@ -1,6 +1,29 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IpcChannel } from '../shared/ipc'
-import type { ChatSendPayload, ChatStreamPayload, ChatChunkData, AgentStreamPayload, AgentEventData, EditorId, TacoApi, SystemInfo, ProjectNote, McpServerInfo, ExternalBrowserStatus, GuiPlusConfig, AppNotifyPayload, MobileBridgeConfig, MobileBridgeCommandData, MobileBridgeContextSnapshot, MobileBridgeSelectData, MobileBridgeAbortData, MobileBridgeConfirmData, MobileBridgeNewSessionData, MobileBridgeClearSessionData } from '../shared/ipc'
+import type {
+  ChatSendPayload,
+  ChatStreamPayload,
+  ChatChunkData,
+  AgentStreamPayload,
+  AgentEventData,
+  EditorId,
+  TacoApi,
+  SystemInfo,
+  ProjectNote,
+  McpServerInfo,
+  ExternalBrowserStatus,
+  GuiPlusConfig,
+  AppNotifyPayload,
+  MobileBridgeConfig,
+  MobileBridgeCommandData,
+  MobileBridgeContextSnapshot,
+  MobileBridgeSelectData,
+  MobileBridgeAbortData,
+  MobileBridgeConfirmData,
+  MobileBridgeNewSessionData,
+  MobileBridgeClearSessionData,
+  PromptConfig,
+} from '../shared/ipc'
 
 // 沙盒化 preload 无法使用 os 模块，用 process 和环境变量替代
 const systemInfo: SystemInfo = {
@@ -265,6 +288,12 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.GUI_PLUS_GET),
     saveConfig: (config: GuiPlusConfig): Promise<void> =>
       ipcRenderer.invoke(IpcChannel.GUI_PLUS_SAVE, config),
+  },
+  prompt: {
+    getConfig: (): Promise<PromptConfig> =>
+      ipcRenderer.invoke(IpcChannel.PROMPT_CONFIG_GET),
+    saveConfig: (config: PromptConfig): Promise<PromptConfig> =>
+      ipcRenderer.invoke(IpcChannel.PROMPT_CONFIG_SAVE, config),
   }
 }
 

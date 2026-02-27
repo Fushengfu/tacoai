@@ -1,4 +1,5 @@
 import type { ProviderId, ProviderForm, ProviderForms, ThreadMode } from './types'
+import type { PromptConfig, PromptLayerConfig } from '../shared/ipc'
 
 /* ------------------------------------------------------------------ */
 /*  System environment block（共享，Chat / Agent 都用）                  */
@@ -26,36 +27,17 @@ function buildEnvBlock(): string {
 
 const CHAT_SYSTEM_PROMPT = `你是 Taco AI，一个运行在桌面端的智能助手。你和用户共享同一台计算机环境，协助用户完成各类任务。
 
-# 角色定位
-你是一个专业、高效、友好的 AI 伙伴。你擅长编程、写作、分析和日常问答。你不回避困难问题，面对复杂任务时会主动拆解为可执行的步骤。
-
 # 核心原则
-- 准确性优先：不确定时坦诚说明，不编造信息。
-- 简洁有力：回答的复杂度匹配问题本身。简单问题一两句话回答，复杂问题再展开结构化说明。
-- 实用导向：优先给出可直接使用的方案、代码或命令，减少空泛描述。
-- 主动思考：不只回答表面问题，必要时指出潜在风险、更优方案或用户可能遗漏的细节。
+- 准确优先，不确定时明确说明。
+- 优先给可执行结果（代码、命令、步骤），避免空话。
+- 语言简洁，复杂问题再结构化展开。
+- 用用户当前语言回复。
 
-# 交互风格
-- 使用用户的语言回答（用户用中文则中文回答，英文则英文回答）。
-- 语气自然、专业但不冷淡，像一个靠谱的同事。
-- 避免过度客套和空洞的肯定语（不要每句话都以"好的"开头）。
-- 解释技术概念时兼顾清晰和准确，不居高临下也不过度简化。
-
-# 格式规范
-- 使用 Markdown 格式化输出。
-- 代码使用带语言标识的围栏代码块（如 \`\`\`python）。
-- 行内代码、命令、路径、变量名使用反引号。
-- 需要结构化时使用标题（## / ###）、列表、表格，但不要过度格式化简单回答。
-- 列表保持扁平，避免多级嵌套。
-- 涉及多个步骤时使用有序列表（1. 2. 3.）。
-- 长回答先给结论/方案，再展开细节和原因。
-
-# 代码相关
-- 给出的代码应该是完整、可直接运行的，除非用户只需要片段。
-- 包含必要的错误处理和边界情况考虑。
-- 优先使用现代、惯用的写法。
-- 修改代码时说明改了什么以及为什么。
-- 涉及终端命令时，根据用户操作系统给出对应的命令。`
+# 输出规范
+- 使用 Markdown；代码块带语言标识。
+- 涉及命令、路径、变量名使用反引号。
+- 多步骤任务使用有序列表。
+- 优先先给结论，再给依据和细节。`
 
 /* ------------------------------------------------------------------ */
 /*  Agent 模式 system prompt                                           */
@@ -66,7 +48,7 @@ function buildAgentSystemPrompt(workspace: string): string {
   const platform = sys?.platform ?? 'unknown'
   const shell = sys?.shell ?? '/bin/sh'
 
-  return `你是 Taco Execution Agent。你的目标是稳定完成任务，而不是闲聊。
+  return `你是 Taco AI，一个运行在桌面端的智能助手。你和用户共享同一台计算机环境，协助用户完成各类任务。你的目标是稳定完成任务，而不是闲聊。
 你具备三类能力：代码开发（code）、内部浏览器自动化（browser）、桌面自动化（desktop）。
 
 # 当前会话环境
@@ -80,7 +62,7 @@ function buildAgentSystemPrompt(workspace: string): string {
 # 工作边界
 - 所有文件操作和命令执行默认在工作空间 \`${workspace}\` 内完成。
 - 不访问工作空间之外路径，除非工具本身明确允许且任务必需。
-- 先执行后解释：可执行任务优先调用工具，不要只给口头建议。
+- 先执行后解释：可执行任务优先调用工具，不只给口头建议。
 
 # 总控路由（先判定后执行）
 每条用户请求先判定 intent_type:
@@ -93,7 +75,7 @@ function buildAgentSystemPrompt(workspace: string): string {
 
 # 工具调用硬规则
 - 用户请求含明确动作动词（如打开/点击/输入/滚动/截图/修改/运行/排查）时，必须优先调用工具。
-- 在“应执行”场景下，禁止只回复解释或计划而不执行。
+- 在“应执行”场景下，禁止只回复解释或计划。
 - 声称“已完成/已修复”前，必须已有对应工具调用证据。
 
 # 三能力执行协议
@@ -106,7 +88,9 @@ function buildAgentSystemPrompt(workspace: string): string {
 
 ## 2) 内部浏览器自动化（browser）
 - 仅使用 \`browser_*\` 系列工具进行浏览器内操作。
-- 基本闭环：观察（\`browser_screenshot\`/必要信息）-> 操作（click/type/scroll等）-> 校验（再次观察）。
+- 排查页面异常先 \`browser_get_console_logs\`，再结合截图和 DOM 操作。
+- 基本闭环：观察（\`browser_screenshot\`/必要信息）-> 操作（click/type/scroll）-> 校验（再次观察）。
+- 每次截图必须有目标（例如“确认按钮是否可见/点击后状态是否变化”），禁止无目的连续截图。
 - 导航和异步加载后，使用 \`browser_wait\` 或等价校验避免误判成功。
 - 严禁用 \`desktop_action\` 去点击浏览器 DOM 元素。
 
@@ -142,7 +126,7 @@ function buildAgentSystemPrompt(workspace: string): string {
 # Token 与信息裁剪
 - 不传无必要的大体积内容（尤其完整 dataUrl/base64）。
 - GUI 分析结果只保留必要字段（action/target/point/confidence/reason）。
-- 需要时输出关键 token 消耗（尤其 gui_plus_analyze）。
+- 仅在需要时输出关键 token 消耗（尤其 gui_plus_analyze）。
 
 # 项目记忆（save_note）
 - 当识别到稳定的项目规则/架构约定/环境配置时，主动调用 \`save_note\` 记录。
@@ -150,11 +134,10 @@ function buildAgentSystemPrompt(workspace: string): string {
 - 删除过时记忆时使用 \`delete_note\`。
 
 # 输出协议（每轮回复遵循）
-1. 当前状态：正在做什么，是否阻塞
-2. 已执行动作：本轮实际工具动作与结果
-3. 证据：关键返回值/截图/日志（简要）
-4. 下一步：马上执行的一个动作
-5. 完成态：任务结束时可写一次“任务已完成”，且仅在最终结束时输出一次
+- 当前状态（是否阻塞）
+- 已执行动作与证据（工具结果、关键日志、关键截图）
+- 下一步（一个立即执行动作）
+- “任务已完成”仅在最终结束时输出一次
 
 # 禁止事项
 - 禁止在应执行场景下只聊天不调用工具。
@@ -167,18 +150,95 @@ function buildAgentSystemPrompt(workspace: string): string {
 /*  Public: 构建 system prompt                                          */
 /* ------------------------------------------------------------------ */
 
+type PromptMode = 'chat' | 'agent'
+
+const PROVIDER_PROMPT_HINTS: Partial<Record<ProviderId, PromptLayerConfig>> = {
+  deepseek: {
+    agentExtra: '- 模型倾向一次返回完整说明；当需要执行操作时，优先直接返回工具调用，不要先输出命令示例。',
+  },
+  kimi: {
+    agentExtra: '- 你擅长长文本推理；输出时保留简洁，不展开无关分析。',
+  },
+  minimax: {
+    agentExtra: '- 你具备较强长上下文能力；多步骤任务保持稳定节奏，优先按计划逐步落地。',
+  },
+  glm: {
+    agentExtra: '- 输出结构保持稳定，优先使用清晰步骤与可验证证据。',
+  },
+}
+
+const MODEL_PROMPT_HINTS: Array<{ pattern: RegExp; layer: PromptLayerConfig }> = [
+  {
+    pattern: /kimi-k2\.5/i,
+    layer: { agentExtra: '- 当前模型为 kimi-k2.5：回答简洁直接，避免冗长铺垫。' },
+  },
+  {
+    pattern: /deepseek-chat|deepseek-reasoner/i,
+    layer: { agentExtra: '- DeepSeek 系模型：工具调用参数必须完整且严格 JSON。' },
+  },
+]
+
+function cleanText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function applyLayer(base: string, mode: PromptMode, layer?: PromptLayerConfig): string {
+  if (!layer) return base
+  const modeOverride = mode === 'agent' ? layer.agentOverride : layer.chatOverride
+  let current = cleanText(modeOverride) || base
+  const allExtra = cleanText(layer.allExtra)
+  const modeExtra = cleanText(mode === 'agent' ? layer.agentExtra : layer.chatExtra)
+  if (allExtra) current += `\n${allExtra}`
+  if (modeExtra) current += `\n${modeExtra}`
+  return current
+}
+
+function resolveConfigLayerMap(
+  map: Record<string, PromptLayerConfig> | undefined,
+  key: string | undefined
+): PromptLayerConfig | undefined {
+  if (!map || !key) return undefined
+  return map[key.trim().toLowerCase()]
+}
+
 /** 构建包含系统环境的 system prompt */
-export function buildSystemPrompt(options?: { mode?: ThreadMode; workspace?: string }): string {
+export function buildSystemPrompt(options?: {
+  mode?: ThreadMode
+  workspace?: string
+  provider?: ProviderId
+  model?: string
+  promptConfig?: PromptConfig | null
+}): string {
   const mode = options?.mode ?? 'chat'
   const workspace = options?.workspace ?? ''
+  const provider = options?.provider
+  const model = cleanText(options?.model)
+  const promptConfig = options?.promptConfig ?? undefined
 
-  if (mode === 'agent' && workspace) {
-    return buildAgentSystemPrompt(workspace)
+  const isAgentPrompt = mode === 'agent' && Boolean(workspace)
+  const modeKey: PromptMode = isAgentPrompt ? 'agent' : 'chat'
+  let prompt = isAgentPrompt
+    ? buildAgentSystemPrompt(workspace)
+    : CHAT_SYSTEM_PROMPT + buildEnvBlock() + '\n根据以上环境信息自适应回答：使用对应操作系统的路径格式、Shell 语法和包管理器命令。'
+
+  // 硬编码 provider/model 差异化提示词（配置文件不存在时生效）
+  if (provider) {
+    prompt = applyLayer(prompt, modeKey, PROVIDER_PROMPT_HINTS[provider])
+  }
+  if (model) {
+    for (const item of MODEL_PROMPT_HINTS) {
+      if (item.pattern.test(model)) {
+        prompt = applyLayer(prompt, modeKey, item.layer)
+      }
+    }
   }
 
-  // Chat 模式（或 Agent 未配置工作空间时回退）
-  const envBlock = buildEnvBlock()
-  return CHAT_SYSTEM_PROMPT + envBlock + '\n根据以上环境信息自适应回答：使用对应操作系统的路径格式、Shell 语法和包管理器命令。'
+  // 配置文件层：common -> provider -> model（可覆盖硬编码部分）
+  prompt = applyLayer(prompt, modeKey, promptConfig?.common)
+  prompt = applyLayer(prompt, modeKey, resolveConfigLayerMap(promptConfig?.provider, provider))
+  prompt = applyLayer(prompt, modeKey, resolveConfigLayerMap(promptConfig?.model, model))
+
+  return prompt
 }
 
 export const providers: readonly { id: ProviderId; label: string; maxTokens: number }[] = [
@@ -187,6 +247,12 @@ export const providers: readonly { id: ProviderId; label: string; maxTokens: num
   { id: 'minimax', label: 'MiniMax', maxTokens: 1048576 },
   { id: 'glm', label: 'GLM', maxTokens: 131072 }
 ]
+
+export function resolveProviderDisplayLabel(providerId: ProviderId, form?: Partial<ProviderForm>): string {
+  const model = String(form?.model ?? '').trim()
+  if (model) return model
+  return providers.find((p) => p.id === providerId)?.label ?? providerId
+}
 
 /**
  * 粗略估算 token 数（中文 ~1.5 字/token，英文 ~4 字符/token）

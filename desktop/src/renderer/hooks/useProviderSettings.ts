@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ProviderId, ProviderForm, ProviderForms } from '../types'
-import { providers, defaultProviderForms } from '../constants'
+import { providers, defaultProviderForms, resolveProviderDisplayLabel } from '../constants'
 import { loadJson, saveJson } from '../lib/storage'
 
 export function useProviderSettings() {
@@ -22,14 +22,17 @@ export function useProviderSettings() {
   }, [providerForms])
 
   // 已配置的 provider 列表
-  const configuredProviders = useMemo(
-    () =>
-      providers.filter((p) => {
+  const configuredProviders = useMemo(() => (
+    providers
+      .filter((p) => {
         const c = providerForms[p.id]
         return Boolean(c?.apiKey && c?.model)
-      }),
-    [providerForms]
-  )
+      })
+      .map((p) => ({
+        ...p,
+        label: resolveProviderDisplayLabel(p.id, providerForms[p.id]),
+      }))
+  ), [providerForms])
 
   // 当前 provider 失效时自动切换
   useEffect(() => {

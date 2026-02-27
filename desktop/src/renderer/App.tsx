@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ChatMsg, FileChangeInfo, FileChangeStatus, GitVersionCommit, ProviderId, ThreadMode } from './types'
 import type { EditorId, FileTreeEntry, BrowserConsoleLevel, MobileBridgeContextSnapshot } from '../shared/ipc'
-import { providers, estimateTokens, buildSystemPrompt, resolveProviderMaxTokens } from './constants'
+import { providers, estimateTokens, buildSystemPrompt, resolveProviderDisplayLabel, resolveProviderMaxTokens } from './constants'
 import { loadJson, saveJson } from './lib/storage'
 import { useThreads } from './hooks/useThreads'
 import { useChat } from './hooks/useChat'
@@ -186,11 +186,20 @@ export default function App() {
   // 当前项目使用的 provider（项目级 > 全局默认）
   const currentProvider: ProviderId =
     threadStore.activeThread?.provider ?? providerSettings.activeProvider
-  const activeProviderInfo = providers.find((p) => p.id === currentProvider)
-  const activeProviderLabel = activeProviderInfo?.label
+  const activeProviderLabel = resolveProviderDisplayLabel(
+    currentProvider,
+    providerSettings.providerForms[currentProvider]
+  )
 
   // 上下文窗口使用量
-  const usedTokens = estimateTokens(buildSystemPrompt()) +
+  const usedTokens = estimateTokens(
+    buildSystemPrompt({
+      mode: currentMode,
+      workspace: currentWorkspace,
+      provider: currentProvider,
+      model: providerSettings.providerForms[currentProvider]?.model,
+    })
+  ) +
     messages.reduce((sum, m) => sum + estimateTokens(m.content), 0)
   const maxTokens = resolveProviderMaxTokens(currentProvider, providerSettings.providerForms[currentProvider])
   const contextPercent = Math.min(Math.round((usedTokens / maxTokens) * 100), 100)

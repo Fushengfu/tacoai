@@ -12,7 +12,7 @@ import path from 'node:path'
 import { exec, execFile } from 'node:child_process'
 import { desktopCapturer, systemPreferences, screen, nativeImage } from 'electron'
 import { log } from './logger'
-import { executeBrowserAction } from './browser'
+import { executeBrowserAction, getBrowserConsoleSnapshot } from './browser'
 import type { BrowserActionType } from '../shared/ipc'
 import { saveScreenshot, getActiveMcpTools, callMcpTool } from './mcp'
 import { fileToDataUrl, getGuiPlusConfig, runGuiPlus } from './gui-plus'
@@ -481,6 +481,29 @@ export const toolDefinitions: ToolDefinition[] = [
         type: 'object',
         properties: {
           appId: { type: 'string', description: '浏览器实例标识，不指定则使用 "default"' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_get_console_logs',
+      description: '获取外部浏览器控制台日志（按需给 AI）。默认仅返回开发环境日志，并附带最高权重的异常候选（最多 3 条）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          appId: { type: 'string', description: '浏览器实例标识，不指定则使用 "default"' },
+          limit: { type: 'number', description: '返回日志条数，默认 50，范围 1-200' },
+          levels: {
+            type: 'array',
+            items: { type: 'string', enum: ['log', 'info', 'warn', 'error', 'debug'] },
+            description: '日志级别过滤（可选）',
+          },
+          onlyErrors: { type: 'boolean', description: '仅返回 error 级日志，默认 false' },
+          devOnly: { type: 'boolean', description: '仅返回开发环境日志，默认 true' },
+          includeCandidates: { type: 'boolean', description: '是否返回高权重异常候选，默认 true' },
+          clearAfterRead: { type: 'boolean', description: '读取后清理已返回日志，避免重复读取，默认 true' },
         },
       },
     },
@@ -1034,6 +1057,8 @@ async function executeTool(
         return await execBrowserAction('evaluate', args)
       case 'browser_get_info':
         return await execBrowserAction('get_info', args)
+      case 'browser_get_console_logs':
+        return await execBrowserGetConsoleLogs(args)
       case 'browser_hover':
         return await execBrowserAction('hover', args)
       case 'browser_keypress':
@@ -1985,6 +2010,35 @@ async function execBrowserAction(action: BrowserActionType, args: Record<string,
     return { content: result.data ?? '操作成功', success: true }
   }
   return { content: `浏览器操作失败: ${result.error}`, success: false }
+}
+
+async function execBrowserGetConsoleLogs(args: Record<string, unknown>): Promise<ExecResult> {
+  const appId = args.appId ? String(args.appId) : 'default'
+  const limit = Number.isFinite(Number(args.limit)) ? Number(args.limit) : undefined
+  const onlyErrors = args.onlyErrors === true
+  const devOnly = args.devOnly !== false
+  const includeCandidates = args.includeCandidates !== false
+  const clearAfterRead = args.clearAfterRead !== false
+  const levels = Array.isArray(args.levels)
+    ? args.levels
+      .map((v) => String(v))
+      .filter((v): v is 'log' | 'info' | 'warn' | 'error' | 'debug' => ['log', 'info', 'warn', 'error', 'debug'].includes(v))
+    : undefined
+
+  const snapshot = getBrowserConsoleSnapshot({
+    appId,
+    limit,
+    levels,
+    onlyErrors,
+    devOnly,
+    includeCandidates,
+    clearAfterRead,
+  })
+
+  return {
+    content: JSON.stringify(snapshot, null, 2),
+    success: true,
+  }
 }
 
 /* ------------------------------------------------------------------ */

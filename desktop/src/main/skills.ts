@@ -87,14 +87,14 @@ const BUILTIN_SKILLS: SkillInfo[] = [
   {
     id: 'browser-automation',
     name: '浏览器自动化',
-    description: '操控内嵌浏览器执行自动化操作：页面导航、元素点击、表单填写、内容提取、UI 验证等',
+    description: '操控外部浏览器执行自动化操作：页面导航、元素点击、表单填写、内容提取、UI 验证等',
     version: '1.0.0',
     author: 'Taco',
     source: 'builtin',
     enabled: true,
     instructions: `# Skill: 浏览器自动化
 
-你可以通过浏览器自动化工具操控内嵌浏览器，执行以下类型的任务：
+你可以通过浏览器自动化工具操控外部浏览器，执行以下类型的任务：
 
 ## 适用场景
 - **前端开发验证**: 打开本地开发服务器（如 http://localhost:3000），验证 UI 显示效果
@@ -103,19 +103,20 @@ const BUILTIN_SKILLS: SkillInfo[] = [
 - **UI 问题排查**: 截图分析页面布局、样式问题
 
 ## 操作流程模式
-典型的浏览器操作应遵循"观察-操作-验证"的循环：
+典型的浏览器操作应遵循“目标-操作-验证”的循环：
 
 1. **browser_navigate** → 打开目标页面
-2. **browser_screenshot** → 观察当前页面状态，了解可用的交互元素
-3. **browser_click / browser_type** → 执行具体操作
-4. **browser_screenshot** → 验证操作结果
-5. 重复步骤 3-4 直到完成
+2. **browser_get_console_logs / browser_get_info** → 先确认页面状态与错误信息
+3. **browser_screenshot** → 仅在需要视觉确认时截图（必须有明确目标）
+4. **browser_click / browser_type** → 执行具体操作
+5. **browser_screenshot / browser_get_content** → 验证操作结果
+6. 重复步骤 3-5 直到完成
 
 ## 关键注意事项
-- 每次操作之前都应先 screenshot 了解页面状态
+- 截图前必须明确目的（例如“验证按钮是否出现”），禁止无目的连续截图
 - CSS 选择器应尽量使用稳定的标识（id、name、data-testid）
 - 页面跳转或异步加载后使用 browser_wait 等待关键元素
-- 遇到错误时先截图分析再重试，不要盲目重复操作
+- 遇到错误时优先查看 browser_get_console_logs，再决定是否截图
 - 表单填写时注意使用 clear: true 清空后再输入
 - 对于需要登录的页面，先完成登录流程再进行后续操作`,
   },

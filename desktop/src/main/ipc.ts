@@ -11,7 +11,20 @@ import * as fs from 'node:fs/promises'
 import { watch as fsWatch, type FSWatcher } from 'node:fs'
 import * as nodePath from 'node:path'
 import { IpcChannel, editorCommands } from '../shared/ipc'
-import type { AppNotifyPayload, ChatSendPayload, ChatStreamPayload, AgentStreamPayload, AgentConfirmPayload, EditorId, ProjectNote, McpServerInfo, GuiPlusConfig, MobileBridgeConfig, MobileBridgeContextSnapshot } from '../shared/ipc'
+import type {
+  AppNotifyPayload,
+  ChatSendPayload,
+  ChatStreamPayload,
+  AgentStreamPayload,
+  AgentConfirmPayload,
+  EditorId,
+  ProjectNote,
+  McpServerInfo,
+  GuiPlusConfig,
+  MobileBridgeConfig,
+  MobileBridgeContextSnapshot,
+  PromptConfig,
+} from '../shared/ipc'
 import { setBrowserAutoApproved, setAutoApproveCategories } from './tools'
 import type { RiskCategory } from './tools'
 import type { ProviderKey, ProviderOverrides } from './llm'
@@ -22,6 +35,7 @@ import { initSkills, listSkills, installSkill, uninstallSkill, toggleSkill } fro
 import { listNotes, saveNote, deleteNote } from './notes'
 import { initMcp, listMcpServers, saveMcpServer, removeMcpServer, toggleMcpServer, saveScreenshot } from './mcp'
 import { getGuiPlusConfig, saveGuiPlusConfig } from './gui-plus'
+import { getPromptConfig, savePromptConfig } from './prompt-config'
 import { getLogDir } from './logger'
 import { log } from './logger'
 import { handleTerminalSpawn, handleTerminalInput, handleTerminalResize, handleTerminalKill } from './terminal'
@@ -98,6 +112,14 @@ async function handleGuiPlusGet(): Promise<GuiPlusConfig> {
 
 async function handleGuiPlusSave(_event: IpcMainInvokeEvent, config: GuiPlusConfig): Promise<void> {
   await saveGuiPlusConfig(config)
+}
+
+async function handlePromptConfigGet(): Promise<PromptConfig> {
+  return await getPromptConfig()
+}
+
+async function handlePromptConfigSave(_event: IpcMainInvokeEvent, config: PromptConfig): Promise<PromptConfig> {
+  return await savePromptConfig(config)
 }
 
 async function handleAppNotify(_event: IpcMainInvokeEvent, payload: AppNotifyPayload): Promise<boolean> {
@@ -474,6 +496,8 @@ export function registerIpcHandlers() {
   ipcMain.on(IpcChannel.MOBILE_BRIDGE_SYNC_CONTEXT, handleMobileBridgeSyncContext)
   ipcMain.handle(IpcChannel.GUI_PLUS_GET, handleGuiPlusGet)
   ipcMain.handle(IpcChannel.GUI_PLUS_SAVE, handleGuiPlusSave)
+  ipcMain.handle(IpcChannel.PROMPT_CONFIG_GET, handlePromptConfigGet)
+  ipcMain.handle(IpcChannel.PROMPT_CONFIG_SAVE, handlePromptConfigSave)
   ipcMain.handle(IpcChannel.FILE_REVERT, handleFileRevert)
   ipcMain.handle(IpcChannel.FILE_DELETE, handleFileDelete)
   ipcMain.handle(IpcChannel.FILE_READ, handleFileRead)

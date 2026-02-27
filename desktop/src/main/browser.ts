@@ -10,12 +10,171 @@ import { BrowserWindow, app, ipcMain, session } from 'electron'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import * as nodePath from 'node:path'
 import { IpcChannel } from '../shared/ipc'
-import type { BrowserActionPayload, BrowserActionResult, ExternalBrowserStatus } from '../shared/ipc'
+import type {
+  BrowserActionPayload,
+  BrowserActionResult,
+  BrowserConsoleLevel,
+  ExternalBrowserStatus,
+} from '../shared/ipc'
 
 /** 浏览器调试模式（是否自动打开 DevTools） */
 let browserDebugMode = false
 /** 浏览器隐藏窗口模式（默认开启） */
 let browserHiddenMode = true
+
+const DEV_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1'])
+const MAX_CONSOLE_LOGS_PER_APP = 500
+const MAX_CONSOLE_CANDIDATES_PER_APP = 3
+
+type BrowserConsoleEntry = {
+  id: number
+  appId: string
+  level: BrowserConsoleLevel
+  message: string
+  source?: string
+  line?: number
+  pageUrl?: string
+  timestamp: number
+  fromDevEnv: boolean
+}
+
+type BrowserConsoleCandidate = BrowserConsoleEntry & { weight: number; fingerprint: string }
+
+const browserConsoleLogsByAppId = new Map<string, BrowserConsoleEntry[]>()
+const browserConsoleCandidatesByAppId = new Map<string, BrowserConsoleCandidate[]>()
+let browserConsoleSeq = 0
+
+function isPrivateIpv4(hostname: string): boolean {
+  const m = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (!m) return false
+  const [a, b] = [Number(m[1]), Number(m[2])]
+  if (a === 10) return true
+  if (a === 192 && b === 168) return true
+  if (a === 172 && b >= 16 && b <= 31) return true
+  return false
+}
+
+function isDevBrowserUrl(rawUrl?: string): boolean {
+  if (!rawUrl) return false
+  if (rawUrl.startsWith('webpack://') || rawUrl.startsWith('vite://')) return true
+  try {
+    const u = new URL(rawUrl)
+    const host = u.hostname.toLowerCase()
+    if (DEV_HOSTS.has(host)) return true
+    if (host.endsWith('.localhost') || host.endsWith('.local')) return true
+    if (isPrivateIpv4(host)) return true
+    return false
+  } catch {
+    return false
+  }
+}
+
+function scoreBrowserError(entry: BrowserConsoleEntry): number {
+  let score = 0
+  const msg = entry.message || ''
+  if (entry.level === 'error') score += 50
+  if (msg.startsWith('[页面加载失败]')) score += 60
+  if (/Uncaught|Unhandled/i.test(msg)) score += 45
+  if (/TypeError|ReferenceError|SyntaxError|RangeError/i.test(msg)) score += 35
+  if (/CORS|ERR_|Failed to fetch|NetworkError/i.test(msg)) score += 25
+  return score
+}
+
+function rememberBrowserConsole(entry: Omit<BrowserConsoleEntry, 'id' | 'timestamp' | 'fromDevEnv'>) {
+  const fromDevEnv = isDevBrowserUrl(entry.pageUrl) || isDevBrowserUrl(entry.source)
+  const normalized: BrowserConsoleEntry = {
+    ...entry,
+    id: ++browserConsoleSeq,
+    timestamp: Date.now(),
+    fromDevEnv,
+  }
+
+  const prev = browserConsoleLogsByAppId.get(entry.appId) ?? []
+  const next = [...prev, normalized]
+  browserConsoleLogsByAppId.set(
+    entry.appId,
+    next.length > MAX_CONSOLE_LOGS_PER_APP ? next.slice(-MAX_CONSOLE_LOGS_PER_APP) : next
+  )
+
+  const isFatal = normalized.level === 'error' && (
+    normalized.message.startsWith('[页面加载失败]') ||
+    normalized.message.includes('Uncaught') ||
+    normalized.message.includes('TypeError') ||
+    normalized.message.includes('ReferenceError') ||
+    normalized.message.includes('SyntaxError') ||
+    normalized.message.includes('CORS') ||
+    normalized.message.includes('ERR_')
+  )
+  if (!isFatal || !fromDevEnv) return
+
+  const weight = scoreBrowserError(normalized)
+  const fingerprint =
+    `${normalized.appId}|${normalized.level}|${normalized.message}|${normalized.source ?? ''}|${normalized.line ?? ''}`
+  const candidate: BrowserConsoleCandidate = { ...normalized, weight, fingerprint }
+  const deduped = (browserConsoleCandidatesByAppId.get(entry.appId) ?? [])
+    .filter((item) => item.fingerprint !== fingerprint)
+  const ranked = [...deduped, candidate]
+    .sort((a, b) => (b.weight - a.weight) || (b.timestamp - a.timestamp))
+    .slice(0, MAX_CONSOLE_CANDIDATES_PER_APP)
+  browserConsoleCandidatesByAppId.set(entry.appId, ranked)
+}
+
+export function getBrowserConsoleSnapshot(options?: {
+  appId?: string
+  limit?: number
+  levels?: BrowserConsoleLevel[]
+  onlyErrors?: boolean
+  devOnly?: boolean
+  includeCandidates?: boolean
+  clearAfterRead?: boolean
+}) {
+  const appId = (options?.appId || 'default').trim() || 'default'
+  const limit = Math.max(1, Math.min(200, Number(options?.limit ?? 50)))
+  const allowLevels = options?.levels && options.levels.length > 0
+    ? new Set(options.levels)
+    : null
+  const onlyErrors = options?.onlyErrors === true
+  const devOnly = options?.devOnly !== false
+  const includeCandidates = options?.includeCandidates !== false
+  const clearAfterRead = options?.clearAfterRead === true
+
+  const all = browserConsoleLogsByAppId.get(appId) ?? []
+  let logs = all
+  if (devOnly) logs = logs.filter((item) => item.fromDevEnv)
+  if (onlyErrors) logs = logs.filter((item) => item.level === 'error')
+  if (allowLevels) logs = logs.filter((item) => allowLevels.has(item.level))
+  logs = logs.slice(-limit)
+
+  const candidates = includeCandidates
+    ? (browserConsoleCandidatesByAppId.get(appId) ?? []).filter((item) => !devOnly || item.fromDevEnv)
+    : []
+
+  if (clearAfterRead) {
+    const consumedIds = new Set<number>([
+      ...logs.map((item) => item.id),
+      ...candidates.map((item) => item.id),
+    ])
+    if (consumedIds.size > 0) {
+      const remainedLogs = all.filter((item) => !consumedIds.has(item.id))
+      if (remainedLogs.length > 0) browserConsoleLogsByAppId.set(appId, remainedLogs)
+      else browserConsoleLogsByAppId.delete(appId)
+
+      const allCandidates = browserConsoleCandidatesByAppId.get(appId) ?? []
+      const remainedCandidates = allCandidates.filter((item) => !consumedIds.has(item.id))
+      if (remainedCandidates.length > 0) browserConsoleCandidatesByAppId.set(appId, remainedCandidates)
+      else browserConsoleCandidatesByAppId.delete(appId)
+    }
+  }
+
+  return {
+    appId,
+    totalStored: all.length,
+    returned: logs.length,
+    filters: { limit, onlyErrors, devOnly, levels: allowLevels ? Array.from(allowLevels) : undefined, clearAfterRead },
+    logs,
+    topCandidates: candidates,
+  }
+}
 
 /** 设置浏览器调试模式 */
 export function setBrowserDebugMode(enabled: boolean) {
@@ -147,6 +306,49 @@ async function getElementCenter(wc: Electron.WebContents, selector: string): Pro
  */
 async function executeExternalBrowserAction(payload: BrowserActionPayload, appId: string = DEFAULT_APP_ID): Promise<BrowserActionResult> {
   const { action, params } = payload
+  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+  const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
+    let timer: NodeJS.Timeout | undefined
+    try {
+      return await new Promise<T>((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timeout (${timeoutMs}ms)`)), timeoutMs)
+        promise.then(resolve).catch(reject)
+      })
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+  const captureScreenshotDataUrl = async (wc: Electron.WebContents): Promise<string> => {
+    const errors: string[] = []
+    const tryCdp = async (fromSurface: boolean): Promise<string> => {
+      const result = await withTimeout(
+        wc.debugger.sendCommand('Page.captureScreenshot', { format: 'png', fromSurface }) as Promise<{ data: string }>,
+        6000,
+        `Page.captureScreenshot fromSurface=${fromSurface}`
+      )
+      if (!result?.data) throw new Error('empty screenshot data')
+      return `data:image/png;base64,${result.data}`
+    }
+    const tryCapturePage = async (): Promise<string> => {
+      const image = await withTimeout(wc.capturePage(), 6000, 'webContents.capturePage')
+      const dataUrl = image.toDataURL()
+      if (!dataUrl) throw new Error('empty capturePage data')
+      return dataUrl
+    }
+    const strategies: Array<() => Promise<string>> = [
+      () => tryCdp(true),
+      () => tryCdp(false),
+      () => tryCapturePage(),
+    ]
+    for (const strategy of strategies) {
+      try {
+        return await strategy()
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : String(err))
+      }
+    }
+    throw new Error(`截图失败: ${errors.join(' | ')}`)
+  }
 
   // navigate → 打开/导航外部浏览器
   if (action === 'navigate') {
@@ -196,14 +398,24 @@ async function executeExternalBrowserAction(payload: BrowserActionPayload, appId
       // ── 截图：按浏览器窗口整屏截图 ──
       case 'screenshot': {
         await ensureCdpAttached(wc, appId)
+        await wc.debugger.sendCommand('Page.bringToFront').catch(() => {})
 
-        // 截取整个浏览器窗口可视区域
-        const { data: base64 } = await wc.debugger.sendCommand('Page.captureScreenshot', {
-          format: 'png',
-          fromSurface: true,
-        }) as { data: string }
-
-        const dataUrl = `data:image/png;base64,${base64}`
+        // Windows 隐藏窗口下截图经常卡住：失败时临时显示窗口后重试，再恢复隐藏
+        let dataUrl = ''
+        let temporarilyShown = false
+        try {
+          dataUrl = await captureScreenshotDataUrl(wc)
+        } catch (firstErr) {
+          if (process.platform !== 'win32' || !browserHiddenMode || extWin.isDestroyed()) throw firstErr
+          if (!extWin.isVisible()) {
+            extWin.showInactive()
+            temporarilyShown = true
+            await sleep(120)
+          }
+          dataUrl = await captureScreenshotDataUrl(wc)
+        } finally {
+          if (temporarilyShown && !extWin.isDestroyed()) extWin.hide()
+        }
 
         // 采集页面结构信息，保持与内嵌浏览器返回结构一致
         let pageInfo: Record<string, unknown> = {
@@ -213,7 +425,7 @@ async function executeExternalBrowserAction(payload: BrowserActionPayload, appId
           elements: [],
         }
         try {
-          const raw = await wc.executeJavaScript(`
+          const raw = await withTimeout(wc.executeJavaScript(`
             (function() {
               var info = { title: document.title, url: location.href, viewport: { w: window.innerWidth, h: window.innerHeight } };
               var els = [];
@@ -238,7 +450,7 @@ async function executeExternalBrowserAction(payload: BrowserActionPayload, appId
               info.elements = els;
               return JSON.stringify(info);
             })()
-          `)
+          `), 4000, 'collect page info')
           pageInfo = JSON.parse(String(raw))
         } catch {
           // 页面脚本失败时降级到基础信息
@@ -1249,14 +1461,20 @@ export function openExternalBrowser(url: string, appId: string = DEFAULT_APP_ID)
     width: 1920,
     height: 1080,
     show: !browserHiddenMode,
+    paintWhenInitiallyHidden: true,
+    autoHideMenuBar: true,
     title: `浏览器 [${appId}]`,
     backgroundColor: '#1e1e1e',
     webPreferences: {
+      backgroundThrottling: false,
       contextIsolation: true,
       nodeIntegration: false,
       partition: `persist:browser-${appId}`,
     },
   })
+  // 外部浏览器窗口不显示系统菜单（Windows/Linux）
+  win.setMenuBarVisibility(false)
+  win.removeMenu()
 
   const instance: BrowserInstance = {
     win,
@@ -1282,6 +1500,13 @@ export function openExternalBrowser(url: string, appId: string = DEFAULT_APP_ID)
   // 页面加载失败 → 通知渲染进程 + 显示友好错误页
   wc.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL, isMainFrame) => {
     console.error(`[Browser] did-fail-load: code=${errorCode} desc="${errorDescription}" url="${validatedURL}"`)
+    rememberBrowserConsole({
+      appId,
+      level: 'error',
+      message: `[页面加载失败] ${validatedURL} — ${errorCode} ${errorDescription}`,
+      source: validatedURL,
+      pageUrl: validatedURL,
+    })
     // 把错误信息发给渲染进程，自动反馈给 AI
     sendExternalStatus({
       type: 'console',
@@ -1358,6 +1583,14 @@ export function openExternalBrowser(url: string, appId: string = DEFAULT_APP_ID)
       info: 'info', warning: 'warn', error: 'error', debug: 'log',
     }
     const consoleLevel = levelMap[event.level as string] ?? 'log'
+    rememberBrowserConsole({
+      appId,
+      level: consoleLevel,
+      message: event.message,
+      source: event.sourceId,
+      line: event.lineNumber,
+      pageUrl: wc.getURL(),
+    })
     sendExternalStatus({
       type: 'console',
       appId,

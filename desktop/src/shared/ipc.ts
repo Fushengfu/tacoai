@@ -133,6 +133,9 @@ export const IpcChannel = {
   /** GUI-Plus 配置 */
   GUI_PLUS_GET: 'gui-plus:get',
   GUI_PLUS_SAVE: 'gui-plus:save',
+  /** Prompt 配置（可选文件覆盖） */
+  PROMPT_CONFIG_GET: 'prompt-config:get',
+  PROMPT_CONFIG_SAVE: 'prompt-config:save',
 
   /** 窗口拖拽 — 手动实现以获取自定义光标控制 */
   WINDOW_DRAG_START: 'window:drag-start',
@@ -296,6 +299,29 @@ export type SystemInfo = {
   nodeVersion: string
   electronVersion: string
   locale: string
+}
+
+/** Prompt 配置层 */
+export type PromptLayerConfig = {
+  /** 所有模式通用追加文本 */
+  allExtra?: string
+  /** chat 模式追加文本 */
+  chatExtra?: string
+  /** agent 模式追加文本 */
+  agentExtra?: string
+  /** chat 模式完整覆盖（可选） */
+  chatOverride?: string
+  /** agent 模式完整覆盖（可选） */
+  agentOverride?: string
+}
+
+/** Prompt 配置（存储在 ~/.taco/prompt-config.json） */
+export type PromptConfig = {
+  version?: number
+  common?: PromptLayerConfig
+  provider?: Record<string, PromptLayerConfig>
+  model?: Record<string, PromptLayerConfig>
+  updatedAt?: string
 }
 
 /** 支持的编辑器 */
@@ -745,6 +771,12 @@ export type TacoApi = {
   guiPlus: {
     getConfig: () => Promise<GuiPlusConfig>
     saveConfig: (config: GuiPlusConfig) => Promise<void>
+  }
+  prompt: {
+    /** 读取 prompt 配置（文件缺失时返回默认空配置） */
+    getConfig: () => Promise<PromptConfig>
+    /** 保存 prompt 配置 */
+    saveConfig: (config: PromptConfig) => Promise<PromptConfig>
   }
 }
 

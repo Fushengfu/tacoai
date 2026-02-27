@@ -105,7 +105,7 @@ function looksLikePseudoExecution(text: string): boolean {
 function looksLikeFinalCompletion(text: string): boolean {
   const normalized = text.trim().toLowerCase()
   if (!normalized) return false
-  const completionPattern = /(任务已完成|已完成任务|处理完成|完成了|all done|task completed|completed)/i
+  const completionPattern = /(任务已完成|已完成任务|处理完成|完成了|已修复|修复完成|已解决|问题已解决|已搞定|搞定了|已处理好|all done|task completed|completed)/i
   const negativePattern = /(未完成|没完成|无法完成|不能完成|失败|error|aborted|取消|中断)/i
   return completionPattern.test(normalized) && !negativePattern.test(normalized)
 }
@@ -418,6 +418,7 @@ export async function runAgent(
   let forceToolChoiceThisRound = false
   let forceToolRetryCount = 0
   let forcePlanProgressRetryCount = 0
+  let ephemeralRoundConstraint = ''
 
   while (round < MAX_TOOL_ROUNDS) {
     // ── 检查是否被中断 ──
@@ -444,7 +445,13 @@ export async function runAgent(
       return
     }
 
-    log('AGENT', { round, messageCount: workingMessages.length }, logScope)
+    const requestMessages =
+      ephemeralRoundConstraint
+        ? [...workingMessages, { role: 'system' as const, content: ephemeralRoundConstraint }]
+        : workingMessages
+    ephemeralRoundConstraint = ''
+
+    log('AGENT', { round, messageCount: requestMessages.length }, logScope)
 
     let textContent = ''
     let toolCalls: ToolCall[] = []
@@ -455,7 +462,7 @@ export async function runAgent(
       forceToolChoiceThisRound = false
       for await (const event of requestStreamWithTools(
         provider,
-        workingMessages,
+        requestMessages,
         overrides,
         { tools: getAllToolDefinitions(), toolChoice },
         signal,
@@ -523,20 +530,13 @@ export async function runAgent(
               text: step.text,
             })),
           }, logScope)
-          workingMessages.push({
-            role: 'assistant',
-            content: textContent || '（上一轮未更新执行计划状态）',
-          })
           const unfinishedText = unfinishedPlanSteps
             .slice(0, 8)
             .map(({ index, step }) => `${index}: ${step.text} [${step.status}]`)
             .join('\n')
-          workingMessages.push({
-            role: 'user',
-            content:
-              '[继续执行约束]\n你还有执行计划步骤未完成状态更新。给出最终总结前，必须先调用 update_plan_progress 将剩余步骤逐个标记为 done 或 failed（必要时填写 note），然后再继续回复。\n未完成步骤（stepIndex 从 0 开始）:\n' +
-              unfinishedText,
-          })
+          ephemeralRoundConstraint =
+            '[执行约束]\n你还有执行计划步骤未完成状态更新。给出最终总结前，必须先调用 update_plan_progress 将剩余步骤逐个标记为 done 或 failed（必要时填写 note），然后再继续回复。\n未完成步骤（stepIndex 从 0 开始）:\n' +
+            unfinishedText
           forceToolChoiceThisRound = true
           continue
         }
@@ -567,14 +567,7 @@ export async function runAgent(
             : 'actionable request produced no tool_calls',
           retry: forceToolRetryCount,
         }, logScope)
-        workingMessages.push({
-          role: 'assistant',
-          content: textContent || '（上一轮未产出可执行工具调用）',
-        })
-        workingMessages.push({
-          role: 'user',
-          content: '[继续执行约束]\n你上一轮没有调用任何工具。对于可执行任务，下一轮必须直接返回 tool_calls；不要输出命令示例代码块，不要只做口头说明。',
-        })
+        ephemeralRoundConstraint = '[执行约束]\n你上一轮没有调用任何工具。对于可执行任务，下一轮必须直接返回 tool_calls；不要输出命令示例代码块，不要只做口头说明。'
         forceToolChoiceThisRound = true
         continue
       }

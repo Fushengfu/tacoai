@@ -662,32 +662,34 @@ export function ChatPanel({
       >
         <div className="topbar-title">{title}</div>
         <div className="topbar-actions no-drag">
-          <select
-            className="editor-select"
-            value={editor}
-            onChange={(e) => onEditorChange(e.target.value as EditorId)}
-            title="选择打开文件的编辑器"
-          >
-            {Object.entries(editorCommands).map(([id, { label }]) => (
-              <option key={id} value={id}>{label}</option>
-            ))}
-          </select>
-          <button
-            className={`pill terminal-toggle ${showTerminal ? 'active' : ''}`}
-            type="button"
-            onClick={onToggleTerminal}
-            title={showTerminal ? '关闭终端' : '打开终端'}
-          >
-            {'>'}_
-          </button>
-          {messages.length > 0 && (
-            <button className="pill" type="button" onClick={onClearChat}>
-              清空
+          <div className="topbar-main-actions">
+            <select
+              className="editor-select"
+              value={editor}
+              onChange={(e) => onEditorChange(e.target.value as EditorId)}
+              title="选择打开文件的编辑器"
+            >
+              {Object.entries(editorCommands).map(([id, { label }]) => (
+                <option key={id} value={id}>{label}</option>
+              ))}
+            </select>
+            <button
+              className={`pill terminal-toggle ${showTerminal ? 'active' : ''}`}
+              type="button"
+              onClick={onToggleTerminal}
+              title={showTerminal ? '关闭终端' : '打开终端'}
+            >
+              {'>'}_
             </button>
-          )}
-          <button className="pill new-session-btn" type="button" onClick={onNewSession} title="在当前项目中新建会话">
-            + 新建会话
-          </button>
+            {messages.length > 0 && (
+              <button className="pill" type="button" onClick={onClearChat}>
+                清空
+              </button>
+            )}
+            <button className="pill new-session-btn" type="button" onClick={onNewSession} title="在当前项目中新建会话">
+              + 新建会话
+            </button>
+          </div>
           {showWindowControls && (
             <div className="window-controls">
               <button
@@ -697,7 +699,9 @@ export function ChatPanel({
                 title="最小化"
                 aria-label="最小化"
               >
-                _
+                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                  <path d="M3 8.5h10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
               </button>
               <button
                 type="button"
@@ -706,7 +710,9 @@ export function ChatPanel({
                 title="最大化/还原"
                 aria-label="最大化"
               >
-                □
+                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                  <rect x="3.25" y="3.25" width="9.5" height="9.5" fill="none" stroke="currentColor" strokeWidth="1.5" rx="1" />
+                </svg>
               </button>
               <button
                 type="button"
@@ -715,7 +721,9 @@ export function ChatPanel({
                 title="关闭"
                 aria-label="关闭"
               >
-                ✕
+                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                  <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
               </button>
             </div>
           )}
