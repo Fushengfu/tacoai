@@ -33,23 +33,40 @@ function isExternalUrl(url: string): boolean {
 
 function normalizeTrayIcon(image: Electron.NativeImage): Electron.NativeImage {
   if (image.isEmpty()) return image
+  const trimmed = trimTransparentPadding(image)
 
   if (process.platform === 'darwin') {
-    // macOS 菜单栏图标需要小尺寸 + template image，否则会显得过大/不协调
-    const resized = image.resize({ width: 24, height: 24, quality: 'best' })
-    resized.setTemplateImage(true)
-    return resized
+    // macOS: 使用真实应用图标（非 template），避免显示白点
+    return trimmed.resize({ width: 20, height: 20, quality: 'best' })
   }
 
   if (process.platform === 'win32') {
-    return image.resize({ width: 16, height: 16, quality: 'best' })
+    // Windows: 适当放大，避免托盘里过小
+    return trimmed.resize({ width: 20, height: 20, quality: 'best' })
   }
 
-  return image
+  return trimmed
 }
 
 function resolveTrayIcon() {
   const candidates = [
+    // macOS 优先 icns，Windows 优先 ico，减少格式兼容问题
+    ...(process.platform === 'darwin' ? [
+      path.join(process.cwd(), 'desktop', 'build', 'icon.icns'),
+      path.join(process.cwd(), 'build', 'icon.icns'),
+      path.join(__dirname, '../../build/icon.icns'),
+      path.join(app.getAppPath(), 'build', 'icon.icns'),
+      path.join(process.resourcesPath, 'build', 'icon.icns'),
+      path.join(process.resourcesPath, 'icon.icns'),
+    ] : []),
+    ...(process.platform === 'win32' ? [
+      path.join(process.cwd(), 'desktop', 'build', 'icon.ico'),
+      path.join(process.cwd(), 'build', 'icon.ico'),
+      path.join(__dirname, '../../build/icon.ico'),
+      path.join(app.getAppPath(), 'build', 'icon.ico'),
+      path.join(process.resourcesPath, 'build', 'icon.ico'),
+      path.join(process.resourcesPath, 'icon.ico'),
+    ] : []),
     path.join(process.cwd(), 'desktop', 'build', 'icon.png'),
     path.join(process.cwd(), 'desktop', 'build', 'icon.ico'),
     path.join(process.cwd(), 'desktop', 'build', 'icon.icns'),
@@ -82,6 +99,38 @@ function resolveTrayIcon() {
   }
 
   return normalizeTrayIcon(nativeImage.createEmpty())
+}
+
+function trimTransparentPadding(image: Electron.NativeImage): Electron.NativeImage {
+  try {
+    const { width, height } = image.getSize()
+    if (width <= 0 || height <= 0) return image
+
+    const bitmap = image.toBitmap()
+    let minX = width
+    let minY = height
+    let maxX = -1
+    let maxY = -1
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        // toBitmap: BGRA 顺序，alpha 在第 4 个字节
+        const alpha = bitmap[(y * width + x) * 4 + 3]
+        if (alpha > 8) {
+          if (x < minX) minX = x
+          if (y < minY) minY = y
+          if (x > maxX) maxX = x
+          if (y > maxY) maxY = y
+        }
+      }
+    }
+
+    if (maxX < minX || maxY < minY) return image
+    if (minX === 0 && minY === 0 && maxX === width - 1 && maxY === height - 1) return image
+    return image.crop({ x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 })
+  } catch {
+    return image
+  }
 }
 
 function showMainWindow() {
@@ -152,6 +201,8 @@ function createWindow() {
       additionalArguments: [`--taco-version=${app.getVersion()}`],
     }
   })
+
+  console.log(`Taco version: ${app.getVersion()}`)
 
   /* ---- 拦截链接点击：通知渲染进程在内嵌浏览器中打开 ---- */
   win.webContents.setWindowOpenHandler(({ url }) => {

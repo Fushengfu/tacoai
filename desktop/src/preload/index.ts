@@ -46,10 +46,21 @@ function resolveAppVersion(): string {
   return value || '0.0.0'
 }
 
-const appVersion = resolveAppVersion()
+let appVersion = resolveAppVersion()
+void ipcRenderer.invoke(IpcChannel.APP_GET_VERSION)
+  .then((version) => {
+    if (typeof version === 'string' && version.trim()) {
+      appVersion = version.trim()
+    }
+  })
+  .catch(() => {
+    // ignore: fallback to launch argument version
+  })
 
 const tacoApi: TacoApi = {
-  version: appVersion,
+  get version() {
+    return appVersion
+  },
   system: systemInfo,
   shell: {
     openInEditor: (filePath: string, editor: EditorId) =>

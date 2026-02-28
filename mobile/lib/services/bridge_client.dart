@@ -263,6 +263,20 @@ class BridgeClient {
       },
     );
   }
+
+  String screenshotUrl(String screenshotPath) {
+    final raw = screenshotPath.trim();
+    if (raw.isEmpty) return '';
+    if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
+    final uri = _uri(
+      '/screenshot',
+      queryParameters: <String, String>{
+        'path': raw,
+        if (config.token.isNotEmpty) 'token': config.token,
+      },
+    );
+    return uri.toString();
+  }
 }
 
 class _BridgeEndpoint {

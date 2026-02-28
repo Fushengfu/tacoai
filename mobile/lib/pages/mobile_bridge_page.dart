@@ -286,11 +286,7 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
   }
 
   String _buildScreenshotUrl(String screenshotPath) {
-    final path = screenshotPath.trim();
-    if (path.startsWith('http://') || path.startsWith('https://')) return path;
-    final encodedPath = Uri.encodeQueryComponent(path);
-    final encodedToken = Uri.encodeQueryComponent(_config.token);
-    return 'http://${_config.host}:${_config.port}/screenshot?path=$encodedPath&token=$encodedToken';
+    return _client.screenshotUrl(screenshotPath);
   }
 
   List<String> _extractScreenshotUrls(DesktopBridgeMessage msg) {
@@ -321,7 +317,10 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
         }
       }
     }
-    return paths.map(_buildScreenshotUrl).toList();
+    return paths
+        .map(_buildScreenshotUrl)
+        .where((url) => url.isNotEmpty)
+        .toList();
   }
 
   Future<void> _openImagePreview(String imageUrl) async {

@@ -109,6 +109,8 @@ export const IpcChannel = {
 
   /** renderer → main, 打开日志目录 */
   OPEN_LOG_DIR: 'app:open-log-dir',
+  /** renderer → main, 获取应用版本号（来自 app.getVersion()） */
+  APP_GET_VERSION: 'app:get-version',
   /** renderer → main, 触发系统通知 */
   APP_NOTIFY: 'app:notify',
   /** renderer → main, 获取移动端桥接配置 */
@@ -202,11 +204,19 @@ export type ChatStreamPayload = {
 /* ------------------------------------------------------------------ */
 
 /** chat:chunk 推送体 */
+export type IpcTokenUsage = {
+  promptTokens?: number
+  completionTokens?: number
+  totalTokens?: number
+}
+
+/** chat:chunk 推送体 */
 export type ChatChunkData = {
   requestId: string
   chunk: string
   done: boolean
   error?: string
+  usage?: IpcTokenUsage
 }
 
 /** agent:stream 请求体 */
@@ -269,6 +279,7 @@ export type AgentEventData = {
   | { type: 'confirm'; confirmId: string; toolCalls: IpcToolCall[]; risks: IpcRiskInfo[] }
   | { type: 'tool_results'; results: IpcToolResult[] }
   | { type: 'git_commit'; hash: string; message: string }
+  | { type: 'usage'; usage: IpcTokenUsage }
   | { type: 'plan_init'; summary: string; steps: string[]; reasoning?: string }
   | { type: 'plan_progress'; stepIndex: number; status: PlanStepStatus; note?: string }
   | { type: 'done' }

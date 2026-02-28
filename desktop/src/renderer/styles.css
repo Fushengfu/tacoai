@@ -425,6 +425,11 @@ body.is-resizing iframe {
   overflow: hidden;
 }
 
+.topbar.has-window-controls {
+  position: relative;
+  padding-right: 128px;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Draggable bars — 手动拖拽，cursor 完全由 CSS 控制                   */
 /* ------------------------------------------------------------------ */
@@ -489,6 +494,10 @@ body.is-dragging * {
   justify-content: flex-end;
 }
 
+.topbar-actions.has-window-controls .topbar-main-actions {
+  margin-right: 8px;
+}
+
 .topbar-main-actions {
   display: flex;
   align-items: center;
@@ -504,6 +513,17 @@ body.is-dragging * {
   padding-left: 8px;
   border-left: 1px solid rgba(255, 255, 255, 0.08);
   flex-shrink: 0;
+}
+
+.topbar.has-window-controls .window-controls {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  margin-left: 0;
+  padding: 0 8px 0 10px;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(12, 16, 24, 0.75), rgba(8, 10, 14, 0.65));
 }
 
 .window-control-btn {

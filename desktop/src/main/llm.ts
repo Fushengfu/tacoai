@@ -16,6 +16,13 @@ export type ChatMessage = {
 export type StreamEvent =
   | { type: 'text'; content: string }
   | { type: 'tool_calls'; toolCalls: ToolCall[] }
+  | { type: 'usage'; usage: TokenUsage }
+
+export type TokenUsage = {
+  promptTokens?: number
+  completionTokens?: number
+  totalTokens?: number
+}
 
 export type ProviderKey = 'deepseek' | 'kimi' | 'minimax' | 'glm'
 
@@ -105,56 +112,14 @@ function normalizeMessages(messages: ChatMessage[]): ChatMessage[] {
   return out
 }
 
-function maskBearerToken(raw: string): string {
-  const text = raw.trim()
-  const lower = text.toLowerCase()
-  if (!lower.startsWith('bearer ')) return '[redacted]'
-  const token = text.slice(7).trim()
-  if (!token) return 'Bearer [redacted]'
-  const tail = token.slice(-4)
-  return `Bearer ***${tail}`
-}
-
-function sanitizeHeadersForLog(headers: HeadersInit | undefined): Record<string, string> {
+function fullHeadersForLog(headers: HeadersInit | undefined): Record<string, string> {
   const out: Record<string, string> = {}
   if (!headers) return out
   const h = new Headers(headers)
   for (const [k, v] of h.entries()) {
-    if (k.toLowerCase() === 'authorization') {
-      out[k] = maskBearerToken(v)
-    } else {
-      out[k] = v
-    }
+    out[k] = v
   }
   return out
-}
-
-function sanitizeTextForLog(text: string): string {
-  let next = text.replace(/sk-[a-zA-Z0-9_-]{16,}/g, 'sk-***')
-  if (next.includes('data:image/')) {
-    next = next.replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]+/g, '[data-url omitted]')
-  }
-  return next
-}
-
-function sanitizeBodyForLog(body: BodyInit | null | undefined): unknown {
-  if (typeof body !== 'string') return body ?? null
-  const safeText = sanitizeTextForLog(body)
-  try {
-    const parsed = JSON.parse(safeText) as Record<string, unknown>
-    const messages = Array.isArray(parsed.messages) ? parsed.messages : []
-    parsed.messages = messages.map((m) => {
-      if (!m || typeof m !== 'object') return m
-      const msg = { ...(m as Record<string, unknown>) }
-      if (typeof msg.content === 'string') {
-        msg.content = sanitizeTextForLog(msg.content).slice(0, 2000)
-      }
-      return msg
-    })
-    return parsed
-  } catch {
-    return safeText
-  }
 }
 
 function buildRequest(config: ProviderConfig, messages: ChatMessage[], stream: boolean, options?: RequestOptions) {
@@ -180,6 +145,10 @@ function buildRequest(config: ProviderConfig, messages: ChatMessage[], stream: b
     body.tools = options.tools
     body.tool_choice = options.toolChoice ?? 'auto'
   }
+  if (stream) {
+    // 请求 provider 在流式响应中返回 usage（尤其 total_tokens）
+    body.stream_options = { include_usage: true }
+  }
 
   return {
     url: `${config.baseUrl}/chat/completions`,
@@ -188,6 +157,46 @@ function buildRequest(config: ProviderConfig, messages: ChatMessage[], stream: b
       headers,
       body: JSON.stringify(body),
     } satisfies RequestInit
+  }
+}
+
+function shouldRetryWithoutStreamOptions(status: number, text: string): boolean {
+  if (status !== 400) return false
+  const lower = String(text).toLowerCase()
+  return (
+    lower.includes('stream_options') ||
+    lower.includes('include_usage') ||
+    lower.includes('unknown field') ||
+    lower.includes('unknown parameter') ||
+    lower.includes('invalid param')
+  )
+}
+
+async function retryStreamRequestWithoutUsageOption(
+  url: string,
+  init: RequestInit,
+  signal: AbortSignal | undefined,
+  logScope: string | undefined,
+): Promise<Response | null> {
+  if (typeof init.body !== 'string') return null
+  try {
+    const parsed = JSON.parse(init.body) as Record<string, unknown>
+    if (!parsed || typeof parsed !== 'object' || !('stream_options' in parsed)) return null
+    delete parsed.stream_options
+    const retryInit: RequestInit = {
+      ...init,
+      body: JSON.stringify(parsed),
+    }
+    log('REQUEST_RETRY', {
+      url,
+      method: retryInit.method,
+      reason: 'stream_options.include_usage not accepted, retry without stream_options',
+      headers: fullHeadersForLog(retryInit.headers),
+      body: retryInit.body ?? null,
+    }, logScope)
+    return await fetch(url, { ...retryInit, signal })
+  } catch {
+    return null
   }
 }
 
@@ -211,8 +220,8 @@ export async function requestChatCompletion(
   log('REQUEST', {
     url,
     method: init.method,
-    headers: sanitizeHeadersForLog(init.headers),
-    body: sanitizeBodyForLog(init.body),
+    headers: fullHeadersForLog(init.headers),
+    body: init.body ?? null,
   }, logScope)
 
   let response: Response
@@ -254,6 +263,7 @@ export async function* requestChatCompletionStream(
   overrides?: ProviderOverrides,
   signal?: AbortSignal,
   logScope?: string,
+  onUsage?: (usage: TokenUsage) => void,
 ): AsyncGenerator<string> {
   const config = getProviderConfig(provider, overrides)
   if (!config.apiKey || !config.model) {
@@ -267,8 +277,8 @@ export async function* requestChatCompletionStream(
   log('REQUEST', {
     url,
     method: init.method,
-    headers: sanitizeHeadersForLog(init.headers),
-    body: sanitizeBodyForLog(init.body),
+    headers: fullHeadersForLog(init.headers),
+    body: JSON.parse(init.body ?? '{}') ?? null,
   }, logScope)
 
   let response: Response
@@ -280,16 +290,25 @@ export async function* requestChatCompletionStream(
   }
 
   if (!response.ok) {
-    const text = await response.text()
-    log('RESPONSE', {
-      url,
-      status: response.status,
-      statusText: response.statusText,
-      headers: Object.fromEntries(response.headers.entries()),
-      durationMs: Date.now() - startTime,
-      body: text,
-    }, logScope)
-    throw new Error(`Request failed: ${response.status} ${response.statusText} ${text}`)
+    let text = await response.text()
+    if (shouldRetryWithoutStreamOptions(response.status, text)) {
+      const retryResponse = await retryStreamRequestWithoutUsageOption(url, init, signal, logScope)
+      if (retryResponse) {
+        response = retryResponse
+        if (!response.ok) text = await response.text()
+      }
+    }
+    if (!response.ok) {
+      log('RESPONSE', {
+        url,
+        status: response.status,
+        statusText: response.statusText,
+        headers: Object.fromEntries(response.headers.entries()),
+        durationMs: Date.now() - startTime,
+        body: text,
+      }, logScope)
+      throw new Error(`Request failed: ${response.status} ${response.statusText} ${text}`)
+    }
   }
 
   if (!response.body) {
@@ -300,6 +319,7 @@ export async function* requestChatCompletionStream(
   const decoder = new TextDecoder()
   let buffer = ''
   let accumulated = ''
+  const rawChunks: unknown[] = []
   // 保留首个 chunk 的结构信息和最后一个 chunk 的 usage 等字段
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let firstChunk: any = null
@@ -321,13 +341,16 @@ export async function* requestChatCompletionStream(
         const data = trimmed.slice(5).trim()
         if (data === '[DONE]') {
           // ── 流结束，用原始响应结构 + 合并内容记录日志 ──
-          logMergedStreamResponse(url, response.status, Date.now() - startTime, firstChunk, lastChunk, accumulated, logScope)
+          logMergedStreamResponse(url, response.status, Date.now() - startTime, firstChunk, lastChunk, accumulated, rawChunks, logScope)
           return
         }
         try {
           const parsed = JSON.parse(data)
+          rawChunks.push(parsed)
           if (!firstChunk) firstChunk = parsed
           lastChunk = parsed
+          const usage = parseTokenUsage(parsed)
+          if (usage) onUsage?.(usage)
           const content = parsed.choices?.[0]?.delta?.content
           if (content) {
             accumulated += content
@@ -340,17 +363,34 @@ export async function* requestChatCompletionStream(
     }
 
     // 正常读完（没收到 [DONE]）
-    logMergedStreamResponse(url, response.status, Date.now() - startTime, firstChunk, lastChunk, accumulated, logScope)
+    logMergedStreamResponse(url, response.status, Date.now() - startTime, firstChunk, lastChunk, accumulated, rawChunks, logScope)
   } catch (err) {
     log('RESPONSE_ERROR', {
       url,
       status: response.status,
       durationMs: Date.now() - startTime,
-      body: buildMergedResponse(firstChunk, lastChunk, accumulated),
+      body: buildMergedResponse(firstChunk, lastChunk, accumulated, rawChunks),
       error: String(err),
     }, logScope)
     throw err
   }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function parseTokenUsage(chunk: any): TokenUsage | null {
+  const usage = chunk?.usage
+  if (!usage || typeof usage !== 'object') return null
+
+  const promptTokens = Number(usage.prompt_tokens)
+  const completionTokens = Number(usage.completion_tokens)
+  const totalTokens = Number(usage.total_tokens)
+
+  const out: TokenUsage = {}
+  if (Number.isFinite(promptTokens)) out.promptTokens = promptTokens
+  if (Number.isFinite(completionTokens)) out.completionTokens = completionTokens
+  if (Number.isFinite(totalTokens)) out.totalTokens = totalTokens
+
+  return Object.keys(out).length > 0 ? out : null
 }
 
 /**
@@ -359,8 +399,8 @@ export async function* requestChatCompletionStream(
  * choices[0] 由 delta 合并为完整的 message。
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildMergedResponse(firstChunk: any, lastChunk: any, content: string) {
-  if (!firstChunk) return { content }
+function buildMergedResponse(firstChunk: any, lastChunk: any, content: string, rawChunks: unknown[] = []) {
+  if (!firstChunk) return { content, rawChunks }
   return {
     id: firstChunk.id,
     object: 'chat.completion',
@@ -374,6 +414,7 @@ function buildMergedResponse(firstChunk: any, lastChunk: any, content: string) {
       }
     ],
     usage: lastChunk?.usage ?? null,
+    rawChunks,
   }
 }
 
@@ -386,13 +427,14 @@ function logMergedStreamResponse(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   lastChunk: any,
   content: string,
+  rawChunks: unknown[] = [],
   logScope?: string,
 ) {
   log('RESPONSE', {
     url,
     status,
     durationMs,
-    body: buildMergedResponse(firstChunk, lastChunk, content),
+    body: buildMergedResponse(firstChunk, lastChunk, content, rawChunks),
   }, logScope)
 }
 
@@ -425,8 +467,8 @@ export async function* requestStreamWithTools(
   log('REQUEST', {
     url,
     method: init.method,
-    headers: sanitizeHeadersForLog(init.headers),
-    body: sanitizeBodyForLog(init.body),
+    headers: fullHeadersForLog(init.headers),
+    body: init.body ?? null,
   }, logScope)
 
   let response: Response
@@ -438,9 +480,18 @@ export async function* requestStreamWithTools(
   }
 
   if (!response.ok) {
-    const text = await response.text()
-    log('RESPONSE', { url, status: response.status, durationMs: Date.now() - startTime, body: text }, logScope)
-    throw new Error(`Request failed: ${response.status} ${response.statusText} ${text}`)
+    let text = await response.text()
+    if (shouldRetryWithoutStreamOptions(response.status, text)) {
+      const retryResponse = await retryStreamRequestWithoutUsageOption(url, init, signal, logScope)
+      if (retryResponse) {
+        response = retryResponse
+        if (!response.ok) text = await response.text()
+      }
+    }
+    if (!response.ok) {
+      log('RESPONSE', { url, status: response.status, durationMs: Date.now() - startTime, body: text }, logScope)
+      throw new Error(`Request failed: ${response.status} ${response.statusText} ${text}`)
+    }
   }
 
   if (!response.body) {
@@ -451,6 +502,7 @@ export async function* requestStreamWithTools(
   const decoder = new TextDecoder()
   let buffer = ''
   let accumulated = ''
+  const rawChunks: unknown[] = []
   let lastTextChunk = ''
   let repeatedTextChunkCount = 0
   // 累积 tool_calls（流式 delta 中分片到达）
@@ -479,13 +531,16 @@ export async function* requestStreamWithTools(
             const toolCalls = Array.from(toolCallsMap.values())
             yield { type: 'tool_calls', toolCalls }
           }
-          logMergedStreamResponse(url, response.status, Date.now() - startTime, firstChunk, lastChunk, accumulated, logScope)
+          logMergedStreamResponse(url, response.status, Date.now() - startTime, firstChunk, lastChunk, accumulated, rawChunks, logScope)
           return
         }
         try {
           const parsed = JSON.parse(data)
+          rawChunks.push(parsed)
           if (!firstChunk) firstChunk = parsed
           lastChunk = parsed
+          const usage = parseTokenUsage(parsed)
+          if (usage) yield { type: 'usage', usage }
 
           const delta = parsed.choices?.[0]?.delta
 
@@ -505,7 +560,7 @@ export async function* requestStreamWithTools(
                   const toolCalls = Array.from(toolCallsMap.values())
                   yield { type: 'tool_calls', toolCalls }
                 }
-                logMergedStreamResponse(url, response.status, Date.now() - startTime, firstChunk, lastChunk, accumulated, logScope)
+                logMergedStreamResponse(url, response.status, Date.now() - startTime, firstChunk, lastChunk, accumulated, rawChunks, logScope)
                 return
               }
             } else {
@@ -548,9 +603,15 @@ export async function* requestStreamWithTools(
       const toolCalls = Array.from(toolCallsMap.values())
       yield { type: 'tool_calls', toolCalls }
     }
-    logMergedStreamResponse(url, response.status, Date.now() - startTime, firstChunk, lastChunk, accumulated, logScope)
+    logMergedStreamResponse(url, response.status, Date.now() - startTime, firstChunk, lastChunk, accumulated, rawChunks, logScope)
   } catch (err) {
-    log('RESPONSE_ERROR', { url, status: response.status, durationMs: Date.now() - startTime, error: String(err) }, logScope)
+    log('RESPONSE_ERROR', {
+      url,
+      status: response.status,
+      durationMs: Date.now() - startTime,
+      body: buildMergedResponse(firstChunk, lastChunk, accumulated, rawChunks),
+      error: String(err),
+    }, logScope)
     throw err
   }
 }

@@ -4,7 +4,7 @@
  * 将所有 ipcMain handler 集中管理，main.ts 只需调用 registerIpcHandlers() 即可。
  */
 
-import { BrowserWindow, Notification, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, Notification, dialog, ipcMain, shell } from 'electron'
 import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron'
 import { exec } from 'node:child_process'
 import * as fs from 'node:fs/promises'
@@ -27,7 +27,7 @@ import type {
 } from '../shared/ipc'
 import { setBrowserAutoApproved, setAutoApproveCategories } from './tools'
 import type { RiskCategory } from './tools'
-import type { ProviderKey, ProviderOverrides } from './llm'
+import type { ProviderKey, ProviderOverrides, TokenUsage } from './llm'
 import { requestChatCompletion, requestChatCompletionStream } from './llm'
 import { runAgent, resolveConfirm } from './agent'
 import { gitLog, gitCommit, gitRollback, gitCommitFiles } from './git'
@@ -69,6 +69,7 @@ async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload)
   const { requestId, provider, messages, overrides, projectId, workspace } = payload
   const logScope = buildLogScope(projectId, workspace)
   const abortController = new AbortController()
+  let lastUsage: TokenUsage | undefined
   chatAbortControllers.set(requestId, abortController)
 
   try {
@@ -78,18 +79,21 @@ async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload)
       overrides as ProviderOverrides | undefined,
       abortController.signal,
       logScope,
+      (usage) => {
+        lastUsage = usage
+      },
     )) {
       if (event.sender.isDestroyed()) return
       event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk, done: false })
     }
     if (!event.sender.isDestroyed()) {
-      event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk: '', done: true })
+      event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk: '', done: true, usage: lastUsage })
     }
   } catch (error) {
     const aborted = abortController.signal.aborted || (error instanceof Error && error.name === 'AbortError')
     if (aborted) {
       if (!event.sender.isDestroyed()) {
-        event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk: '', done: true })
+        event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk: '', done: true, usage: lastUsage })
       }
       return
     }
@@ -490,6 +494,7 @@ export function registerIpcHandlers() {
     const logScope = buildLogScope(scope?.projectId, scope?.workspace)
     return shell.openPath(getLogDir(logScope))
   })
+  ipcMain.handle(IpcChannel.APP_GET_VERSION, () => app.getVersion())
   ipcMain.handle(IpcChannel.APP_NOTIFY, handleAppNotify)
   ipcMain.handle(IpcChannel.MOBILE_BRIDGE_GET, handleMobileBridgeGet)
   ipcMain.handle(IpcChannel.MOBILE_BRIDGE_SET, handleMobileBridgeSet)

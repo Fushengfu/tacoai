@@ -49,6 +49,8 @@ export function useChat() {
   const [streamingContents, setStreamingContents] = useState<Record<string, string>>({})
   /** 每个 thread 的待发送队列 */
   const [queues, setQueues] = useState<Record<string, QueuedMessage[]>>({})
+  /** 每个 thread 最近一次真实 usage.total_tokens */
+  const [usageTotalTokensByThread, setUsageTotalTokensByThread] = useState<Record<string, number | undefined>>({})
   /** 刚完成的 thread（短暂显示 ✓ 后自动清除） */
   const [completedThreads, setCompletedThreads] = useState<Record<string, boolean>>({})
 
@@ -132,6 +134,11 @@ export function useChat() {
     return threadMessages[threadId] ?? []
   }
 
+  function getUsageTotalTokens(threadId: string): number | undefined {
+    const value = usageTotalTokensByThread[threadId]
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+  }
+
   /* ------------------------------------------------------------------ */
   /*  Message CRUD                                                       */
   /* ------------------------------------------------------------------ */
@@ -152,6 +159,11 @@ export function useChat() {
 
   function clearMessages(threadId: string) {
     setMessages(threadId, [])
+    setUsageTotalTokensByThread((prev) => {
+      const next = { ...prev }
+      delete next[threadId]
+      return next
+    })
   }
 
   function deleteThreadMessages(threadId: string) {
@@ -167,6 +179,11 @@ export function useChat() {
       return next
     })
     setSendingThreads((prev) => {
+      const next = { ...prev }
+      delete next[threadId]
+      return next
+    })
+    setUsageTotalTokensByThread((prev) => {
       const next = { ...prev }
       delete next[threadId]
       return next
@@ -281,6 +298,7 @@ export function useChat() {
     setMessages(threadId, updatedMsgs)
     setSendingThreads((prev) => ({ ...prev, [threadId]: true }))
     setStreamingContents((prev) => ({ ...prev, [threadId]: '' }))
+    setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: undefined }))
 
     // 首条消息 → 自动命名
     if (currentMsgs.length === 0 && onFirstMessage) {
@@ -378,6 +396,10 @@ export function useChat() {
               accumulated += event.content
               // Agent 模式下直接更新消息内容，不使用独立的 streamingContent
               flushAgentMsg()
+            } else if (event.type === 'usage') {
+              if (typeof event.usage.totalTokens === 'number' && Number.isFinite(event.usage.totalTokens)) {
+                setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: event.usage.totalTokens }))
+              }
             } else if (event.type === 'tool_calls') {
               // AI 决定调用工具 → 当前文本作为该步骤的 thinking
               currentRound++
@@ -485,7 +507,15 @@ export function useChat() {
           const cleanup = globalThis.window.taco.chat.onChunk((data) => {
             if (data.requestId !== requestId) return
             if (data.error) { cleanup(); reject(new Error(data.error)); return }
-            if (data.done) { cleanup(); resolve(); return }
+            if (data.done) {
+              const totalTokens = data.usage?.totalTokens
+              if (typeof totalTokens === 'number' && Number.isFinite(totalTokens)) {
+                setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: totalTokens }))
+              }
+              cleanup()
+              resolve()
+              return
+            }
             accumulated += data.chunk
             setStreamingContents((prev) => ({ ...prev, [threadId]: accumulated }))
           })
@@ -574,6 +604,7 @@ export function useChat() {
 
     setSendingThreads((prev) => ({ ...prev, [threadId]: true }))
     setStreamingContents((prev) => ({ ...prev, [threadId]: '' }))
+    setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: undefined }))
 
     const promptConfig = await ensurePromptConfigLoaded()
     const model = String(providerForms[provider]?.model ?? '').trim() || undefined
@@ -634,6 +665,10 @@ export function useChat() {
             if (evt.type === 'text') {
               accumulated += evt.content
               flushAgentMsg()
+            } else if (evt.type === 'usage') {
+              if (typeof evt.usage.totalTokens === 'number' && Number.isFinite(evt.usage.totalTokens)) {
+                setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: evt.usage.totalTokens }))
+              }
             } else if (evt.type === 'tool_calls') {
               currentRound++
               const toolCalls: ToolCallInfo[] = evt.toolCalls.map((tc) => ({
@@ -729,7 +764,15 @@ export function useChat() {
           const cleanup = window.taco.chat.onChunk((data) => {
             if (data.requestId !== requestId) return
             if (data.error) { cleanup(); reject(new Error(data.error)); return }
-            if (data.done) { cleanup(); resolve(); return }
+            if (data.done) {
+              const totalTokens = data.usage?.totalTokens
+              if (typeof totalTokens === 'number' && Number.isFinite(totalTokens)) {
+                setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: totalTokens }))
+              }
+              cleanup()
+              resolve()
+              return
+            }
             accumulated += data.chunk
             setStreamingContents((prev) => ({ ...prev, [threadId]: accumulated }))
           })
@@ -795,6 +838,7 @@ export function useChat() {
     getStreamingContent,
     getQueue,
     getMessages,
+    getUsageTotalTokens,
     setMessages,
     clearMessages,
     deleteThreadMessages,

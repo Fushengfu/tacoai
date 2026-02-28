@@ -302,11 +302,12 @@ export const toolDefinitions: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'browser_screenshot',
-      description: '截取当前浏览器页面的截图并获取页面元素信息。返回包含页面标题、URL、可见元素列表的结构化信息。',
+      description: '截取当前浏览器页面并返回结构化页面信息（标题、URL、可见元素、截图路径）。调用前应先明确本次截图目标，避免无目的连续截图。',
       parameters: {
         type: 'object',
         properties: {
           appId: { type: 'string', description: '浏览器实例标识，不指定则使用 "default"' },
+          goal: { type: 'string', description: '本次截图的目标（例如：确认登录按钮可见/验证提交后提示是否出现）' },
         },
       },
     },
@@ -336,6 +337,7 @@ export const toolDefinitions: ToolDefinition[] = [
         type: 'object',
         properties: {
           instruction: { type: 'string', description: '对截图的操作指令（必填）' },
+          analysisGoal: { type: 'string', description: '分析目标与成功判定标准（建议填写，减少误判）。例如：定位“登录”按钮并返回可点击坐标。' },
           imageDataUrl: { type: 'string', description: '截图 data URL（与 imagePath 二选一）' },
           imagePath: { type: 'string', description: '截图文件路径（与 imageDataUrl 二选一）' },
           minPixels: { type: 'number', description: '图像最小像素阈值（可选）' },
@@ -590,7 +592,7 @@ export const toolDefinitions: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'mcp_call',
-      description: '调用 MCP (Model Context Protocol) 服务器提供的工具。使用前先通过 mcp_list_tools 查看可用工具。',
+      description: '调用 MCP (Model Context Protocol) 服务器提供的工具。调用前必须先通过 mcp_list_tools 读取最新 inputSchema 并按 schema 组装 arguments。',
       parameters: {
         type: 'object',
         properties: {
@@ -617,6 +619,123 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
 ]
+
+function normalizeParametersSchema(parameters: Record<string, unknown>): Record<string, unknown> {
+  const normalized = { ...parameters }
+  if (normalized.type === 'object' && normalized.additionalProperties === undefined) {
+    normalized.additionalProperties = false
+  }
+  return normalized
+}
+
+for (const definition of toolDefinitions) {
+  definition.function.parameters = normalizeParametersSchema(definition.function.parameters)
+}
+
+const TOOL_GUIDE_GROUPS: Array<{ title: string; names: string[] }> = [
+  {
+    title: '代码开发',
+    names: ['list_directory', 'find_file', 'search_files', 'read_file', 'write_file', 'delete_file', 'run_command'],
+  },
+  {
+    title: '计划与记忆',
+    names: ['propose_plan', 'update_plan_progress', 'save_note', 'delete_note'],
+  },
+  {
+    title: '浏览器自动化',
+    names: ['browser_navigate', 'browser_wait', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_get_content', 'browser_get_console_logs'],
+  },
+  {
+    title: '桌面自动化',
+    names: ['desktop_screenshot', 'gui_plus_analyze', 'desktop_action'],
+  },
+  {
+    title: 'MCP',
+    names: ['mcp_list_tools', 'mcp_call'],
+  },
+]
+
+const TOOL_GUIDE_NOTES: Record<string, string> = {
+  read_file: '大文件必须分块读取，优先带 startLine/endLine。',
+  write_file: '写入后建议 read_file 回读关键片段做落盘校验。',
+  run_command: '用于构建/测试/验证，失败时需回报关键信息与下一步。',
+  browser_screenshot: '每次截图必须附带明确目标（goal）。',
+  browser_get_console_logs: '页面异常优先读取控制台日志，再决定后续操作。',
+  gui_plus_analyze: '建议填写 analysisGoal，避免“看图闲聊”与误点击。',
+  mcp_list_tools: '先读取 inputSchema，再调用 mcp_call。',
+  mcp_call: 'arguments 必须严格按 inputSchema 组装。',
+}
+
+function getDefinition(name: string): ToolDefinition | undefined {
+  return toolDefinitions.find((item) => item.function.name === name)
+}
+
+function getSchemaKeys(parameters: Record<string, unknown>): { required: string[]; optional: string[] } {
+  const required = new Set<string>()
+  const optional = new Set<string>()
+  const requiredRaw = parameters.required
+  if (Array.isArray(requiredRaw)) {
+    for (const key of requiredRaw) {
+      if (typeof key === 'string' && key.trim()) required.add(key.trim())
+    }
+  }
+
+  const propertiesRaw = parameters.properties
+  if (propertiesRaw && typeof propertiesRaw === 'object') {
+    for (const key of Object.keys(propertiesRaw as Record<string, unknown>)) {
+      if (required.has(key)) continue
+      optional.add(key)
+    }
+  }
+
+  return {
+    required: Array.from(required),
+    optional: Array.from(optional),
+  }
+}
+
+function shortDescription(text: string): string {
+  const normalized = text.replace(/\s+/g, ' ').trim()
+  if (!normalized) return ''
+  const firstStop = normalized.search(/[。.!?]/)
+  if (firstStop <= 0) return normalized
+  return normalized.slice(0, firstStop + 1)
+}
+
+function buildToolSignature(name: string, parameters: Record<string, unknown>): string {
+  const keys = getSchemaKeys(parameters)
+  const requiredPart = keys.required.join(', ')
+  const optionalPart = keys.optional.map((key) => `${key}?`).join(', ')
+  const args = [requiredPart, optionalPart].filter(Boolean).join(', ')
+  return `${name}(${args})`
+}
+
+export function getToolDesignPromptBlock(): string {
+  const lines: string[] = [
+    '# 工具能力清单（调用前必须遵守）',
+    '- 仅调用与当前 intent 匹配的最小必要工具，避免无目的调用。',
+    '- 有可执行工具时优先执行，不输出“命令示例”代替真实执行。',
+    '- 声称完成前必须提供工具执行证据。',
+  ]
+
+  for (const group of TOOL_GUIDE_GROUPS) {
+    lines.push(`## ${group.title}`)
+    for (const name of group.names) {
+      const definition = getDefinition(name)
+      if (!definition) continue
+      const signature = buildToolSignature(name, definition.function.parameters)
+      const desc = shortDescription(definition.function.description)
+      const note = TOOL_GUIDE_NOTES[name]
+      if (note) {
+        lines.push(`- \`${signature}\`：${desc} 关键要求：${note}`)
+      } else {
+        lines.push(`- \`${signature}\`：${desc}`)
+      }
+    }
+  }
+
+  return lines.join('\n')
+}
 
 /**
  * 获取完整的工具定义列表（静态工具 + 动态 MCP 工具描述）。
@@ -2297,6 +2416,7 @@ async function execGuiPlusAnalyze(args: Record<string, unknown>, signal?: AbortS
     minPixels: effectiveMinPixels,
     maxPixels: effectiveMaxPixels,
     signal,
+    logScope,
   })
 
   if (result.usage) {

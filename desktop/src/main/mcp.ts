@@ -250,6 +250,7 @@ function sendJsonRpc(state: McpServerState, method: string, params?: unknown): P
       reject(new Error('MCP 服务器进程不可用'))
       return
     }
+    console.log(`Sending JSON-RPC message: ${method}`, params)
 
     const id = state.nextId++
     const body = JSON.stringify({

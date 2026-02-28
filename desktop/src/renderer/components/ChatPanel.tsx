@@ -669,12 +669,12 @@ export function ChatPanel({
     <main className="main-panel">
       {/* Topbar */}
       <header
-        className="topbar draggable"
+        className={`topbar draggable ${showWindowControls ? 'has-window-controls' : ''}`}
         {...drag}
         onDoubleClick={() => globalThis.window.taco.window.toggleMaximize()}
       >
         <div className="topbar-title">{title}</div>
-        <div className="topbar-actions no-drag">
+        <div className={`topbar-actions no-drag ${showWindowControls ? 'has-window-controls' : ''}`}>
           <div className="topbar-main-actions">
             <select
               className="editor-select"

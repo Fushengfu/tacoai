@@ -227,8 +227,8 @@ export default function App() {
     providerSettings.providerForms[currentProvider]
   )
 
-  // 上下文窗口使用量
-  const usedTokens = estimateTokens(
+  // 上下文窗口使用量：优先使用模型真实 usage.total_tokens，缺失时回退本地估算
+  const estimatedTokens = estimateTokens(
     buildSystemPrompt({
       mode: currentMode,
       workspace: currentWorkspace,
@@ -237,6 +237,8 @@ export default function App() {
     })
   ) +
     messages.reduce((sum, m) => sum + estimateTokens(m.content), 0)
+  const usageTotalTokens = chat.getUsageTotalTokens(sessionId)
+  const usedTokens = typeof usageTotalTokens === 'number' ? usageTotalTokens : estimatedTokens
   const maxTokens = resolveProviderMaxTokens(currentProvider, providerSettings.providerForms[currentProvider])
   const contextPercent = Math.min(Math.round((usedTokens / maxTokens) * 100), 100)
 

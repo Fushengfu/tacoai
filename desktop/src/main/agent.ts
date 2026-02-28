@@ -9,10 +9,10 @@
  * 通过 callback 向调用方推送事件（文本流、工具调用、工具结果、确认请求）。
  */
 
-import type { ChatMessage, ProviderOverrides } from './llm'
+import type { ChatMessage, ProviderOverrides, TokenUsage } from './llm'
 import type { ProviderKey } from './llm'
 import { requestChatCompletion, requestStreamWithTools } from './llm'
-import { getAllToolDefinitions, executeToolCalls, assessToolCallsRisk, setBrowserAutoApproved, setDesktopAutoApproved, getWorkspaceTree } from './tools'
+import { getAllToolDefinitions, executeToolCalls, assessToolCallsRisk, setBrowserAutoApproved, setDesktopAutoApproved, getWorkspaceTree, getToolDesignPromptBlock } from './tools'
 import type { ToolCall, ToolResult, RiskInfo } from './tools'
 import { log } from './logger'
 import { gitCommit, gitEnsureRepo } from './git'
@@ -36,6 +36,8 @@ export type AgentEvent =
   | { type: 'tool_results'; results: ToolResult[] }
   /** Git 自动提交完成 */
   | { type: 'git_commit'; hash: string; message: string }
+  /** 本轮请求 token 使用量 */
+  | { type: 'usage'; usage: TokenUsage }
   /** 计划初始化（用户确认后） */
   | { type: 'plan_init'; summary: string; steps: string[]; reasoning?: string }
   /** 计划步骤进度更新 */
@@ -126,6 +128,93 @@ function isCodeMutationIntent(messages: ChatMessage[]): boolean {
   return codeObjectPattern.test(user) && mutationPattern.test(user)
 }
 
+function requiresCommandValidationIntent(messages: ChatMessage[]): boolean {
+  const lastUser = [...messages].reverse().find((m) => m.role === 'user')?.content ?? ''
+  const user = lastUser.trim().toLowerCase()
+  if (!user) return false
+  const validationPattern = /(验证|校验|测试|单测|集成测试|构建|编译|运行并检查|跑一下|test|unit test|integration test|verify|validation|build|compile|lint)/i
+  return validationPattern.test(user)
+}
+
+type CompletionEvidence = {
+  inspectedStructure: boolean
+  readAnyFile: boolean
+  readBackChangedFile: boolean
+  verifiedByCommand: boolean
+  changedPaths: Set<string>
+  hasReadableChangedFile: boolean
+}
+
+function normalizePathForEvidence(rawPath: unknown, workspace: string): string {
+  const text = String(rawPath ?? '').trim()
+  if (!text) return ''
+  const normalized = text.replace(/[\\]+/g, '/').replace(/\/+/g, '/').replace(/^\.\//, '')
+  if (!normalized) return ''
+  const ws = String(workspace ?? '').trim().replace(/[\\]+/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '')
+  if (!ws) return normalized.toLowerCase()
+  const lowerPath = normalized.toLowerCase()
+  const lowerWs = ws.toLowerCase()
+  if (lowerPath === lowerWs) return ''
+  if (lowerPath.startsWith(`${lowerWs}/`)) return normalized.slice(ws.length + 1).toLowerCase()
+  return lowerPath
+}
+
+function parseToolArgs(call?: ToolCall): Record<string, unknown> {
+  if (!call) return {}
+  try {
+    const parsed = JSON.parse(call.function.arguments)
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {}
+  } catch {
+    return {}
+  }
+}
+
+function extractPrimaryPathFromToolCall(call?: ToolCall): string {
+  const args = parseToolArgs(call)
+  const direct = args.path ?? args.file_path ?? ''
+  return String(direct ?? '')
+}
+
+function updateCompletionEvidence(
+  evidence: CompletionEvidence,
+  toolCalls: ToolCall[],
+  results: ToolResult[],
+  workspace: string,
+): void {
+  const callMap = new Map(toolCalls.map((tc) => [tc.id, tc] as const))
+  const batchChangedPaths = new Set<string>()
+
+  for (const result of results) {
+    if (!result.success || !result.fileChange) continue
+    const changedPath = normalizePathForEvidence(result.fileChange.filePath, workspace)
+    if (!changedPath) continue
+    evidence.changedPaths.add(changedPath)
+    batchChangedPaths.add(changedPath)
+    if (result.fileChange.newContent !== null) evidence.hasReadableChangedFile = true
+  }
+
+  for (const result of results) {
+    if (!result.success) continue
+    if (result.name === 'list_directory' || result.name === 'find_file' || result.name === 'search_files') {
+      evidence.inspectedStructure = true
+      continue
+    }
+    if (result.name === 'run_command') {
+      evidence.verifiedByCommand = true
+      continue
+    }
+    if (result.name === 'read_file') {
+      evidence.readAnyFile = true
+      const call = callMap.get(result.tool_call_id)
+      const pathArg = extractPrimaryPathFromToolCall(call)
+      const normalizedPath = normalizePathForEvidence(pathArg, workspace)
+      if (normalizedPath && (evidence.changedPaths.has(normalizedPath) || batchChangedPaths.has(normalizedPath))) {
+        evidence.readBackChangedFile = true
+      }
+    }
+  }
+}
+
 /** 外部调用：用户响应了确认请求 */
 export function resolveConfirm(confirmId: string, approved: boolean) {
   const resolver = pendingConfirms.get(confirmId)
@@ -161,15 +250,8 @@ const MAX_TOOL_ROUNDS = 1000 // 防止无限循环
 let confirmCounter = 0
 
 /* ------------------------------------------------------------------ */
-/*  Token 估算 & AI 摘要压缩                                             */
+/*  AI 摘要压缩                                                        */
 /* ------------------------------------------------------------------ */
-
-/** 粗略估算字符串的 token 数 */
-function estimateTokens(text: string): number {
-  const cjk = (text.match(/[\u4e00-\u9fff\u3400-\u4dbf]/g) || []).length
-  const other = text.length - cjk
-  return Math.ceil(cjk * 1.2 + other * 0.25)
-}
 
 /** 单条消息内容的最大字符数（超过则截断，约 8K tokens） */
 const MAX_SINGLE_MSG_CHARS = 32000
@@ -215,11 +297,7 @@ async function summarizeMessages(
       : m.role === 'user' ? '用户'
       : m.role === 'tool' ? '工具结果'
       : '系统'
-    // 对超长内容进行截断以控制摘要请求自身的 token 量
-    const content = m.content.length > 8000
-      ? m.content.slice(0, 8000) + '...[截断]'
-      : m.content
-    lines.push(`[${role}] ${content}`)
+    lines.push(`[${role}] ${m.content}`)
   }
 
   const conversationText = lines.join('\n\n')
@@ -252,7 +330,7 @@ async function summarizeMessages(
     // 摘要失败时回退为简单文本拼接
     return messagesToSummarize.map((m) => {
       const tag = m.role === 'assistant' ? 'AI' : m.role === 'user' ? 'User' : m.role
-      return `[${tag}] ${m.content.slice(0, 200)}`
+      return `[${tag}] ${m.content}`
     }).join('\n')
   }
 }
@@ -260,10 +338,9 @@ async function summarizeMessages(
 /**
  * Agent 循环内的上下文 AI 摘要压缩。
  *
- * 策略（多层递进）：
- * 1. 截断超长的单条消息（tool results / assistant 文本）
- * 2. 如果总 token 仍超预算 → 提取要压缩的旧消息 → 调用 AI 生成摘要 → 替换
- * 3. 始终保留 system prompt（第 0 条）和最近 N 条消息
+ * 策略：
+ * 1. 仅使用 usage.total_tokens 判断是否需要压缩
+ * 2. 触发压缩时，保留 system prompt（第 0 条），其余全部消息做 AI 摘要替换
  *
  * @returns  被压缩替换的消息数（0 表示无需压缩）
  */
@@ -272,38 +349,30 @@ async function compressAgentContext(
   tokenBudget: number,
   provider: ProviderKey,
   overrides: ProviderOverrides | undefined,
+  usageTotalTokensHint?: number,
   signal?: AbortSignal,
   logScope?: string,
 ): Promise<number> {
   const threshold = Math.floor(tokenBudget * 0.70) // 留 30% 给回复
 
-  // ── 第一步：截断超长的单条消息 ──
-  for (let i = 1; i < msgs.length; i++) {
-    const m = msgs[i]
-    if (m.content && m.content.length > MAX_SINGLE_MSG_CHARS) {
-      const truncated = m.content.slice(0, MAX_SINGLE_MSG_CHARS)
-      msgs[i] = { ...m, content: truncated + '\n\n[...内容已截断以适配上下文窗口]' }
-    }
+  // 仅接受 usage.total_tokens 作为压缩触发依据
+  if (!(typeof usageTotalTokensHint === 'number' && Number.isFinite(usageTotalTokensHint) && usageTotalTokensHint > 0)) {
+    return 0
   }
-
-  // ── 第二步：计算总 token ──
-  let total = msgs.reduce((s, m) => s + estimateTokens(m.content), 0)
+  const total = usageTotalTokensHint
   if (total <= threshold) return 0
 
-  // ── 第三步：确定要压缩的消息范围 ──
-  // 保留: msgs[0] (system) + 最近 minKeep 条
-  const minKeep = Math.min(8, msgs.length - 1)
-  const compressEnd = msgs.length - minKeep // 压缩 msgs[1..compressEnd)
-  if (compressEnd <= 1) return 0 // 没有可压缩的消息
-
-  const toCompress = msgs.slice(1, compressEnd)
+  // 保留 system 消息，压缩其余全部消息
+  if (msgs.length <= 1) return 0
+  const toCompress = msgs.slice(1)
   const compressCount = toCompress.length
 
   log('AGENT_CONTEXT_SUMMARIZE_START', {
+    sourceTotalTokens: usageTotalTokensHint,
     totalTokens: total,
     budget: tokenBudget,
     compressCount,
-    keepCount: minKeep,
+    keepSystemOnly: true,
   }, logScope)
 
   // ── 第四步：调用 AI 生成摘要 ──
@@ -315,14 +384,13 @@ async function compressAgentContext(
     content: `[对话历史摘要 — 以下是之前 ${compressCount} 条消息的 AI 总结]\n\n${summary}\n\n[摘要结束 — 请基于以上摘要和后续的最新消息继续工作]`,
   }
 
-  // 移除 msgs[1..compressEnd) 并插入摘要
+  // 移除 msgs[1..] 并插入摘要
   msgs.splice(1, compressCount, summaryMsg)
 
-  const newTotal = msgs.reduce((s, m) => s + estimateTokens(m.content), 0)
   log('AGENT_CONTEXT_SUMMARIZE_DONE', {
     compressed: compressCount,
     beforeTokens: total,
-    afterTokens: newTotal,
+    afterTokens: undefined,
     budget: tokenBudget,
   }, logScope)
 
@@ -387,12 +455,27 @@ export async function runAgent(
       log('WORKSPACE_TREE_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
     }
 
+    // 工具设计清单注入（与后端工具 schema 同步）
+    try {
+      extraPrompt += `\n\n${getToolDesignPromptBlock()}`
+    } catch (err) {
+      log('TOOL_DESIGN_PROMPT_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
+    }
+
     if (extraPrompt) {
       workingMessages[0] = { ...workingMessages[0], content: workingMessages[0].content + extraPrompt }
     }
   }
   let round = 0
   let hasFileChanges = false // 跟踪整个 agent 运行期间是否有文件变更
+  const completionEvidence: CompletionEvidence = {
+    inspectedStructure: false,
+    readAnyFile: false,
+    readBackChangedFile: false,
+    verifiedByCommand: false,
+    changedPaths: new Set<string>(),
+    hasReadableChangedFile: false,
+  }
 
   // 当前活跃的执行计划（用于跟踪步骤进度）
   let currentPlan: { summary: string; reasoning?: string; steps: { text: string; status: PlanStepStatus; note?: string }[] } | null = null
@@ -424,11 +507,14 @@ export async function runAgent(
   }
 
   const tokenBudget = maxTokens ?? 131072
+  let lastUsageTotalTokens: number | undefined
   let contextRetries = 0
   let forceToolChoiceThisRound = false
   let forceToolRetryCount = 0
   let forcePlanProgressRetryCount = 0
+  let forcePlanReapprovalRetryCount = 0
   let ephemeralRoundConstraint = ''
+  let requirePlanReapprovalBeforeExecution = false
 
   while (round < MAX_TOOL_ROUNDS) {
     // ── 检查是否被中断 ──
@@ -443,7 +529,7 @@ export async function runAgent(
 
     // ── 每轮 LLM 请求前检查并压缩上下文（含首轮） ──
     try {
-      await compressAgentContext(workingMessages, tokenBudget, provider, overrides, signal, logScope)
+      await compressAgentContext(workingMessages, tokenBudget, provider, overrides, lastUsageTotalTokens, signal, logScope)
     } catch (err) {
       if (isAbortError(err) || signal?.aborted) {
         log('AGENT_ABORTED', { round, reason: 'signal aborted during context compress' }, logScope)
@@ -488,6 +574,11 @@ export async function runAgent(
         if (event.type === 'text') {
           textContent += event.content
           onEvent?.({ type: 'text', content: event.content })
+        } else if (event.type === 'usage') {
+          if (typeof event.usage.totalTokens === 'number' && Number.isFinite(event.usage.totalTokens)) {
+            lastUsageTotalTokens = event.usage.totalTokens
+          }
+          onEvent?.({ type: 'usage', usage: event.usage })
         } else if (event.type === 'tool_calls') {
           toolCalls = event.toolCalls
         }
@@ -508,7 +599,7 @@ export async function runAgent(
       ) {
         contextRetries++
         log('AGENT_CONTEXT_OVERFLOW', { round, retry: contextRetries, error: msg }, logScope)
-        const dropped = await compressAgentContext(workingMessages, Math.floor(tokenBudget * 0.5), provider, overrides, signal, logScope)
+        const dropped = await compressAgentContext(workingMessages, Math.floor(tokenBudget * 0.5), provider, overrides, lastUsageTotalTokens, signal, logScope)
         if (dropped > 0) {
           log('AGENT_CONTEXT_RETRY', { dropped, newMsgCount: workingMessages.length }, logScope)
           round-- // 不消耗轮次，重试当前步骤
@@ -522,6 +613,23 @@ export async function runAgent(
 
     // 如果没有 tool_calls → 纯文本回复，循环结束
     if (toolCalls.length === 0) {
+      if (requirePlanReapprovalBeforeExecution) {
+        if (forcePlanReapprovalRetryCount < 2) {
+          forcePlanReapprovalRetryCount++
+          log('AGENT_FORCE_PLAN_REAPPROVAL_RETRY', {
+            round,
+            retry: forcePlanReapprovalRetryCount,
+            reason: 'plan was denied, revised plan approval required before execution',
+          }, logScope)
+          ephemeralRoundConstraint =
+            '[执行约束]\n上一个执行计划被用户拒绝。你在执行任何任务前，必须先给出修订后的计划并调用 propose_plan，等待用户重新确认。禁止直接执行工具操作。'
+          forceToolChoiceThisRound = true
+          continue
+        }
+        onEvent?.({ type: 'error', message: '执行计划尚未重新确认：请先提交修订计划并等待用户确认。' })
+        return
+      }
+
       const unfinishedPlanSteps = currentPlan
         ? currentPlan.steps
             .map((step, index) => ({ step, index }))
@@ -565,32 +673,67 @@ export async function runAgent(
       const executedAnyTool = hasMeaningfulExecutedTool(workingMessages)
       const pseudoExecutionText = looksLikePseudoExecution(textContent)
       const codeMutationIntent = isCodeMutationIntent(workingMessages)
+      const commandValidationRequired = requiresCommandValidationIntent(workingMessages)
       const completionWithoutFileChanges = codeMutationIntent && completionText && !hasFileChanges
+      const hasLogicCheckEvidence = completionEvidence.inspectedStructure || completionEvidence.readAnyFile || completionEvidence.verifiedByCommand
+      const completionWithoutLogicCheck = codeMutationIntent && completionText && hasFileChanges && !hasLogicCheckEvidence
+      const completionWithoutReadback = codeMutationIntent &&
+        completionText &&
+        hasFileChanges &&
+        completionEvidence.hasReadableChangedFile &&
+        !completionEvidence.readBackChangedFile
+      const completionWithoutCommandValidation = codeMutationIntent &&
+        commandValidationRequired &&
+        completionText &&
+        !completionEvidence.verifiedByCommand
       const shouldForceRetry = shouldRequireToolCall(workingMessages, textContent) &&
         !(completionText && executedAnyTool)
       const shouldForceRetryByPseudo = pseudoExecutionText && !completionText
 
-      if ((shouldForceRetry || shouldForceRetryByPseudo || completionWithoutFileChanges) && forceToolRetryCount < 2) {
+      if ((shouldForceRetry || shouldForceRetryByPseudo || completionWithoutFileChanges || completionWithoutLogicCheck || completionWithoutReadback || completionWithoutCommandValidation) && forceToolRetryCount < 2) {
         forceToolRetryCount++
         log('AGENT_FORCE_TOOL_RETRY', {
           round,
           reason: completionWithoutFileChanges
             ? 'code mutation intent but no file changes before completion'
+            : completionWithoutCommandValidation
+            ? 'command validation required by user intent but run_command not executed before completion'
+            : completionWithoutReadback
+            ? 'code mutation intent completed without readback on changed files'
+            : completionWithoutLogicCheck
+            ? 'code mutation intent completed without logic/content verification evidence'
             : shouldForceRetryByPseudo
             ? 'pseudo execution text produced no tool_calls'
             : 'actionable request produced no tool_calls',
           retry: forceToolRetryCount,
+          evidence: {
+            hasFileChanges,
+            changedPathCount: completionEvidence.changedPaths.size,
+            inspectedStructure: completionEvidence.inspectedStructure,
+            readAnyFile: completionEvidence.readAnyFile,
+            readBackChangedFile: completionEvidence.readBackChangedFile,
+            verifiedByCommand: completionEvidence.verifiedByCommand,
+            hasReadableChangedFile: completionEvidence.hasReadableChangedFile,
+          },
         }, logScope)
         ephemeralRoundConstraint = completionWithoutFileChanges
           ? '[执行约束]\n你刚刚声称任务完成，但当前任务属于代码/文件改动，且还没有任何文件变更证据。下一轮必须继续执行必要工具（至少产生真实文件变更或明确失败原因），不要直接给“已完成/已修复”结论。'
+          : (completionWithoutLogicCheck || completionWithoutReadback)
+          ? '[执行约束]\n你刚刚声称任务完成，但缺少开发完成校验证据。下一轮必须先做校验再总结：\n1) 检查相关逻辑（至少调用 read_file/search_files/find_file/list_directory 之一）\n2) 对已修改文件执行 read_file 回读关键内容（确认改动已落盘且符合预期）\n3) 能运行验证时调用 run_command 验证结果\n完成以上后再给最终结论。'
+          : completionWithoutCommandValidation
+          ? '[执行约束]\n用户本轮明确要求验证/测试/构建。你在给出最终结论前，必须先调用 run_command 执行对应验证命令，并根据执行结果再总结。'
           : '[执行约束]\n你上一轮没有调用任何工具。对于可执行任务，下一轮必须直接返回 tool_calls；不要输出命令示例代码块，不要只做口头说明。'
         forceToolChoiceThisRound = true
         continue
       }
 
-      if (shouldForceRetry || shouldForceRetryByPseudo || completionWithoutFileChanges) {
+      if (shouldForceRetry || shouldForceRetryByPseudo || completionWithoutFileChanges || completionWithoutLogicCheck || completionWithoutReadback || completionWithoutCommandValidation) {
         const errMessage = completionWithoutFileChanges
           ? '模型声称任务已完成，但未检测到文件变更证据，本轮已停止。请重试或切换模型。'
+          : completionWithoutCommandValidation
+          ? '模型声称任务已完成，但用户要求验证/测试/构建且未执行 run_command 校验，本轮已停止。请重试或切换模型。'
+          : (completionWithoutLogicCheck || completionWithoutReadback)
+          ? '模型声称任务已完成，但缺少开发完成校验证据（逻辑检查/文件回读），本轮已停止。请重试或切换模型。'
           : '模型未按要求调用工具（仅输出文字/命令示例），本轮已停止。请重试或切换模型。'
         onEvent?.({ type: 'error', message: errMessage })
         return
@@ -625,6 +768,7 @@ export async function runAgent(
     const noteToolCalls = toolCalls.filter((tc) => NOTE_TOOLS.has(tc.function.name))
     if (noteToolCalls.length > 0) {
       const noteResults = await executeToolCalls(noteToolCalls, workspace, signal, logScope, projectId)
+      updateCompletionEvidence(completionEvidence, noteToolCalls, noteResults, workspace)
       if (signal?.aborted) {
         log('AGENT_ABORTED', { round, reason: 'signal aborted during note tools' }, logScope)
         await autoCommit()
@@ -705,6 +849,9 @@ export async function runAgent(
       }
 
       if (!approved) {
+        requirePlanReapprovalBeforeExecution = true
+        forcePlanReapprovalRetryCount = 0
+        currentPlan = null
         // 用户拒绝计划 → 反馈给 LLM，让它调整方案
         const deniedResults: ToolResult[] = toolCalls.map((tc) => ({
           tool_call_id: tc.id,
@@ -725,6 +872,9 @@ export async function runAgent(
         }
         continue
       }
+
+      requirePlanReapprovalBeforeExecution = false
+      forcePlanReapprovalRetryCount = 0
 
       // 用户确认 → 存储计划并发射 plan_init 事件
       try {
@@ -760,33 +910,49 @@ export async function runAgent(
         continue
       }
 
-      // 如果同时有其他工具调用，先追加 plan 结果，再执行其余工具
+      // 如果同时有其他工具调用：禁止在“计划确认回合”直接执行，防止跳过用户许可
+      const otherToolCalls = toolCalls.filter((tc) => tc.function.name !== 'propose_plan')
+      const deferredResults: ToolResult[] = otherToolCalls.map((tc) => ({
+        tool_call_id: tc.id,
+        name: tc.function.name,
+        content: '该操作未执行：执行计划刚被确认，请在下一轮基于已确认计划重新发起工具调用。',
+        success: false,
+      }))
+      const allResults = [planResult, ...deferredResults]
+      onEvent?.({ type: 'tool_results', results: allResults })
+
       workingMessages.push({
         role: 'tool',
         content: planResult.content,
         tool_call_id: planResult.tool_call_id,
       })
-
-      // 执行非 propose_plan 的工具
-      const otherToolCalls = toolCalls.filter((tc) => tc.function.name !== 'propose_plan')
-      const otherResults = await executeToolCalls(otherToolCalls, workspace, signal, logScope, projectId)
-      if (signal?.aborted) {
-        log('AGENT_ABORTED', { round, reason: 'signal aborted during plan tools' }, logScope)
-        await autoCommit()
-        onEvent?.({ type: 'done' })
-        return
-      }
-      trackFileChanges(otherResults)
-      const allResults = [planResult, ...otherResults]
-
-      onEvent?.({ type: 'tool_results', results: allResults })
-      for (const result of otherResults) {
+      for (const result of deferredResults) {
         workingMessages.push({
           role: 'tool',
           content: result.content,
           tool_call_id: result.tool_call_id,
         })
       }
+      continue
+    }
+
+    // 上一版计划被拒绝后，必须先重新 propose_plan 获批，禁止直接执行工具
+    if (requirePlanReapprovalBeforeExecution) {
+      const blockedResults: ToolResult[] = toolCalls.map((tc) => ({
+        tool_call_id: tc.id,
+        name: tc.function.name,
+        content: '该操作未执行：上一版计划未获批准。请先调用 propose_plan 提交修订方案并等待用户确认。',
+        success: false,
+      }))
+      onEvent?.({ type: 'tool_results', results: blockedResults })
+      for (const result of blockedResults) {
+        workingMessages.push({
+          role: 'tool',
+          content: result.content,
+          tool_call_id: result.tool_call_id,
+        })
+      }
+      forceToolChoiceThisRound = true
       continue
     }
 
@@ -813,11 +979,22 @@ export async function runAgent(
       }
 
       if (!approved) {
+        const deniedBrowserOps = toolCalls.some((tc) => tc.function.name.startsWith('browser_'))
+        const deniedDesktopOps = toolCalls.some((tc) => tc.function.name.startsWith('desktop_'))
+        if (deniedBrowserOps) {
+          setBrowserAutoApproved(false)
+          log('BROWSER_AUTO_APPROVED_RESET', { reason: 'user denied browser operation' }, logScope)
+        }
+        if (deniedDesktopOps) {
+          setDesktopAutoApproved(false)
+          log('DESKTOP_AUTO_APPROVED_RESET', { reason: 'user denied desktop operation' }, logScope)
+        }
+
         // 用户拒绝 → 将拒绝信息作为工具结果反馈给 LLM
         const deniedResults: ToolResult[] = toolCalls.map((tc) => ({
           tool_call_id: tc.id,
           name: tc.function.name,
-          content: '用户拒绝了此操作的执行。请告知用户你原本打算执行的操作，并询问是否需要其他方式来完成任务。',
+          content: '用户拒绝了此操作。请先重新评估方案，说明替代做法或再次请求许可；在用户明确同意前不要直接执行。',
           success: false,
         }))
         onEvent?.({ type: 'tool_results', results: deniedResults })
@@ -829,6 +1006,10 @@ export async function runAgent(
             tool_call_id: result.tool_call_id,
           })
         }
+
+        ephemeralRoundConstraint =
+          '[执行约束]\n用户刚刚拒绝了授权操作。下一轮先重新评估并说明替代方案，或再次请求用户许可；不要绕过许可直接执行。'
+        forceToolChoiceThisRound = false
 
         // 继续循环让 LLM 处理拒绝情况
         continue
@@ -857,6 +1038,7 @@ export async function runAgent(
 
     // ── 执行工具（限制在 workspace 内，异步不阻塞主进程）──
     const results = await executeToolCalls(toolCalls, workspace, signal, logScope, projectId)
+    updateCompletionEvidence(completionEvidence, toolCalls, results, workspace)
     if (signal?.aborted) {
       log('AGENT_ABORTED', { round, reason: 'signal aborted during tool execution' }, logScope)
       await autoCommit()

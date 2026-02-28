@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { app } from 'electron'
+import { log } from './logger'
 
 export type GuiPlusConfig = {
   baseUrl: string
@@ -149,7 +150,7 @@ export async function runGuiPlus(
   config: GuiPlusConfig,
   instruction: string,
   imageDataUrl: string,
-  options?: { minPixels?: number; maxPixels?: number; signal?: AbortSignal },
+  options?: { minPixels?: number; maxPixels?: number; signal?: AbortSignal; logScope?: string },
 ): Promise<GuiPlusResult> {
   if (!config.apiKey || !config.model) {
     throw new Error('GUI-Plus missing API key or model')
@@ -167,17 +168,47 @@ export async function runGuiPlus(
     body.vl_high_resolution_images = true
   }
 
-  const response = await fetch(`${config.baseUrl}/chat/completions`, {
+  const url = `${config.baseUrl}/chat/completions`
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${config.apiKey}`,
+  }
+  const startTime = Date.now()
+
+  log('REQUEST', {
+    url,
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.apiKey}`,
-    },
-    body: JSON.stringify(body),
-    signal: options?.signal,
-  })
+    headers,
+    body,
+  }, options?.logScope)
+
+  let response: Response
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: options?.signal,
+    })
+  } catch (err) {
+    log('ERROR', {
+      url,
+      error: String(err),
+      durationMs: Date.now() - startTime,
+    }, options?.logScope)
+    throw err
+  }
 
   const rawText = await response.text()
+  log('RESPONSE', {
+    url,
+    status: response.status,
+    statusText: response.statusText,
+    headers: Object.fromEntries(response.headers.entries()),
+    durationMs: Date.now() - startTime,
+    body: rawText,
+  }, options?.logScope)
+
   if (!response.ok) {
     throw new Error(`GUI-Plus request failed: ${response.status} ${response.statusText} ${rawText}`)
   }
