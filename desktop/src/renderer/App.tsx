@@ -364,10 +364,14 @@ export default function App() {
 
   // （浏览器模式已统一为外部 BrowserWindow，不再需要模式切换）
 
+  const currentBrowserAppId = tid
+    ? `project-${tid.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 64)}`
+    : 'default'
+
   /** 打开外部浏览器 */
   const openBrowser = useCallback((url: string) => {
-    window.taco.browser.openExternal(url)
-  }, [])
+    window.taco.browser.openExternal(url, currentBrowserAppId)
+  }, [currentBrowserAppId])
 
   /** 关闭指定 appId 的外部浏览器 */
   const closeBrowser = useCallback((appId?: string) => {

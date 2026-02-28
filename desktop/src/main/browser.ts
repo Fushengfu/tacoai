@@ -1025,9 +1025,17 @@ interface BrowserInstance {
 
 /** appId → BrowserWindow 实例映射 */
 const browserInstances = new Map<string, BrowserInstance>()
+/** 标记哪些 appId 正在被程序主动关闭（例如点击浏览器 tab 的关闭按钮） */
+const forceCloseAppIds = new Set<string>()
+/** 进程退出时允许关闭所有外部浏览器窗口 */
+let forceCloseAllBrowsers = false
 
 /** 默认 appId（当工具调用未指定 appId 时使用） */
 const DEFAULT_APP_ID = 'default'
+
+app.on('before-quit', () => {
+  forceCloseAllBrowsers = true
+})
 
 /** 确保配置目录存在 */
 function ensureProfilesDir() {
@@ -1613,10 +1621,20 @@ export function openExternalBrowser(url: string, appId: string = DEFAULT_APP_ID)
   })
 
   // 窗口关闭 — 分离 CDP debugger，清理实例
+  win.on('close', (event) => {
+    const allowClose = forceCloseAllBrowsers || forceCloseAppIds.has(appId)
+    if (allowClose) return
+    // 用户点击系统关闭按钮时仅隐藏窗口，保持会话和窗口实例不丢失
+    event.preventDefault()
+    if (!win.isDestroyed()) win.hide()
+  })
+
+  // 窗口关闭 — 分离 CDP debugger，清理实例
   win.on('closed', () => {
     try {
       if (wc.debugger?.isAttached()) wc.debugger.detach()
     } catch { /* ignore */ }
+    forceCloseAppIds.delete(appId)
     browserInstances.delete(appId)
     sendExternalStatus({ type: 'closed', appId })
     syncMainWindowPriority()
@@ -1634,6 +1652,7 @@ export function closeExternalBrowser(appId: string = DEFAULT_APP_ID) {
         inst.win.webContents.debugger.detach()
       }
     } catch { /* ignore */ }
+    forceCloseAppIds.add(appId)
     inst.win.close()
   }
   browserInstances.delete(appId)

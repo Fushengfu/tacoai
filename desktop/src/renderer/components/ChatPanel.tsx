@@ -413,6 +413,38 @@ export function ChatPanel({
     try { return JSON.parse(argsStr) } catch { return {} }
   }
 
+  function maskSensitiveText(text: string): string {
+    let masked = text
+    const keyValuePattern = /((?:token|access_token|api[_-]?key|authorization|bearer|password|passwd|pwd|secret)\s*[:=]\s*)([^\s'"]+)/ig
+    masked = masked.replace(keyValuePattern, (_m, prefix: string) => `${prefix}***`)
+    const bearerPattern = /(bearer\s+)([a-z0-9._\-]+)/ig
+    masked = masked.replace(bearerPattern, (_m, prefix: string) => `${prefix}***`)
+    return masked
+  }
+
+  function summarizeRunCommand(command: string): string {
+    const masked = maskSensitiveText(command.trim())
+    if (!masked) return ''
+
+    const curlMatch = masked.match(/\bcurl\b[\s\S]*?(?:-X\s+([A-Z]+))?[\s\S]*?(https?:\/\/[^\s'"]+)/i)
+    if (curlMatch) {
+      const method = (curlMatch[1] || 'GET').toUpperCase()
+      const urlText = curlMatch[2]
+      try {
+        const u = new URL(urlText)
+        return `请求接口 ${method} ${u.pathname}`
+      } catch {
+        return `请求接口 ${method} ${urlText}`
+      }
+    }
+
+    if (/npm\s+run\s+dev/i.test(masked)) return '启动前端开发服务'
+    if (/npm\s+(run\s+)?build/i.test(masked)) return '构建项目'
+    if (/go\s+test|npm\s+test|pnpm\s+test|yarn\s+test/i.test(masked)) return '执行测试'
+
+    return masked.length > 60 ? `${masked.slice(0, 57)}...` : masked
+  }
+
   /** 生成每个工具调用的富摘要 + 可悬停路径 */
   function toolCallSummary(tc: { name: string; arguments: string }): { label: string; detail: string; filePath?: string } {
     const args = parseArgs(tc.arguments)
@@ -425,20 +457,80 @@ export function ChatPanel({
         const p = String(args.path ?? '')
         return { label: '写入文件', detail: p, filePath: p }
       }
+      case 'edit_file': {
+        const p = String(args.path ?? '')
+        return { label: '编辑文件', detail: p, filePath: p }
+      }
       case 'list_directory': {
         const p = String(args.path ?? '.')
         return { label: '列出目录', detail: p, filePath: p }
       }
       case 'run_command': {
         const cmd = String(args.command ?? '')
-        // 截断长命令
-        const short = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
-        return { label: '执行命令', detail: short }
+        return { label: '执行命令', detail: summarizeRunCommand(cmd) }
       }
       case 'search_files': {
         const pattern = String(args.pattern ?? '')
         const dir = String(args.directory ?? '')
         return { label: '搜索文件', detail: `"${pattern}" in ${dir}` }
+      }
+      case 'browser_navigate': {
+        const url = String(args.url ?? '')
+        return { label: '打开页面', detail: url }
+      }
+      case 'browser_screenshot': {
+        const goal = String(args.goal ?? '').trim()
+        return { label: '页面截图', detail: goal ? `目标：${goal}` : '用于状态确认' }
+      }
+      case 'browser_wait': {
+        const selector = String(args.selector ?? '')
+        return { label: '等待元素', detail: selector || '等待页面加载完成' }
+      }
+      case 'browser_get_content': {
+        const selector = String(args.selector ?? '')
+        return { label: '读取页面内容', detail: selector || '读取页面主体内容' }
+      }
+      case 'browser_get_console_logs': {
+        return { label: '检查控制台日志', detail: '收集页面错误与警告' }
+      }
+      case 'browser_click': {
+        const selector = String(args.selector ?? '').trim()
+        const x = Number(args.x)
+        const y = Number(args.y)
+        const clickCount = Number(args.clickCount ?? 1)
+        if (selector) {
+          return { label: clickCount >= 2 ? '双击元素' : '点击元素', detail: selector }
+        }
+        if (Number.isFinite(x) && Number.isFinite(y)) {
+          return { label: clickCount >= 2 ? '双击坐标' : '点击坐标', detail: `(${Math.round(x)}, ${Math.round(y)})` }
+        }
+        return { label: clickCount >= 2 ? '双击页面' : '点击页面', detail: '' }
+      }
+      case 'browser_type': {
+        const selector = String(args.selector ?? '')
+        const text = String(args.text ?? '')
+        const displayText = text.length > 18 ? `${text.slice(0, 18)}...` : text
+        return { label: '输入内容', detail: `${selector}${displayText ? ` ← ${displayText}` : ''}`.trim() }
+      }
+      case 'browser_scroll': {
+        const direction = String(args.direction ?? 'down')
+        return { label: '滚动页面', detail: `方向：${direction}` }
+      }
+      case 'browser_hover': {
+        const selector = String(args.selector ?? '')
+        return { label: '悬停元素', detail: selector || '指定位置' }
+      }
+      case 'browser_keypress': {
+        const key = String(args.key ?? '')
+        return { label: '按下按键', detail: key }
+      }
+      case 'browser_drag': {
+        return { label: '拖拽元素', detail: '执行拖拽操作' }
+      }
+      case 'browser_select': {
+        const selector = String(args.selector ?? '')
+        const value = String(args.value ?? args.label ?? '')
+        return { label: '选择下拉项', detail: `${selector}${value ? ` → ${value}` : ''}`.trim() }
       }
       default:
         return { label: tc.name, detail: '' }
@@ -1169,7 +1261,11 @@ export function ChatPanel({
                 title="添加图片（支持粘贴）"
                 disabled={!hasProviders || (mode === 'agent' && !workspace)}
               >
-                🖼
+                <svg className="composer-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="3.5" y="5" width="17" height="14" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.7" />
+                  <circle cx="9" cy="10" r="1.6" fill="currentColor" />
+                  <path d="M5.5 16l4.2-4 2.6 2.4 2.7-2.7 3.5 4.3" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
               </button>
               <button
                 type="button"
@@ -1186,7 +1282,10 @@ export function ChatPanel({
                   onClick={onSelectWorkspace}
                   title={workspace ? `工作空间: ${workspace}` : '选择工作空间'}
                 >
-                  📁 {workspace ? workspace.split('/').pop() || workspace : '选择工作空间'}
+                  <svg className="workspace-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M3.5 8.5A2.5 2.5 0 0 1 6 6h4l2 2h6A2.5 2.5 0 0 1 20.5 10.5v7A2.5 2.5 0 0 1 18 20H6a2.5 2.5 0 0 1-2.5-2.5z" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+                  </svg>
+                  <span>{workspace ? workspace.split('/').pop() || workspace : '选择工作空间'}</span>
                 </button>
               )}
               <select
@@ -1224,7 +1323,10 @@ export function ChatPanel({
                   onClick={handleSend}
                   disabled={!hasProviders || (mode === 'agent' && !workspace)}
                 >
-                  {'\u2191'}
+                  <svg className="send-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 19V5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    <path d="M6.8 10.2L12 5l5.2 5.2" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
                 </button>
               )}
             </div>

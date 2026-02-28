@@ -124,6 +124,24 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     type: 'function',
     function: {
+      name: 'edit_file',
+      description: '编辑已有文件内容：将 oldText 替换为 newText。默认只替换首次命中；可通过 replaceAll=true 替换全部命中。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '文件的绝对路径或相对路径' },
+          oldText: { type: 'string', description: '需要被替换的原文本（必须精确匹配）' },
+          newText: { type: 'string', description: '替换后的新文本' },
+          replaceAll: { type: 'boolean', description: '是否替换全部匹配项，默认 false' },
+          expectedOccurrences: { type: 'number', description: '期望 oldText 在文件中出现的次数（可选，不匹配则报错）' },
+        },
+        required: ['path', 'oldText', 'newText'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'list_directory',
       description: '查看目录结构（树形）。支持深度控制、隐藏文件过滤和目录/文件数量摘要。适合先整体理解项目结构再定位目标文件。',
       parameters: {
@@ -635,7 +653,7 @@ for (const definition of toolDefinitions) {
 const TOOL_GUIDE_GROUPS: Array<{ title: string; names: string[] }> = [
   {
     title: '代码开发',
-    names: ['list_directory', 'find_file', 'search_files', 'read_file', 'write_file', 'delete_file', 'run_command'],
+    names: ['list_directory', 'find_file', 'search_files', 'read_file', 'write_file', 'edit_file', 'delete_file', 'run_command'],
   },
   {
     title: '计划与记忆',
@@ -658,6 +676,7 @@ const TOOL_GUIDE_GROUPS: Array<{ title: string; names: string[] }> = [
 const TOOL_GUIDE_NOTES: Record<string, string> = {
   read_file: '大文件必须分块读取，优先带 startLine/endLine。',
   write_file: '写入后建议 read_file 回读关键片段做落盘校验。',
+  edit_file: '用于精确替换局部内容；若存在多处匹配建议设置 expectedOccurrences。',
   run_command: '用于构建/测试/验证，失败时需回报关键信息与下一步。',
   browser_screenshot: '每次截图必须附带明确目标（goal）。',
   browser_get_console_logs: '页面异常优先读取控制台日志，再决定后续操作。',
@@ -759,7 +778,7 @@ export type ToolCall = {
   }
 }
 
-/** 文件变更信息（write_file / delete_file 时自动记录） */
+/** 文件变更信息（write_file / edit_file / delete_file 时自动记录） */
 export type FileChange = {
   filePath: string
   oldContent: string | null  // null 表示新建文件
@@ -771,7 +790,7 @@ export type ToolResult = {
   name: string
   content: string
   success: boolean
-  /** write_file 操作时记录文件变更 */
+  /** write_file / edit_file / delete_file 操作时记录文件变更 */
   fileChange?: FileChange
 }
 
@@ -1141,6 +1160,8 @@ async function executeTool(
         return await execReadFile(args, workspace)
       case 'write_file':
         return await execWriteFile(args, workspace)
+      case 'edit_file':
+        return await execEditFile(args, workspace)
       case 'delete_file':
         return await execDeleteFile(args, workspace)
       case 'list_directory':
@@ -1157,35 +1178,35 @@ async function executeTool(
         return await execDeleteNote(args, workspace, projectId)
       /* ---- 浏览器自动化 ---- */
       case 'browser_navigate':
-        return await execBrowserAction('navigate', args)
+        return await execBrowserAction('navigate', args, projectId)
       case 'browser_screenshot':
-        return await execBrowserAction('screenshot', args)
+        return await execBrowserAction('screenshot', args, projectId)
       case 'desktop_screenshot':
         return await execDesktopScreenshot(args, logScope)
       case 'browser_click':
-        return await execBrowserAction('click', args)
+        return await execBrowserAction('click', args, projectId)
       case 'browser_type':
-        return await execBrowserAction('type', args)
+        return await execBrowserAction('type', args, projectId)
       case 'browser_scroll':
-        return await execBrowserAction('scroll', args)
+        return await execBrowserAction('scroll', args, projectId)
       case 'browser_get_content':
-        return await execBrowserAction('get_content', args)
+        return await execBrowserAction('get_content', args, projectId)
       case 'browser_wait':
-        return await execBrowserAction('wait', args)
+        return await execBrowserAction('wait', args, projectId)
       case 'browser_evaluate':
-        return await execBrowserAction('evaluate', args)
+        return await execBrowserAction('evaluate', args, projectId)
       case 'browser_get_info':
-        return await execBrowserAction('get_info', args)
+        return await execBrowserAction('get_info', args, projectId)
       case 'browser_get_console_logs':
-        return await execBrowserGetConsoleLogs(args)
+        return await execBrowserGetConsoleLogs(args, projectId)
       case 'browser_hover':
-        return await execBrowserAction('hover', args)
+        return await execBrowserAction('hover', args, projectId)
       case 'browser_keypress':
-        return await execBrowserAction('keypress', args)
+        return await execBrowserAction('keypress', args, projectId)
       case 'browser_drag':
-        return await execBrowserAction('drag', args)
+        return await execBrowserAction('drag', args, projectId)
       case 'browser_select':
-        return await execBrowserAction('select', args)
+        return await execBrowserAction('select', args, projectId)
       case 'gui_plus_analyze':
         return await execGuiPlusAnalyze(args, signal, logScope)
       case 'desktop_action':
@@ -1327,6 +1348,75 @@ async function execWriteFile(args: Record<string, unknown>, workspace: string): 
     content: `File written: ${resolved} (${fileContent.length} chars)`,
     success: true,
     fileChange: { filePath: relPath, oldContent, newContent: fileContent },
+  }
+}
+
+function countTextOccurrences(haystack: string, needle: string): number {
+  if (!needle) return 0
+  let count = 0
+  let start = 0
+  while (true) {
+    const idx = haystack.indexOf(needle, start)
+    if (idx < 0) break
+    count += 1
+    start = idx + needle.length
+  }
+  return count
+}
+
+async function execEditFile(args: Record<string, unknown>, workspace: string): Promise<ExecResult & { fileChange?: FileChange }> {
+  const filePath = String(args.path ?? '')
+  const oldText = String(args.oldText ?? '')
+  const newText = String(args.newText ?? '')
+  const replaceAll = Boolean(args.replaceAll ?? false)
+  const expectedRaw = Number(args.expectedOccurrences)
+
+  if (!filePath) return { content: 'Error: path is required', success: false }
+  if (!oldText) return { content: 'Error: oldText is required and cannot be empty', success: false }
+
+  const check = resolveSafe(workspace, filePath)
+  if ('error' in check) return { content: check.error, success: false }
+  const resolved = check.resolved
+
+  let oldContent: string
+  try {
+    const stat = await fs.stat(resolved)
+    if (!stat.isFile()) return { content: `Error: Not a file: ${resolved}`, success: false }
+    oldContent = await fs.readFile(resolved, 'utf-8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { content: `Error: File not found: ${resolved}`, success: false }
+    }
+    throw err
+  }
+
+  const occurrences = countTextOccurrences(oldContent, oldText)
+  if (occurrences === 0) {
+    return { content: `Error: oldText not found in file: ${resolved}`, success: false }
+  }
+  if (Number.isFinite(expectedRaw) && expectedRaw >= 0 && occurrences !== Math.floor(expectedRaw)) {
+    return {
+      content: `Error: expectedOccurrences mismatch for ${resolved}, expected=${Math.floor(expectedRaw)}, actual=${occurrences}`,
+      success: false,
+    }
+  }
+
+  const replacedCount = replaceAll ? occurrences : 1
+  const newContent = replaceAll
+    ? oldContent.split(oldText).join(newText)
+    : oldContent.replace(oldText, newText)
+
+  if (newContent === oldContent) {
+    return { content: `Error: edit produced no changes for ${resolved}`, success: false }
+  }
+
+  await fs.writeFile(resolved, newContent, 'utf-8')
+
+  const relPath = toPosixPath(path.relative(workspace, resolved))
+  return {
+    content: `File edited: ${resolved} (replaced ${replacedCount} occurrence${replacedCount > 1 ? 's' : ''})`,
+    success: true,
+    fileChange: { filePath: relPath, oldContent, newContent },
   }
 }
 
@@ -2087,10 +2177,22 @@ async function execDeleteNote(args: Record<string, unknown>, workspace: string, 
 /*  浏览器自动化执行器                                                    */
 /* ------------------------------------------------------------------ */
 
-async function execBrowserAction(action: BrowserActionType, args: Record<string, unknown>): Promise<ExecResult> {
-  const appId = args.appId ? String(args.appId) : undefined
-  log(`Browser action: ${action} [appId=${appId || 'default'}]`, args)
-  const result = await executeBrowserAction({ action, params: args }, appId)
+function scopedBrowserAppId(projectId?: string): string | undefined {
+  const raw = String(projectId ?? '').trim()
+  if (!raw) return undefined
+  const safe = raw.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 64)
+  return safe ? `project-${safe}` : undefined
+}
+
+async function execBrowserAction(
+  action: BrowserActionType,
+  args: Record<string, unknown>,
+  projectId?: string,
+): Promise<ExecResult> {
+  const appId = args.appId ? String(args.appId) : scopedBrowserAppId(projectId)
+  const mergedArgs = appId ? { ...args, appId } : args
+  log(`Browser action: ${action} [appId=${appId || 'default'}]`, mergedArgs)
+  const result = await executeBrowserAction({ action, params: mergedArgs }, appId)
   if (result.success) {
     // screenshot：保存图片到本地 + 返回文件路径和页面信息
     if (action === 'screenshot' && result.data) {
@@ -2131,8 +2233,8 @@ async function execBrowserAction(action: BrowserActionType, args: Record<string,
   return { content: `浏览器操作失败: ${result.error}`, success: false }
 }
 
-async function execBrowserGetConsoleLogs(args: Record<string, unknown>): Promise<ExecResult> {
-  const appId = args.appId ? String(args.appId) : 'default'
+async function execBrowserGetConsoleLogs(args: Record<string, unknown>, projectId?: string): Promise<ExecResult> {
+  const appId = args.appId ? String(args.appId) : (scopedBrowserAppId(projectId) ?? 'default')
   const limit = Number.isFinite(Number(args.limit)) ? Number(args.limit) : undefined
   const onlyErrors = args.onlyErrors === true
   const devOnly = args.devOnly !== false

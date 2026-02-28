@@ -122,6 +122,15 @@ function fullHeadersForLog(headers: HeadersInit | undefined): Record<string, str
   return out
 }
 
+function parseJsonBodyForLog(body: BodyInit | null | undefined): unknown {
+  if (typeof body !== 'string') return body ?? null
+  try {
+    return JSON.parse(body)
+  } catch {
+    return body
+  }
+}
+
 function buildRequest(config: ProviderConfig, messages: ChatMessage[], stream: boolean, options?: RequestOptions) {
   const normalizedMessages = normalizeMessages(messages)
   const headers: Record<string, string> = {
@@ -192,7 +201,7 @@ async function retryStreamRequestWithoutUsageOption(
       method: retryInit.method,
       reason: 'stream_options.include_usage not accepted, retry without stream_options',
       headers: fullHeadersForLog(retryInit.headers),
-      body: retryInit.body ?? null,
+      body: parseJsonBodyForLog(retryInit.body),
     }, logScope)
     return await fetch(url, { ...retryInit, signal })
   } catch {
@@ -221,7 +230,7 @@ export async function requestChatCompletion(
     url,
     method: init.method,
     headers: fullHeadersForLog(init.headers),
-    body: init.body ?? null,
+    body: parseJsonBodyForLog(init.body),
   }, logScope)
 
   let response: Response
@@ -278,7 +287,7 @@ export async function* requestChatCompletionStream(
     url,
     method: init.method,
     headers: fullHeadersForLog(init.headers),
-    body: JSON.parse(init.body ?? '{}') ?? null,
+    body: parseJsonBodyForLog(init.body),
   }, logScope)
 
   let response: Response
@@ -319,12 +328,12 @@ export async function* requestChatCompletionStream(
   const decoder = new TextDecoder()
   let buffer = ''
   let accumulated = ''
-  const rawChunks: unknown[] = []
   // 保留首个 chunk 的结构信息和最后一个 chunk 的 usage 等字段
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let firstChunk: any = null
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let lastChunk: any = null
+  let mergedUsageRaw: unknown = null
 
   try {
     while (true) {
@@ -341,14 +350,25 @@ export async function* requestChatCompletionStream(
         const data = trimmed.slice(5).trim()
         if (data === '[DONE]') {
           // ── 流结束，用原始响应结构 + 合并内容记录日志 ──
-          logMergedStreamResponse(url, response.status, Date.now() - startTime, firstChunk, lastChunk, accumulated, rawChunks, logScope)
+          logMergedStreamResponse({
+            url,
+            response,
+            durationMs: Date.now() - startTime,
+            firstChunk,
+            lastChunk,
+            content: accumulated,
+            usage: mergedUsageRaw,
+            logScope,
+          })
           return
         }
         try {
           const parsed = JSON.parse(data)
-          rawChunks.push(parsed)
           if (!firstChunk) firstChunk = parsed
           lastChunk = parsed
+          if (Object.prototype.hasOwnProperty.call(parsed, 'usage')) {
+            mergedUsageRaw = parsed.usage
+          }
           const usage = parseTokenUsage(parsed)
           if (usage) onUsage?.(usage)
           const content = parsed.choices?.[0]?.delta?.content
@@ -363,13 +383,22 @@ export async function* requestChatCompletionStream(
     }
 
     // 正常读完（没收到 [DONE]）
-    logMergedStreamResponse(url, response.status, Date.now() - startTime, firstChunk, lastChunk, accumulated, rawChunks, logScope)
+    logMergedStreamResponse({
+      url,
+      response,
+      durationMs: Date.now() - startTime,
+      firstChunk,
+      lastChunk,
+      content: accumulated,
+      usage: mergedUsageRaw,
+      logScope,
+    })
   } catch (err) {
     log('RESPONSE_ERROR', {
       url,
       status: response.status,
       durationMs: Date.now() - startTime,
-      body: buildMergedResponse(firstChunk, lastChunk, accumulated, rawChunks),
+      body: buildMergedResponse(firstChunk, lastChunk, accumulated, mergedUsageRaw),
       error: String(err),
     }, logScope)
     throw err
@@ -399,8 +428,35 @@ function parseTokenUsage(chunk: any): TokenUsage | null {
  * choices[0] 由 delta 合并为完整的 message。
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildMergedResponse(firstChunk: any, lastChunk: any, content: string, rawChunks: unknown[] = []) {
-  if (!firstChunk) return { content, rawChunks }
+function buildMergedResponse(
+  firstChunk: any,
+  lastChunk: any,
+  content: string,
+  usageOverride?: unknown,
+  toolCalls?: ToolCall[],
+) {
+  const usage = usageOverride !== undefined ? usageOverride : (lastChunk?.usage ?? null)
+  const message: { role: 'assistant'; content: string; tool_calls?: ToolCall[] } = {
+    role: 'assistant',
+    content,
+  }
+  if (toolCalls && toolCalls.length > 0) {
+    message.tool_calls = toolCalls
+  }
+
+  if (!firstChunk) {
+    return {
+      object: 'chat.completion',
+      choices: [
+        {
+          index: 0,
+          message,
+          finish_reason: lastChunk?.choices?.[0]?.finish_reason ?? 'stop',
+        }
+      ],
+      usage,
+    }
+  }
   return {
     id: firstChunk.id,
     object: 'chat.completion',
@@ -409,32 +465,35 @@ function buildMergedResponse(firstChunk: any, lastChunk: any, content: string, r
     choices: [
       {
         index: 0,
-        message: { role: 'assistant', content },
+        message,
         finish_reason: lastChunk?.choices?.[0]?.finish_reason ?? 'stop',
       }
     ],
-    usage: lastChunk?.usage ?? null,
-    rawChunks,
+    usage,
   }
 }
 
-function logMergedStreamResponse(
-  url: string,
-  status: number,
-  durationMs: number,
+function logMergedStreamResponse(params: {
+  url: string
+  response: Response
+  durationMs: number
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  firstChunk: any,
+  firstChunk: any
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  lastChunk: any,
-  content: string,
-  rawChunks: unknown[] = [],
-  logScope?: string,
-) {
+  lastChunk: any
+  content: string
+  usage?: unknown
+  toolCalls?: ToolCall[]
+  logScope?: string
+}) {
+  const { url, response, durationMs, firstChunk, lastChunk, content, usage, toolCalls, logScope } = params
   log('RESPONSE', {
     url,
-    status,
+    status: response.status,
+    statusText: response.statusText,
+    headers: Object.fromEntries(response.headers.entries()),
     durationMs,
-    body: buildMergedResponse(firstChunk, lastChunk, content, rawChunks),
+    body: buildMergedResponse(firstChunk, lastChunk, content, usage, toolCalls),
   }, logScope)
 }
 
@@ -468,7 +527,7 @@ export async function* requestStreamWithTools(
     url,
     method: init.method,
     headers: fullHeadersForLog(init.headers),
-    body: init.body ?? null,
+    body: parseJsonBodyForLog(init.body),
   }, logScope)
 
   let response: Response
@@ -502,7 +561,6 @@ export async function* requestStreamWithTools(
   const decoder = new TextDecoder()
   let buffer = ''
   let accumulated = ''
-  const rawChunks: unknown[] = []
   let lastTextChunk = ''
   let repeatedTextChunkCount = 0
   // 累积 tool_calls（流式 delta 中分片到达）
@@ -511,6 +569,7 @@ export async function* requestStreamWithTools(
   let firstChunk: any = null
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let lastChunk: any = null
+  let mergedUsageRaw: unknown = null
 
   try {
     while (true) {
@@ -527,18 +586,32 @@ export async function* requestStreamWithTools(
         const data = trimmed.slice(5).trim()
         if (data === '[DONE]') {
           // 如果有累积的 tool_calls，yield 出去
+          let mergedToolCalls: ToolCall[] | undefined
           if (toolCallsMap.size > 0) {
-            const toolCalls = Array.from(toolCallsMap.values())
+            const toolCalls = Array.from(toolCallsMap.values()) as ToolCall[]
+            mergedToolCalls = toolCalls
             yield { type: 'tool_calls', toolCalls }
           }
-          logMergedStreamResponse(url, response.status, Date.now() - startTime, firstChunk, lastChunk, accumulated, rawChunks, logScope)
+          logMergedStreamResponse({
+            url,
+            response,
+            durationMs: Date.now() - startTime,
+            firstChunk,
+            lastChunk,
+            content: accumulated,
+            usage: mergedUsageRaw,
+            toolCalls: mergedToolCalls,
+            logScope,
+          })
           return
         }
         try {
           const parsed = JSON.parse(data)
-          rawChunks.push(parsed)
           if (!firstChunk) firstChunk = parsed
           lastChunk = parsed
+          if (Object.prototype.hasOwnProperty.call(parsed, 'usage')) {
+            mergedUsageRaw = parsed.usage
+          }
           const usage = parseTokenUsage(parsed)
           if (usage) yield { type: 'usage', usage }
 
@@ -557,10 +630,20 @@ export async function* requestStreamWithTools(
                   sample: content.slice(0, 120),
                 }, logScope)
                 if (toolCallsMap.size > 0) {
-                  const toolCalls = Array.from(toolCallsMap.values())
+                  const toolCalls = Array.from(toolCallsMap.values()) as ToolCall[]
                   yield { type: 'tool_calls', toolCalls }
                 }
-                logMergedStreamResponse(url, response.status, Date.now() - startTime, firstChunk, lastChunk, accumulated, rawChunks, logScope)
+                logMergedStreamResponse({
+                  url,
+                  response,
+                  durationMs: Date.now() - startTime,
+                  firstChunk,
+                  lastChunk,
+                  content: accumulated,
+                  usage: mergedUsageRaw,
+                  toolCalls: Array.from(toolCallsMap.values()) as ToolCall[],
+                  logScope,
+                })
                 return
               }
             } else {
@@ -599,17 +682,35 @@ export async function* requestStreamWithTools(
     }
 
     // 如果有累积的 tool_calls
+    let mergedToolCalls: ToolCall[] | undefined
     if (toolCallsMap.size > 0) {
-      const toolCalls = Array.from(toolCallsMap.values())
+      const toolCalls = Array.from(toolCallsMap.values()) as ToolCall[]
+      mergedToolCalls = toolCalls
       yield { type: 'tool_calls', toolCalls }
     }
-    logMergedStreamResponse(url, response.status, Date.now() - startTime, firstChunk, lastChunk, accumulated, rawChunks, logScope)
+    logMergedStreamResponse({
+      url,
+      response,
+      durationMs: Date.now() - startTime,
+      firstChunk,
+      lastChunk,
+      content: accumulated,
+      usage: mergedUsageRaw,
+      toolCalls: mergedToolCalls,
+      logScope,
+    })
   } catch (err) {
     log('RESPONSE_ERROR', {
       url,
       status: response.status,
       durationMs: Date.now() - startTime,
-      body: buildMergedResponse(firstChunk, lastChunk, accumulated, rawChunks),
+      body: buildMergedResponse(
+        firstChunk,
+        lastChunk,
+        accumulated,
+        mergedUsageRaw,
+        Array.from(toolCallsMap.values()) as ToolCall[],
+      ),
       error: String(err),
     }, logScope)
     throw err

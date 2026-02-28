@@ -12,6 +12,7 @@ import { logInfo, getLogDir } from './logger'
 import { IpcChannel } from '../shared/ipc'
 import { shutdownAllMcp } from './mcp'
 import { shutdownMobileBridge } from './mobile-bridge'
+import { ensurePromptConfigInitialized } from './prompt-config'
 
 // esbuild 构建后 __dirname 由 CJS 运行时提供，指向 dist-main/
 // 源码开发时 tsx 也支持 __dirname
@@ -264,7 +265,7 @@ function createWindow() {
   return win
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   logInfo('app', `Taco started (${isDev ? 'dev' : 'prod'})`, {
     platform: process.platform,
     arch: process.arch,
@@ -272,6 +273,15 @@ app.whenReady().then(() => {
     node: process.versions.node,
     logDir: getLogDir(),
   })
+
+  try {
+    await ensurePromptConfigInitialized()
+    logInfo('prompt-config', 'prompt-config.json initialized')
+  } catch (err) {
+    logInfo('prompt-config', 'prompt-config.json init failed', {
+      error: err instanceof Error ? err.message : String(err),
+    })
+  }
 
   mainWindow = createWindow()
   createTray()

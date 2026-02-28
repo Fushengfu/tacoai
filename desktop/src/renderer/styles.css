@@ -1207,20 +1207,29 @@ body.is-dragging * {
 .composer-attach-btn {
   background: none;
   border: none;
-  font-size: 16px;
   cursor: pointer;
   padding: 4px 6px;
   border-radius: 6px;
   opacity: 0.6;
   transition: opacity 0.15s, background 0.15s;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .composer-attach-btn:hover {
   opacity: 1;
   background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
 }
 .composer-attach-btn:disabled {
   opacity: 0.3;
   cursor: not-allowed;
+}
+.composer-btn-icon {
+  width: 18px;
+  height: 18px;
+  display: block;
 }
 /* ── 消息中的图片 ── */
 .msg-images {
@@ -1367,7 +1376,6 @@ body.is-dragging * {
   background: var(--accent-2);
   color: white;
   flex-shrink: 0;
-  font-size: 18px;
   cursor: pointer;
   transition: background 0.15s ease, box-shadow 0.3s ease, transform 0.15s ease;
   display: inline-flex;
@@ -1421,6 +1429,12 @@ body.is-dragging * {
   height: 12px;
   background: white;
   border-radius: 2px;
+}
+
+.send-btn-icon {
+  width: 18px;
+  height: 18px;
+  display: block;
 }
 
 /* ------------------------------------------------------------------ */
@@ -3558,6 +3572,9 @@ body.is-dragging * {
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .workspace-btn:hover {
   background: rgba(255, 255, 255, 0.1);
@@ -3567,6 +3584,18 @@ body.is-dragging * {
   background: rgba(76, 200, 120, 0.12);
   border-color: rgba(76, 200, 120, 0.3);
   color: #4cc878;
+}
+
+.workspace-btn-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.workspace-btn > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ---- Workspace select prompt (empty state) ---- */
