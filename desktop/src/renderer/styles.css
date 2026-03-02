@@ -6073,6 +6073,25 @@ body.is-dragging * {
   opacity: 0.6;
 }
 
+.file-editor-image-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.file-editor-image-preview {
+  max-width: 100%;
+  height: auto;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #0b111b;
+}
+
 /* ---- Code area (line numbers + code wrapper) ---- */
 .file-editor-code {
   flex: 1;

@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -41,6 +43,8 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
   bool _saving = false;
   bool _dirty = false;
   bool _isBinary = false;
+  bool _isImageFile = false;
+  String? _imageDataUrl;
   bool _silentApplyingText = false;
   Timer? _syncTimer;
   double _treePaneHeight = 260;
@@ -109,6 +113,8 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
     setState(() {
       _selectedPath = relativePath;
       _isBinary = false;
+      _isImageFile = _isImagePath(relativePath);
+      _imageDataUrl = null;
     });
     await _reloadSelectedFile(silent: false);
   }
@@ -126,6 +132,7 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
       );
       if (!mounted || _selectedPath != targetPath) return;
       final nextText = file.content ?? '';
+      final nextImageDataUrl = file.dataUrl;
       final hasChanged = _editorController.text != nextText;
       if (hasChanged) {
         _silentApplyingText = true;
@@ -138,6 +145,8 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
       if (!silent || hasChanged || _isBinary != file.isBinary || _dirty) {
         setState(() {
           _isBinary = file.isBinary;
+          _isImageFile = _isImagePath(targetPath);
+          _imageDataUrl = nextImageDataUrl;
           if (hasChanged || !silent) _dirty = false;
         });
       }
@@ -216,6 +225,24 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
       );
     }
     if (_isBinary) {
+      if (_isImageFile && _imageDataUrl != null && _imageDataUrl!.isNotEmpty) {
+        return Container(
+          color: _kWorkspaceEditorBg,
+          alignment: Alignment.center,
+          child: InteractiveViewer(
+            minScale: 0.5,
+            maxScale: 4,
+            child: Image.memory(
+              _decodeDataUrl(_imageDataUrl!),
+              fit: BoxFit.contain,
+              errorBuilder: (context, error, stackTrace) => Text(
+                '图片加载失败',
+                style: TextStyle(color: scheme.onSurfaceVariant),
+              ),
+            ),
+          ),
+        );
+      }
       return Center(
         child: Text(
           '该文件为二进制或过大文件，暂不支持编辑',
@@ -438,6 +465,24 @@ class _MobileWorkspacePageState extends State<MobileWorkspacePage> {
       ),
     );
   }
+}
+
+bool _isImagePath(String path) {
+  final lower = path.toLowerCase();
+  return lower.endsWith('.png') ||
+      lower.endsWith('.jpg') ||
+      lower.endsWith('.jpeg') ||
+      lower.endsWith('.gif') ||
+      lower.endsWith('.webp') ||
+      lower.endsWith('.bmp') ||
+      lower.endsWith('.ico') ||
+      lower.endsWith('.svg');
+}
+
+Uint8List _decodeDataUrl(String dataUrl) {
+  final idx = dataUrl.indexOf(',');
+  final body = idx >= 0 ? dataUrl.substring(idx + 1) : dataUrl;
+  return base64Decode(body);
 }
 
 class _WorkspaceNode extends StatelessWidget {

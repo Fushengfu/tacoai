@@ -43,7 +43,7 @@ class MessageBubble extends StatelessWidget {
     final showSummaryLast = !isUser && (hasPlan || hasSteps);
 
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       child: Align(
         alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
         child: Container(
@@ -319,26 +319,145 @@ class _PlanPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final total = plan.steps.length;
+    final done = plan.steps.where((s) => s.status == 'done').length;
+    final inProgress = plan.steps.where((s) => s.status == 'in_progress').length;
+    final failed = plan.steps.where((s) => s.status == 'failed').length;
+    final progress = total > 0 ? done / total : 0.0;
+    final summary = inProgress > 0
+        ? '$inProgress 个执行中'
+        : '$done/$total 已完成${failed > 0 ? ' · $failed 异常' : ''}';
+
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(8),
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.45),
+        color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.06),
         borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.3),
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            plan.summary.isEmpty ? '执行计划' : plan.summary,
-            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '执行计划',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  '$done/$total',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 6),
-          ...plan.steps.map((step) => Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: SelectableText(
-                  '${_planStatusIcon(step.status)} ${step.text}',
-                  style: const TextStyle(fontSize: 12, height: 1.35),
+          if (plan.summary.isNotEmpty) ...[
+            Text(
+              plan.summary,
+              style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+          Text(
+            summary,
+            style: TextStyle(
+              fontSize: 12,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: LinearProgressIndicator(
+              value: progress.clamp(0, 1),
+              minHeight: 3,
+              backgroundColor: Colors.white.withValues(alpha: 0.08),
+              valueColor: AlwaysStoppedAnimation<Color>(
+                done >= total && total > 0 ? const Color(0xFF48BB78) : const Color(0xFF4C7BFF),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          ...plan.steps.map((step) => Container(
+                width: double.infinity,
+                margin: const EdgeInsets.only(bottom: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                decoration: BoxDecoration(
+                  color: step.status == 'in_progress'
+                      ? const Color(0xFF4C7BFF).withValues(alpha: 0.10)
+                      : step.status == 'failed'
+                          ? Colors.red.withValues(alpha: 0.10)
+                          : Colors.transparent,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      width: 16,
+                      child: Text(
+                        _planStatusIcon(step.status),
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: _planStatusColor(step.status),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: SelectableText(
+                        step.text,
+                        style: TextStyle(
+                          fontSize: 12,
+                          height: 1.45,
+                          color: step.status == 'in_progress'
+                              ? Theme.of(context).colorScheme.onSurface
+                              : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.8),
+                          decoration: step.status == 'done' ? TextDecoration.lineThrough : TextDecoration.none,
+                          decorationColor: Colors.white.withValues(alpha: 0.25),
+                        ),
+                      ),
+                    ),
+                    if (step.note.isNotEmpty) ...[
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Text(
+                          step.note,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.45),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
               )),
         ],
@@ -458,7 +577,7 @@ class _StepPanelState extends State<_StepPanel> {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
-                              fontSize: 16, fontWeight: FontWeight.w700),
+                              fontSize: 13, fontWeight: FontWeight.w700),
                         ),
                         if (summary.detail.isNotEmpty) ...[
                           const SizedBox(height: 2),
@@ -569,9 +688,6 @@ class _ConfirmPanel extends StatelessWidget {
         children: [
           Row(
             children: [
-              Text(isPlanConfirm ? '📋' : '⚠',
-                  style: const TextStyle(fontSize: 15)),
-              const SizedBox(width: 6),
               Expanded(
                 child: Text(
                   title,
@@ -798,8 +914,11 @@ class _ConfirmStatusSection extends StatelessWidget {
         ),
         child: Row(
           children: [
-            Text(isStepRunning ? '⏳' : '✓',
-                style: const TextStyle(fontSize: 13)),
+            Icon(
+              isStepRunning ? Icons.hourglass_top : Icons.check,
+              size: 14,
+              color: Colors.green.shade300,
+            ),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
@@ -829,8 +948,11 @@ class _ConfirmStatusSection extends StatelessWidget {
         ),
         child: Row(
           children: [
-            Text(isStepRunning ? '⏳' : '✗',
-                style: const TextStyle(fontSize: 13)),
+            Icon(
+              isStepRunning ? Icons.hourglass_top : Icons.close,
+              size: 14,
+              color: Colors.orange.shade300,
+            ),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
@@ -876,10 +998,12 @@ class _ToolCallBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final summary = _toolCallSummary(call);
     final args = call.arguments.trim();
-    final body = args.isEmpty
-        ? 'Call ${call.name}'
-        : 'Call ${call.name}\n\n```json\n$args\n```';
+    final head = summary.detail.isNotEmpty
+        ? '${summary.label} · ${summary.detail}'
+        : summary.label;
+    final body = args.isEmpty ? head : '$head\n\n```json\n$args\n```';
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(8),
@@ -905,6 +1029,10 @@ class _ToolResultBlock extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final body = _formatToolResultBody(result.content);
+    final summary = _toolResultSummaryByName(result.name);
+    final title = summary.detail.isNotEmpty
+        ? '${summary.label} · ${summary.detail}'
+        : summary.label;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(8),
@@ -924,7 +1052,7 @@ class _ToolResultBlock extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SelectableText(
-            '${result.success ? 'OK' : 'FAIL'} ${result.name}',
+            '${result.success ? '成功' : '失败'} · $title',
             style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
           ),
           if (body.isNotEmpty) ...[
@@ -1159,7 +1287,7 @@ class _ScreenshotThumb extends StatelessWidget {
             color: Theme.of(context).colorScheme.surfaceContainerHighest,
             alignment: Alignment.center,
             child:
-                const Text('Image unavailable', style: TextStyle(fontSize: 11)),
+                const Text('图片加载失败', style: TextStyle(fontSize: 11)),
           ),
         ),
       ),
@@ -1498,12 +1626,25 @@ String _formatToolResultBody(String raw) {
 String _planStatusIcon(String status) {
   switch (status) {
     case 'in_progress':
-      return '[~]';
+      return '•';
     case 'done':
-      return '[v]';
+      return '✓';
     case 'failed':
-      return '[x]';
+      return '✕';
     default:
-      return '[ ]';
+      return '○';
+  }
+}
+
+Color _planStatusColor(String status) {
+  switch (status) {
+    case 'in_progress':
+      return const Color(0xFF4C7BFF);
+    case 'done':
+      return const Color(0xFF48BB78);
+    case 'failed':
+      return const Color(0xFFF56565);
+    default:
+      return Colors.white.withValues(alpha: 0.35);
   }
 }

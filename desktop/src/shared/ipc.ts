@@ -688,8 +688,8 @@ export type TacoApi = {
     revert: (filePath: string, oldContent: string) => Promise<void>
     /** 删除文件（用于撤销 Agent 新建的文件） */
     delete: (filePath: string) => Promise<void>
-    /** 读取文件内容（文本文件返回内容字符串，二进制文件返回 null） */
-    read: (filePath: string) => Promise<{ content: string | null; size: number; isBinary: boolean }>
+    /** 读取文件内容（文本文件返回内容字符串，二进制文件返回 null；图片可返回 dataUrl 预览） */
+    read: (filePath: string) => Promise<{ content: string | null; size: number; isBinary: boolean; dataUrl?: string }>
     /** 写入文件内容 */
     write: (filePath: string, content: string) => Promise<void>
   }

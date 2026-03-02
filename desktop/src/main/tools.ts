@@ -373,10 +373,15 @@ export const toolDefinitions: ToolDefinition[] = [
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['move', 'click', 'double_click', 'scroll', 'type', 'key'], description: '操作类型（double_click 会自动映射为 click + clicks=2）' },
-          x: { type: 'number', description: '屏幕坐标 X（move/click）' },
-          y: { type: 'number', description: '屏幕坐标 Y（move/click）' },
-          button: { type: 'string', enum: ['left', 'right', 'middle'], description: '鼠标按键（click）' },
+          action: { type: 'string', enum: ['move', 'click', 'double_click', 'mouse_down', 'drag', 'scroll', 'type', 'key'], description: '操作类型（double_click 会自动映射为 click + clicks=2）' },
+          x: { type: 'number', description: '屏幕坐标 X（move/click/mouse_down/drag 起点）' },
+          y: { type: 'number', description: '屏幕坐标 Y（move/click/mouse_down/drag 起点）' },
+          toX: { type: 'number', description: '拖动目标坐标 X（drag）' },
+          toY: { type: 'number', description: '拖动目标坐标 Y（drag）' },
+          steps: { type: 'number', description: '拖动分步数（drag，可选，默认自动）' },
+          duration_ms: { type: 'number', description: '拖动总时长毫秒（drag，可选，默认自动）' },
+          release: { type: 'boolean', description: 'drag 完成后是否自动松开鼠标，默认 true' },
+          button: { type: 'string', enum: ['left', 'right', 'middle'], description: '鼠标按键（click/mouse_down/drag）' },
           clicks: { type: 'number', description: '点击次数（click），默认 1' },
           clickCount: { type: 'number', description: '兼容字段，等价于 clicks' },
           double: { type: 'boolean', description: '是否双击（兼容字段，true 时等价 clicks=2）' },
@@ -2631,7 +2636,7 @@ async function execDesktopAction(args: Record<string, unknown>, signal?: AbortSi
   const normalizedAction = normalizeDesktopAction(rawAction)
   if (!normalizedAction) {
     return {
-      content: `Error: unsupported action "${rawAction}". Supported actions: move/click/scroll/type/key`,
+      content: `Error: unsupported action "${rawAction}". Supported actions: move/click/mouse_down/drag/scroll/type/key`,
       success: false,
     }
   }
@@ -2666,11 +2671,27 @@ async function execDesktopAction(args: Record<string, unknown>, signal?: AbortSi
     ...(explicitModifiers ?? []),
   ])
   const clicks = resolveDesktopClicks(args, action, normalizedAction.impliedClicks)
+  const pickNumberArg = (keys: string[]): number | undefined => {
+    for (const key of keys) {
+      const n = Number(args[key])
+      if (Number.isFinite(n)) return n
+    }
+    return undefined
+  }
 
   const payload = {
-    action: action as 'move' | 'click' | 'scroll' | 'type' | 'key',
-    x: Number.isFinite(Number(args.x)) ? Number(args.x) : undefined,
-    y: Number.isFinite(Number(args.y)) ? Number(args.y) : undefined,
+    action: action as 'move' | 'click' | 'mouse_down' | 'drag' | 'scroll' | 'type' | 'key',
+    x: pickNumberArg(['x', 'fromX', 'startX', 'from_x', 'start_x']),
+    y: pickNumberArg(['y', 'fromY', 'startY', 'from_y', 'start_y']),
+    toX: pickNumberArg(['toX', 'endX', 'targetX', 'to_x', 'end_x', 'target_x', 'x2']),
+    toY: pickNumberArg(['toY', 'endY', 'targetY', 'to_y', 'end_y', 'target_y', 'y2']),
+    steps: Number.isFinite(Number(args.steps)) ? Math.max(2, Math.round(Number(args.steps))) : undefined,
+    duration_ms: Number.isFinite(Number(args.duration_ms))
+      ? Math.max(40, Math.round(Number(args.duration_ms)))
+      : (Number.isFinite(Number(args.durationMs)) ? Math.max(40, Math.round(Number(args.durationMs))) : undefined),
+    release: (Object.prototype.hasOwnProperty.call(args, 'release') || Object.prototype.hasOwnProperty.call(args, 'keepDown'))
+      ? !parseBool(args.keepDown) && parseBool(args.release ?? true)
+      : undefined,
     button: typeof args.button === 'string' ? (args.button as 'left' | 'right' | 'middle') : undefined,
     clicks,
     dx,
@@ -2711,6 +2732,11 @@ async function execDesktopAction(args: Record<string, unknown>, signal?: AbortSi
     action: payload.action,
     x: payload.x,
     y: payload.y,
+    toX: payload.toX,
+    toY: payload.toY,
+    steps: payload.steps,
+    duration_ms: payload.duration_ms,
+    release: payload.release,
     button: payload.button,
     clicks: payload.clicks,
     dx: payload.dx,
@@ -2757,9 +2783,9 @@ async function execDesktopAction(args: Record<string, unknown>, signal?: AbortSi
   return { content: JSON.stringify(result), success: true }
 }
 
-function normalizeDesktopAction(action: string): { action: 'move' | 'click' | 'scroll' | 'type' | 'key'; impliedClicks?: number } | null {
+function normalizeDesktopAction(action: string): { action: 'move' | 'click' | 'mouse_down' | 'drag' | 'scroll' | 'type' | 'key'; impliedClicks?: number } | null {
   const normalized = action.trim().toUpperCase().replace(/[\s-]+/g, '_')
-  const map: Record<string, { action: 'move' | 'click' | 'scroll' | 'type' | 'key'; impliedClicks?: number }> = {
+  const map: Record<string, { action: 'move' | 'click' | 'mouse_down' | 'drag' | 'scroll' | 'type' | 'key'; impliedClicks?: number }> = {
     MOVE: { action: 'move' },
     HOVER: { action: 'move' },
     CLICK: { action: 'click' },
@@ -2768,6 +2794,13 @@ function normalizeDesktopAction(action: string): { action: 'move' | 'click' | 's
     DOUBLECLICK: { action: 'click', impliedClicks: 2 },
     DBLCLICK: { action: 'click', impliedClicks: 2 },
     DOUBLE_TAP: { action: 'click', impliedClicks: 2 },
+    MOUSE_DOWN: { action: 'mouse_down' },
+    MOUSEDOWN: { action: 'mouse_down' },
+    PRESS: { action: 'mouse_down' },
+    PRESS_DOWN: { action: 'mouse_down' },
+    DRAG: { action: 'drag' },
+    DRAG_TO: { action: 'drag' },
+    DRAG_SLIDER: { action: 'drag' },
     SCROLL: { action: 'scroll' },
     TYPE: { action: 'type' },
     INPUT: { action: 'type' },
@@ -2796,7 +2829,7 @@ function parseBool(value: unknown): boolean {
 
 function resolveDesktopClicks(
   args: Record<string, unknown>,
-  action: 'move' | 'click' | 'scroll' | 'type' | 'key',
+  action: 'move' | 'click' | 'mouse_down' | 'drag' | 'scroll' | 'type' | 'key',
   impliedClicks?: number,
 ): number | undefined {
   if (action !== 'click') return undefined

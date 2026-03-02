@@ -460,12 +460,14 @@ class BridgeWorkspaceFileContent {
     required this.content,
     required this.size,
     required this.isBinary,
+    this.dataUrl,
   });
 
   final String path;
   final String? content;
   final int size;
   final bool isBinary;
+  final String? dataUrl;
 
   factory BridgeWorkspaceFileContent.fromJson(Map<String, dynamic> json) {
     return BridgeWorkspaceFileContent(
@@ -473,6 +475,7 @@ class BridgeWorkspaceFileContent {
       content: json['content']?.toString(),
       size: (json['size'] as num?)?.toInt() ?? 0,
       isBinary: json['isBinary'] == true,
+      dataUrl: json['dataUrl']?.toString(),
     );
   }
 }

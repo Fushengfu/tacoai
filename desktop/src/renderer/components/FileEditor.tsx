@@ -45,6 +45,7 @@ export function FileEditor({ filePath, workspace, onClose, onSaved, onViewDiff }
   const [fileSize, setFileSize] = useState(0)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [imageDataUrl, setImageDataUrl] = useState<string | null>(null)
 
   const editorRef = useRef<monacoEditor.IStandaloneCodeEditor | null>(null)
   const handleSaveRef = useRef<() => void>(() => {})
@@ -54,6 +55,8 @@ export function FileEditor({ filePath, workspace, onClose, onSaved, onViewDiff }
   const languageLabel = getLanguageLabel(filePath)
   const monacoLang = getMonacoLanguage(filePath)
   const isModified = content !== null && content !== originalContent
+  const ext = filePath.includes('.') ? filePath.split('.').pop()?.toLowerCase() ?? '' : ''
+  const isImageFile = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'svg'].includes(ext)
 
   /** 加载文件内容 */
   useEffect(() => {
@@ -61,6 +64,7 @@ export function FileEditor({ filePath, workspace, onClose, onSaved, onViewDiff }
     setLoading(true)
     setError(null)
     setSaved(false)
+    setImageDataUrl(null)
 
     window.taco.file.read(absPath).then((result) => {
       if (cancelled) return
@@ -68,6 +72,7 @@ export function FileEditor({ filePath, workspace, onClose, onSaved, onViewDiff }
       setFileSize(result.size)
       setContent(result.content)
       setOriginalContent(result.content)
+      setImageDataUrl(result.dataUrl ?? null)
       setLoading(false)
     }).catch((err: Error) => {
       if (cancelled) return
@@ -165,6 +170,10 @@ export function FileEditor({ filePath, workspace, onClose, onSaved, onViewDiff }
           <div className="file-editor-status">加载中...</div>
         ) : error ? (
           <div className="file-editor-status error">{error}</div>
+        ) : isImageFile && imageDataUrl ? (
+          <div className="file-editor-image-wrap">
+            <img src={imageDataUrl} alt={fileName} className="file-editor-image-preview" />
+          </div>
         ) : isBinary ? (
           <div className="file-editor-status">
             <span>二进制文件，无法编辑</span>

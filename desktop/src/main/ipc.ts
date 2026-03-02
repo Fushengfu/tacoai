@@ -399,12 +399,28 @@ function isBinaryBuffer(buf: Buffer): boolean {
   return false
 }
 
-/** 读取文件内容，返回文本内容或标记为二进制 */
+function imageMimeFromPath(filePath: string): string | null {
+  const ext = nodePath.extname(filePath).toLowerCase()
+  const m: Record<string, string> = {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.bmp': 'image/bmp',
+    '.ico': 'image/x-icon',
+    '.svg': 'image/svg+xml',
+  }
+  return m[ext] ?? null
+}
+
+/** 读取文件内容，返回文本内容或标记为二进制（图片可附带 dataUrl 预览） */
 async function handleFileRead(
   _event: IpcMainInvokeEvent, filePath: string,
-): Promise<{ content: string | null; size: number; isBinary: boolean }> {
+): Promise<{ content: string | null; size: number; isBinary: boolean; dataUrl?: string }> {
   const stat = await fs.stat(filePath)
   const size = stat.size
+  const imageMime = imageMimeFromPath(filePath)
 
   // 超过 5MB 不读取内容
   if (size > 5 * 1024 * 1024) {
@@ -413,10 +429,27 @@ async function handleFileRead(
 
   const buf = Buffer.from(await fs.readFile(filePath))
   if (isBinaryBuffer(buf)) {
+    if (imageMime) {
+      return {
+        content: null,
+        size,
+        isBinary: true,
+        dataUrl: `data:${imageMime};base64,${buf.toString('base64')}`,
+      }
+    }
     return { content: null, size, isBinary: true }
   }
 
-  return { content: buf.toString('utf-8'), size, isBinary: false }
+  const text = buf.toString('utf-8')
+  if (imageMime === 'image/svg+xml') {
+    return {
+      content: text,
+      size,
+      isBinary: false,
+      dataUrl: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(text)}`,
+    }
+  }
+  return { content: text, size, isBinary: false }
 }
 
 /** 写入文件内容 */

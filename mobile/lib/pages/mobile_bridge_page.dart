@@ -36,6 +36,8 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
   StreamSubscription<dynamic>? _contextSocketSub;
   bool _socketConnected = false;
   bool _socketConnecting = false;
+  bool _drainingSocketContext = false;
+  Map<String, dynamic>? _pendingSocketContext;
 
   DesktopBridgeContext? _context;
   String? _selectedThreadId;
@@ -148,6 +150,23 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
     }
   }
 
+  void _enqueueSocketContext(Map<String, dynamic> rawContext) {
+    _pendingSocketContext = rawContext;
+    if (_drainingSocketContext) return;
+    _drainingSocketContext = true;
+    Future<void>(() async {
+      while (_pendingSocketContext != null) {
+        final latest = _pendingSocketContext;
+        _pendingSocketContext = null;
+        if (latest == null) continue;
+        _applyContext(DesktopBridgeContext.fromJson(latest));
+        // 让出事件循环，避免大量上下文更新阻塞 UI。
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+      }
+      _drainingSocketContext = false;
+    });
+  }
+
   Future<void> _connectContextSocket({bool forceReconnect = false}) async {
     if (_socketConnecting) return;
     if (forceReconnect) {
@@ -175,7 +194,7 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
             if (type != 'context') return;
             final rawContext = decoded['context'];
             if (rawContext is! Map<String, dynamic>) return;
-            _applyContext(DesktopBridgeContext.fromJson(rawContext));
+            _enqueueSocketContext(rawContext);
           } catch (_) {
             // ignore malformed payload
           }
@@ -839,27 +858,34 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
       child: ListView.builder(
         controller: _historyScrollController,
         reverse: true,
+        addRepaintBoundaries: true,
         itemCount: messages.length + (currentSession.streamingContent.isNotEmpty ? 1 : 0),
         itemBuilder: (context, index) {
           if (index == 0 && currentSession.streamingContent.isNotEmpty) {
-            return MessageBubble(
-              role: 'assistant',
-              content: currentSession.streamingContent,
-              streaming: true,
+            return RepaintBoundary(
+              key: const ValueKey('streaming-bubble'),
+              child: MessageBubble(
+                role: 'assistant',
+                content: currentSession.streamingContent,
+                streaming: true,
+              ),
             );
           }
           final offset = currentSession.streamingContent.isNotEmpty ? 1 : 0;
           final msg = messages[messages.length - 1 - (index - offset)];
           final screenshotUrls = _extractScreenshotUrls(msg);
-          return MessageBubble(
-            role: msg.role,
-            content: msg.content,
-            agentSteps: msg.agentSteps,
-            activePlan: msg.activePlan,
-            screenshotUrls: screenshotUrls,
-            onOpenImage: (url) => unawaited(_openImagePreview(url)),
-            onConfirmStep: (confirmId, approved) => _confirmStep(confirmId, approved),
-            confirmStates: _respondedConfirms,
+          return RepaintBoundary(
+            key: ValueKey('msg-${msg.id}'),
+            child: MessageBubble(
+              role: msg.role,
+              content: msg.content,
+              agentSteps: msg.agentSteps,
+              activePlan: msg.activePlan,
+              screenshotUrls: screenshotUrls,
+              onOpenImage: (url) => unawaited(_openImagePreview(url)),
+              onConfirmStep: (confirmId, approved) => _confirmStep(confirmId, approved),
+              confirmStates: _respondedConfirms,
+            ),
           );
         },
       ),

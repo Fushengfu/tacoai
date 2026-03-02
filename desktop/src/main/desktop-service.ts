@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module'
 
-type DesktopAction = 'move' | 'click' | 'scroll' | 'type' | 'key'
+type DesktopAction = 'move' | 'click' | 'mouse_down' | 'drag' | 'scroll' | 'type' | 'key'
 type DesktopCursor = { x: number; y: number } | null
 
 type NutPoint = unknown
@@ -10,6 +10,12 @@ type NutModule = {
     setPosition: (point: NutPoint) => Promise<void>
     getPosition?: () => Promise<unknown>
     click: (button?: unknown) => Promise<void>
+    pressButton?: (button?: unknown) => Promise<void>
+    releaseButton?: (button?: unknown) => Promise<void>
+    press?: (button?: unknown) => Promise<void>
+    release?: (button?: unknown) => Promise<void>
+    buttonDown?: (button?: unknown) => Promise<void>
+    buttonUp?: (button?: unknown) => Promise<void>
     scrollDown: (amount?: number) => Promise<void>
     scrollUp: (amount?: number) => Promise<void>
     scrollLeft: (amount?: number) => Promise<void>
@@ -29,8 +35,13 @@ export type DesktopActionRequest = {
   action: DesktopAction
   x?: number
   y?: number
+  toX?: number
+  toY?: number
   button?: 'left' | 'right' | 'middle'
   clicks?: number
+  steps?: number
+  duration_ms?: number
+  release?: boolean
   dx?: number
   dy?: number
   text?: string
@@ -51,6 +62,7 @@ let nutModule: NutModule | null = null
 let loadingNut: Promise<NutModule> | null = null
 let lastMousePos: { x: number; y: number } | null = null
 let lastDesktopClickAt = 0
+let activeMouseButton: DesktopActionRequest['button'] | null = null
 const runtimeRequire = createRequire(__filename)
 
 function sleep(ms: number): Promise<void> {
@@ -202,6 +214,7 @@ async function smoothSetPosition(
   Point: NutModule['Point'],
   targetX: number,
   targetY: number,
+  options?: { steps?: number; durationMs?: number },
   signal?: AbortSignal,
 ): Promise<void> {
   const x2 = Math.round(targetX)
@@ -221,8 +234,10 @@ async function smoothSetPosition(
     return
   }
 
-  const steps = Math.max(4, Math.min(30, Math.round(distance / 60)))
-  const totalMs = Math.max(80, Math.min(260, Math.round(distance * 0.7)))
+  const autoSteps = Math.max(4, Math.min(30, Math.round(distance / 60)))
+  const autoTotalMs = Math.max(80, Math.min(260, Math.round(distance * 0.7)))
+  const steps = Math.max(2, Math.min(120, Math.round(options?.steps ?? autoSteps)))
+  const totalMs = Math.max(20, Math.min(5000, Math.round(options?.durationMs ?? autoTotalMs)))
   const delayMs = Math.max(4, Math.floor(totalMs / steps))
 
   for (let i = 1; i <= steps; i++) {
@@ -236,6 +251,20 @@ async function smoothSetPosition(
   }
 
   lastMousePos = { x: x2, y: y2 }
+}
+
+function resolveMouseDownApi(mouse: NutModule['mouse']): ((button?: unknown) => Promise<void>) | null {
+  if (typeof mouse.pressButton === 'function') return mouse.pressButton.bind(mouse)
+  if (typeof mouse.press === 'function') return mouse.press.bind(mouse)
+  if (typeof mouse.buttonDown === 'function') return mouse.buttonDown.bind(mouse)
+  return null
+}
+
+function resolveMouseUpApi(mouse: NutModule['mouse']): ((button?: unknown) => Promise<void>) | null {
+  if (typeof mouse.releaseButton === 'function') return mouse.releaseButton.bind(mouse)
+  if (typeof mouse.release === 'function') return mouse.release.bind(mouse)
+  if (typeof mouse.buttonUp === 'function') return mouse.buttonUp.bind(mouse)
+  return null
 }
 
 export async function callDesktopService(payload: DesktopActionRequest, signal?: AbortSignal): Promise<DesktopActionResponse> {
@@ -257,14 +286,14 @@ export async function callDesktopService(payload: DesktopActionRequest, signal?:
         if (!Number.isFinite(payload.x) || !Number.isFinite(payload.y)) {
           return { ok: false, error: 'x and y are required for move action', cursorBefore }
         }
-        await smoothSetPosition(mouse, Point, Number(payload.x), Number(payload.y), signal)
+        await smoothSetPosition(mouse, Point, Number(payload.x), Number(payload.y), undefined, signal)
         const cursorAfter = await getCurrentMousePos(mouse)
         return { ok: true, message: 'mouse moved', cursorBefore, cursorAfter }
       }
 
       case 'click': {
         if (Number.isFinite(payload.x) && Number.isFinite(payload.y)) {
-          await smoothSetPosition(mouse, Point, Number(payload.x), Number(payload.y), signal)
+          await smoothSetPosition(mouse, Point, Number(payload.x), Number(payload.y), undefined, signal)
         }
         const button = mapButton(payload.button, Button)
         const clicks = Math.max(1, Number(payload.clicks ?? 1))
@@ -277,6 +306,63 @@ export async function callDesktopService(payload: DesktopActionRequest, signal?:
         lastDesktopClickAt = Date.now()
         const cursorAfter = await getCurrentMousePos(mouse)
         return { ok: true, message: 'mouse clicked', cursorBefore, cursorAfter }
+      }
+
+      case 'mouse_down': {
+        if (Number.isFinite(payload.x) && Number.isFinite(payload.y)) {
+          await smoothSetPosition(mouse, Point, Number(payload.x), Number(payload.y), undefined, signal)
+        }
+        const mouseDown = resolveMouseDownApi(mouse)
+        if (!mouseDown) {
+          return { ok: false, error: 'desktop library does not support mouse down API', cursorBefore }
+        }
+        const button = mapButton(payload.button, Button)
+        await mouseDown(button)
+        activeMouseButton = payload.button ?? 'left'
+        const cursorAfter = await getCurrentMousePos(mouse)
+        return { ok: true, message: 'mouse down', cursorBefore, cursorAfter }
+      }
+
+      case 'drag': {
+        const releaseAfter = payload.release !== false
+        const buttonName = payload.button ?? activeMouseButton ?? 'left'
+        const button = mapButton(buttonName, Button)
+        const mouseDown = resolveMouseDownApi(mouse)
+        const mouseUp = resolveMouseUpApi(mouse)
+        if (!mouseDown || !mouseUp) {
+          return { ok: false, error: 'desktop library does not support drag (mouse down/up API missing)', cursorBefore }
+        }
+        if (!Number.isFinite(payload.toX) || !Number.isFinite(payload.toY)) {
+          return { ok: false, error: 'toX and toY are required for drag action', cursorBefore }
+        }
+
+        const hasStart = Number.isFinite(payload.x) && Number.isFinite(payload.y)
+        if (hasStart) {
+          await smoothSetPosition(mouse, Point, Number(payload.x), Number(payload.y), undefined, signal)
+        }
+
+        if (!activeMouseButton) {
+          await mouseDown(button)
+          activeMouseButton = buttonName
+        }
+
+        await smoothSetPosition(
+          mouse,
+          Point,
+          Number(payload.toX),
+          Number(payload.toY),
+          { steps: payload.steps, durationMs: payload.duration_ms },
+          signal,
+        )
+
+        if (releaseAfter) {
+          await mouseUp(button)
+          activeMouseButton = null
+        } else {
+          activeMouseButton = buttonName
+        }
+        const cursorAfter = await getCurrentMousePos(mouse)
+        return { ok: true, message: releaseAfter ? 'mouse dragged and released' : 'mouse dragged (holding)', cursorBefore, cursorAfter }
       }
 
       case 'scroll': {

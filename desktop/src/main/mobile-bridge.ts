@@ -131,6 +131,10 @@ function trimText(raw: unknown, maxLen: number): string {
   return String(raw ?? '').slice(0, maxLen)
 }
 
+function fullText(raw: unknown): string {
+  return String(raw ?? '')
+}
+
 function sanitizeAgentStepStatus(raw: unknown): 'calling' | 'running' | 'confirm' | 'done' {
   const text = String(raw ?? '')
   if (text === 'calling' || text === 'running' || text === 'confirm' || text === 'done') return text
@@ -167,48 +171,48 @@ function broadcastContext(): void {
 
 function sanitizeContext(raw: MobileBridgeContextSnapshot): MobileBridgeContextSnapshot {
   const providers = Array.isArray(raw?.providers)
-    ? raw.providers.slice(0, 20).map((p) => ({
+    ? raw.providers.map((p) => ({
       id: trimText(p.id, 64),
       label: trimText(p.label, 128),
     }))
     : []
   const safeThreads = Array.isArray(raw?.threads) ? raw.threads : []
-  const threads = safeThreads.slice(0, 20).map((thread) => {
+  const threads = safeThreads.map((thread) => {
     const sessions = Array.isArray(thread.sessions) ? thread.sessions : []
-    const safeSessions = sessions.slice(0, 30).map((session) => {
+    const safeSessions = sessions.map((session) => {
       const messages = Array.isArray(session.messages) ? session.messages : []
-      const safeMessages = messages.slice(0, 80).map((msg) => {
+      const safeMessages = messages.map((msg) => {
         const rawSteps = Array.isArray(msg.agentSteps) ? msg.agentSteps : []
-        const safeSteps = rawSteps.slice(0, 30).map((step) => {
+        const safeSteps = rawSteps.map((step) => {
           const rawToolCalls = Array.isArray(step.toolCalls) ? step.toolCalls : []
           const rawToolResults = Array.isArray(step.toolResults) ? step.toolResults : []
           const rawRisks = Array.isArray(step.risks) ? step.risks : []
           return {
             round: Number.isFinite(step.round) ? Math.max(0, Math.trunc(step.round)) : 0,
-            thinking: trimText(step.thinking, 4000),
+            thinking: fullText(step.thinking),
             status: sanitizeAgentStepStatus(step.status),
             confirmId: trimText(step.confirmId, 128) || undefined,
-            risks: rawRisks.slice(0, 10).map((risk) => ({
+            risks: rawRisks.map((risk) => ({
               toolName: trimText(risk.toolName, 128),
-              reason: trimText(risk.reason, 1000),
-              detail: trimText(risk.detail, 2000),
+              reason: fullText(risk.reason),
+              detail: fullText(risk.detail),
               level: risk.level === 'safe' || risk.level === 'danger' ? risk.level : 'warning',
             })),
-            toolCalls: rawToolCalls.slice(0, 30).map((tc) => ({
+            toolCalls: rawToolCalls.map((tc) => ({
               id: trimText(tc.id, 128),
               name: trimText(tc.name, 128),
-              arguments: trimText(tc.arguments, 2000),
+              arguments: fullText(tc.arguments),
             })),
-            toolResults: rawToolResults.slice(0, 30).map((tr) => ({
+            toolResults: rawToolResults.map((tr) => ({
               tool_call_id: trimText(tr.tool_call_id, 128),
               name: trimText(tr.name, 128),
-              content: trimText(tr.content, 3000),
+              content: fullText(tr.content),
               success: Boolean(tr.success),
               fileChange: tr.fileChange && typeof tr.fileChange === 'object'
                 ? {
                   filePath: trimText(tr.fileChange.filePath, 1024),
-                  oldContent: tr.fileChange.oldContent == null ? null : trimText(tr.fileChange.oldContent, 12000),
-                  newContent: tr.fileChange.newContent == null ? null : trimText(tr.fileChange.newContent, 12000),
+                  oldContent: tr.fileChange.oldContent == null ? null : fullText(tr.fileChange.oldContent),
+                  newContent: tr.fileChange.newContent == null ? null : fullText(tr.fileChange.newContent),
                 }
                 : undefined,
             })),
@@ -218,21 +222,21 @@ function sanitizeContext(raw: MobileBridgeContextSnapshot): MobileBridgeContextS
         const rawPlanSteps = Array.isArray(rawPlan?.steps) ? rawPlan.steps : []
         const safePlan = rawPlan
           ? {
-            summary: trimText(rawPlan.summary, 500),
-            reasoning: trimText(rawPlan.reasoning, 1000),
-            steps: rawPlanSteps.slice(0, 50).map((step) => ({
-              text: trimText(step.text, 500),
+            summary: fullText(rawPlan.summary),
+            reasoning: fullText(rawPlan.reasoning),
+            steps: rawPlanSteps.map((step) => ({
+              text: fullText(step.text),
               status: sanitizePlanStepStatus(step.status),
-              note: trimText(step.note, 500),
+              note: fullText(step.note),
             })),
           }
           : undefined
         return {
           id: trimText(msg.id, 128),
           role: msg.role === 'assistant' || msg.role === 'system' ? msg.role : 'user',
-          content: trimText(msg.content, 4000),
+          content: fullText(msg.content),
           screenshotPaths: Array.isArray(msg.screenshotPaths)
-            ? msg.screenshotPaths.slice(0, 20).map((p) => trimText(p, 1024)).filter(Boolean)
+            ? msg.screenshotPaths.map((p) => trimText(p, 1024)).filter(Boolean)
             : undefined,
           ...(safeSteps.length > 0 ? { agentSteps: safeSteps } : {}),
           ...(safePlan ? { activePlan: safePlan } : {}),
@@ -245,8 +249,8 @@ function sanitizeContext(raw: MobileBridgeContextSnapshot): MobileBridgeContextS
         messageCount: Number.isFinite(session.messageCount) ? Math.max(0, Math.trunc(session.messageCount)) : safeMessages.length,
         messages: safeMessages,
         sending: Boolean(session.sending),
-        queue: queue.slice(0, 20).map((q) => trimText(q, 500)),
-        streamingContent: trimText(session.streamingContent, 4000),
+        queue: queue.map((q) => fullText(q)),
+        streamingContent: fullText(session.streamingContent),
       }
     })
     return {
@@ -587,6 +591,18 @@ async function handleWorkspaceFileReadRequest(_req: http.IncomingMessage, res: h
       return
     }
     const size = stat.size
+    const ext = path.extname(resolved.absolutePath).toLowerCase()
+    const imageMime: Record<string, string> = {
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp',
+      '.bmp': 'image/bmp',
+      '.ico': 'image/x-icon',
+      '.svg': 'image/svg+xml',
+    }
+    const mime = imageMime[ext]
     if (size > 5 * 1024 * 1024) {
       writeJson(res, 200, {
         ok: true,
@@ -605,15 +621,20 @@ async function handleWorkspaceFileReadRequest(_req: http.IncomingMessage, res: h
         isBinary: true,
         size,
         content: null,
+        dataUrl: mime ? `data:${mime};base64,${buf.toString('base64')}` : undefined,
       })
       return
     }
+    const text = buf.toString('utf-8')
     writeJson(res, 200, {
       ok: true,
       path: resolved.relativePath,
       isBinary: false,
       size,
-      content: buf.toString('utf-8'),
+      content: text,
+      dataUrl: mime === 'image/svg+xml'
+        ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(text)}`
+        : undefined,
     })
   } catch {
     writeJson(res, 404, { ok: false, error: 'file not found' })
