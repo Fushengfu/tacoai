@@ -7,6 +7,76 @@ function extractText(children: React.ReactNode): string {
   return String(children).replace(/\n$/, '')
 }
 
+function normalizeSlashPath(input: string): string {
+  return String(input ?? '').trim().replace(/[\\/]+/g, '/').replace(/\/+/g, '/')
+}
+
+function isWindowsAbsolutePath(input: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(input) || input.startsWith('\\\\')
+}
+
+function isHttpLikeUrl(input: string): boolean {
+  return /^(https?|ftp|mailto|tel):/i.test(input)
+}
+
+function decodeFileHrefPath(href: string): string | null {
+  const raw = String(href ?? '').trim()
+  if (!raw || raw.startsWith('#')) return null
+  if (isHttpLikeUrl(raw)) return null
+
+  if (raw.startsWith('file://')) {
+    try {
+      const u = new URL(raw)
+      let pathname = decodeURIComponent(u.pathname || '')
+      if (u.hostname) {
+        // file://server/share/path
+        const uncPath = pathname.replace(/\//g, '\\')
+        return `\\\\${u.hostname}${uncPath}`
+      }
+      if (/^\/[a-zA-Z]:\//.test(pathname)) {
+        pathname = pathname.slice(1)
+      }
+      return pathname
+    } catch {
+      return null
+    }
+  }
+
+  if (raw.startsWith('/') || isWindowsAbsolutePath(raw)) {
+    try { return decodeURIComponent(raw) } catch { return raw }
+  }
+
+  // 相对路径（非 URL 协议）视作项目内候选路径
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw)) {
+    try { return decodeURIComponent(raw) } catch { return raw }
+  }
+  return null
+}
+
+function toWorkspaceRelativePath(filePath: string, workspace?: string): string | null {
+  const normalizedPath = normalizeSlashPath(filePath).replace(/^\.\//, '')
+  if (!normalizedPath) return null
+  if (normalizedPath.startsWith('../') || normalizedPath === '..') return null
+
+  if (!workspace) {
+    return normalizedPath.startsWith('/') || isWindowsAbsolutePath(normalizedPath) ? null : normalizedPath
+  }
+
+  const normalizedWorkspace = normalizeSlashPath(workspace).replace(/\/+$/, '')
+  const lowerPath = normalizedPath.toLowerCase()
+  const lowerWorkspace = normalizedWorkspace.toLowerCase()
+
+  if (normalizedPath.startsWith('/') || isWindowsAbsolutePath(normalizedPath)) {
+    if (lowerPath === lowerWorkspace) return ''
+    if (lowerPath.startsWith(`${lowerWorkspace}/`)) {
+      return normalizedPath.slice(normalizedWorkspace.length + 1)
+    }
+    return null
+  }
+
+  return normalizedPath
+}
+
 /* ------------------------------------------------------------------ */
 /*  解析 <think> 标签                                                    */
 /* ------------------------------------------------------------------ */
@@ -114,7 +184,14 @@ function CopyButton({ text }: Readonly<{ text: string }>) {
   )
 }
 
-export function MarkdownBubble({ content, streaming }: Readonly<{ content: string; streaming?: boolean }>) {
+type MarkdownBubbleProps = {
+  content: string
+  streaming?: boolean
+  workspace?: string
+  onOpenProjectFile?: (filePath: string) => void
+}
+
+export function MarkdownBubble({ content, streaming, workspace, onOpenProjectFile }: Readonly<MarkdownBubbleProps>) {
   const parsed = useMemo(() => parseThinkTag(content), [content])
 
   // 思考完成状态：如果没有思考内容则忽略；流式中跟随 thinkingDone
@@ -136,8 +213,14 @@ export function MarkdownBubble({ content, streaming }: Readonly<{ content: strin
                   rel="noopener noreferrer"
                   onClick={(e) => {
                     e.preventDefault()
+                    const resolvedPath = href
+                      ? toWorkspaceRelativePath(decodeFileHrefPath(href) ?? '', workspace)
+                      : null
+                    if (resolvedPath && onOpenProjectFile) {
+                      onOpenProjectFile(resolvedPath)
+                      return
+                    }
                     if (href) {
-                      // 通过 IPC 在外部浏览器窗口中打开链接
                       window.taco.browser.openExternal(href)
                     }
                   }}

@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ActivePlan, AgentStep, AttachedImage, ChatMsg, FileChangeInfo, FileChangeStatus, ProviderId, QueuedMessage, Session, ThreadMode } from '../types'
 import type { EditorId } from '../../shared/ipc'
-import { editorCommands } from '../../shared/ipc'
 import { MarkdownBubble } from './MarkdownBubble'
 import { DiffView } from './DiffView'
 import { FileEditor } from './FileEditor'
@@ -35,6 +34,24 @@ function formatElapsedHms(ms: number): string {
   const m = Math.floor((totalSeconds % 3600) / 60)
   const s = totalSeconds % 60
   return `${h}h${m}m${s}s`
+}
+
+function formatTaskTimingLabel(
+  taskTiming?: ChatMsg['taskTiming'] | null,
+  nowTs?: number,
+  fallbackStartedAt?: number,
+): string | null {
+  const startedAtRaw = Number(taskTiming?.startedAt ?? fallbackStartedAt)
+  if (!Number.isFinite(startedAtRaw) || startedAtRaw <= 0) return null
+  const startedAt = startedAtRaw
+  const direct = Number(taskTiming?.durationMs)
+  const endedAt = Number(taskTiming?.endedAt)
+  let durationMs = Number.NaN
+  if (Number.isFinite(direct)) durationMs = direct
+  else if (Number.isFinite(endedAt) && endedAt >= startedAt) durationMs = endedAt - startedAt
+  else durationMs = (Number.isFinite(nowTs) ? Number(nowTs) : Date.now()) - startedAt
+  if (!Number.isFinite(durationMs)) return null
+  return `本轮耗时 ${formatElapsedHms(Math.max(0, durationMs))}`
 }
 
 function PlanTracker({ plan }: { plan: ActivePlan }) {
@@ -87,11 +104,57 @@ function PlanTracker({ plan }: { plan: ActivePlan }) {
   )
 }
 
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function stripInternalSummaryBlocks(text: string): string {
+  let output = String(text ?? '')
+  const headers = [
+    '【历史助手回复（仅供上下文，不代表当前轮结论）】',
+    '【执行过程摘要】',
+    '【计划状态】',
+    '【Git 提交】',
+  ]
+  for (const header of headers) {
+    const pattern = new RegExp(`${escapeRegExp(header)}[\\s\\S]*?(?=\\n【|$)`, 'g')
+    output = output.replace(pattern, '')
+  }
+  return output
+}
+
+function maskToolNamesForUser(text: string, toolNames: string[]): string {
+  let output = String(text ?? '')
+  const names = Array.from(new Set(toolNames.filter(Boolean)))
+  for (const name of names) {
+    const pattern = new RegExp(`\\b${escapeRegExp(name)}\\b`, 'gi')
+    output = output.replace(pattern, '工具操作')
+  }
+  output = output
+    .replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/gi, '')
+    .replace(/<invoke[\s\S]*?<\/invoke>/gi, '')
+    .replace(/<\/?minimax:tool_call>/gi, '')
+  return output
+}
+
+function sanitizeAssistantContentForDisplay(content: string, toolNames: string[]): string {
+  const withoutInternalSummary = stripInternalSummaryBlocks(content)
+  const withoutThink = withoutInternalSummary
+    .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '')
+    .replace(/<\/?think\b[^>]*>/gi, '')
+  const masked = maskToolNamesForUser(withoutThink, toolNames)
+  return masked
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 type ChatPanelProps = {
   title: string
   messages: ChatMsg[]
   showStreamBubble: boolean
   streamingContent: string
+  /** 当前在途任务开始时间（用于实时耗时） */
+  activeTaskStartedAt?: number
   draft: string
   onDraftChange: (value: string) => void
   sending: boolean
@@ -117,7 +180,8 @@ type ChatPanelProps = {
   queue: QueuedMessage[]
   onRemoveFromQueue: (id: string) => void
   editor: EditorId
-  onEditorChange: (id: EditorId) => void
+  /** 判断会话是否正在执行中 */
+  isSessionSending?: (sessionId: string) => boolean
   /** 当前选中要查看 diff 的文件变更 */
   selectedFileChange: FileChangeInfo | null
   /** 关闭 diff 视图的回调 */
@@ -138,14 +202,20 @@ type ChatPanelProps = {
   onRollbackBeforeMsg?: (commitHash: string) => Promise<void>
   /** 当前在编辑器中打开的文件路径（非变更文件） */
   viewingFile?: string | null
+  /** 文件编辑器初始定位（行/列） */
+  viewingSelection?: { line: number; column: number } | null
   /** 工作空间路径（FileEditor 需要） */
   viewingWorkspace?: string
   /** 关闭文件编辑器 */
   onCloseFileEditor?: () => void
   /** 文件保存后的回调（刷新目录树等） */
   onFileSaved?: () => void
+  /** 文件编辑后的回调（用于同步变更列表） */
+  onFileEdited?: (change: FileChangeInfo) => void
   /** 从编辑器切换到 Diff 视图 */
   onViewDiffFromEditor?: () => void
+  /** 在中间区域打开文件查看/编辑 */
+  onOpenFileView?: (filePath: string, forceDiff?: boolean, selection?: { line: number; column: number } | null) => void
 }
 
 export function ChatPanel({
@@ -153,6 +223,7 @@ export function ChatPanel({
   messages,
   showStreamBubble,
   streamingContent,
+  activeTaskStartedAt,
   draft,
   onDraftChange,
   sending,
@@ -177,7 +248,7 @@ export function ChatPanel({
   queue,
   onRemoveFromQueue,
   editor,
-  onEditorChange,
+  isSessionSending,
   selectedFileChange,
   onCloseDiff,
   showTerminal,
@@ -188,10 +259,13 @@ export function ChatPanel({
   onRejectFile,
   onRollbackBeforeMsg,
   viewingFile,
+  viewingSelection,
   viewingWorkspace,
   onCloseFileEditor,
   onFileSaved,
+  onFileEdited,
   onViewDiffFromEditor,
+  onOpenFileView,
 }: Readonly<ChatPanelProps>) {
   const hasProviders = configuredProviders.length > 0
   const drag = useDrag()
@@ -290,6 +364,13 @@ export function ChatPanel({
   const [stepGroupExpandedMap, setStepGroupExpandedMap] = useState<Record<string, boolean>>({})
   // 自动化截图预览
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null)
+  const [nowTs, setNowTs] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!sending) return
+    const timer = window.setInterval(() => setNowTs(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [sending])
 
   function isWindowsAbsolutePath(text: string): boolean {
     return /^[a-zA-Z]:[\\/]/.test(text) || text.startsWith('\\\\')
@@ -356,6 +437,14 @@ export function ChatPanel({
       }
     }
     return Array.from(paths).map((p) => toImageUrl(p))
+  }
+
+  let lastAssistantMessageId: string | null = null
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === 'assistant') {
+      lastAssistantMessageId = messages[i].id
+      break
+    }
   }
 
   function toggleStep(key: string) {
@@ -451,7 +540,7 @@ export function ChatPanel({
     switch (tc.name) {
       case 'read_file': {
         const p = String(args.path ?? '')
-        return { label: '读取文件', detail: p, filePath: p }
+        return { label: '查看文件', detail: p, filePath: p }
       }
       case 'write_file': {
         const p = String(args.path ?? '')
@@ -461,37 +550,42 @@ export function ChatPanel({
         const p = String(args.path ?? '')
         return { label: '编辑文件', detail: p, filePath: p }
       }
+      case 'delete_file': {
+        const p = String(args.path ?? '')
+        return { label: '删除文件', detail: p, filePath: p }
+      }
+      case 'list_dir':
       case 'list_directory': {
         const p = String(args.path ?? '.')
-        return { label: '列出目录', detail: p, filePath: p }
+        return { label: '查看目录', detail: p, filePath: p }
       }
       case 'run_command': {
         const cmd = String(args.command ?? '')
         return { label: '执行命令', detail: summarizeRunCommand(cmd) }
       }
-      case 'search_files': {
-        const pattern = String(args.pattern ?? '')
-        const dir = String(args.directory ?? '')
-        return { label: '搜索文件', detail: `"${pattern}" in ${dir}` }
+      case 'codebase_search': {
+        const query = String(args.query ?? args.pattern ?? '')
+        const dir = String(args.path ?? args.directory ?? '.')
+        return { label: '检索内容', detail: `"${query}" in ${dir}` }
       }
       case 'browser_navigate': {
         const url = String(args.url ?? '')
-        return { label: '打开页面', detail: url }
+        return { label: '浏览器操作', detail: url }
       }
       case 'browser_screenshot': {
         const goal = String(args.goal ?? '').trim()
-        return { label: '页面截图', detail: goal ? `目标：${goal}` : '用于状态确认' }
+        return { label: '浏览器操作', detail: goal ? `目标：${goal}` : '状态确认' }
       }
       case 'browser_wait': {
         const selector = String(args.selector ?? '')
-        return { label: '等待元素', detail: selector || '等待页面加载完成' }
+        return { label: '浏览器操作', detail: selector || '等待页面加载完成' }
       }
       case 'browser_get_content': {
         const selector = String(args.selector ?? '')
-        return { label: '读取页面内容', detail: selector || '读取页面主体内容' }
+        return { label: '浏览器操作', detail: selector || '读取页面主体内容' }
       }
       case 'browser_get_console_logs': {
-        return { label: '检查控制台日志', detail: '收集页面错误与警告' }
+        return { label: '浏览器操作', detail: '检查控制台日志' }
       }
       case 'browser_click': {
         const selector = String(args.selector ?? '').trim()
@@ -499,48 +593,67 @@ export function ChatPanel({
         const y = Number(args.y)
         const clickCount = Number(args.clickCount ?? 1)
         if (selector) {
-          return { label: clickCount >= 2 ? '双击元素' : '点击元素', detail: selector }
+          return { label: '浏览器操作', detail: clickCount >= 2 ? `双击 ${selector}` : `点击 ${selector}` }
         }
         if (Number.isFinite(x) && Number.isFinite(y)) {
-          return { label: clickCount >= 2 ? '双击坐标' : '点击坐标', detail: `(${Math.round(x)}, ${Math.round(y)})` }
+          return { label: '浏览器操作', detail: `${clickCount >= 2 ? '双击' : '点击'} (${Math.round(x)}, ${Math.round(y)})` }
         }
-        return { label: clickCount >= 2 ? '双击页面' : '点击页面', detail: '' }
+        return { label: '浏览器操作', detail: clickCount >= 2 ? '双击页面' : '点击页面' }
       }
       case 'browser_type': {
         const selector = String(args.selector ?? '')
         const text = String(args.text ?? '')
         const displayText = text.length > 18 ? `${text.slice(0, 18)}...` : text
-        return { label: '输入内容', detail: `${selector}${displayText ? ` ← ${displayText}` : ''}`.trim() }
+        return { label: '浏览器操作', detail: `${selector}${displayText ? ` ← ${displayText}` : ''}`.trim() }
       }
       case 'browser_scroll': {
         const direction = String(args.direction ?? 'down')
-        return { label: '滚动页面', detail: `方向：${direction}` }
+        return { label: '浏览器操作', detail: `滚动(${direction})` }
       }
       case 'browser_hover': {
         const selector = String(args.selector ?? '')
-        return { label: '悬停元素', detail: selector || '指定位置' }
+        return { label: '浏览器操作', detail: selector || '悬停指定位置' }
       }
       case 'browser_keypress': {
         const key = String(args.key ?? '')
-        return { label: '按下按键', detail: key }
+        return { label: '浏览器操作', detail: `按键 ${key}` }
       }
       case 'browser_drag': {
-        return { label: '拖拽元素', detail: '执行拖拽操作' }
+        return { label: '浏览器操作', detail: '拖拽操作' }
       }
       case 'browser_select': {
         const selector = String(args.selector ?? '')
         const value = String(args.value ?? args.label ?? '')
-        return { label: '选择下拉项', detail: `${selector}${value ? ` → ${value}` : ''}`.trim() }
+        return { label: '浏览器操作', detail: `${selector}${value ? ` → ${value}` : ''}`.trim() }
       }
       default:
-        return { label: tc.name, detail: '' }
+        return { label: '执行操作', detail: '' }
     }
   }
 
   /** 步骤折叠标题（多个工具时合并显示） */
   function stepHeaderSummary(step: AgentStep): { label: string; detail: string; filePath?: string } {
     if (step.toolCalls.length === 0) return { label: '思考中', detail: '...' }
-    if (step.toolCalls.length === 1) return toolCallSummary(step.toolCalls[0])
+    if (step.toolCalls.length === 1) {
+      const tc = step.toolCalls[0]
+      const base = toolCallSummary(tc)
+      const result = step.toolResults.find((r) => r.tool_call_id === tc.id)
+      const fc = result?.fileChange
+      if (!fc) return base
+      if (fc.oldContent === null && fc.newContent !== null) {
+        return { ...base, label: '新建文件' }
+      }
+      if (fc.oldContent !== null && fc.newContent === null) {
+        return { ...base, label: '删除文件' }
+      }
+      if (tc.name === 'edit_file') {
+        return { ...base, label: '编辑文件' }
+      }
+      if (tc.name === 'write_file') {
+        return { ...base, label: '覆盖文件' }
+      }
+      return base
+    }
     // 多工具：显示数量
     const names = [...new Set(step.toolCalls.map((tc) => toolCallSummary(tc).label))]
     return { label: names.join(' + '), detail: `(${step.toolCalls.length} 个操作)` }
@@ -563,8 +676,31 @@ export function ChatPanel({
   /** 用选中的编辑器打开文件路径 */
   function openFile(filePath: string) {
     if (!filePath) return
-    // 相对路径时，拼接 workspace
-    const fullPath = filePath.startsWith('/') ? filePath : (workspace ? `${workspace}/${filePath}` : filePath)
+    const normalizedPath = filePath.replace(/[\\/]+/g, '/').replace(/^\.\//, '')
+    const normalizedWorkspace = workspace.replace(/[\\/]+/g, '/').replace(/\/+$/, '')
+    let relativePath: string | null = null
+
+    if (/^[a-zA-Z]:[\\/]/.test(filePath) || filePath.startsWith('\\\\') || filePath.startsWith('/')) {
+      const lowerPath = normalizedPath.toLowerCase()
+      const lowerWorkspace = normalizedWorkspace.toLowerCase()
+      if (lowerPath === lowerWorkspace) {
+        relativePath = ''
+      } else if (lowerPath.startsWith(`${lowerWorkspace}/`)) {
+        relativePath = normalizedPath.slice(normalizedWorkspace.length + 1)
+      }
+    } else if (normalizedPath && !normalizedPath.startsWith('../') && normalizedPath !== '..') {
+      relativePath = normalizedPath
+    }
+
+    if (relativePath && onOpenFileView) {
+      onOpenFileView(relativePath, false)
+      return
+    }
+
+    // 非项目内路径兜底：仍允许外部编辑器打开
+    const fullPath = filePath.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(filePath) || filePath.startsWith('\\\\')
+      ? filePath
+      : (workspace ? `${workspace}/${filePath}` : filePath)
     globalThis.window.taco.shell.openInEditor(fullPath, editor).catch(() => {
       // 静默失败，不影响 UI
     })
@@ -592,7 +728,11 @@ export function ChatPanel({
 
   function renderStepThinking(msg: ChatMsg, step: AgentStep, isStepRunning: boolean) {
     if (!step.thinking) return null
-    const cleaned = step.thinking.replace(/<think>/gi, '').replace(/<\/think>/gi, '').trim()
+    const toolNames = step.toolCalls.map((tc) => tc.name)
+    const cleaned = maskToolNamesForUser(
+      step.thinking.replace(/<think>/gi, '').replace(/<\/think>/gi, '').trim(),
+      toolNames,
+    )
     if (!cleaned) return null
     const thinkKey = `think-${msg.id}-${step.round}`
     const isThinkOpen = expandedThinkBlocks.has(thinkKey)
@@ -608,7 +748,9 @@ export function ChatPanel({
           {!isThinkOpen && <span className="step-thinking-preview">{preview}</span>}
         </button>
         {isThinkOpen && (
-          <div className="step-thinking-body"><MarkdownBubble content={cleaned} /></div>
+          <div className="step-thinking-body">
+            <MarkdownBubble content={cleaned} workspace={workspace} onOpenProjectFile={(path) => openFile(path)} />
+          </div>
         )}
       </div>
     )
@@ -687,8 +829,12 @@ export function ChatPanel({
           {step.risks.map((risk) => (
             <div key={risk.toolCallId} className={`agent-confirm-risk ${risk.level}`}>
               <span className="agent-confirm-risk-badge">{risk.level === 'danger' ? '危险' : '注意'}</span>
-              <span className="agent-confirm-risk-reason">{risk.reason}</span>
-              <pre className="agent-confirm-risk-detail">{risk.detail}</pre>
+              <span className="agent-confirm-risk-reason">
+                {maskToolNamesForUser(risk.reason, step.risks?.map((r) => r.toolName) ?? [])}
+              </span>
+              <pre className="agent-confirm-risk-detail">
+                {maskToolNamesForUser(risk.detail, step.risks?.map((r) => r.toolName) ?? [])}
+              </pre>
             </div>
           ))}
         </div>
@@ -713,22 +859,25 @@ export function ChatPanel({
     if (step.toolCalls.length > 1) {
       return (
         <>
-          {step.toolCalls.map((tc) => {
+          {step.toolCalls.map((tc, index) => {
             const sm = toolCallSummary(tc)
             const result = step.toolResults.find((r) => r.tool_call_id === tc.id)
             const tbKey = `${msg.id}-${step.round}-${tc.id}`
             const isToolRunning = !result && isStepRunning
             const isToolBlockOpen = isToolRunning || expandedToolBlocks.has(tbKey)
+            const actionLabel = sm.label && sm.label.trim() ? sm.label : '执行操作'
+            const actionDetail = sm.detail && sm.detail.trim() ? sm.detail : '无附加信息'
             return (
               <div key={tc.id} className={`agent-tool-block ${isToolRunning ? 'running' : ''}`}>
                 <div className="agent-tool-block-header">
                   <button type="button" className="agent-tool-block-toggle" onClick={() => toggleToolBlock(tbKey)}>
-                    <span className="agent-tool-block-label">{sm.label}</span>
+                    <span className="agent-tool-block-label">{actionLabel}</span>
+                    <span className="agent-tool-block-seq">{index + 1}/{step.toolCalls.length}</span>
                   </button>
                   <span className="agent-tool-block-path" onClick={() => toggleToolBlock(tbKey)}>
                     {sm.filePath ? (
-                      <span className="agent-step-path-link" title={`点击用 ${editorCommands[editor].label} 打开`} onClick={(e) => { e.stopPropagation(); openFile(sm.filePath!) }}>{sm.detail}</span>
-                    ) : sm.detail}
+                      <span className="agent-step-path-link" title="点击预览打开" onClick={(e) => { e.stopPropagation(); openFile(sm.filePath!) }}>{actionDetail}</span>
+                    ) : actionDetail}
                   </span>
                   <button type="button" className="agent-tool-block-chevron-btn" onClick={() => toggleToolBlock(tbKey)}>
                     <span className={`agent-tool-block-chevron ${isToolBlockOpen ? 'open' : ''}`}>›</span>
@@ -758,7 +907,7 @@ export function ChatPanel({
   }
 
   return (
-    <main className="main-panel">
+    <main className="main-panel" style={{ width: '100%', minWidth: 0, alignSelf: 'stretch' }}>
       {/* Topbar */}
       <header
         className={`topbar draggable ${showWindowControls ? 'has-window-controls' : ''}`}
@@ -768,16 +917,6 @@ export function ChatPanel({
         <div className="topbar-title">{title}</div>
         <div className={`topbar-actions no-drag ${showWindowControls ? 'has-window-controls' : ''}`}>
           <div className="topbar-main-actions">
-            <select
-              className="editor-select"
-              value={editor}
-              onChange={(e) => onEditorChange(e.target.value as EditorId)}
-              title="选择打开文件的编辑器"
-            >
-              {Object.entries(editorCommands).map(([id, { label }]) => (
-                <option key={id} value={id}>{label}</option>
-              ))}
-            </select>
             <button
               className={`pill terminal-toggle ${showTerminal ? 'active' : ''}`}
               type="button"
@@ -841,12 +980,15 @@ export function ChatPanel({
           {sessions.map((s) => (
             <div
               key={s.id}
-              className={`session-tab ${s.id === activeSessionId ? 'active' : ''}`}
+              className={`session-tab ${s.id === activeSessionId ? 'active' : ''} ${(isSessionSending?.(s.id) ?? false) ? 'sending' : ''}`}
               onClick={() => onSwitchSession(s.id)}
               role="button"
               tabIndex={0}
               onKeyDown={(e) => { if (e.key === 'Enter') onSwitchSession(s.id) }}
             >
+              {(isSessionSending?.(s.id) ?? false) && (
+                <span className="session-tab-status" title="执行中" />
+              )}
               <span className="session-tab-title">{s.title}</span>
               {sessions.length > 1 && (
                 <button
@@ -888,8 +1030,21 @@ export function ChatPanel({
             filePath={viewingFile}
             workspace={viewingWorkspace}
             onClose={onCloseFileEditor}
-            onSaved={onFileSaved}
+            onSaved={(change) => {
+              onFileSaved?.()
+              if (change && onFileEdited) {
+                onFileEdited({
+                  filePath: change.filePath,
+                  oldContent: change.oldContent,
+                  newContent: change.newContent,
+                })
+              }
+            }}
             onViewDiff={onViewDiffFromEditor}
+            onNavigateToFile={(nextFilePath, line, column) => {
+              onOpenFileView?.(nextFilePath, false, { line, column })
+            }}
+            initialSelection={viewingSelection ?? null}
           />
         </section>
       )}
@@ -916,7 +1071,10 @@ export function ChatPanel({
                 className="workspace-select-btn"
                 onClick={onSelectWorkspace}
               >
-                📁 选择工作空间
+                <svg className="workspace-select-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3.5 8.5A2.5 2.5 0 0 1 6 6h4l2 2h6A2.5 2.5 0 0 1 20.5 10.5v7A2.5 2.5 0 0 1 18 20H6a2.5 2.5 0 0 1-2.5-2.5z" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+                </svg>
+                <span>选择工作空间</span>
               </button>
             )}
           </div>
@@ -925,11 +1083,24 @@ export function ChatPanel({
         <div className="chat-thread">
           {messages.map((msg) => {
             const isEditing = editingMsgId === msg.id
+            const isExecutingAssistant = Boolean(
+              sending &&
+              msg.role === 'assistant' &&
+              lastAssistantMessageId &&
+              msg.id === lastAssistantMessageId &&
+              activeTaskStartedAt,
+            )
+            const taskTimingLabel = formatTaskTimingLabel(
+              isExecutingAssistant ? { startedAt: Number(activeTaskStartedAt) } : msg.taskTiming,
+              nowTs,
+              isExecutingAssistant ? activeTaskStartedAt : undefined,
+            )
 
             return (
               <div key={msg.id} className={`chat-row ${msg.role}`}>
                 {msg.role === 'assistant' ? (
                   <div className="bubble">
+                    {taskTimingLabel && <div className="assistant-task-meta">{taskTimingLabel}</div>}
                     {/* Agent 步骤 + PlanTracker 插入在计划确认和执行步骤之间 */}
                     {msg.agentSteps && msg.agentSteps.length > 0 && (() => {
                       const stepCount = msg.agentSteps.length
@@ -937,9 +1108,12 @@ export function ChatPanel({
                       const doneCount = msg.agentSteps.filter((s) => s.status === 'done').length
                       const failedCount = msg.agentSteps.filter((s) => s.status === 'done' && s.toolResults.some((r) => !r.success)).length
                       const hasActiveSteps = activeCount > 0
+                      const isMessageExecuting = Boolean(sending && lastAssistantMessageId && msg.id === lastAssistantMessageId)
                       const defaultExpanded = hasActiveSteps || stepCount <= 4
                       const hasExplicitExpanded = Object.prototype.hasOwnProperty.call(stepGroupExpandedMap, msg.id)
-                      const isStepsExpanded = hasExplicitExpanded ? stepGroupExpandedMap[msg.id] : defaultExpanded
+                      const isStepsExpanded = isMessageExecuting
+                        ? true
+                        : (hasExplicitExpanded ? stepGroupExpandedMap[msg.id] : defaultExpanded)
                       const groupOperation = stepGroupOperationSummary(msg.agentSteps)
                       const groupSummary = hasActiveSteps
                         ? `${activeCount} 个执行中`
@@ -968,7 +1142,7 @@ export function ChatPanel({
                               </button>
                               <span className="agent-step-detail" onClick={() => toggleStep(stepKey)}>
                                 {summary.filePath ? (
-                                  <span className="agent-step-path-link" title={`点击用 ${editorCommands[editor].label} 打开`} onClick={(e) => { e.stopPropagation(); openFile(summary.filePath!) }}>{summary.detail}</span>
+                                  <span className="agent-step-path-link" title="点击预览打开" onClick={(e) => { e.stopPropagation(); openFile(summary.filePath!) }}>{summary.detail}</span>
                                 ) : summary.detail}
                               </span>
                               <button type="button" className="agent-step-chevron-btn" onClick={() => toggleStep(stepKey)}>
@@ -1014,8 +1188,18 @@ export function ChatPanel({
                     })()}
                     {/* 执行计划进度：紧贴在最终总结文本上方 */}
                     {msg.activePlan && <PlanTracker plan={msg.activePlan} />}
-                    {/* 最终回复文本 */}
-                    {msg.content && <MarkdownBubble content={msg.content} />}
+                    {/* 最终回复文本（隐藏内部过程摘要与工具名） */}
+                    {(() => {
+                      const toolNames = msg.agentSteps?.flatMap((s) => s.toolCalls.map((tc) => tc.name)) ?? []
+                      const visibleContent = sanitizeAssistantContentForDisplay(msg.content, toolNames)
+                      return visibleContent ? (
+                        <MarkdownBubble
+                          content={visibleContent}
+                          workspace={workspace}
+                          onOpenProjectFile={(path) => openFile(path)}
+                        />
+                      ) : null
+                    })()}
                     {/* 自动化截图缩略图 */}
                     {(() => {
                       const screenshotUrls = collectMessageScreenshotUrls(msg)
@@ -1129,8 +1313,18 @@ export function ChatPanel({
           {showStreamBubble && (
             <div className="chat-row assistant">
               <div className="bubble">
+                {activeTaskStartedAt && (
+                  <div className="assistant-task-meta">
+                    {formatTaskTimingLabel({ startedAt: activeTaskStartedAt }, nowTs)}
+                  </div>
+                )}
                 {streamingContent ? (
-                  <MarkdownBubble content={streamingContent} streaming />
+                  <MarkdownBubble
+                    content={streamingContent}
+                    streaming
+                    workspace={workspace}
+                    onOpenProjectFile={(path) => openFile(path)}
+                  />
                 ) : (
                   <div className="typing-indicator">
                     <span />

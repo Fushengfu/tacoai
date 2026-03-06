@@ -183,8 +183,8 @@ export function DiffView({
           )}
 
           {!editing && status === 'pending' && onAccept && (
-            <button type="button" className="diff-action-btn accept" onClick={onAccept} title="确认变更">
-              ✓ {effectiveNewContent === null ? '确认删除' : '保存'}
+            <button type="button" className="diff-action-btn accept" onClick={onAccept} title="暂存变更">
+              ✓ {effectiveNewContent === null ? '暂存删除' : '暂存'}
             </button>
           )}
           {!editing && status === 'pending' && onReject && (
@@ -193,7 +193,7 @@ export function DiffView({
             </button>
           )}
 
-          {status === 'accepted' && <span className="diff-status-badge accepted">已保存</span>}
+          {status === 'accepted' && <span className="diff-status-badge accepted">已暂存</span>}
           {status === 'rejected' && <span className="diff-status-badge rejected">已撤销</span>}
 
           {onClose && (

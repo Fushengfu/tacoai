@@ -10,7 +10,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { exec, execFile } from 'node:child_process'
-import { desktopCapturer, systemPreferences, screen, nativeImage } from 'electron'
+import { desktopCapturer, systemPreferences, screen, nativeImage, shell } from 'electron'
 import { log } from './logger'
 import { executeBrowserAction, getBrowserConsoleSnapshot } from './browser'
 import type { BrowserActionType } from '../shared/ipc'
@@ -142,7 +142,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     type: 'function',
     function: {
-      name: 'list_directory',
+      name: 'list_dir',
       description: '查看目录结构（树形）。支持深度控制、隐藏文件过滤和目录/文件数量摘要。适合先整体理解项目结构再定位目标文件。',
       parameters: {
         type: 'object',
@@ -249,19 +249,19 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     type: 'function',
     function: {
-      name: 'search_files',
+      name: 'codebase_search',
       description: '在文件内容中搜索关键词或正则表达式，返回匹配行及上下文。优先使用 rg (ripgrep)，自动尊重 .gitignore。结果按文件分组，紧凑高效。用于在代码中定位函数、变量、配置等。',
       parameters: {
         type: 'object',
         properties: {
-          pattern: { type: 'string', description: '搜索关键词或正则表达式' },
-          directory: { type: 'string', description: '搜索目录（可选，默认项目根目录）' },
-          filePattern: { type: 'string', description: '限定文件类型，如 "*.ts"、"*.{ts,tsx}"（可选）' },
-          contextLines: { type: 'number', description: '每个匹配项显示的上下文行数，默认 2' },
-          maxResults: { type: 'number', description: '最大返回匹配数，默认 30' },
+          query: { type: 'string', description: '搜索关键词或正则表达式（必填）' },
+          path: { type: 'string', description: '搜索范围路径（目录或文件，支持相对/绝对路径；默认项目根目录）' },
+          glob: { type: 'string', description: '限定文件类型，如 "*.ts"、"*.{ts,tsx}"（可选）' },
+          context: { type: 'number', description: '每个匹配项显示的上下文行数，默认 2，范围 0-5' },
+          limit: { type: 'number', description: '最大返回匹配数，默认 30，范围 1-80' },
           caseSensitive: { type: 'boolean', description: '是否区分大小写，默认 false' },
         },
-        required: ['pattern'],
+        required: ['query'],
       },
     },
   },
@@ -269,7 +269,7 @@ export const toolDefinitions: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'save_note',
-      description: '保存一条项目笔记/记忆到持久化存储。在对话过程中，当你从用户消息、代码文件、执行结果中识别到重要的项目上下文信息时（如代码规范、数据库配置、架构决策、技术栈偏好、团队约定等），应立即且主动调用此工具记录。笔记会在后续所有会话中自动注入系统提示词，让 AI 始终了解项目背景。无需征求用户许可即可调用。',
+      description: '保存一条项目笔记/记忆到持久化存储。在对话过程中，当你从用户消息、代码文件、执行结果中识别到重要的项目上下文信息时（如代码规范、数据库配置、架构决策、技术栈偏好、团队约定等），应立即且主动调用此工具记录。笔记会在后续每轮任务请求中注入到用户上下文（项目笔记 + 用户提问），帮助 AI 持续理解项目背景。无需征求用户许可即可调用。',
       parameters: {
         type: 'object',
         properties: {
@@ -655,43 +655,257 @@ for (const definition of toolDefinitions) {
   definition.function.parameters = normalizeParametersSchema(definition.function.parameters)
 }
 
-const TOOL_GUIDE_GROUPS: Array<{ title: string; names: string[] }> = [
-  {
-    title: '代码开发',
-    names: ['list_directory', 'find_file', 'search_files', 'read_file', 'write_file', 'edit_file', 'delete_file', 'run_command'],
-  },
-  {
-    title: '计划与记忆',
-    names: ['propose_plan', 'update_plan_progress', 'save_note', 'delete_note'],
-  },
-  {
-    title: '浏览器自动化',
-    names: ['browser_navigate', 'browser_wait', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_get_content', 'browser_get_console_logs'],
-  },
-  {
-    title: '桌面自动化',
-    names: ['desktop_screenshot', 'gui_plus_analyze', 'desktop_action'],
-  },
-  {
-    title: 'MCP',
-    names: ['mcp_list_tools', 'mcp_call'],
-  },
-]
+type ToolGuideManual = {
+  usage: string[]
+  cautions?: string[]
+}
 
-const TOOL_GUIDE_NOTES: Record<string, string> = {
-  read_file: '大文件必须分块读取，优先带 startLine/endLine。',
-  write_file: '写入后建议 read_file 回读关键片段做落盘校验。',
-  edit_file: '用于精确替换局部内容；若存在多处匹配建议设置 expectedOccurrences。',
-  run_command: '用于构建/测试/验证，失败时需回报关键信息与下一步。',
-  browser_screenshot: '每次截图必须附带明确目标（goal）。',
-  browser_get_console_logs: '页面异常优先读取控制台日志，再决定后续操作。',
-  gui_plus_analyze: '建议填写 analysisGoal，避免“看图闲聊”与误点击。',
-  mcp_list_tools: '先读取 inputSchema，再调用 mcp_call。',
-  mcp_call: 'arguments 必须严格按 inputSchema 组装。',
+const TOOL_NAME_ALIASES: Record<string, string> = {
+  list_directory: 'list_dir',
+}
+
+function normalizeToolName(name: string): string {
+  return TOOL_NAME_ALIASES[name] ?? name
+}
+
+const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
+  read_file: {
+    usage: [
+      '优先按行范围分块读取（startLine/endLine），先小块定位再扩展上下文。',
+      '每次读取后必须判断已获取信息是否足够完成当前任务，并记录尚未覆盖的区段。',
+      '如果文件过大，则分多次读取，每次读取后必须判断已获取信息是否足够完成当前任务，并记录尚未覆盖的区段。',
+      '注意：此调用最多查看 250 行，最少 200 行。如果读取行范围不够，可以选择读取整个文件。读取整个文件通常低效且缓慢，尤其对于大文件（数百行以上），请谨慎使用。大多数情况下不允许读取整个文件，只有文件被编辑过或由用户手动附加到对话时才可读取全文。',
+      '信息不足时继续读取相邻区段，直到可执行，不允许凭猜测修改代码。',
+    ],
+    cautions: [
+      '除非确实需要，不要直接读取整文件，尤其是大文件。',
+      '对于用户手动附加文件或刚编辑文件，才可考虑全文读取。',
+    ],
+  },
+  write_file: {
+    usage: [
+      '仅在“需要重写整个文件”时使用；局部变更优先使用 edit_file。',
+      '写入前先通过 read_file 确认目标文件当前结构，避免覆盖无关内容。',
+      '写入后必须回读关键片段验证落盘结果。',
+    ],
+    cautions: ['严禁在未确认路径和内容时覆盖核心文件。'],
+  },
+  edit_file: {
+    usage: [
+      '先 read_file 定位并确认 oldText 与上下文完全一致后再替换。',
+      '默认只替换首个命中；多处命中场景需显式设置 replaceAll 或 expectedOccurrences。',
+      '替换后再次 read_file 校验函数/变量/语法是否保持正确。',
+    ],
+    cautions: ['避免使用过短 oldText，防止误改到非目标位置。'],
+  },
+  list_dir: {
+    usage: [
+      '用于快速理解目录结构，优先以较小 maxDepth 查看骨架。',
+      '当只需目录骨架时将 includeFiles 设为 false，减少无关噪声。',
+      '定位目标后再配合 find_file/codebase_search/read_file 深入。',
+    ],
+  },
+  run_command: {
+    usage: [
+      '用于构建、测试、运行和验证真实结果，优先执行最小必要命令。',
+      '明确设置 cwd 到目标项目目录，避免在错误目录执行。',
+      '命令失败时返回关键 stdout/stderr，并给出下一步处理动作。',
+    ],
+    cautions: ['未获用户明确授权时，禁止执行高风险破坏性命令。'],
+  },
+  delete_file: {
+    usage: [
+      '仅在用户明确要求删除，或任务步骤明确要求清理时使用。',
+      '删除前确认路径属于当前任务目标，避免误删。',
+      '删除后给出已删除文件清单，必要时提示可恢复路径。',
+    ],
+    cautions: ['禁止批量删除与任务无关文件。'],
+  },
+  propose_plan: {
+    usage: [
+      '多步骤或高不确定任务先提出计划，摘要必须清晰可执行。',
+      'steps 必须按可落地顺序编排，避免抽象空话。',
+      '提出计划后等待用户确认，再进入执行阶段。',
+    ],
+  },
+  update_plan_progress: {
+    usage: [
+      '开始某一步前标记 in_progress，完成后标记 done，失败标记 failed。',
+      'note 只写关键进度或失败原因，不写冗余描述。',
+      '确保状态与真实执行一致，不允许“先报完成后再执行”。',
+    ],
+  },
+  find_file: {
+    usage: [
+      '当已知文件名/路径特征时优先使用，快速定位目标文件。',
+      'pattern 默认沿用用户原词；只有明显更优时才改写。',
+      '大范围匹配时通过 directory/type/mode 缩小范围。',
+    ],
+  },
+  codebase_search: {
+    usage: [
+      '用于在内容层面定位符号、变量、配置、报错文本。',
+      '优先使用精确关键词或正则，必要时加 glob 限定语言范围。',
+      '命中后必须 read_file 查看上下文，不可仅凭命中行下结论。',
+    ],
+  },
+  save_note: {
+    usage: [
+      '仅记录对后续任务稳定有价值的项目知识（约定、架构、关键配置）。',
+      '内容必须可执行、可复用，避免记录闲聊或一次性噪声。',
+      '标题简洁、正文具体，分类必须准确。',
+    ],
+  },
+  delete_note: {
+    usage: [
+      '当用户要求删除或笔记确认过时时调用。',
+      '必须使用准确 noteId，删除前确认目标笔记。',
+      '删除后给出已删除项，避免用户误解。 ',
+    ],
+  },
+  browser_navigate: {
+    usage: [
+      '浏览器任务通常先导航到目标 URL，再进行后续观察/操作。',
+      '同一项目测试优先固定 appId，保持会话隔离和状态连续。',
+      '页面跳转后应配合 browser_wait 或 browser_screenshot 验证加载完成。',
+    ],
+  },
+  browser_screenshot: {
+    usage: [
+      '每次截图必须提供 goal，明确“本次要验证什么”。',
+      '用于操作前观察、操作后复核，不做无目的连续截图。',
+      '截图结果要用于下一步决策（点击、输入、滚动、断言）。',
+    ],
+    cautions: ['同一状态重复截图超过一次前，先判断是否真的有新信息。'],
+  },
+  desktop_screenshot: {
+    usage: [
+      '桌面语义目标（例如“点某按钮”）先截图，再分析，再执行。',
+      '优先使用默认主屏参数，除非任务明确多屏或指定分辨率。',
+      '截图路径用于后续 gui_plus_analyze，不要把大 dataUrl 传回上下文。',
+    ],
+  },
+  gui_plus_analyze: {
+    usage: [
+      'instruction 必须明确动作意图，建议同时提供 analysisGoal 明确成功标准。',
+      '优先传 imagePath，避免传 imageDataUrl 造成 token 浪费。',
+      '输出只保留必要字段（目标、坐标、置信度、理由）用于下一步执行。',
+    ],
+    cautions: ['当目标不确定时先悬停复核，再执行点击。'],
+  },
+  desktop_action: {
+    usage: [
+      '用户给出明确坐标/按键/文本时可直接执行，无需先截图。',
+      '语义目标先走 screenshot + analyze，再执行 action。',
+      '点击后若紧跟输入，建议间隔约 1 秒确保焦点生效。',
+    ],
+    cautions: ['双击必须使用 double_click 或 clicks=2，不要拆成两次普通点击。'],
+  },
+  browser_click: {
+    usage: [
+      '优先使用稳定 selector；仅在必要时使用坐标点击。',
+      '点击前确认元素可见且可交互，必要时先 browser_wait。',
+      '点击后立即复核页面变化（截图或内容读取）。',
+    ],
+  },
+  browser_type: {
+    usage: [
+      '先定位输入框再输入，必要时 clear=true 清空旧值。',
+      '对搜索/登录等场景可按需设置 submit。',
+      '输入后通过 browser_get_content 或截图校验值已生效。',
+    ],
+  },
+  browser_scroll: {
+    usage: [
+      '用于进入可视区域或触发懒加载，方向与幅度必须明确。',
+      '局部滚动场景应提供 selector，避免滚错容器。',
+      '滚动后复核目标元素是否已出现。 ',
+    ],
+  },
+  browser_get_content: {
+    usage: [
+      '用于读取文本、HTML 或表单值，支撑断言和数据提取。',
+      '优先传 selector 缩小范围，避免抓取整页噪声。',
+      '提取到关键字段后再决定后续操作。 ',
+    ],
+  },
+  browser_wait: {
+    usage: [
+      '页面跳转、异步加载、提交后状态变化时优先等待关键元素。',
+      'selector 要能代表“成功状态”，而不是任意静态元素。',
+      '超时后给出失败证据并转入诊断（截图/控制台日志）。',
+    ],
+  },
+  browser_evaluate: {
+    usage: [
+      '仅在标准浏览器工具不足以完成任务时使用脚本求值。',
+      '表达式应最小化且聚焦目标（读取状态或执行必要操作）。',
+      '执行后必须验证副作用是否符合预期。',
+    ],
+    cautions: ['避免注入大段脚本或与任务无关的全局副作用代码。'],
+  },
+  browser_get_info: {
+    usage: [
+      '用于快速确认当前 URL、标题、视口等基础状态。',
+      '常用于导航后或异常诊断前的基线确认。',
+      '结果应服务于下一步操作，不单独重复调用。',
+    ],
+  },
+  browser_get_console_logs: {
+    usage: [
+      '仅在需要诊断页面异常时调用，不要每步都读日志。',
+      '优先读取 error/warn 或候选异常（includeCandidates）。',
+      '读取后默认 clearAfterRead=true，避免重复噪声。',
+    ],
+  },
+  browser_hover: {
+    usage: [
+      '用于触发 tooltip、悬浮菜单、隐藏按钮等 hover 态。',
+      '优先 selector 定位，必要时再使用坐标。',
+      '悬停后通过截图或内容读取确认目标状态出现。',
+    ],
+  },
+  browser_keypress: {
+    usage: [
+      '用于回车提交、快捷键、方向键导航等键盘交互。',
+      '组合键通过 modifiers 明确声明，不要隐式假设平台键位。',
+      '按键后复核页面状态是否变化。 ',
+    ],
+  },
+  browser_drag: {
+    usage: [
+      '用于拖拽组件、滑块验证、排序等场景。',
+      '优先元素到元素拖拽；坐标拖拽需保证起终点准确。',
+      '根据场景调整 steps 以提高稳定性和拟人化。 ',
+    ],
+  },
+  browser_select: {
+    usage: [
+      '专用于 <select> 控件，优先按 value 匹配，失败再按 label。',
+      '选择后读取 value 或截图确认选项已生效。',
+      '不适用于自定义下拉组件，自定义组件请用 click/type。 ',
+    ],
+  },
+  mcp_list_tools: {
+    usage: [
+      '调用 MCP 前先拉取工具清单和 inputSchema。',
+      '当 schema 更新或切换 server_id 时必须重新拉取。',
+      '结果用于构造后续 mcp_call 参数，不可凭记忆猜字段。',
+    ],
+  },
+  mcp_call: {
+    usage: [
+      '严格按 mcp_list_tools 返回的 inputSchema 组装 arguments。',
+      '调用前确认 server_id、tool_name、参数类型完全匹配。',
+      '失败时先修正参数或连接，再给降级方案。',
+    ],
+    cautions: ['禁止调用不存在的 MCP 工具名。'],
+  },
 }
 
 function getDefinition(name: string): ToolDefinition | undefined {
-  return toolDefinitions.find((item) => item.function.name === name)
+  const normalizedName = normalizeToolName(name)
+  return toolDefinitions.find((item) => item.function.name === normalizedName)
 }
 
 function getSchemaKeys(parameters: Record<string, unknown>): { required: string[]; optional: string[] } {
@@ -736,29 +950,60 @@ function buildToolSignature(name: string, parameters: Record<string, unknown>): 
 
 export function getToolDesignPromptBlock(): string {
   const lines: string[] = [
-    '# 工具能力清单（调用前必须遵守）',
-    '- 仅调用与当前 intent 匹配的最小必要工具，避免无目的调用。',
-    '- 有可执行工具时优先执行，不输出“命令示例”代替真实执行。',
-    '- 声称完成前必须提供工具执行证据。',
+    '# 工具定义与调用规范（逐个工具，强制执行）',
+    '## 工具调用规则',
+    '1. 必须严格按照指定格式调用工具，确保提供所有必填参数。',
+    '2. 对话中可能提及已失效工具，绝不调用未明确提供的工具。',
+    '3. 与用户沟通时，永远不要提及工具名称，用自然语言描述工具行为即可。',
+    '4. 只使用标准工具调用格式与已提供的工具。',
+    '5. 尽量寻找可并行执行多个工具的机会，提前规划哪些操作可同时运行。',
+    '6. 文件编辑工具禁止并行执行，必须串行以保证一致性。',
+    '7. run_command 禁止并行执行，命令必须串行以确保执行顺序、避免竞争条件。',
+    '',
+
+    '8. 必须严格按照参数 schema 调用。',
+    '9. 如果文件过大，则分多次读取，每次读取后必须判断已获取信息是否足够完成当前任务，并记录尚未覆盖的区段。',
+    '10. 有可执行工具时必须真实调用，禁止只输出“命令示例”或口头描述。',
+    '11. 工具调用必须与当前 intent 对齐，避免无目的重复调用。',
+    '12. 声称“已完成/已修复”前，必须已有对应工具执行证据。',
+    '13. 禁止输出 [TOOL_CALL]、<invoke> 等伪调用文本，工具调用只能通过标准 tool_calls。',
+    '14. 参数必须严格匹配工具 schema，不允许猜字段名。',
+    '',
+    '## 工具清单（每个工具都要遵守对应规范）',
   ]
 
-  for (const group of TOOL_GUIDE_GROUPS) {
-    lines.push(`## ${group.title}`)
-    for (const name of group.names) {
-      const definition = getDefinition(name)
-      if (!definition) continue
-      const signature = buildToolSignature(name, definition.function.parameters)
-      const desc = shortDescription(definition.function.description)
-      const note = TOOL_GUIDE_NOTES[name]
-      if (note) {
-        lines.push(`- \`${signature}\`：${desc} 关键要求：${note}`)
-      } else {
-        lines.push(`- \`${signature}\`：${desc}`)
-      }
+  for (const definition of toolDefinitions) {
+    const name = definition.function.name
+    const signature = buildToolSignature(name, definition.function.parameters)
+    const desc = shortDescription(definition.function.description)
+    const schemaKeys = getSchemaKeys(definition.function.parameters)
+    const manual = TOOL_GUIDE_MANUAL[name]
+
+    lines.push(`### ${name}`)
+    lines.push(`描述：${desc}`)
+    lines.push(`调用签名：\`${signature}\``)
+    lines.push(`参数（必填）：${schemaKeys.required.length ? schemaKeys.required.map((item) => `\`${item}\``).join('、') : '无'}`)
+    lines.push(`参数（可选）：${schemaKeys.optional.length ? schemaKeys.optional.map((item) => `\`${item}\``).join('、') : '无'}`)
+
+    if (manual?.usage.length) {
+      lines.push('使用规则：')
+      manual.usage.forEach((rule, index) => lines.push(`${index + 1}. ${rule}`))
     }
+
+    if (manual?.cautions?.length) {
+      lines.push('注意事项：')
+      manual.cautions.forEach((item) => lines.push(`- ${item}`))
+    }
+
+    if (!manual) {
+      lines.push('使用规则：')
+      lines.push('1. 严格按照参数 schema 调用。')
+      lines.push('2. 调用后基于返回结果再决定下一步。')
+    }
+    lines.push('')
   }
 
-  return lines.join('\n')
+  return lines.join('\n').trim()
 }
 
 /**
@@ -1160,7 +1405,8 @@ async function executeTool(
 ): Promise<ExecResult & { fileChange?: FileChange }> {
   try {
     if (signal?.aborted) throw makeAbortError()
-    switch (name) {
+    const normalizedName = normalizeToolName(name)
+    switch (normalizedName) {
       case 'read_file':
         return await execReadFile(args, workspace)
       case 'write_file':
@@ -1169,14 +1415,14 @@ async function executeTool(
         return await execEditFile(args, workspace)
       case 'delete_file':
         return await execDeleteFile(args, workspace)
-      case 'list_directory':
+      case 'list_dir':
         return await execListDirectory(args, workspace)
       case 'run_command':
         return await execRunCommand(args, workspace, signal)
       case 'find_file':
         return await execFindFile(args, workspace)
-      case 'search_files':
-        return await execSearchFiles(args, workspace)
+      case 'codebase_search':
+        return await execCodebaseSearch(args, workspace)
       case 'save_note':
         return await execSaveNote(args, workspace, projectId)
       case 'delete_note':
@@ -1565,7 +1811,7 @@ async function hasDirectoryContent(dir: string): Promise<boolean> {
  * 统一的工作区索引收集器。
  *
  * 优先使用 git ls-files（快且尊重 .gitignore），失败时回退到 fs.readdir。
- * 返回统一的 file/directory 条目，供 list_directory / find_file 复用。
+ * 返回统一的 file/directory 条目，供 list_dir / find_file 复用。
  */
 async function collectWorkspaceEntries(
   rootDir: string,
@@ -2041,29 +2287,43 @@ function globToRegex(glob: string): RegExp {
   return new RegExp(`^${re}$`, 'i')
 }
 
-/* ---- search_files：内容搜索 (ripgrep 优先) ---- */
+/* ---- codebase_search：内容搜索 (ripgrep 优先) ---- */
 
 /** rg 可用性缓存（避免每次调用都 fork 进程检测） */
 let _rgAvailable: boolean | null = null
 
-async function execSearchFiles(args: Record<string, unknown>, workspace: string): Promise<ExecResult> {
-  const pattern = String(args.pattern ?? '').trim()
-  if (!pattern) return { content: 'Error: pattern is required', success: false }
-  const directory = String(args.directory ?? '.')
-  const filePattern = args.filePattern ? String(args.filePattern) : undefined
-  const contextLines = Math.min(Number(args.contextLines) || 2, 5)
-  const maxResults = Math.min(Number(args.maxResults) || 30, 80)
+async function execCodebaseSearch(args: Record<string, unknown>, workspace: string): Promise<ExecResult> {
+  const query = String(args.query ?? args.pattern ?? '').trim()
+  if (!query) return { content: 'Error: query is required', success: false }
+  const searchPath = String(args.path ?? args.directory ?? '.').trim() || '.'
+  const glob = args.glob ?? args.filePattern
+  const fileGlob = glob ? String(glob) : undefined
+  const contextLines = clampNumber(args.context ?? args.contextLines, 0, 5, 2)
+  const maxResults = clampNumber(args.limit ?? args.maxResults, 1, 80, 30)
   const caseSensitive = Boolean(args.caseSensitive)
 
-  const check = await resolveSmartPath(workspace, directory, 'directory')
+  const check = await resolveSmartPath(workspace, searchPath, 'any')
   if ('error' in check) return { content: check.error, success: false }
   const resolved = check.resolved
+  let resolvedKind: 'file' | 'directory' | 'other' = 'other'
+  try {
+    const stat = await fs.stat(resolved)
+    if (stat.isFile()) resolvedKind = 'file'
+    else if (stat.isDirectory()) resolvedKind = 'directory'
+  } catch {
+    resolvedKind = 'other'
+  }
+  if (resolvedKind === 'other') {
+    return { content: `Error: search path is not accessible: "${resolved}"`, success: false }
+  }
   const correctedNote = check.corrected
-    ? `[自动纠正路径: "${directory}" → "${check.corrected.split('\n')[0]}"]\n`
+    ? `[自动纠正路径: "${searchPath}" → "${check.corrected.split('\n')[0]}"]\n`
     : ''
 
-  // 转义 shell 单引号
-  const safePattern = pattern.replace(/'/g, "'\\''")
+  // 转义 shell 单引号，避免参数注入与路径中引号导致命令失败
+  const safeQuery = query.replace(/'/g, "'\\''")
+  const safeResolvedPath = resolved.replace(/'/g, "'\\''")
+  const safeFileGlob = fileGlob?.replace(/'/g, "'\\''")
 
   // 缓存 rg 可用性检测
   if (_rgAvailable === null) {
@@ -2075,7 +2335,7 @@ async function execSearchFiles(args: Record<string, unknown>, workspace: string)
     const caseFlag = caseSensitive ? '-s' : '-i'
 
     if (_rgAvailable) {
-      const globFlag = filePattern ? `--glob '${filePattern}'` : ''
+      const globFlag = safeFileGlob ? `--glob '${safeFileGlob}'` : ''
       cmd = [
         'rg', '-n', '--heading', '--color=never',
         caseFlag,
@@ -2084,7 +2344,7 @@ async function execSearchFiles(args: Record<string, unknown>, workspace: string)
         '--max-columns=200',      // 截断超长行避免 token 浪费
         '--max-columns-preview',  // 超长行显示截断预览
         globFlag,
-        `-- '${safePattern}' '${resolved}'`,
+        `-- '${safeQuery}' '${safeResolvedPath}'`,
         '2>/dev/null',
         `| head -${Math.min(maxResults * 8, 400)}`,  // 按结果数动态限制总行数
       ].filter(Boolean).join(' ')
@@ -2094,10 +2354,10 @@ async function execSearchFiles(args: Record<string, unknown>, workspace: string)
         '*.ts', '*.tsx', '*.js', '*.jsx', '*.json', '*.css',
         '*.html', '*.md', '*.py', '*.go', '*.rs', '*.vue', '*.svelte',
       ]
-      const includeFlags = filePattern
-        ? `--include='${filePattern}'`
+      const includeFlags = safeFileGlob
+        ? `--include='${safeFileGlob}'`
         : defaultIncludes.map((g) => `--include='${g}'`).join(' ')
-      cmd = `grep -rn ${caseFlag} -C ${contextLines} ${includeFlags} '${safePattern}' '${resolved}' 2>/dev/null | head -200`
+      cmd = `grep -rn ${caseFlag} -C ${contextLines} ${includeFlags} '${safeQuery}' '${safeResolvedPath}' 2>/dev/null | head -200`
     }
 
     const { stdout } = await execAsync(cmd, {
@@ -2107,15 +2367,47 @@ async function execSearchFiles(args: Record<string, unknown>, workspace: string)
     })
 
     if (!stdout.trim()) {
-      return { content: correctedNote + `No matches found for "${pattern}"`, success: true }
+      return { content: correctedNote + `No matches found for "${query}"`, success: true }
     }
 
     // 后处理：将绝对路径替换为相对路径，更紧凑
     const output = stdout
       .split('\n')
       .map((line) => {
-        if (line.startsWith(resolved)) return line.slice(resolved.length + 1)
-        if (line.startsWith(workspace)) return line.slice(workspace.length + 1)
+        if (!line) return line
+        const normalizedWorkspace = path.normalize(workspace)
+        const normalizedResolved = path.normalize(resolved)
+        const resolvedPrefix = `${normalizedResolved}${path.sep}`
+        const wsPrefix = `${normalizedWorkspace}${path.sep}`
+        const toSlash = (p: string) => p.split(path.sep).join('/')
+
+        // 匹配 "path:line:..." 或 "path-line-..."，优先重写成相对路径
+        const match = line.match(/^(.*?):(\d+[:-].*)$/)
+        if (match) {
+          const abs = path.normalize(match[1])
+          const rest = match[2]
+
+          if (resolvedKind === 'directory' && (abs === normalizedResolved || abs.startsWith(resolvedPrefix))) {
+            const rel = toSlash(path.relative(normalizedResolved, abs))
+            return `${rel || '.'}:${rest}`
+          }
+          if (abs === normalizedWorkspace || abs.startsWith(wsPrefix)) {
+            const rel = toSlash(path.relative(normalizedWorkspace, abs))
+            return `${rel || '.'}:${rest}`
+          }
+          return line
+        }
+
+        // rg --heading 的标题行通常仅包含文件路径
+        const heading = path.normalize(line)
+        if (resolvedKind === 'directory' && (heading === normalizedResolved || heading.startsWith(resolvedPrefix))) {
+          const rel = toSlash(path.relative(normalizedResolved, heading))
+          return rel || '.'
+        }
+        if (heading === normalizedWorkspace || heading.startsWith(wsPrefix)) {
+          const rel = toSlash(path.relative(normalizedWorkspace, heading))
+          return rel || '.'
+        }
         return line
       })
       .join('\n')
@@ -2130,7 +2422,7 @@ async function execSearchFiles(args: Record<string, unknown>, workspace: string)
 
     return { content: correctedNote + header + output, success: true }
   } catch {
-    return { content: correctedNote + `No matches found for "${pattern}"`, success: true }
+    return { content: correctedNote + `No matches found for "${query}"`, success: true }
   }
 }
 
@@ -2347,6 +2639,22 @@ async function execMcpListTools(): Promise<ExecResult> {
   return { content: lines.join('\n'), success: true }
 }
 
+function openMacScreenRecordingSettings(): void {
+  if (process.platform !== 'darwin') return
+  try {
+    const maybeOpen = (systemPreferences as unknown as {
+      openSystemPreferences?: (pane: string, section?: string) => void
+    }).openSystemPreferences
+    if (typeof maybeOpen === 'function') {
+      maybeOpen('privacy', 'ScreenRecording')
+      return
+    }
+  } catch {
+    // ignore
+  }
+  void shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture').catch(() => {})
+}
+
 async function execDesktopScreenshot(args: Record<string, unknown>, logScope?: string): Promise<ExecResult> {
   const rawWidth = args.width
   const rawHeight = args.height
@@ -2366,7 +2674,7 @@ async function execDesktopScreenshot(args: Record<string, unknown>, logScope?: s
     try {
       const status = systemPreferences.getMediaAccessStatus?.('screen')
       if (status && status !== 'granted') {
-        try { systemPreferences.openSystemPreferences?.('privacy', 'ScreenRecording') } catch { /* ignore */ }
+        openMacScreenRecordingSettings()
         return {
           content:
             `Error: Screen Recording permission is ${status}. ` +
@@ -2413,7 +2721,7 @@ async function execDesktopScreenshot(args: Record<string, unknown>, logScope?: s
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     if (process.platform === 'darwin') {
-      try { systemPreferences.openSystemPreferences?.('privacy', 'ScreenRecording') } catch { /* ignore */ }
+      openMacScreenRecordingSettings()
     }
     return {
       content: `Error: Failed to get sources. ${msg}\n` +

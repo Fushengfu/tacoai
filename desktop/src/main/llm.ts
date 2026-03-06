@@ -22,6 +22,7 @@ export type TokenUsage = {
   promptTokens?: number
   completionTokens?: number
   totalTokens?: number
+  cachedTokens?: number
 }
 
 export type ProviderKey = 'deepseek' | 'kimi' | 'minimax' | 'glm'
@@ -57,6 +58,12 @@ const providerConfigs: Record<ProviderKey, ProviderConfig> = {
     model: process.env.GLM_MODEL ?? ''
   }
 }
+
+/**
+ * 固定模型温度（不走设置页配置）：
+ * 值越低输出越稳定、越可复现。
+ */
+const FIXED_MODEL_TEMPERATURE = 0.05
 
 function getProviderConfig(
   provider: ProviderKey,
@@ -147,7 +154,7 @@ function buildRequest(config: ProviderConfig, messages: ChatMessage[], stream: b
   const body: Record<string, any> = {
     model: config.model,
     messages: normalizedMessages,
-    temperature: 0.1,
+    temperature: FIXED_MODEL_TEMPERATURE,
     stream,
   }
   if (options?.tools && options.tools.length > 0) {
@@ -413,11 +420,24 @@ function parseTokenUsage(chunk: any): TokenUsage | null {
   const promptTokens = Number(usage.prompt_tokens)
   const completionTokens = Number(usage.completion_tokens)
   const totalTokens = Number(usage.total_tokens)
+  const promptDetails = usage.prompt_tokens_details && typeof usage.prompt_tokens_details === 'object'
+    ? usage.prompt_tokens_details
+    : null
+  const inputDetails = usage.input_tokens_details && typeof usage.input_tokens_details === 'object'
+    ? usage.input_tokens_details
+    : null
+  const cachedTokensRaw =
+    promptDetails?.cached_tokens
+    ?? promptDetails?.cache_read_tokens
+    ?? inputDetails?.cached_tokens
+    ?? inputDetails?.cache_read_tokens
+  const cachedTokens = Number(cachedTokensRaw)
 
   const out: TokenUsage = {}
   if (Number.isFinite(promptTokens)) out.promptTokens = promptTokens
   if (Number.isFinite(completionTokens)) out.completionTokens = completionTokens
   if (Number.isFinite(totalTokens)) out.totalTokens = totalTokens
+  if (Number.isFinite(cachedTokens)) out.cachedTokens = cachedTokens
 
   return Object.keys(out).length > 0 ? out : null
 }

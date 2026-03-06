@@ -15,7 +15,8 @@ export function useResize(
   defaultWidth: number,
   minWidth: number,
   maxWidth: number,
-  storageKey?: string
+  storageKey?: string,
+  edge: 'left' | 'right' = 'right',
 ) {
   const [width, setWidth] = useState<number>(() => {
     if (storageKey) {
@@ -55,9 +56,9 @@ export function useResize(
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (!isDragging.current) return
-      // 向左拖 → dx 为负 → 右侧面板变宽
       const dx = e.clientX - startX.current
-      const newWidth = Math.min(maxWidth, Math.max(minWidth, startWidth.current - dx))
+      const baseWidth = edge === 'right' ? startWidth.current - dx : startWidth.current + dx
+      const newWidth = Math.min(maxWidth, Math.max(minWidth, baseWidth))
       setWidth(newWidth)
     }
 
@@ -76,7 +77,7 @@ export function useResize(
       document.removeEventListener('mousemove', handleMouseMove)
       document.removeEventListener('mouseup', handleMouseUp)
     }
-  }, [minWidth, maxWidth])
+  }, [edge, minWidth, maxWidth])
 
-  return { width, handleMouseDown }
+  return { width, setWidth, handleMouseDown }
 }

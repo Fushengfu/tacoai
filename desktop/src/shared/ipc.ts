@@ -64,6 +64,10 @@ export const IpcChannel = {
   GIT_COMMIT: 'git:commit',
   GIT_ROLLBACK: 'git:rollback',
   GIT_COMMIT_FILES: 'git:commit-files',
+  GIT_STATUS: 'git:status',
+  GIT_FILE_CHANGE: 'git:file-change',
+  GIT_STAGE_FILES: 'git:stage-files',
+  GIT_STAGE_ALL: 'git:stage-all',
 
   /** Skills 管理 */
   SKILLS_LIST: 'skills:list',
@@ -76,6 +80,8 @@ export const IpcChannel = {
 
   /** 项目笔记/记忆 */
   NOTES_LIST: 'notes:list',
+  NOTES_TASK_MEMORIES_LIST: 'notes:task-memories:list',
+  NOTES_TASK_MEMORY_DELETE: 'notes:task-memory:delete',
   NOTES_SAVE: 'notes:save',
   NOTES_DELETE: 'notes:delete',
 
@@ -208,6 +214,7 @@ export type IpcTokenUsage = {
   promptTokens?: number
   completionTokens?: number
   totalTokens?: number
+  cachedTokens?: number
 }
 
 /** chat:chunk 推送体 */
@@ -231,6 +238,8 @@ export type AgentStreamPayload = {
   workspace: string
   /** 模型上下文窗口大小（token 数），用于 agent 循环内自动压缩 */
   maxTokens?: number
+  /** 是否开启召回调试日志（默认 false） */
+  recallDebug?: boolean
   /** 用户附带的图片（base64 data URL），需要通过 MCP 理解后注入消息 */
   images?: string[]
 }
@@ -356,6 +365,19 @@ export type FileTreeEntry = {
   children?: FileTreeEntry[]
 }
 
+/** Git 工作区状态（按是否已暂存分组） */
+export type GitWorkingTreeStatus = {
+  staged: string[]
+  unstaged: string[]
+}
+
+/** Git 文件差异快照（基于 HEAD vs 工作区） */
+export type GitFileChange = {
+  filePath: string
+  oldContent: string | null
+  newContent: string | null
+}
+
 /* ------------------------------------------------------------------ */
 /*  Skills                                                             */
 /* ------------------------------------------------------------------ */
@@ -402,6 +424,30 @@ export type ProjectNote = {
   /** 创建时间 (ISO) */
   createdAt: string
   /** 最后更新时间 (ISO) */
+  updatedAt: string
+}
+
+/** 任务执行记忆 */
+export type ProjectTaskMemory = {
+  id: string
+  /** 本轮用户原始提问（纯文本） */
+  userQuery?: string
+  goal: string
+  /** 意图类型（qa/debug/implement/refactor/ops/other） */
+  intentType?: string
+  /** 一句话意图摘要 */
+  intentSummary?: string
+  /** 意图目标描述 */
+  intentGoal?: string
+  /** 本轮处理结果正文（用于后续上下文重放） */
+  assistantResult?: string
+  summary: string
+  outcome: 'success' | 'aborted' | 'error'
+  tools: string[]
+  changedFiles: string[]
+  identifiers: string[]
+  failures: string[]
+  createdAt: string
   updatedAt: string
 }
 
@@ -682,6 +728,12 @@ export type TacoApi = {
   workspace: {
     /** 读取工作空间目录树 */
     tree: (cwd: string) => Promise<FileTreeEntry[]>
+    /** 开始监听工作空间变化 */
+    watch: (cwd: string) => void
+    /** 停止监听工作空间变化 */
+    unwatch: () => void
+    /** 监听工作空间变化通知 */
+    onChanged: (callback: () => void) => () => void
   }
   file: {
     /** 将文件内容恢复为指定内容（用于撤销 Agent 变更） */
@@ -689,7 +741,7 @@ export type TacoApi = {
     /** 删除文件（用于撤销 Agent 新建的文件） */
     delete: (filePath: string) => Promise<void>
     /** 读取文件内容（文本文件返回内容字符串，二进制文件返回 null；图片可返回 dataUrl 预览） */
-    read: (filePath: string) => Promise<{ content: string | null; size: number; isBinary: boolean; dataUrl?: string }>
+    read: (filePath: string) => Promise<{ content: string | null; size: number; isBinary: boolean; dataUrl?: string; truncated?: boolean }>
     /** 写入文件内容 */
     write: (filePath: string, content: string) => Promise<void>
   }
@@ -710,8 +762,16 @@ export type TacoApi = {
   git: {
     /** 获取 Taco 提交历史 */
     log: (cwd: string) => Promise<{ hash: string; shortHash: string; message: string; timestamp: number; fileCount: number }[]>
+    /** 获取工作区暂存状态 */
+    status: (cwd: string) => Promise<GitWorkingTreeStatus>
+    /** 获取某个文件的 Git 差异（HEAD vs 工作区） */
+    fileChange: (cwd: string, filePath: string) => Promise<GitFileChange | null>
     /** 手动创建提交 */
     commit: (cwd: string, message: string) => Promise<string | null>
+    /** 暂存指定文件 */
+    stageFiles: (cwd: string, filePaths: string[]) => Promise<void>
+    /** 暂存全部变更 */
+    stageAll: (cwd: string) => Promise<void>
     /** 回退到指定提交 */
     rollback: (cwd: string, hash: string) => Promise<void>
     /** 获取某个提交变更的文件列表 */
@@ -730,6 +790,10 @@ export type TacoApi = {
   notes: {
     /** 列出指定工作空间的所有笔记 */
     list: (workspace: string, projectId?: string) => Promise<ProjectNote[]>
+    /** 列出指定工作空间的任务执行记忆 */
+    listTaskMemories: (workspace: string, projectId?: string) => Promise<ProjectTaskMemory[]>
+    /** 删除任务执行记忆 */
+    deleteTaskMemory: (workspace: string, memoryId: string, projectId?: string) => Promise<void>
     /** 保存笔记（新增或更新） */
     save: (workspace: string, note: ProjectNote, projectId?: string) => Promise<ProjectNote>
     /** 删除笔记 */
@@ -795,7 +859,7 @@ export type TacoApi = {
 export type BrowserMode = 'embedded' | 'external'
 
 /** 浏览器控制台日志级别 */
-export type BrowserConsoleLevel = 'log' | 'warn' | 'error' | 'info' | 'debug'
+export type BrowserConsoleLevel = 'log' | 'warn' | 'error' | 'info' | 'debug' | 'network'
 
 /** 外部浏览器状态事件 */
 export type ExternalBrowserStatus = {

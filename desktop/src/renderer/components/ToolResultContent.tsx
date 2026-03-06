@@ -5,7 +5,7 @@
  * - run_command → 终端风格输出
  * - write_file / delete_file → inline diff 显示文件变更
  * - read_file → 代码风格文件内容
- * - list_directory / find_file / search_files → 结构化树形展示
+ * - list_dir / find_file / codebase_search → 结构化树形展示
  * - 其他 → 原始文本
  */
 
@@ -173,8 +173,8 @@ function DirectoryListing({ content }: { content: string }) {
 /* ================================================================== */
 
 export function ToolResultContent({ toolName, toolArgs, result }: ToolResultContentProps) {
-  // 1. 写入/删除文件 → 显示 diff
-  if ((toolName === 'write_file' || toolName === 'delete_file') && result.fileChange) {
+  // 1. 任何携带 fileChange 的工具结果都显示 diff（含 edit_file / write_file / delete_file）
+  if (result.fileChange) {
     return <FileChangeDiff change={result.fileChange} result={result} />
   }
 
@@ -192,7 +192,12 @@ export function ToolResultContent({ toolName, toolArgs, result }: ToolResultCont
 
   // 4. 目录列表 / 搜索结果 → 树形
   if (
-    (toolName === 'list_directory' || toolName === 'find_file' || toolName === 'search_files')
+    (
+      toolName === 'list_dir'
+      || toolName === 'list_directory'
+      || toolName === 'find_file'
+      || toolName === 'codebase_search'
+    )
     && result.content
   ) {
     return <DirectoryListing content={result.content} />

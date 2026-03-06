@@ -6,6 +6,8 @@
  */
 
 import { exec } from 'node:child_process'
+import * as fs from 'node:fs/promises'
+import * as nodePath from 'node:path'
 
 /* ------------------------------------------------------------------ */
 /*  工具函数                                                           */
@@ -19,6 +21,19 @@ function git(cwd: string, args: string): Promise<string> {
         reject(new Error(stderr.trim() || err.message))
       } else {
         resolve(stdout.trim())
+      }
+    })
+  })
+}
+
+/** 执行 git 命令，返回原始 stdout（不 trim，保留换行） */
+function gitRaw(cwd: string, args: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    exec(`git ${args}`, { cwd, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) {
+        reject(new Error(stderr.trim() || err.message))
+      } else {
+        resolve(stdout)
       }
     })
   })
@@ -45,6 +60,73 @@ export type GitCommitInfo = {
   message: string
   timestamp: number  // Unix seconds
   fileCount: number
+}
+
+export type GitWorkingTreeStatus = {
+  staged: string[]
+  unstaged: string[]
+}
+
+export type GitFileChangeInfo = {
+  filePath: string
+  oldContent: string | null
+  newContent: string | null
+}
+
+function parseGitNameList(raw: string): string[] {
+  if (!raw) return []
+  const normalized = raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/[\\]+/g, '/').replace(/^\.\//, ''))
+  return Array.from(new Set(normalized)).sort((a, b) => a.localeCompare(b))
+}
+
+function shellQuote(value: string): string {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`
+}
+
+function normalizeGitRelativePath(filePath: string): string {
+  return String(filePath ?? '')
+    .trim()
+    .replace(/[\\]+/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/^\/+/, '')
+}
+
+/** 检测是否为二进制内容（含 NUL 字节） */
+function isBinaryBuffer(buf: Buffer): boolean {
+  const len = Math.min(buf.length, 8192)
+  for (let i = 0; i < len; i++) {
+    if (buf[i] === 0) return true
+  }
+  return false
+}
+
+async function readWorkingTreeText(cwd: string, filePath: string): Promise<string | null> {
+  const rel = normalizeGitRelativePath(filePath)
+  if (!rel) return null
+  try {
+    const absPath = nodePath.join(cwd, rel)
+    const buf = Buffer.from(await fs.readFile(absPath))
+    if (isBinaryBuffer(buf)) return null
+    return buf.toString('utf-8')
+  } catch {
+    return null
+  }
+}
+
+async function readHeadText(cwd: string, filePath: string): Promise<string | null> {
+  const rel = normalizeGitRelativePath(filePath)
+  if (!rel) return null
+  try {
+    const out = await gitRaw(cwd, `show ${shellQuote(`HEAD:${rel}`)}`)
+    if (out.includes('\u0000')) return null
+    return out
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -101,35 +183,32 @@ export async function gitLog(cwd: string, maxCount = 50): Promise<GitCommitInfo[
   if (!(await isGitRepo(cwd))) return []
 
   try {
-    // 格式: hash|shortHash|timestamp|message
-    const raw = await git(
+    // 使用单次 git log + name-only，避免每条 commit 额外 diff-tree 的 N+1 开销
+    const raw = await gitRaw(
       cwd,
-      `log --grep="\\[taco\\]" --format="%H|%h|%at|%s" -n ${maxCount}`
+      `log --grep="\\[taco\\]" --format="%H%x1f%h%x1f%at%x1f%s%x1e" --name-only -n ${maxCount}`
     )
     if (!raw) return []
 
     const commits: GitCommitInfo[] = []
-    for (const line of raw.split('\n')) {
-      if (!line.trim()) continue
-      const [hash, shortHash, ts, ...msgParts] = line.split('|')
-      const message = msgParts.join('|') // 消息中可能包含 |
+    const records = raw.split('\u001e')
+    for (const record of records) {
+      const block = record.trim()
+      if (!block) continue
+      const lines = block.split('\n')
+      const header = lines.shift()?.trim()
+      if (!header) continue
+      const [hash, shortHash, ts, ...msgParts] = header.split('\u001f')
+      if (!hash || !shortHash || !ts) continue
+      const message = msgParts.join('\u001f')
+      const fileCount = lines.map((line) => line.trim()).filter(Boolean).length
       commits.push({
         hash,
         shortHash,
         message: message.replace(/^\[taco\]\s*/, ''), // 去掉 [taco] 前缀
         timestamp: Number(ts),
-        fileCount: 0, // 下面填充
+        fileCount,
       })
-    }
-
-    // 为每个提交获取变更文件数量
-    for (const commit of commits) {
-      try {
-        const stat = await git(cwd, `diff-tree --no-commit-id --name-only -r ${commit.hash}`)
-        commit.fileCount = stat ? stat.split('\n').filter(Boolean).length : 0
-      } catch {
-        // ignore
-      }
     }
 
     return commits
@@ -148,6 +227,65 @@ export async function gitCommitFiles(cwd: string, hash: string): Promise<string[
   } catch {
     return []
   }
+}
+
+/**
+ * 获取工作区文件状态（已暂存 / 未暂存）
+ */
+export async function gitStatus(cwd: string): Promise<GitWorkingTreeStatus> {
+  if (!(await isGitRepo(cwd))) {
+    return { staged: [], unstaged: [] }
+  }
+  try {
+    const [stagedRaw, unstagedRaw, untrackedRaw] = await Promise.all([
+      git(cwd, 'diff --cached --name-only --'),
+      git(cwd, 'diff --name-only --'),
+      git(cwd, 'ls-files --others --exclude-standard'),
+    ])
+    const staged = parseGitNameList(stagedRaw)
+    const unstaged = parseGitNameList([unstagedRaw, untrackedRaw].filter(Boolean).join('\n'))
+    return { staged, unstaged }
+  } catch {
+    return { staged: [], unstaged: [] }
+  }
+}
+
+/**
+ * 获取指定文件的差异快照（HEAD vs 工作区）
+ */
+export async function gitFileChange(cwd: string, filePath: string): Promise<GitFileChangeInfo | null> {
+  if (!(await isGitRepo(cwd))) return null
+  const rel = normalizeGitRelativePath(filePath)
+  if (!rel) return null
+  const [oldContent, newContent] = await Promise.all([
+    readHeadText(cwd, rel),
+    readWorkingTreeText(cwd, rel),
+  ])
+  if (oldContent === newContent) return null
+  return { filePath: rel, oldContent, newContent }
+}
+
+/**
+ * 暂存指定文件
+ */
+export async function gitStageFiles(cwd: string, filePaths: string[]): Promise<void> {
+  await gitEnsureRepo(cwd)
+  const normalized = Array.from(new Set(
+    (filePaths ?? [])
+      .map((p) => String(p ?? '').trim())
+      .filter(Boolean),
+  ))
+  if (normalized.length === 0) return
+  const quoted = normalized.map((p) => shellQuote(p)).join(' ')
+  await git(cwd, `add -- ${quoted}`)
+}
+
+/**
+ * 暂存全部变更
+ */
+export async function gitStageAll(cwd: string): Promise<void> {
+  await gitEnsureRepo(cwd)
+  await git(cwd, 'add -A')
 }
 
 /**

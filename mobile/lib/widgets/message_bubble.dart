@@ -1431,6 +1431,7 @@ _ToolSummary _toolCallSummary(DesktopBridgeToolCall call) {
     case 'write_file':
       return _ToolSummary(
           label: '写入文件', detail: _shortText('${args['path'] ?? ''}', 120));
+    case 'list_dir':
     case 'list_directory':
       return _ToolSummary(
           label: '列出目录', detail: _shortText('${args['path'] ?? '.'}', 120));
@@ -1440,11 +1441,11 @@ _ToolSummary _toolCallSummary(DesktopBridgeToolCall call) {
     case 'find_file':
       return _ToolSummary(
           label: '查找文件', detail: _shortText('${args['pattern'] ?? ''}', 120));
-    case 'search_files':
+    case 'codebase_search':
       return _ToolSummary(
         label: '搜索文件',
         detail: _shortText(
-            '"${args['pattern'] ?? ''}" in ${args['directory'] ?? '.'}', 120),
+            '"${args['query'] ?? args['pattern'] ?? ''}" in ${args['path'] ?? args['directory'] ?? '.'}', 120),
       );
     case 'browser_navigate':
       return _ToolSummary(
@@ -1475,13 +1476,14 @@ _ToolSummary _toolResultSummaryByName(String name) {
       return const _ToolSummary(label: '读取文件', detail: '');
     case 'write_file':
       return const _ToolSummary(label: '写入文件', detail: '');
+    case 'list_dir':
     case 'list_directory':
       return const _ToolSummary(label: '列出目录', detail: '');
     case 'run_command':
       return const _ToolSummary(label: '执行命令', detail: '');
     case 'find_file':
       return const _ToolSummary(label: '查找文件', detail: '');
-    case 'search_files':
+    case 'codebase_search':
       return const _ToolSummary(label: '搜索文件', detail: '');
     case 'browser_navigate':
       return const _ToolSummary(label: '打开网页', detail: '');

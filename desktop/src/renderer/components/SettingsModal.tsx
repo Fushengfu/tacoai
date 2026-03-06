@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import QRCode from 'qrcode'
-import type { ProviderId, ProviderForm, ProviderForms, GuiPlusForm } from '../types'
-import type { SkillInfo, ProjectNote, NoteCategory, McpServerInfo, MobileBridgeConfig } from '../../shared/ipc'
+import type { ProviderId, ProviderForm, ProviderForms, GuiPlusForm, ThemeMode } from '../types'
+import type { SkillInfo, ProjectNote, ProjectTaskMemory, NoteCategory, McpServerInfo, MobileBridgeConfig } from '../../shared/ipc'
 import { providers, providerPlaceholders } from '../constants'
 
 const NOTE_CATEGORIES: { value: NoteCategory; label: string }[] = [
@@ -23,6 +23,10 @@ type SettingsPageProps = {
   onUpdateField: (id: ProviderId, field: keyof ProviderForm, value: string) => void
   guiPlusForm: GuiPlusForm
   onUpdateGuiPlusField: <K extends keyof GuiPlusForm>(key: K, value: GuiPlusForm[K]) => void
+  themeMode: ThemeMode
+  onThemeModeChange: (mode: ThemeMode) => void
+  projectRules?: string
+  onProjectRulesChange?: (rules: string) => void
   onClose: () => void
   workspace?: string | null
   projectId?: string
@@ -35,11 +39,15 @@ export function SettingsPage({
   onUpdateField,
   guiPlusForm,
   onUpdateGuiPlusField,
+  themeMode,
+  onThemeModeChange,
+  projectRules,
+  onProjectRulesChange,
   onClose,
   workspace,
   projectId,
 }: Readonly<SettingsPageProps>) {
-  const [tab, setTab] = useState<SettingsTab>('models')
+  const [tab, setTab] = useState<SettingsTab>('general')
   const [revealApiKey, setRevealApiKey] = useState<Record<string, boolean>>({})
   const [revealGuiPlusKey, setRevealGuiPlusKey] = useState(false)
 
@@ -55,6 +63,10 @@ export function SettingsPage({
   const [notesLoading, setNotesLoading] = useState(false)
   const [editingNote, setEditingNote] = useState<Partial<ProjectNote> | null>(null)
   const [noteSaving, setNoteSaving] = useState(false)
+  const [expandedNoteIds, setExpandedNoteIds] = useState<Set<string>>(new Set())
+  const [taskMemories, setTaskMemories] = useState<ProjectTaskMemory[]>([])
+  const [taskMemoriesLoading, setTaskMemoriesLoading] = useState(false)
+  const [expandedTaskMemoryIds, setExpandedTaskMemoryIds] = useState<Set<string>>(new Set())
 
   // 通用设置
   const [browserAutoTakeover, setBrowserAutoTakeover] = useState<boolean>(() =>
@@ -67,6 +79,9 @@ export function SettingsPage({
     const saved = localStorage.getItem('taco.browserHiddenMode')
     return saved === null ? true : saved === 'true'
   })
+  const [recallDebugEnabled, setRecallDebugEnabled] = useState<boolean>(() =>
+    localStorage.getItem('taco.recallDebugEnabled') === 'true'
+  )
 
   // 自动授权分类
   const [autoApproveCategories, setAutoApproveCategoriesState] = useState<Set<string>>(() => {
@@ -95,6 +110,15 @@ export function SettingsPage({
   )
   const [mobileBridgeQrDataUrl, setMobileBridgeQrDataUrl] = useState('')
   const [mobileBridgeQrPayload, setMobileBridgeQrPayload] = useState('')
+  const [projectRulesDraft, setProjectRulesDraft] = useState(projectRules ?? '')
+
+  useEffect(() => {
+    setProjectRulesDraft(projectRules ?? '')
+  }, [projectRules])
+
+  const notesWorkspace = (workspace ?? '').trim()
+  const notesProjectId = (projectId ?? '').trim()
+  const hasNotesScope = Boolean(notesWorkspace || notesProjectId)
 
   useEffect(() => {
     let cancelled = false
@@ -132,9 +156,9 @@ export function SettingsPage({
         dark: '#EAF0FF',
         light: '#00000000',
       },
-    }).then((dataUrl) => {
+    }).then((dataUrl: string) => {
       if (!cancelled) setMobileBridgeQrDataUrl(dataUrl)
-    }).catch((err) => {
+    }).catch((err: unknown) => {
       console.error('生成移动端连接二维码失败:', err)
       if (!cancelled) setMobileBridgeQrDataUrl('')
     })
@@ -198,24 +222,34 @@ export function SettingsPage({
 
   // ── Notes 逻辑 ──
   const loadNotes = useCallback(async () => {
-    if (!workspace) return
+    if (!hasNotesScope) {
+      setNotes([])
+      setTaskMemories([])
+      return
+    }
     setNotesLoading(true)
+    setTaskMemoriesLoading(true)
     try {
-      const list = await window.taco.notes.list(workspace, projectId)
+      const [list, memories] = await Promise.all([
+        window.taco.notes.list(notesWorkspace, notesProjectId || undefined),
+        window.taco.notes.listTaskMemories(notesWorkspace, notesProjectId || undefined),
+      ])
       setNotes(list)
+      setTaskMemories(memories)
     } catch (err) {
       console.error('加载笔记失败:', err)
     } finally {
       setNotesLoading(false)
+      setTaskMemoriesLoading(false)
     }
-  }, [workspace, projectId])
+  }, [hasNotesScope, notesWorkspace, notesProjectId])
 
   useEffect(() => {
     if (tab === 'notes') loadNotes()
   }, [tab, loadNotes])
 
   const handleSaveNote = async () => {
-    if (!workspace || !editingNote) return
+    if (!hasNotesScope || !editingNote) return
     const title = (editingNote.title || '').trim()
     const content = (editingNote.content || '').trim()
     if (!title || !content) return
@@ -230,7 +264,7 @@ export function SettingsPage({
         createdAt: editingNote.createdAt || now,
         updatedAt: now,
       }
-      const saved = await window.taco.notes.save(workspace, note, projectId)
+      const saved = await window.taco.notes.save(notesWorkspace, note, notesProjectId || undefined)
       setNotes((prev) => {
         const idx = prev.findIndex((n) => n.id === saved.id)
         if (idx >= 0) {
@@ -249,13 +283,57 @@ export function SettingsPage({
   }
 
   const handleDeleteNote = async (id: string) => {
-    if (!workspace) return
+    if (!hasNotesScope) return
     try {
-      await window.taco.notes.delete(workspace, id, projectId)
+      await window.taco.notes.delete(notesWorkspace, id, notesProjectId || undefined)
       setNotes((prev) => prev.filter((n) => n.id !== id))
+      setExpandedNoteIds((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
     } catch (err) {
       console.error('删除笔记失败:', err)
     }
+  }
+
+  const toggleNoteExpanded = (id: string) => {
+    setExpandedNoteIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const toggleTaskMemoryExpanded = (id: string) => {
+    setExpandedTaskMemoryIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const handleDeleteTaskMemory = async (id: string) => {
+    if (!hasNotesScope) return
+    try {
+      await window.taco.notes.deleteTaskMemory(notesWorkspace, id, notesProjectId || undefined)
+      setTaskMemories((prev) => prev.filter((item) => item.id !== id))
+      setExpandedTaskMemoryIds((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
+    } catch (err) {
+      console.error('删除任务记忆失败:', err)
+    }
+  }
+
+  const outcomeLabel = (outcome: ProjectTaskMemory['outcome']) => {
+    if (outcome === 'success') return '完成'
+    if (outcome === 'aborted') return '中止'
+    return '失败'
   }
 
   // ── MCP 逻辑 ──
@@ -387,7 +465,7 @@ export function SettingsPage({
             className={`settings-tab ${tab === 'notes' ? 'active' : ''}`}
             onClick={() => setTab('notes')}
           >
-            项目笔记
+            记忆
           </button>
           <button
             type="button"
@@ -475,6 +553,70 @@ export function SettingsPage({
                 />
               </label>
 
+              <label className="settings-toggle-row">
+                <span className="settings-toggle-label">
+                  <strong>记忆召回调试日志</strong>
+                  <small>开启后记录本轮召回候选、分数、入选原因与预算裁剪详情（仅日志可见）。</small>
+                </span>
+                <input
+                  type="checkbox"
+                  className="settings-toggle"
+                  checked={recallDebugEnabled}
+                  onChange={(e) => {
+                    const val = e.target.checked
+                    setRecallDebugEnabled(val)
+                    localStorage.setItem('taco.recallDebugEnabled', String(val))
+                  }}
+                />
+              </label>
+
+            </div>
+
+            <div className="settings-card" style={{ marginTop: 16 }}>
+              <div className="settings-card-title">主题样式</div>
+              <div className="settings-grid">
+                <label className="settings-field">
+                  <span>界面主题</span>
+                  <select
+                    value={themeMode}
+                    onChange={(e) => onThemeModeChange(e.target.value as ThemeMode)}
+                  >
+                    <option value="dark">深色默认</option>
+                    <option value="ocean">海蓝</option>
+                    <option value="graphite">石墨</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            <div className="settings-card" style={{ marginTop: 16 }}>
+              <div className="settings-card-title">项目规则注入</div>
+              <div className="settings-card-desc">
+                这里填写的规则会在每次请求时自动注入到 system prompt（仅当前项目生效）。
+              </div>
+              <label className="settings-field">
+                <span>规则内容</span>
+                <textarea
+                  className="mcp-textarea"
+                  rows={6}
+                  value={projectRulesDraft}
+                  onChange={(e) => setProjectRulesDraft(e.target.value)}
+                  placeholder="例如：\n1. 后端统一使用 snake_case JSON 字段\n2. 禁止引入新的全局状态管理库\n3. 所有新增接口必须补充错误码说明"
+                />
+              </label>
+              <div className="settings-action-row">
+                <div className="settings-action-info">
+                  <small>提示：项目规则用于“约束执行风格”，不会替代系统安全规则。</small>
+                </div>
+                <button
+                  type="button"
+                  className="settings-action-btn"
+                  onClick={() => onProjectRulesChange?.(projectRulesDraft.trim())}
+                  disabled={!onProjectRulesChange}
+                >
+                  保存项目规则
+                </button>
+              </div>
             </div>
 
             <div className="settings-card" style={{ marginTop: 16 }}>
@@ -883,18 +1025,18 @@ export function SettingsPage({
             </div>
           )}
 
-          {/* ── 项目笔记 ── */}
+          {/* ── 记忆 ── */}
           {tab === 'notes' && (
             <div className="notes-panel">
-              {!workspace ? (
-                <div className="notes-empty">请先选择一个工作空间目录才能使用项目笔记</div>
+              {!hasNotesScope ? (
+                <div className="notes-empty">请先创建会话或选择工作空间后再使用记忆</div>
               ) : (
                 <>
                   {/* 新增/编辑笔记表单 */}
                   {editingNote ? (
                     <div className="note-form">
                       <div className="note-form-title">
-                        {editingNote.id ? '编辑笔记' : '新增笔记'}
+                        {editingNote.id ? '编辑记忆' : '新增记忆'}
                       </div>
                       <div className="note-form-fields">
                         <input
@@ -916,7 +1058,7 @@ export function SettingsPage({
                           className="note-form-textarea"
                           value={editingNote.content || ''}
                           onChange={(e) => setEditingNote((prev) => ({ ...prev, content: e.target.value }))}
-                          placeholder="笔记内容（如：MySQL 地址 127.0.0.1:3306，用户名 root，密码 xxx）"
+                          placeholder="记忆内容（如：MySQL 地址 127.0.0.1:3306，用户名 root，密码 xxx）"
                           rows={4}
                         />
                       </div>
@@ -944,55 +1086,143 @@ export function SettingsPage({
                       className="notes-add-btn"
                       onClick={() => setEditingNote({ category: 'other' })}
                     >
-                      + 新增笔记
+                      + 新增记忆
                     </button>
                   )}
 
-                  {/* 笔记列表 */}
+                  {/* 记忆列表 */}
                   <div className="notes-list-title">
-                    项目笔记 ({notes.length})
-                    <span className="notes-list-hint">以下笔记仅对当前项目生效，并会在该项目会话时自动注入</span>
+                    手动记忆 ({notes.length})
+                    <span className="notes-list-hint">由你手动维护或 AI 通过 save_note 写入的长期项目记忆。</span>
                   </div>
                   {notesLoading ? (
                     <div className="notes-loading">加载中...</div>
                   ) : notes.length === 0 ? (
                     <div className="notes-empty">
-                      暂无笔记。你可以手动添加，或在对话中提到重要信息时 AI 会自动记录。
+                      暂无记忆。你可以手动添加，或在对话中提到重要信息时 AI 会自动记录。
                     </div>
                   ) : (
                     <div className="notes-list">
-                      {notes.map((note) => (
-                        <div key={note.id} className="note-card">
-                          <div className="note-card-header">
-                            <span className={`note-card-category ${note.category}`}>
-                              {NOTE_CATEGORIES.find((c) => c.value === note.category)?.label || note.category}
-                            </span>
-                            <span className="note-card-title">{note.title}</span>
-                            <div className="note-card-actions">
-                              <button
-                                type="button"
-                                className="note-card-btn edit"
-                                onClick={() => setEditingNote(note)}
-                                title="编辑"
-                              >
-                                编辑
-                              </button>
-                              <button
-                                type="button"
-                                className="note-card-btn delete"
-                                onClick={() => handleDeleteNote(note.id)}
-                                title="删除"
-                              >
-                                ✕
-                              </button>
+                      {notes.map((note) => {
+                        const expanded = expandedNoteIds.has(note.id)
+                        const hasLongContent = note.content.length > 140 || note.content.includes('\n')
+                        return (
+                          <div key={note.id} className="note-card">
+                            <div className="note-card-header">
+                              <span className={`note-card-category ${note.category}`}>
+                                {NOTE_CATEGORIES.find((c) => c.value === note.category)?.label || note.category}
+                              </span>
+                              <span className="note-card-title">{note.title}</span>
+                              <div className="note-card-actions">
+                                <button
+                                  type="button"
+                                  className="note-card-btn edit"
+                                  onClick={() => setEditingNote(note)}
+                                  title="编辑"
+                                >
+                                  编辑
+                                </button>
+                                <button
+                                  type="button"
+                                  className="note-card-btn delete"
+                                  onClick={() => handleDeleteNote(note.id)}
+                                  title="删除"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            </div>
+                            <div className={`note-card-content ${expanded ? 'expanded' : ''}`}>{note.content}</div>
+                            <div className="note-card-footer">
+                              <div className="note-card-meta">
+                                更新于 {new Date(note.updatedAt).toLocaleString()}
+                              </div>
+                              {hasLongContent && (
+                                <button
+                                  type="button"
+                                  className="note-card-toggle-btn"
+                                  onClick={() => toggleNoteExpanded(note.id)}
+                                >
+                                  {expanded ? '收起' : '展开'}
+                                </button>
+                              )}
                             </div>
                           </div>
-                          <div className="note-card-content">{note.content}</div>
-                          <div className="note-card-meta">
-                            更新于 {new Date(note.updatedAt).toLocaleString()}
+                        )
+                      })}
+                    </div>
+                  )}
+
+                  {/* 任务记忆列表（自动生成，仅查看） */}
+                  <div className="notes-list-title" style={{ marginTop: 14 }}>
+                    自动记忆 ({taskMemories.length})
+                    <span className="notes-list-hint">每轮用户提问自动记录“用户原问 + 处理结果要点”，用于后续上下文重放与召回。</span>
+                  </div>
+                  {taskMemoriesLoading ? (
+                    <div className="notes-loading">加载中...</div>
+                  ) : taskMemories.length === 0 ? (
+                    <div className="notes-empty">
+                      暂无自动记忆。发起提问后会自动生成。
+                    </div>
+                  ) : (
+                    <div className="notes-list">
+                      {taskMemories.map((memory) => {
+                        const expanded = expandedTaskMemoryIds.has(memory.id)
+                        const resultBody = (memory.assistantResult || '').trim()
+                        const detailLines = [
+                          `用户问题：${memory.userQuery || memory.goal || '无'}`,
+                          `用户意图：${memory.intentType || 'other'}${memory.intentSummary ? ` | ${memory.intentSummary}` : ''}`,
+                          `意图目标：${memory.intentGoal || memory.goal || '无'}`,
+                          `结果：${outcomeLabel(memory.outcome)}`,
+                          `执行动作：${memory.tools.length > 0 ? memory.tools.join('、') : '无'}`,
+                          `修改文件：${memory.changedFiles.length > 0 ? memory.changedFiles.join('、') : '无'}`,
+                          `关键标识符：${memory.identifiers.length > 0 ? memory.identifiers.join('、') : '无'}`,
+                          memory.failures.length > 0 ? `异常：${memory.failures.slice(0, 3).join('；')}` : '',
+                        ].filter(Boolean)
+                        const detailText = detailLines.join('\n')
+                        const memoryDigest = (memory.summary || '').trim()
+                        const contentText = [
+                          memoryDigest ? `记忆摘要：\n${memoryDigest}` : '',
+                          resultBody ? `处理结果：\n${resultBody}` : '',
+                          detailText ? `结构化信息：\n${detailText}` : '',
+                        ].filter(Boolean).join('\n\n')
+                        const hasLongContent = contentText.length > 180 || contentText.includes('\n')
+                        return (
+                          <div key={memory.id} className="note-card">
+                            <div className="note-card-header">
+                              <span className="note-card-category other">{outcomeLabel(memory.outcome)}</span>
+                              <span className="note-card-title">{memory.goal || '（无目标）'}</span>
+                              <div className="note-card-actions">
+                                <button
+                                  type="button"
+                                  className="note-card-btn delete"
+                                  onClick={() => handleDeleteTaskMemory(memory.id)}
+                                  title="删除"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            </div>
+                            <div className={`note-card-content ${expanded ? 'expanded' : ''}`}>
+                              {contentText || '（无可展示内容）'}
+                            </div>
+                            <div className="note-card-footer">
+                              <div className="note-card-meta">
+                                更新时间 {new Date(memory.updatedAt).toLocaleString()}
+                              </div>
+                              {hasLongContent && (
+                                <button
+                                  type="button"
+                                  className="note-card-toggle-btn"
+                                  onClick={() => toggleTaskMemoryExpanded(memory.id)}
+                                >
+                                  {expanded ? '收起' : '展开'}
+                                </button>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   )}
                 </>

@@ -8,7 +8,7 @@ import { app, BrowserWindow, Notification, dialog, ipcMain, shell } from 'electr
 import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron'
 import { exec } from 'node:child_process'
 import * as fs from 'node:fs/promises'
-import { watch as fsWatch, type FSWatcher } from 'node:fs'
+import { watch as fsWatch, type Dirent, type FSWatcher } from 'node:fs'
 import * as nodePath from 'node:path'
 import { IpcChannel, editorCommands } from '../shared/ipc'
 import type {
@@ -30,14 +30,15 @@ import type { RiskCategory } from './tools'
 import type { ProviderKey, ProviderOverrides, TokenUsage } from './llm'
 import { requestChatCompletion, requestChatCompletionStream } from './llm'
 import { runAgent, resolveConfirm } from './agent'
-import { gitLog, gitCommit, gitRollback, gitCommitFiles } from './git'
+import { gitLog, gitCommit, gitRollback, gitCommitFiles, gitStatus, gitFileChange, gitStageFiles, gitStageAll } from './git'
 import { initSkills, listSkills, installSkill, uninstallSkill, toggleSkill } from './skills'
-import { listNotes, saveNote, deleteNote } from './notes'
+import { inferIntentFromBackground, listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, recordTaskLog } from './notes'
 import { initMcp, listMcpServers, saveMcpServer, removeMcpServer, toggleMcpServer, saveScreenshot } from './mcp'
 import { getGuiPlusConfig, saveGuiPlusConfig } from './gui-plus'
 import { getPromptConfig, savePromptConfig } from './prompt-config'
 import { getLogDir } from './logger'
 import { log } from './logger'
+import { applyRewardScore } from './reward-score'
 import { handleTerminalSpawn, handleTerminalInput, handleTerminalResize, handleTerminalKill } from './terminal'
 import { openExternalBrowser, closeExternalBrowser, navigateExternalBrowser, focusExternalBrowser } from './browser'
 import { getMobileBridgeConfig, initMobileBridge, setMobileBridgeConfig, updateMobileBridgeContext } from './mobile-bridge'
@@ -52,24 +53,186 @@ function buildLogScope(projectId?: string, workspace?: string): string | undefin
   return undefined
 }
 
+function cleanupAssistantMemoryText(text: string): string {
+  return String(text ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+}
+
+const USER_ASSETS_BLOCK_REGEX = /\s*\[USER_ASSETS\][\s\S]*?\[\/USER_ASSETS\]\s*/gi
+
+function stripUserAssetsBlock(content: string): string {
+  return String(content ?? '')
+    .replace(USER_ASSETS_BLOCK_REGEX, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function buildUserAssetsBlock(imagePaths: string[]): string {
+  const lines: string[] = ['[USER_ASSETS]']
+  for (const imagePath of imagePaths) {
+    lines.push('- type: image')
+    lines.push(`  path: ${imagePath}`)
+  }
+  lines.push('[/USER_ASSETS]')
+  return lines.join('\n')
+}
+
+function extractUserQueryText(content: string): string {
+  const raw = stripUserAssetsBlock(String(content ?? ''))
+  const wrapped = raw.match(/\[USER_QUERY\]([\s\S]*?)\[\/USER_QUERY\]/i)
+  if (wrapped && wrapped[1]) return wrapped[1].trim()
+  return raw.trim()
+}
+
+function inferIntentTypeFromQuery(query: string): string {
+  const text = String(query ?? '').trim().toLowerCase()
+  if (!text) return 'other'
+  if (/(报错|错误|异常|排查|调试|debug|error|bug|trace|崩溃)/.test(text)) return 'debug'
+  if (/(实现|新增|开发|编写|添加|implement|create|build|功能)/.test(text)) return 'implement'
+  if (/(重构|优化|整理|抽离|refactor|optimize|cleanup)/.test(text)) return 'refactor'
+  if (/(删除|重命名|移动|部署|发布|配置|运行|执行|remove|delete|rm |mv |deploy)/.test(text)) return 'ops'
+  if (/(是什么|为什么|怎么|如何|请解释|是否|吗|\?|？|what|why|how|can you)/.test(text)) return 'qa'
+  return 'other'
+}
+
+const STREAM_SANITIZE_HOLD_BACK = 24
+
+const USER_VISIBLE_SOURCE_PHRASE_RULES: Array<{ pattern: RegExp; replacement: string }> = [
+  { pattern: /从(?:项目)?历史(?:记录|记忆|信息|上下文)来看/g, replacement: '结合当前上下文来看' },
+  { pattern: /根据(?:项目)?历史(?:记录|记忆|信息|上下文)(?:显示|来看|可知|可见)?/g, replacement: '结合当前上下文' },
+  { pattern: /基于(?:项目)?历史(?:记录|记忆|信息|上下文)/g, replacement: '结合当前上下文' },
+  { pattern: /根据(?:背景|上下文)信息/g, replacement: '结合当前上下文' },
+  { pattern: /根据\s*BACKGROUND_CONTEXT/gi, replacement: '结合当前上下文' },
+  { pattern: /based on (?:the )?(?:project )?(?:history|historical (?:records?|memory|context))/gi, replacement: 'based on current context' },
+  { pattern: /from (?:the )?background context/gi, replacement: 'from current context' },
+]
+
+function sanitizeUserFacingText(input: string): string {
+  let output = String(input ?? '')
+  for (const rule of USER_VISIBLE_SOURCE_PHRASE_RULES) {
+    output = output.replace(rule.pattern, rule.replacement)
+  }
+  return output
+}
+
 /** 非流式：renderer invoke → main handle → 返回完整回复 */
 async function handleChatSend(_event: IpcMainInvokeEvent, payload: ChatSendPayload) {
   const logScope = buildLogScope(payload.projectId, undefined)
-  return await requestChatCompletion(
+  const raw = await requestChatCompletion(
     payload.provider as ProviderKey,
     payload.messages,
     payload.overrides as ProviderOverrides | undefined,
     undefined,
     logScope,
   )
+  return sanitizeUserFacingText(raw)
 }
 
 /** 流式：renderer send → main on → 逐块 send 回 renderer */
 async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload) {
   const { requestId, provider, messages, overrides, projectId, workspace } = payload
+  const turnStartedAt = Date.now()
   const logScope = buildLogScope(projectId, workspace)
   const abortController = new AbortController()
   let lastUsage: TokenUsage | undefined
+  let assistantFullText = ''
+  let rawAssistantFullText = ''
+  let emittedSanitizedText = ''
+  const lastUserGoal = [...messages].reverse().find((m) => m.role === 'user')?.content?.trim() || ''
+  const plainUserQuery = extractUserQueryText(lastUserGoal)
+
+  async function persistChatTurnMemory(
+    outcome: 'success' | 'aborted' | 'error',
+    summaryText: string,
+    errorMessage?: string,
+  ): Promise<void> {
+    const cleaned = cleanupAssistantMemoryText(summaryText)
+    const summary = (errorMessage
+      ? [cleaned, `错误信息: ${errorMessage}`].filter(Boolean).join('\n')
+      : cleaned
+    ) || (outcome === 'aborted' ? '(用户中止，未产出完整回复)' : '(无最终文本)')
+
+    try {
+      let intentType = inferIntentTypeFromQuery(plainUserQuery || lastUserGoal)
+      let intentSummary = plainUserQuery || lastUserGoal
+      let intentGoal = plainUserQuery || lastUserGoal
+      let intentSource: 'llm' | 'heuristic' = 'heuristic'
+
+      try {
+        const inferred = await inferIntentFromBackground(
+          workspace?.trim() ?? '',
+          plainUserQuery || lastUserGoal,
+          projectId,
+          {
+            usageTotalTokens: lastUsage?.totalTokens,
+            logScope,
+          },
+        )
+        intentType = inferred.intentType || intentType
+        intentSummary = inferred.intentSummary || intentSummary
+        intentGoal = inferred.intentGoal || intentGoal
+        intentSource = inferred.intentSource || intentSource
+      } catch (err) {
+        log('CHAT_TASK_MEMORY_INTENT_INFER_FAIL', {
+          error: err instanceof Error ? err.message : String(err),
+        }, logScope)
+      }
+
+      await recordTaskLog(
+        workspace?.trim() ?? '',
+        {
+          goal: plainUserQuery || lastUserGoal || '(未提取到用户提问)',
+          userQuery: plainUserQuery || lastUserGoal,
+          intentType,
+          intentSummary,
+          intentGoal,
+          summary,
+          outcome,
+          tools: [],
+          changedFiles: [],
+          identifiers: [],
+          failures: errorMessage ? [errorMessage] : [],
+        },
+        projectId,
+      )
+      log('CHAT_TASK_MEMORY_SAVED', {
+        outcome,
+        hasGoal: Boolean(plainUserQuery || lastUserGoal),
+        intentType,
+        intentSource,
+        summaryLength: summary.length,
+      }, logScope)
+
+      try {
+        const scored = await applyRewardScore({
+          channel: 'chat',
+          outcome,
+          workspace,
+          projectId,
+          requestId,
+          failures: errorMessage ? 1 : 0,
+          elapsedMs: Math.max(0, Date.now() - turnStartedAt),
+        })
+        log('REWARD_SCORE_APPLIED', {
+          channel: 'chat',
+          outcome,
+          delta: scored.delta,
+          points: scored.state.points,
+          debtUsd: scored.state.debtUsd,
+          breakdown: scored.entry.breakdown,
+        }, logScope)
+      } catch (scoreErr) {
+        log('REWARD_SCORE_APPLY_FAIL', {
+          channel: 'chat',
+          error: scoreErr instanceof Error ? scoreErr.message : String(scoreErr),
+        }, logScope)
+      }
+    } catch (err) {
+      log('CHAT_TASK_MEMORY_SAVE_FAIL', {
+        error: err instanceof Error ? err.message : String(err),
+      }, logScope)
+    }
+  }
+
   chatAbortControllers.set(requestId, abortController)
 
   try {
@@ -83,18 +246,35 @@ async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload)
         lastUsage = usage
       },
     )) {
+      rawAssistantFullText += chunk
+      const sanitizedFull = sanitizeUserFacingText(rawAssistantFullText)
+      const safeLen = Math.max(0, sanitizedFull.length - STREAM_SANITIZE_HOLD_BACK)
+      const visibleText = sanitizedFull.slice(0, safeLen)
+      const delta = visibleText.slice(emittedSanitizedText.length)
+      emittedSanitizedText = visibleText
+      assistantFullText = visibleText
       if (event.sender.isDestroyed()) return
-      event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk, done: false })
+      if (delta) {
+        event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk: delta, done: false })
+      }
+    }
+    const finalSanitized = sanitizeUserFacingText(rawAssistantFullText)
+    const tailDelta = finalSanitized.slice(emittedSanitizedText.length)
+    assistantFullText = finalSanitized
+    if (tailDelta && !event.sender.isDestroyed()) {
+      event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk: tailDelta, done: false })
     }
     if (!event.sender.isDestroyed()) {
       event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk: '', done: true, usage: lastUsage })
     }
+    await persistChatTurnMemory('success', assistantFullText)
   } catch (error) {
     const aborted = abortController.signal.aborted || (error instanceof Error && error.name === 'AbortError')
     if (aborted) {
       if (!event.sender.isDestroyed()) {
         event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk: '', done: true, usage: lastUsage })
       }
+      await persistChatTurnMemory('aborted', assistantFullText)
       return
     }
     if (!event.sender.isDestroyed()) {
@@ -105,6 +285,7 @@ async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload)
         error: error instanceof Error ? error.message : 'Stream failed'
       })
     }
+    await persistChatTurnMemory('error', assistantFullText, error instanceof Error ? error.message : 'Stream failed')
   } finally {
     chatAbortControllers.delete(requestId)
   }
@@ -161,7 +342,7 @@ const agentAbortControllers = new Map<string, AbortController>()
 
 /** Agent 流式：renderer send → main on → 多轮工具调用循环 → 逐事件推送 */
 async function handleAgentStream(event: IpcMainEvent, payload: AgentStreamPayload) {
-  const { requestId, provider, messages, overrides, workspace, maxTokens, images, projectId } = payload
+  const { requestId, provider, messages, overrides, workspace, maxTokens, images, projectId, recallDebug } = payload
   const logScope = buildLogScope(projectId, workspace)
 
   // ── 图片预处理：保存到本地文件，将路径告知 AI，由 AI 决定如何分析 ──
@@ -177,11 +358,13 @@ async function handleAgentStream(event: IpcMainEvent, payload: AgentStreamPayloa
       // 将图片路径注入最后一条用户消息
       const lastUserIdx = messages.length - 1
       if (lastUserIdx >= 0 && messages[lastUserIdx].role === 'user') {
-        const pathList = savedPaths.map((p, i) => savedPaths.length > 1 ? `  ${i + 1}. ${p}` : p).join('\n')
-        const hint = `\n\n[用户附带了${savedPaths.length > 1 ? ` ${savedPaths.length} 张` : ''}图片]\n图片路径:\n${pathList}\n如需分析图片，可先调用 mcp_list_tools 查看 minimax 下 understand_image 的最新 inputSchema，再使用 mcp_call 传入参数。`
+        const originalContent = String(messages[lastUserIdx].content ?? '')
+        const baseContent = stripUserAssetsBlock(originalContent)
+        const assetsBlock = buildUserAssetsBlock(savedPaths)
+        const mergedContent = baseContent ? `${baseContent}\n\n${assetsBlock}` : assetsBlock
         messages[lastUserIdx] = {
           ...messages[lastUserIdx],
-          content: messages[lastUserIdx].content + hint,
+          content: mergedContent,
         }
       }
     } catch (imgErr) {
@@ -207,6 +390,7 @@ async function handleAgentStream(event: IpcMainEvent, payload: AgentStreamPayloa
       abortController.signal,
       projectId,
       logScope,
+      Boolean(recallDebug),
     )
   } finally {
     agentAbortControllers.delete(requestId)
@@ -283,40 +467,100 @@ async function handleOpenInEditor(_event: IpcMainInvokeEvent, filePath: string, 
 
 const EXCLUDED_DIRS = new Set([
   'node_modules', '.git', '.svn', '.hg', '.DS_Store',
-  '__pycache__', '.cache', 'coverage', '.idea',
+  '__pycache__', '.cache', 'coverage', '.idea', '.vscode',
+  '.next', '.nuxt', '.output', '.dart_tool', '.turbo',
+  'dist', 'build', 'out', 'target', '.gradle', 'Pods', 'DerivedData',
 ])
 
 import type { FileTreeEntry } from '../shared/ipc'
 
+const WORKSPACE_TREE_MAX_DEPTH = 8
+const WORKSPACE_TREE_MAX_ENTRIES = 12_000
+const WORKSPACE_TREE_MAX_CHILDREN_PER_DIR = 1_500
+const WORKSPACE_TREE_CACHE_TTL_MS = 1_500
+
+type WorkspaceTreeReadState = {
+  visited: number
+  truncated: boolean
+}
+
+const workspaceTreeCache = new Map<string, { at: number; tree: FileTreeEntry[] }>()
+const workspaceTreeInFlight = new Map<string, Promise<FileTreeEntry[]>>()
+
 async function readWorkspaceTree(
-  dir: string, basePath = '', depth = 0, maxDepth = 10,
+  dir: string,
+  basePath = '',
+  depth = 0,
+  maxDepth = WORKSPACE_TREE_MAX_DEPTH,
+  state?: WorkspaceTreeReadState,
 ): Promise<FileTreeEntry[]> {
-  if (depth > maxDepth) return []
-  let entries: Awaited<ReturnType<typeof fs.readdir>>
+  const active = state ?? { visited: 0, truncated: false }
+  if (depth > maxDepth || active.truncated) return []
+  let entries: Dirent<string>[]
   try {
-    entries = await fs.readdir(dir, { withFileTypes: true })
+    entries = await fs.readdir(dir, { withFileTypes: true, encoding: 'utf8' })
   } catch { return [] }
 
+  const sortedEntries = entries
+    .filter((entry) => !EXCLUDED_DIRS.has(entry.name))
+    .sort((a, b) => {
+      if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
+    .slice(0, WORKSPACE_TREE_MAX_CHILDREN_PER_DIR)
+
   const result: FileTreeEntry[] = []
-  for (const entry of entries) {
-    if (EXCLUDED_DIRS.has(entry.name)) continue
+  for (const entry of sortedEntries) {
+    if (active.truncated) break
+    if (active.visited >= WORKSPACE_TREE_MAX_ENTRIES) {
+      active.truncated = true
+      break
+    }
     const relPath = basePath ? `${basePath}/${entry.name}` : entry.name
+    active.visited++
 
     if (entry.isDirectory()) {
       const children = await readWorkspaceTree(
-        nodePath.join(dir, entry.name), relPath, depth + 1, maxDepth,
+        nodePath.join(dir, entry.name), relPath, depth + 1, maxDepth, active,
       )
       result.push({ name: entry.name, path: relPath, isDirectory: true, children })
     } else {
       result.push({ name: entry.name, path: relPath, isDirectory: false })
     }
   }
-  // 排序：目录在前，文件在后，各自按名称排序
-  result.sort((a, b) => {
-    if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
-    return a.name.localeCompare(b.name)
-  })
   return result
+}
+
+async function getWorkspaceTree(cwd: string): Promise<FileTreeEntry[]> {
+  const resolved = nodePath.resolve(String(cwd ?? '').trim() || '.')
+  const now = Date.now()
+  const cached = workspaceTreeCache.get(resolved)
+  if (cached && (now - cached.at) <= WORKSPACE_TREE_CACHE_TTL_MS) {
+    return cached.tree
+  }
+
+  const running = workspaceTreeInFlight.get(resolved)
+  if (running) return running
+
+  const state: WorkspaceTreeReadState = { visited: 0, truncated: false }
+  const task = readWorkspaceTree(resolved, '', 0, WORKSPACE_TREE_MAX_DEPTH, state)
+    .then((tree) => {
+      workspaceTreeCache.set(resolved, { at: Date.now(), tree })
+      if (state.truncated) {
+        log('WORKSPACE_TREE_TRUNCATED', {
+          workspace: resolved,
+          maxDepth: WORKSPACE_TREE_MAX_DEPTH,
+          maxEntries: WORKSPACE_TREE_MAX_ENTRIES,
+        })
+      }
+      return tree
+    })
+    .finally(() => {
+      workspaceTreeInFlight.delete(resolved)
+    })
+
+  workspaceTreeInFlight.set(resolved, task)
+  return task
 }
 
 /* ------------------------------------------------------------------ */
@@ -329,9 +573,9 @@ let watchDebounce: ReturnType<typeof setTimeout> | null = null
 
 function startWatching(cwd: string, win: BrowserWindow) {
   stopWatching()
-  activeWatchPath = cwd
+  activeWatchPath = nodePath.resolve(cwd)
   try {
-    activeWatcher = fsWatch(cwd, { recursive: true }, (_eventType, filename) => {
+    activeWatcher = fsWatch(activeWatchPath, { recursive: true }, (_eventType, filename) => {
       // 过滤掉不需要关注的目录变化
       if (filename) {
         const top = filename.toString().split(/[/\\]/)[0]
@@ -341,10 +585,11 @@ function startWatching(cwd: string, win: BrowserWindow) {
       if (watchDebounce) clearTimeout(watchDebounce)
       watchDebounce = setTimeout(() => {
         watchDebounce = null
+        if (activeWatchPath) workspaceTreeCache.delete(activeWatchPath)
         if (!win.isDestroyed()) {
           win.webContents.send(IpcChannel.WORKSPACE_CHANGED)
         }
-      }, 500)
+      }, 160)
     })
   } catch (err) {
     console.error('工作区文件监听启动失败:', err)
@@ -399,6 +644,42 @@ function isBinaryBuffer(buf: Buffer): boolean {
   return false
 }
 
+const FILE_READ_HARD_LIMIT = 5 * 1024 * 1024
+const LARGE_TEXT_PREVIEW_BYTES = 1024 * 1024
+const LARGE_TEXT_PREVIEW_EXTS = new Set([
+  '.log', '.txt', '.md', '.mdx', '.json', '.jsonl', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf',
+  '.xml', '.csv', '.tsv', '.sql', '.sh', '.bash', '.zsh', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+  '.py', '.go', '.rs', '.java', '.c', '.h', '.cpp', '.hpp', '.php', '.rb', '.swift', '.kt', '.kts',
+  '.env',
+])
+
+function isLargeTextPreviewPath(filePath: string): boolean {
+  const ext = nodePath.extname(filePath).toLowerCase()
+  if (LARGE_TEXT_PREVIEW_EXTS.has(ext)) return true
+  const base = nodePath.basename(filePath).toLowerCase()
+  return base === '.env' || base.endsWith('.log')
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${bytes} B`
+}
+
+async function readUtf8Tail(filePath: string, size: number, maxBytes: number): Promise<string> {
+  const start = Math.max(0, size - maxBytes)
+  const length = Math.max(0, size - start)
+  if (length === 0) return ''
+  const fh = await fs.open(filePath, 'r')
+  try {
+    const buf = Buffer.alloc(length)
+    await fh.read(buf, 0, length, start)
+    return buf.toString('utf-8')
+  } finally {
+    await fh.close()
+  }
+}
+
 function imageMimeFromPath(filePath: string): string | null {
   const ext = nodePath.extname(filePath).toLowerCase()
   const m: Record<string, string> = {
@@ -417,13 +698,18 @@ function imageMimeFromPath(filePath: string): string | null {
 /** 读取文件内容，返回文本内容或标记为二进制（图片可附带 dataUrl 预览） */
 async function handleFileRead(
   _event: IpcMainInvokeEvent, filePath: string,
-): Promise<{ content: string | null; size: number; isBinary: boolean; dataUrl?: string }> {
+): Promise<{ content: string | null; size: number; isBinary: boolean; dataUrl?: string; truncated?: boolean }> {
   const stat = await fs.stat(filePath)
   const size = stat.size
   const imageMime = imageMimeFromPath(filePath)
 
   // 超过 5MB 不读取内容
-  if (size > 5 * 1024 * 1024) {
+  if (size > FILE_READ_HARD_LIMIT) {
+    if (!imageMime && isLargeTextPreviewPath(filePath)) {
+      const preview = await readUtf8Tail(filePath, size, LARGE_TEXT_PREVIEW_BYTES)
+      const notice = `[文件较大，已加载尾部预览：${formatBytes(LARGE_TEXT_PREVIEW_BYTES)} / ${formatBytes(size)}]\n\n`
+      return { content: `${notice}${preview}`, size, isBinary: false, truncated: true }
+    }
     return { content: null, size, isBinary: true }
   }
 
@@ -556,7 +842,7 @@ export function registerIpcHandlers() {
   ipcMain.on(IpcChannel.TERMINAL_KILL, handleTerminalKill)
 
   // 工作区目录树
-  ipcMain.handle(IpcChannel.WORKSPACE_TREE, (_e, cwd: string) => readWorkspaceTree(cwd))
+  ipcMain.handle(IpcChannel.WORKSPACE_TREE, (_e, cwd: string) => getWorkspaceTree(cwd))
 
   // 工作区文件监听
   ipcMain.on(IpcChannel.WORKSPACE_WATCH, (e, cwd: string) => {
@@ -569,7 +855,11 @@ export function registerIpcHandlers() {
 
   // Git 版本控制
   ipcMain.handle(IpcChannel.GIT_LOG, (_e, cwd: string) => gitLog(cwd))
+  ipcMain.handle(IpcChannel.GIT_STATUS, (_e, cwd: string) => gitStatus(cwd))
+  ipcMain.handle(IpcChannel.GIT_FILE_CHANGE, (_e, cwd: string, filePath: string) => gitFileChange(cwd, filePath))
   ipcMain.handle(IpcChannel.GIT_COMMIT, (_e, cwd: string, msg: string) => gitCommit(cwd, msg))
+  ipcMain.handle(IpcChannel.GIT_STAGE_FILES, (_e, cwd: string, filePaths: string[]) => gitStageFiles(cwd, filePaths))
+  ipcMain.handle(IpcChannel.GIT_STAGE_ALL, (_e, cwd: string) => gitStageAll(cwd))
   ipcMain.handle(IpcChannel.GIT_ROLLBACK, (_e, cwd: string, hash: string) => gitRollback(cwd, hash))
   ipcMain.handle(IpcChannel.GIT_COMMIT_FILES, (_e, cwd: string, hash: string) => gitCommitFiles(cwd, hash))
 
@@ -590,6 +880,8 @@ export function registerIpcHandlers() {
 
   // 项目笔记/记忆
   ipcMain.handle(IpcChannel.NOTES_LIST, (_e, workspace: string, projectId?: string) => listNotes(workspace, projectId))
+  ipcMain.handle(IpcChannel.NOTES_TASK_MEMORIES_LIST, (_e, workspace: string, projectId?: string) => listTaskMemories(workspace, projectId))
+  ipcMain.handle(IpcChannel.NOTES_TASK_MEMORY_DELETE, (_e, workspace: string, memoryId: string, projectId?: string) => deleteTaskMemory(workspace, memoryId, projectId))
   ipcMain.handle(IpcChannel.NOTES_SAVE, (_e, workspace: string, note: ProjectNote, projectId?: string) => saveNote(workspace, note, projectId))
   ipcMain.handle(IpcChannel.NOTES_DELETE, (_e, workspace: string, noteId: string, projectId?: string) => deleteNote(workspace, noteId, projectId))
 

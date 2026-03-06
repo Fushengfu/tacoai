@@ -1,0 +1,178 @@
+/* ------------------------------------------------------------------ */
+/*  Terminal panel                                                      */
+/* ------------------------------------------------------------------ */
+
+.conversation.with-terminal {
+  flex: 1;
+  min-height: 120px;
+}
+
+.terminal-panel {
+  flex: 0 0 auto;
+  height: 280px;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  background: #0d0e11;
+  min-height: 0;
+}
+
+.terminal-panel-resize-handle {
+  height: 10px;
+  cursor: ns-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.terminal-panel-resize-line {
+  width: 56px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  transition: background 0.15s ease, width 0.15s ease;
+}
+
+.terminal-panel-resize-handle:hover .terminal-panel-resize-line {
+  width: 72px;
+  background: rgba(86, 217, 197, 0.55);
+}
+
+.terminal-panel-resize-handle:active .terminal-panel-resize-line {
+  width: 86px;
+  background: rgba(86, 217, 197, 0.85);
+}
+
+.terminal-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.terminal-panel-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.5px;
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+}
+
+.terminal-panel-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.terminal-panel-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  font-size: 13px;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: 0.15s ease;
+}
+
+.terminal-panel-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.terminal-panel-body {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 8px;
+}
+
+/* xterm.js 容器适配 */
+.terminal-panel-body .xterm {
+  height: 100%;
+}
+
+.terminal-panel-body .xterm-viewport {
+  scrollbar-width: thin;
+}
+
+/* 终端按钮样式 */
+.terminal-toggle {
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 11px;
+  letter-spacing: 0;
+}
+
+.terminal-toggle.active {
+  background: rgba(86, 217, 197, 0.15);
+  color: var(--accent);
+  border-color: rgba(86, 217, 197, 0.3);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Responsive                                                         */
+/* ------------------------------------------------------------------ */
+
+@media (max-width: 600px) {
+  .app-shell {
+    grid-template-columns: 1fr !important;
+  }
+
+  .sidebar,
+  .resize-handle,
+  .detail-panel {
+    display: none;
+  }
+
+  .composer {
+    left: 20px;
+    right: 20px;
+  }
+}
+
+/* ==================================================================== */
+/*  highlight.js — 深色主题 (GitHub Dark 风格)                            */
+/* ==================================================================== */
+
+.hljs { color: #e6edf3; }
+.hljs-keyword { color: #ff7b72; }
+.hljs-title,
+.hljs-title.function_,
+.hljs-title.class_ { color: #d2a8ff; }
+.hljs-string,
+.hljs-template-variable { color: #a5d6ff; }
+.hljs-number { color: #79c0ff; }
+.hljs-literal { color: #79c0ff; }
+.hljs-built_in { color: #ffa657; }
+.hljs-comment,
+.hljs-doctag { color: #8b949e; font-style: italic; }
+.hljs-type { color: #7ee787; }
+.hljs-params { color: #e6edf3; }
+.hljs-meta,
+.hljs-meta .hljs-keyword { color: #ffa657; }
+.hljs-attr { color: #79c0ff; }
+.hljs-variable,
+.hljs-template-tag { color: #ffa657; }
+.hljs-tag { color: #7ee787; }
+.hljs-name { color: #7ee787; }
+.hljs-selector-class { color: #7ee787; }
+.hljs-selector-id { color: #ffa657; }
+.hljs-selector-tag { color: #7ee787; }
+.hljs-property { color: #79c0ff; }
+.hljs-attribute { color: #79c0ff; }
+.hljs-regexp { color: #a5d6ff; }
+.hljs-symbol { color: #79c0ff; }
+.hljs-addition { color: #aff5b4; background: rgba(63, 185, 80, 0.15); }
+.hljs-deletion { color: #ffa198; background: rgba(248, 81, 73, 0.15); }
+.hljs-section { color: #d2a8ff; font-weight: 700; }
+.hljs-subst { color: #e6edf3; }
+.hljs-punctuation { color: #8b949e; }
+.hljs-operator { color: #ff7b72; }
+.hljs-link { color: #a5d6ff; text-decoration: underline; }
+

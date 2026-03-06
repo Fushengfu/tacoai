@@ -1,5 +1,6 @@
 import { app } from 'electron'
 import http from 'node:http'
+import type { Dirent } from 'node:fs'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { WebSocketServer, type WebSocket } from 'ws'
@@ -10,8 +11,11 @@ import type {
   MobileBridgeConfig,
   MobileBridgeConfirmData,
   MobileBridgeContextSnapshot,
+  MobileBridgeMessage,
   MobileBridgeNewSessionData,
+  MobileBridgeSessionContext,
   MobileBridgeSelectData,
+  MobileBridgeThreadContext,
   FileTreeEntry,
 } from '../shared/ipc'
 import { logError, logInfo } from './logger'
@@ -177,11 +181,11 @@ function sanitizeContext(raw: MobileBridgeContextSnapshot): MobileBridgeContextS
     }))
     : []
   const safeThreads = Array.isArray(raw?.threads) ? raw.threads : []
-  const threads = safeThreads.map((thread) => {
+  const threads: MobileBridgeThreadContext[] = safeThreads.map((thread): MobileBridgeThreadContext => {
     const sessions = Array.isArray(thread.sessions) ? thread.sessions : []
-    const safeSessions = sessions.map((session) => {
+    const safeSessions: MobileBridgeSessionContext[] = sessions.map((session): MobileBridgeSessionContext => {
       const messages = Array.isArray(session.messages) ? session.messages : []
-      const safeMessages = messages.map((msg) => {
+      const safeMessages: MobileBridgeMessage[] = messages.map((msg): MobileBridgeMessage => {
         const rawSteps = Array.isArray(msg.agentSteps) ? msg.agentSteps : []
         const safeSteps = rawSteps.map((step) => {
           const rawToolCalls = Array.isArray(step.toolCalls) ? step.toolCalls : []
@@ -192,12 +196,16 @@ function sanitizeContext(raw: MobileBridgeContextSnapshot): MobileBridgeContextS
             thinking: fullText(step.thinking),
             status: sanitizeAgentStepStatus(step.status),
             confirmId: trimText(step.confirmId, 128) || undefined,
-            risks: rawRisks.map((risk) => ({
-              toolName: trimText(risk.toolName, 128),
-              reason: fullText(risk.reason),
-              detail: fullText(risk.detail),
-              level: risk.level === 'safe' || risk.level === 'danger' ? risk.level : 'warning',
-            })),
+            risks: rawRisks.map((risk) => {
+              const level: 'safe' | 'warning' | 'danger' =
+                risk.level === 'safe' || risk.level === 'danger' ? risk.level : 'warning'
+              return {
+                toolName: trimText(risk.toolName, 128),
+                reason: fullText(risk.reason),
+                detail: fullText(risk.detail),
+                level,
+              }
+            }),
             toolCalls: rawToolCalls.map((tc) => ({
               id: trimText(tc.id, 128),
               name: trimText(tc.name, 128),
@@ -323,11 +331,31 @@ function handleSelectRequest(req: http.IncomingMessage, res: http.ServerResponse
     writeJson(res, 400, { ok: false, error: 'threadId or sessionId or provider or mode is required' })
     return
   }
+  const threadById = threadId
+    ? latestContext.threads.find((thread) => thread.threadId === threadId)
+    : undefined
+  const threadBySession = sessionId
+    ? latestContext.threads.find((thread) => thread.sessions.some((session) => session.sessionId === sessionId))
+    : undefined
+  if (threadId && !threadById && !threadBySession) {
+    writeJson(res, 404, { ok: false, error: `thread not found: ${threadId}` })
+    return
+  }
+  if (sessionId && !threadBySession) {
+    writeJson(res, 404, { ok: false, error: `session not found: ${sessionId}` })
+    return
+  }
+  if (threadById && threadBySession && threadById.threadId !== threadBySession.threadId) {
+    writeJson(res, 409, { ok: false, error: 'threadId and sessionId mismatch' })
+    return
+  }
+  const resolvedThreadId = threadId || threadBySession?.threadId
+
   const select: MobileBridgeSelectData = {
     id: `mobile-select-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     receivedAt: Date.now(),
     remoteAddr: req.socket.remoteAddress,
-    threadId,
+    threadId: resolvedThreadId,
     sessionId,
     provider,
     mode,
@@ -510,6 +538,42 @@ function isBinaryBuffer(buf: Buffer): boolean {
   return false
 }
 
+const WORKSPACE_FILE_READ_HARD_LIMIT = 5 * 1024 * 1024
+const WORKSPACE_LARGE_TEXT_PREVIEW_BYTES = 1024 * 1024
+const WORKSPACE_LARGE_TEXT_PREVIEW_EXTS = new Set([
+  '.log', '.txt', '.md', '.mdx', '.json', '.jsonl', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf',
+  '.xml', '.csv', '.tsv', '.sql', '.sh', '.bash', '.zsh', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+  '.py', '.go', '.rs', '.java', '.c', '.h', '.cpp', '.hpp', '.php', '.rb', '.swift', '.kt', '.kts',
+  '.env',
+])
+
+function isLargeTextPreviewPath(filePath: string): boolean {
+  const ext = path.extname(filePath).toLowerCase()
+  if (WORKSPACE_LARGE_TEXT_PREVIEW_EXTS.has(ext)) return true
+  const base = path.basename(filePath).toLowerCase()
+  return base === '.env' || base.endsWith('.log')
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${bytes} B`
+}
+
+async function readUtf8Tail(filePath: string, size: number, maxBytes: number): Promise<string> {
+  const start = Math.max(0, size - maxBytes)
+  const length = Math.max(0, size - start)
+  if (length === 0) return ''
+  const fh = await fs.open(filePath, 'r')
+  try {
+    const buf = Buffer.alloc(length)
+    await fh.read(buf, 0, length, start)
+    return buf.toString('utf-8')
+  } finally {
+    await fh.close()
+  }
+}
+
 async function readWorkspaceTree(
   workspaceRoot: string,
   dir: string,
@@ -518,9 +582,9 @@ async function readWorkspaceTree(
   counter: { value: number },
 ): Promise<FileTreeEntry[]> {
   if (depth > WORKSPACE_TREE_MAX_DEPTH || counter.value >= WORKSPACE_TREE_MAX_ENTRIES) return []
-  let entries: Awaited<ReturnType<typeof fs.readdir>>
+  let entries: Dirent<string>[]
   try {
-    entries = await fs.readdir(dir, { withFileTypes: true })
+    entries = await fs.readdir(dir, { withFileTypes: true, encoding: 'utf8' })
   } catch {
     return []
   }
@@ -603,7 +667,19 @@ async function handleWorkspaceFileReadRequest(_req: http.IncomingMessage, res: h
       '.svg': 'image/svg+xml',
     }
     const mime = imageMime[ext]
-    if (size > 5 * 1024 * 1024) {
+    if (size > WORKSPACE_FILE_READ_HARD_LIMIT) {
+      if (!mime && isLargeTextPreviewPath(resolved.absolutePath)) {
+        const preview = await readUtf8Tail(resolved.absolutePath, size, WORKSPACE_LARGE_TEXT_PREVIEW_BYTES)
+        writeJson(res, 200, {
+          ok: true,
+          path: resolved.relativePath,
+          isBinary: false,
+          size,
+          content: `[文件较大，已加载尾部预览：${formatBytes(WORKSPACE_LARGE_TEXT_PREVIEW_BYTES)} / ${formatBytes(size)}]\n\n${preview}`,
+          truncated: true,
+        })
+        return
+      }
       writeJson(res, 200, {
         ok: true,
         path: resolved.relativePath,
@@ -891,12 +967,10 @@ async function stopServer(): Promise<void> {
     try { client.close() } catch { /* noop */ }
   }
   wsClients.clear()
-  if (wsServer) {
-    await new Promise<void>((resolve) => {
-      const target = wsServer
-      wsServer = null
-      target.close(() => resolve())
-    })
+  const targetWs = wsServer
+  wsServer = null
+  if (targetWs) {
+    await new Promise<void>((resolve) => targetWs.close(() => resolve()))
   }
   if (!server) return
   const target = server

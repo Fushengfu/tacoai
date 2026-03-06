@@ -1,4 +1,5 @@
 export type ThreadMode = 'chat' | 'agent'
+export type ThemeMode = 'dark' | 'ocean' | 'graphite'
 
 /** 项目内的一个会话 */
 export type Session = {
@@ -11,6 +12,8 @@ export type Session = {
 export type Thread = {
   id: string
   title: string
+  /** 用户手动改名后锁定，自动命名不再覆盖 */
+  titleLocked?: boolean
   updatedAt: number
   /** 该项目使用的模型 */
   provider?: ProviderId
@@ -18,6 +21,8 @@ export type Thread = {
   mode?: ThreadMode
   /** Agent 模式的工作空间目录 */
   workspace?: string
+  /** 当前项目的自定义规则，会自动注入到 system prompt */
+  projectRules?: string
   /** 项目内的所有会话 */
   sessions: Session[]
   /** 当前激活的会话 ID */
@@ -104,6 +109,13 @@ export type ActivePlan = {
   endedAt?: number
 }
 
+/** 单轮任务耗时（从用户发起到本轮 assistant 完成/失败/停止） */
+export type TaskTiming = {
+  startedAt: number
+  endedAt?: number
+  durationMs?: number
+}
+
 /** 用户附带的图片 */
 export type AttachedImage = {
   /** 唯一 ID */
@@ -126,6 +138,8 @@ export type ChatMsg = {
   gitCommitHash?: string
   /** 活跃的执行计划（实时追踪步骤状态） */
   activePlan?: ActivePlan
+  /** 单轮任务耗时（仅 assistant 消息） */
+  taskTiming?: TaskTiming
   /** 兼容旧数据 */
   toolCalls?: ToolCallInfo[]
   toolResults?: ToolResultInfo[]

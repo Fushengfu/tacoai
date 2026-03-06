@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ChatMsg, FileChangeInfo, FileChangeStatus, GitVersionCommit, ProviderId, ThreadMode } from './types'
-import type { EditorId, FileTreeEntry, BrowserConsoleLevel, MobileBridgeContextSnapshot } from '../shared/ipc'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, useTransition } from 'react'
+import type { ChatMsg, FileChangeInfo, FileChangeStatus, GitVersionCommit, ProviderId, ThemeMode, ThreadMode } from './types'
+import type { EditorId, FileTreeEntry, BrowserConsoleLevel, MobileBridgeContextSnapshot, GitWorkingTreeStatus } from '../shared/ipc'
 import { providers, estimateTokens, buildSystemPrompt, resolveProviderDisplayLabel, resolveProviderMaxTokens } from './constants'
 import { loadJson, saveJson } from './lib/storage'
 import { useThreads } from './hooks/useThreads'
@@ -14,6 +14,16 @@ import { SettingsPage } from './components/SettingsModal'
 import { useResize } from './hooks/useResize'
 
 const DEV_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1'])
+const SIDEBAR_MIN_WIDTH = 220
+const SIDEBAR_DEFAULT_RATIO = 0.2
+const CHAT_MIN_WIDTH = 640
+const DETAIL_DEFAULT_WIDTH = 340
+const DETAIL_MIN_WIDTH = 260
+const DETAIL_MAX_WIDTH = 700
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
+}
 
 function isPrivateIpv4(hostname: string): boolean {
   const m = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
@@ -91,6 +101,14 @@ function collectMessageScreenshotPaths(msg: ChatMsg): string[] {
   return Array.from(paths)
 }
 
+function buildMobileBridgeSnapshotDigest(snapshot: MobileBridgeContextSnapshot): string {
+  // 与主进程保持一致：去重时忽略顶层 updatedAt，避免时间戳导致的伪变化。
+  return JSON.stringify({
+    ...snapshot,
+    updatedAt: 0,
+  })
+}
+
 function normalizeSlashPath(input: string): string {
   return String(input ?? '').trim().replace(/[\\/]+/g, '/').replace(/\/+/g, '/')
 }
@@ -131,16 +149,23 @@ export default function App() {
   const chat = useChat()
   const providerSettings = useProviderSettings()
   const guiPlusSettings = useGuiPlusSettings()
-  const { width: detailWidth, handleMouseDown: handleResizeMouseDown } = useResize(
-    340, 260, 700, 'taco.detailPanelWidth'
+  const [, startPanelStateTransition] = useTransition()
+  const { width: detailWidth, setWidth: setDetailWidth, handleMouseDown: handleResizeMouseDown } = useResize(
+    DETAIL_DEFAULT_WIDTH, DETAIL_MIN_WIDTH, DETAIL_MAX_WIDTH, 'taco.detailPanelWidth', 'right'
   )
 
   /* ---- local UI state ---- */
   const [draft, setDraft] = useState('')
   const [showSettings, setShowSettings] = useState(false)
+  const [sidebarVisible, setSidebarVisible] = useState<boolean>(() => {
+    const saved = localStorage.getItem('taco.sidebarVisible')
+    return saved === null ? true : saved === 'true'
+  })
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   /** 当前在中间区域查看/编辑的文件（非变更文件） */
   const [viewingFile, setViewingFile] = useState<string | null>(null)
+  /** 打开文件后需要定位到的行列（供编辑器跳转定义使用） */
+  const [viewingSelection, setViewingSelection] = useState<{ line: number; column: number } | null>(null)
   const [showTerminal, setShowTerminal] = useState(false)
   /** 外部浏览器窗口状态 Map<appId, url> */
   const [browserWindows, setBrowserWindows] = useState<Map<string, string>>(new Map())
@@ -162,14 +187,54 @@ export default function App() {
   const browserErrorCandidatesRef = useRef<BrowserErrorCandidate[]>([])
   /** doSend 的 ref，避免 useEffect 闭包捕获旧引用 */
   type MobileTarget = { threadId?: string; sessionId?: string; provider?: ProviderId; mode?: ThreadMode }
-  const doSendRef = useRef<(content: string, images?: import('../types').AttachedImage[], target?: MobileTarget) => void>(() => {})
+  const doSendRef = useRef<(content: string, images?: import('./types').AttachedImage[], target?: MobileTarget) => void>(() => {})
+  const mobileSyncTimerRef = useRef<number | null>(null)
+  const lastMobileSnapshotDigestRef = useRef('')
   /** 中间区域当前视图：chat / settings */
   type MiddleView = 'chat' | 'settings'
   const [middleView, setMiddleView] = useState<MiddleView>('chat')
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
+    const saved = String(localStorage.getItem('taco.themeMode') || '').trim()
+    if (saved === 'ocean' || saved === 'graphite' || saved === 'dark') return saved
+    return 'dark'
+  })
   const [editor, setEditor] = useState<EditorId>(() =>
     (localStorage.getItem('taco.editor') as EditorId) || 'cursor'
   )
+  const [sidebarWidthRatio, setSidebarWidthRatio] = useState<number>(() => {
+    const savedRatio = Number(localStorage.getItem('taco.sidebarRatio') ?? '')
+    if (Number.isFinite(savedRatio) && savedRatio > 0) {
+      return savedRatio
+    }
+    // 兼容历史像素配置
+    const savedWidth = Number(localStorage.getItem('taco.sidebarWidth') ?? '')
+    if (Number.isFinite(savedWidth) && savedWidth > 0) {
+      const viewport = typeof window === 'undefined' ? 1440 : window.innerWidth
+      const fallbackAreaWidth = Math.max(1, viewport - 340)
+      return savedWidth / fallbackAreaWidth
+    }
+    return SIDEBAR_DEFAULT_RATIO
+  })
+  const [appShellWidth, setAppShellWidth] = useState<number>(() =>
+    typeof window === 'undefined' ? 1440 : window.innerWidth
+  )
+  const appShellRef = useRef<HTMLDivElement | null>(null)
+  const detailWidthRef = useRef(detailWidth)
   const scrollRef = useRef<HTMLDivElement>(null)
+  /** 手动编辑产生的文件变更（按 session 隔离），用于右侧变更面板实时同步 */
+  const [manualFileChangesBySession, setManualFileChangesBySession] = useState<Record<string, FileChangeInfo[]>>({})
+  /**
+   * 每个会话在最近一次切换 workspace 时的消息基线下标。
+   * 仅展示基线之后产生的 agent 文件变更，避免跨目录历史变更污染当前面板。
+   */
+  const [changeStartIndexBySession, setChangeStartIndexBySession] = useState<Record<string, number>>({})
+  const lastWorkspaceBySessionRef = useRef<Record<string, string>>({})
+  // 移动端桥接监听采用“单次订阅 + ref 读取最新状态”，避免高频重渲染导致事件丢失。
+  const threadStoreRef = useRef(threadStore)
+  const providerSettingsRef = useRef(providerSettings)
+  const chatRef = useRef(chat)
+  const activeThreadIdRef = useRef('')
+  const activeSessionIdRef = useRef('')
 
   const scoreBrowserError = useCallback((entry: BrowserConsoleEntry): number => {
     let score = 0
@@ -196,11 +261,6 @@ export default function App() {
     browserErrorCandidatesRef.current = ranked
   }, [scoreBrowserError])
 
-  function handleEditorChange(id: EditorId) {
-    setEditor(id)
-    localStorage.setItem('taco.editor', id)
-  }
-
   /* ---- derived ---- */
   const tid = threadStore.activeThreadId                           // 当前项目 ID
   const sessionId = threadStore.activeThread?.activeSessionId ?? '' // 当前会话 ID
@@ -211,13 +271,32 @@ export default function App() {
   const sessionSending = chat.isSending(sessionId)
   const sessionStreamingContent = chat.getStreamingContent(sessionId)
   const sessionQueue = chat.getQueue(sessionId)
+  const activeTaskStartedAt = chat.getActiveTaskStartedAt(sessionId)
 
   // 当前项目的模式和工作空间
   const currentMode: ThreadMode = threadStore.activeThread?.mode ?? 'chat'
+  const currentProjectRules = threadStore.activeThread?.projectRules ?? ''
 
   // Agent 模式下文本已在消息内实时更新，不需要独立的流式气泡
   const showStreamBubble = sessionSending && currentMode !== 'agent'
   const currentWorkspace: string = threadStore.activeThread?.workspace ?? ''
+
+  /** 将相对路径解析为绝对路径 */
+  const resolveFilePath = useCallback((filePath: string) => {
+    // 如果已经是绝对路径则直接返回
+    if (filePath.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(filePath) || filePath.startsWith('\\\\')) {
+      return filePath
+    }
+    // 否则拼接工作空间路径
+    if (currentWorkspace) {
+      const base = currentWorkspace.replace(/[\\/]+$/, '')
+      const rel = normalizeSlashPath(filePath).replace(/^\.\//, '')
+      const isWindowsWorkspace = /[a-zA-Z]:[\\/]/.test(base) || base.includes('\\')
+      if (isWindowsWorkspace) return `${base}\\${rel.replace(/\//g, '\\')}`
+      return `${base}/${rel}`
+    }
+    return filePath
+  }, [currentWorkspace])
 
   // 当前项目使用的 provider（项目级 > 全局默认）
   const currentProvider: ProviderId =
@@ -227,6 +306,14 @@ export default function App() {
     providerSettings.providerForms[currentProvider]
   )
 
+  useEffect(() => {
+    threadStoreRef.current = threadStore
+    providerSettingsRef.current = providerSettings
+    chatRef.current = chat
+    activeThreadIdRef.current = tid
+    activeSessionIdRef.current = sessionId
+  }, [threadStore, providerSettings, chat, tid, sessionId])
+
   // 上下文窗口使用量：优先使用模型真实 usage.total_tokens，缺失时回退本地估算
   const estimatedTokens = estimateTokens(
     buildSystemPrompt({
@@ -234,6 +321,7 @@ export default function App() {
       workspace: currentWorkspace,
       provider: currentProvider,
       model: providerSettings.providerForms[currentProvider]?.model,
+      projectRules: currentProjectRules,
     })
   ) +
     messages.reduce((sum, m) => sum + estimateTokens(m.content), 0)
@@ -241,6 +329,126 @@ export default function App() {
   const usedTokens = typeof usageTotalTokens === 'number' ? usageTotalTokens : estimatedTokens
   const maxTokens = resolveProviderMaxTokens(currentProvider, providerSettings.providerForms[currentProvider])
   const contextPercent = Math.min(Math.round((usedTokens / maxTokens) * 100), 100)
+  const projectTokenStats = tid ? chat.getProjectTokenStats(tid) : undefined
+
+  useEffect(() => {
+    localStorage.setItem('taco.themeMode', themeMode)
+    document.documentElement.setAttribute('data-theme', themeMode)
+  }, [themeMode])
+
+  useEffect(() => {
+    localStorage.setItem('taco.sidebarVisible', String(sidebarVisible))
+  }, [sidebarVisible])
+
+  useEffect(() => {
+    const normalized = Number.isFinite(sidebarWidthRatio) ? sidebarWidthRatio : SIDEBAR_DEFAULT_RATIO
+    localStorage.setItem('taco.sidebarRatio', String(normalized))
+  }, [sidebarWidthRatio])
+
+  useEffect(() => {
+    const element = appShellRef.current
+    if (!element) return
+
+    const updateWidth = () => {
+      const measured = element.clientWidth
+      if (Number.isFinite(measured) && measured > 0) {
+        setAppShellWidth(measured)
+      } else {
+        setAppShellWidth(window.innerWidth)
+      }
+    }
+
+    updateWidth()
+    const observer = new ResizeObserver(() => updateWidth())
+    observer.observe(element)
+
+    window.addEventListener('resize', updateWidth)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', updateWidth)
+    }
+  }, [])
+
+  const detailAutoMaxWidth = clampNumber(
+    appShellWidth - SIDEBAR_MIN_WIDTH - CHAT_MIN_WIDTH,
+    DETAIL_MIN_WIDTH,
+    DETAIL_MAX_WIDTH,
+  )
+  const effectiveDetailWidth = clampNumber(detailWidth, DETAIL_MIN_WIDTH, detailAutoMaxWidth)
+
+  useEffect(() => {
+    setDetailWidth((prev) => {
+      const next = clampNumber(prev, DETAIL_MIN_WIDTH, detailAutoMaxWidth)
+      return Math.abs(next - prev) < 0.5 ? prev : next
+    })
+  }, [detailAutoMaxWidth, setDetailWidth])
+
+  useEffect(() => {
+    detailWidthRef.current = effectiveDetailWidth
+  }, [effectiveDetailWidth])
+
+  const sidebarAreaWidth = Math.max(0, appShellWidth - effectiveDetailWidth)
+  const sidebarAutoMinWidth = Math.min(SIDEBAR_MIN_WIDTH, sidebarAreaWidth)
+  const sidebarAutoMaxWidth = Math.max(sidebarAutoMinWidth, sidebarAreaWidth - CHAT_MIN_WIDTH)
+  const sidebarMinRatio = sidebarAreaWidth > 0 ? (sidebarAutoMinWidth / sidebarAreaWidth) : 0
+  const sidebarMaxRatio = sidebarAreaWidth > 0
+    ? clampNumber(sidebarAutoMaxWidth / sidebarAreaWidth, sidebarMinRatio, 1)
+    : 0
+
+  useEffect(() => {
+    setSidebarWidthRatio((prev) => {
+      const safePrev = Number.isFinite(prev) ? prev : SIDEBAR_DEFAULT_RATIO
+      const next = clampNumber(safePrev, sidebarMinRatio, sidebarMaxRatio)
+      return Math.abs(next - safePrev) < 0.0001 ? safePrev : next
+    })
+  }, [sidebarMinRatio, sidebarMaxRatio])
+
+  const handleSidebarResizeMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const getAreaWidth = () => {
+      const shellWidth = appShellRef.current?.clientWidth ?? appShellWidth
+      return Math.max(1, shellWidth - detailWidthRef.current)
+    }
+    const startAreaWidth = getAreaWidth()
+    const startMinWidth = Math.min(SIDEBAR_MIN_WIDTH, startAreaWidth)
+    const startMaxWidth = Math.max(startMinWidth, startAreaWidth - CHAT_MIN_WIDTH)
+    const startMinRatio = startAreaWidth > 0 ? (startMinWidth / startAreaWidth) : 0
+    const startMaxRatio = startAreaWidth > 0
+      ? clampNumber(startMaxWidth / startAreaWidth, startMinRatio, 1)
+      : startMinRatio
+    const startRatio = clampNumber(sidebarWidthRatio, startMinRatio, startMaxRatio)
+    const startWidth = startRatio * startAreaWidth
+
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    document.body.classList.add('is-resizing')
+
+    const handleMouseMove = (ev: MouseEvent) => {
+      const dx = ev.clientX - startX
+      const areaWidth = getAreaWidth()
+      const dragMinWidth = Math.min(SIDEBAR_MIN_WIDTH, areaWidth)
+      const dragMaxWidth = Math.max(dragMinWidth, areaWidth - CHAT_MIN_WIDTH)
+      const dragMinRatio = areaWidth > 0 ? (dragMinWidth / areaWidth) : 0
+      const dragMaxRatio = areaWidth > 0
+        ? clampNumber(dragMaxWidth / areaWidth, dragMinRatio, 1)
+        : dragMinRatio
+      const nextWidth = clampNumber(startWidth + dx, dragMinWidth, dragMaxWidth)
+      const nextRatio = areaWidth > 0 ? (nextWidth / areaWidth) : dragMinRatio
+      setSidebarWidthRatio(clampNumber(nextRatio, dragMinRatio, dragMaxRatio))
+    }
+
+    const handleMouseUp = () => {
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      document.body.classList.remove('is-resizing')
+    }
+
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp, { once: true })
+  }, [appShellWidth, sidebarWidthRatio])
 
   /** 判断某项目（线程）是否有任何会话正在发送 */
   function isThreadSending(threadId: string): boolean {
@@ -257,10 +465,17 @@ export default function App() {
   }
 
   // Agent 模式：收集所有文件变更（从 agentSteps 的 toolResults 中提取）
-  const fileChanges: FileChangeInfo[] = useMemo(() => {
+  const changeStartIndex = useMemo(() => {
+    const raw = changeStartIndexBySession[sessionId] ?? 0
+    if (!Number.isFinite(raw) || raw < 0) return 0
+    return raw > messages.length ? messages.length : raw
+  }, [changeStartIndexBySession, sessionId, messages.length])
+
+  const agentFileChanges: FileChangeInfo[] = useMemo(() => {
     if (currentMode !== 'agent') return []
     const changes: FileChangeInfo[] = []
-    for (const msg of messages) {
+    for (let i = changeStartIndex; i < messages.length; i++) {
+      const msg = messages[i]
       if (!msg.agentSteps) continue
       for (const step of msg.agentSteps) {
         for (const tr of step.toolResults) {
@@ -276,7 +491,19 @@ export default function App() {
       }
     }
     return changes
-  }, [messages, currentMode, currentWorkspace])
+  }, [messages, currentMode, currentWorkspace, changeStartIndex])
+
+  // 当前会话手动编辑变更
+  const manualFileChanges = useMemo(
+    () => manualFileChangesBySession[sessionId] ?? [],
+    [manualFileChangesBySession, sessionId],
+  )
+
+  // 合并 agent 变更与手动编辑变更
+  const fileChanges: FileChangeInfo[] = useMemo(
+    () => [...agentFileChanges, ...manualFileChanges],
+    [agentFileChanges, manualFileChanges],
+  )
 
   // 去重合并：同一文件多次变更 → 保留首次 oldContent + 最终 newContent
   const dedupedFileChanges = useMemo(() => {
@@ -301,66 +528,459 @@ export default function App() {
     )
   }, [fileChanges])
 
+  const [gitWorkingStatus, setGitWorkingStatus] = useState<GitWorkingTreeStatus>({ staged: [], unstaged: [] })
+  const [gitStatusLoaded, setGitStatusLoaded] = useState(false)
+
+  const gitStagedFiles = useMemo(() => {
+    const seen = new Set<string>()
+    for (const filePath of gitWorkingStatus.staged ?? []) {
+      const normalized = normalizeWorkspaceRelativePath(filePath, currentWorkspace)
+      if (normalized) seen.add(normalized)
+    }
+    return Array.from(seen).sort((a, b) => a.localeCompare(b))
+  }, [gitWorkingStatus.staged, currentWorkspace])
+
+  const gitUnstagedFiles = useMemo(() => {
+    const seen = new Set<string>()
+    for (const filePath of gitWorkingStatus.unstaged ?? []) {
+      const normalized = normalizeWorkspaceRelativePath(filePath, currentWorkspace)
+      if (normalized) seen.add(normalized)
+    }
+    return Array.from(seen).sort((a, b) => a.localeCompare(b))
+  }, [gitWorkingStatus.unstaged, currentWorkspace])
+
+  const stagedFileSet = useMemo(() => new Set(gitStagedFiles), [gitStagedFiles])
+  const unstagedFileSet = useMemo(() => new Set(gitUnstagedFiles), [gitUnstagedFiles])
+
+  /**
+   * 实时文件差异覆盖层：
+   * - 已有 deduped 变更：以分片方式从磁盘刷新 newContent
+   * - 仅同步最近一批变更文件，避免全量扫描导致 UI 卡顿
+   * 值为 null 表示该路径当前已无有效差异（用于清理旧快照）。
+   */
+  const [liveFileChangeOverrides, setLiveFileChangeOverrides] = useState<Record<string, FileChangeInfo | null>>({})
+  const liveFileChangeSyncSeqRef = useRef(0)
+  const liveDiffLastRunAtRef = useRef(0)
+  const syncLiveNewContentByPath = useCallback(async () => {
+    const now = Date.now()
+    const minInterval = sessionSending ? 700 : 1500
+    if (now - liveDiffLastRunAtRef.current < minInterval) return
+    liveDiffLastRunAtRef.current = now
+
+    const seq = ++liveFileChangeSyncSeqRef.current
+    if (!currentWorkspace || currentMode !== 'agent') {
+      startPanelStateTransition(() => setLiveFileChangeOverrides({}))
+      return
+    }
+
+    const maxTargets = sessionSending ? 16 : 48
+    const targetChanges = dedupedFileChanges
+      .filter((fc) => String(fc.filePath ?? '').trim().length > 0)
+      .slice(-maxTargets)
+
+    if (targetChanges.length === 0) {
+      startPanelStateTransition(() => setLiveFileChangeOverrides({}))
+      return
+    }
+
+    const next: Record<string, FileChangeInfo | null> = {}
+    const chunkSize = 4
+    for (let i = 0; i < targetChanges.length; i += chunkSize) {
+      if (seq !== liveFileChangeSyncSeqRef.current) return
+      const chunk = targetChanges.slice(i, i + chunkSize)
+      const entries = await Promise.all(chunk.map(async (base) => {
+        const filePath = base.filePath
+        try {
+          const fileResult = await window.taco.file.read(resolveFilePath(filePath))
+          const newContent = fileResult.isBinary
+            ? null
+            : (fileResult.truncated ? base.newContent : fileResult.content)
+          const merged = { ...base, newContent }
+          return [filePath, merged.oldContent === merged.newContent ? null : merged] as const
+        } catch {
+          const merged = { ...base, newContent: null }
+          return [filePath, merged.oldContent === merged.newContent ? null : merged] as const
+        }
+      }))
+      if (seq !== liveFileChangeSyncSeqRef.current) return
+      for (const [filePath, change] of entries) next[filePath] = change
+      // 分片让出主线程，避免目录/变更面板刷新时卡顿
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
+    }
+
+    if (seq !== liveFileChangeSyncSeqRef.current) return
+    startPanelStateTransition(() => setLiveFileChangeOverrides(next))
+  }, [
+    currentWorkspace,
+    currentMode,
+    dedupedFileChanges,
+    sessionSending,
+    resolveFilePath,
+    startPanelStateTransition,
+  ])
+
+  const effectiveFileChanges = useMemo(() => {
+    const result = new Map<string, FileChangeInfo>()
+    for (const change of dedupedFileChanges) {
+      result.set(change.filePath, change)
+    }
+    for (const [filePath, override] of Object.entries(liveFileChangeOverrides)) {
+      if (override === null) {
+        result.delete(filePath)
+      } else {
+        result.set(filePath, override)
+      }
+    }
+    return Array.from(result.values()).filter((fc) => fc.oldContent !== fc.newContent)
+  }, [dedupedFileChanges, liveFileChangeOverrides])
+
+  const changeSyncSignal = useMemo(() => {
+    if (currentMode !== 'agent') return ''
+    const segments: string[] = []
+    for (const msg of messages) {
+      if (!msg.agentSteps) continue
+      for (const step of msg.agentSteps) {
+        for (const result of step.toolResults) {
+          if (!result.fileChange) continue
+          const path = normalizeWorkspaceRelativePath(result.fileChange.filePath, currentWorkspace)
+          if (!path) continue
+          segments.push(`${path}:${result.success ? '1' : '0'}:${result.fileChange.oldContent?.length ?? -1}:${result.fileChange.newContent?.length ?? -1}`)
+        }
+      }
+    }
+    return segments.join('|')
+  }, [messages, currentMode, currentWorkspace])
+
   // 工作区目录树
   const [workspaceTree, setWorkspaceTree] = useState<FileTreeEntry[]>([])
+  const workspaceTreeRefreshSeqRef = useRef(0)
+  const gitLogRefreshSeqRef = useRef(0)
+  const gitStatusRefreshSeqRef = useRef(0)
 
   /** 刷新工作区目录树 */
   const refreshWorkspaceTree = useCallback(async () => {
+    const seq = ++workspaceTreeRefreshSeqRef.current
     if (!currentWorkspace) {
-      setWorkspaceTree([])
+      startPanelStateTransition(() => setWorkspaceTree([]))
       return
     }
     try {
       const tree = await window.taco.workspace.tree(currentWorkspace)
-      setWorkspaceTree(tree)
+      if (seq !== workspaceTreeRefreshSeqRef.current) return
+      startPanelStateTransition(() => setWorkspaceTree(tree))
     } catch (err) {
+      if (seq !== workspaceTreeRefreshSeqRef.current) return
       console.error('读取工作区目录失败:', err)
-      setWorkspaceTree([])
+      startPanelStateTransition(() => setWorkspaceTree([]))
     }
-  }, [currentWorkspace])
-
-  // 切换工作区时：立即刷新目录树 + 启动文件监听
-  useEffect(() => {
-    refreshWorkspaceTree()
-    if (currentWorkspace) {
-      window.taco.workspace.watch(currentWorkspace)
-    }
-    return () => {
-      window.taco.workspace.unwatch()
-    }
-  }, [currentWorkspace, refreshWorkspaceTree])
+  }, [currentWorkspace, startPanelStateTransition])
 
   // Git 版本历史
   const [gitVersions, setGitVersions] = useState<GitVersionCommit[]>([])
 
   /** 刷新 Git 版本历史 */
   const refreshGitLog = useCallback(async () => {
+    const seq = ++gitLogRefreshSeqRef.current
     if (!currentWorkspace || currentMode !== 'agent') {
-      setGitVersions([])
+      startPanelStateTransition(() => setGitVersions([]))
       return
     }
     try {
       const commits = await window.taco.git.log(currentWorkspace)
-      setGitVersions(commits)
+      if (seq !== gitLogRefreshSeqRef.current) return
+      startPanelStateTransition(() => setGitVersions(commits))
     } catch (err) {
+      if (seq !== gitLogRefreshSeqRef.current) return
       console.error('获取 Git 版本历史失败:', err)
-      setGitVersions([])
+      startPanelStateTransition(() => setGitVersions([]))
     }
-  }, [currentWorkspace, currentMode])
+  }, [currentWorkspace, currentMode, startPanelStateTransition])
 
-  // 切换会话/项目 或 消息变化时刷新 Git 日志
+  /** 刷新 Git 工作区状态（已暂存/未暂存） */
+  const refreshGitStatus = useCallback(async () => {
+    const seq = ++gitStatusRefreshSeqRef.current
+    if (!currentWorkspace) {
+      startPanelStateTransition(() => setGitWorkingStatus({ staged: [], unstaged: [] }))
+      setGitStatusLoaded(false)
+      return
+    }
+    try {
+      const status = await window.taco.git.status(currentWorkspace)
+      if (seq !== gitStatusRefreshSeqRef.current) return
+      startPanelStateTransition(() => {
+        setGitWorkingStatus({
+          staged: Array.isArray(status?.staged) ? status.staged : [],
+          unstaged: Array.isArray(status?.unstaged) ? status.unstaged : [],
+        })
+      })
+      setGitStatusLoaded(true)
+    } catch (err) {
+      if (seq !== gitStatusRefreshSeqRef.current) return
+      console.error('获取 Git 工作区状态失败:', err)
+      startPanelStateTransition(() => setGitWorkingStatus({ staged: [], unstaged: [] }))
+      setGitStatusLoaded(true)
+    }
+  }, [currentWorkspace, startPanelStateTransition])
+
+  type ProjectRefreshFlags = {
+    tree: boolean
+    gitStatus: boolean
+    gitLog: boolean
+    liveDiff: boolean
+  }
+
+  const refreshQueueRef = useRef<{
+    pending: ProjectRefreshFlags
+    timer: ReturnType<typeof window.setTimeout> | null
+    running: boolean
+    lastTreeAt: number
+    lastGitStatusAt: number
+    lastGitLogAt: number
+  }>({
+    pending: { tree: false, gitStatus: false, gitLog: false, liveDiff: false },
+    timer: null,
+    running: false,
+    lastTreeAt: 0,
+    lastGitStatusAt: 0,
+    lastGitLogAt: 0,
+  })
+  const refreshFnsRef = useRef({
+    refreshWorkspaceTree,
+    refreshGitStatus,
+    refreshGitLog,
+    syncLiveNewContentByPath,
+    sessionSending,
+  })
   useEffect(() => {
-    refreshGitLog()
-  }, [refreshGitLog, sessionId, messages.length])
+    refreshFnsRef.current = {
+      refreshWorkspaceTree,
+      refreshGitStatus,
+      refreshGitLog,
+      syncLiveNewContentByPath,
+      sessionSending,
+    }
+  }, [refreshWorkspaceTree, refreshGitStatus, refreshGitLog, syncLiveNewContentByPath, sessionSending])
 
-  // 监听文件系统变化通知，自动刷新目录树 + Git 版本历史
+  const runQueuedProjectRefresh = useCallback(async () => {
+    const yieldToUI = () => new Promise<void>((resolve) => window.setTimeout(resolve, 0))
+    const state = refreshQueueRef.current
+    if (state.running) return
+    state.running = true
+    if (state.timer) {
+      window.clearTimeout(state.timer)
+      state.timer = null
+    }
+    try {
+      while (true) {
+        const pending = state.pending
+        const shouldTree = pending.tree
+        const shouldGitStatus = pending.gitStatus
+        const shouldGitLog = pending.gitLog
+        const shouldLiveDiff = pending.liveDiff
+
+        state.pending = { tree: false, gitStatus: false, gitLog: false, liveDiff: false }
+
+        if (!shouldTree && !shouldGitStatus && !shouldGitLog && !shouldLiveDiff) break
+
+        const refreshFns = refreshFnsRef.current
+        let didWork = false
+        if (shouldTree) {
+          const now = Date.now()
+          const minTreeInterval = refreshFns.sessionSending ? 1400 : 420
+          if ((now - state.lastTreeAt) >= minTreeInterval) {
+            didWork = true
+            state.lastTreeAt = now
+            await refreshFns.refreshWorkspaceTree()
+            await yieldToUI()
+          } else {
+            state.pending.tree = true
+          }
+        }
+        if (shouldGitStatus) {
+          const now = Date.now()
+          const minGitStatusInterval = refreshFns.sessionSending ? 900 : 260
+          if ((now - state.lastGitStatusAt) >= minGitStatusInterval) {
+            didWork = true
+            state.lastGitStatusAt = now
+            await refreshFns.refreshGitStatus()
+            await yieldToUI()
+          } else {
+            state.pending.gitStatus = true
+          }
+        }
+        if (shouldLiveDiff) {
+          didWork = true
+          await refreshFns.syncLiveNewContentByPath()
+          await yieldToUI()
+        }
+
+        if (shouldGitLog) {
+          const now = Date.now()
+          const canRefreshGitLog = !refreshFns.sessionSending || (now - state.lastGitLogAt >= 1200)
+          if (canRefreshGitLog) {
+            didWork = true
+            state.lastGitLogAt = now
+            await refreshFns.refreshGitLog()
+            await yieldToUI()
+          } else {
+            // 限频期间保留请求，避免高频消息时反复打满 git log
+            state.pending.gitLog = true
+          }
+        }
+
+        if (!didWork && (state.pending.tree || state.pending.gitStatus || state.pending.gitLog)) {
+          // 限频导致本轮未执行真实刷新时，短暂等待避免 busy loop 占满 CPU。
+          await new Promise<void>((resolve) => {
+            window.setTimeout(resolve, 220)
+          })
+        }
+      }
+    } finally {
+      state.running = false
+      const hasPending = state.pending.tree || state.pending.gitStatus || state.pending.gitLog || state.pending.liveDiff
+      if (hasPending && !state.timer) {
+        state.timer = window.setTimeout(() => {
+          state.timer = null
+          void runQueuedProjectRefresh()
+        }, 80)
+      }
+    }
+  }, [])
+
+  const queueProjectRefresh = useCallback((flags: Partial<ProjectRefreshFlags>, debounceMs = 120) => {
+    const state = refreshQueueRef.current
+    state.pending.tree = state.pending.tree || !!flags.tree
+    state.pending.gitStatus = state.pending.gitStatus || !!flags.gitStatus
+    state.pending.gitLog = state.pending.gitLog || !!flags.gitLog
+    state.pending.liveDiff = state.pending.liveDiff || !!flags.liveDiff
+
+    if (debounceMs <= 0) {
+      if (state.timer) {
+        window.clearTimeout(state.timer)
+        state.timer = null
+      }
+      void runQueuedProjectRefresh()
+      return
+    }
+
+    if (state.timer) return
+    state.timer = window.setTimeout(() => {
+      state.timer = null
+      void runQueuedProjectRefresh()
+    }, debounceMs)
+  }, [runQueuedProjectRefresh])
+
+  // 切换工作区时：立即刷新目录树 + 启动文件监听
+  useEffect(() => {
+    setGitStatusLoaded(false)
+    queueProjectRefresh({
+      tree: true,
+      gitStatus: true,
+      gitLog: currentMode === 'agent',
+      liveDiff: currentMode === 'agent',
+    }, 0)
+    if (currentWorkspace) {
+      window.taco.workspace.watch(currentWorkspace)
+    }
+    return () => {
+      window.taco.workspace.unwatch()
+    }
+  }, [currentWorkspace, currentMode, queueProjectRefresh])
+
+  // 切换会话/项目时刷新一次状态（去掉消息长度驱动，避免频繁重刷）
+  useEffect(() => {
+    if (!currentWorkspace) return
+    queueProjectRefresh({
+      gitStatus: true,
+      gitLog: currentMode === 'agent',
+      liveDiff: currentMode === 'agent',
+    }, 120)
+  }, [sessionId, currentWorkspace, currentMode, queueProjectRefresh])
+
+  // 监听文件系统变化通知，自动刷新（合并到调度队列）
   useEffect(() => {
     const unsubscribe = window.taco.workspace.onChanged(() => {
-      refreshWorkspaceTree()
-      refreshGitLog()
+      queueProjectRefresh({
+        tree: !sessionSending,
+        gitStatus: true,
+        gitLog: currentMode === 'agent' && sessionSending,
+        liveDiff: currentMode === 'agent',
+      }, 120)
     })
     return unsubscribe
-  }, [refreshWorkspaceTree, refreshGitLog])
+  }, [currentMode, sessionSending, queueProjectRefresh])
+
+  useEffect(() => {
+    if (!currentWorkspace || currentMode !== 'agent' || !changeSyncSignal) return
+    queueProjectRefresh({
+      tree: !sessionSending,
+      gitStatus: true,
+      gitLog: true,
+      liveDiff: true,
+    }, 80)
+  }, [currentWorkspace, currentMode, changeSyncSignal, sessionSending, queueProjectRefresh])
+
+  // 低频兜底轮询（监听漏事件时保持状态最终一致）
+  useEffect(() => {
+    if (!currentWorkspace) return
+    const intervalMs = sessionSending ? 2200 : 6000
+    const timer = window.setInterval(() => {
+      queueProjectRefresh({
+        tree: !sessionSending,
+        gitStatus: true,
+        gitLog: currentMode === 'agent' && sessionSending,
+        liveDiff: currentMode === 'agent',
+      }, 100)
+    }, intervalMs)
+    return () => window.clearInterval(timer)
+  }, [currentWorkspace, currentMode, sessionSending, queueProjectRefresh])
+
+  // Agent 一轮任务结束后立即做一次全量刷新，避免目录/变更面板停留旧状态
+  const prevSessionSendingRef = useRef(false)
+  useEffect(() => {
+    const prev = prevSessionSendingRef.current
+    prevSessionSendingRef.current = sessionSending
+    if (!currentWorkspace || currentMode !== 'agent') return
+    if (prev && !sessionSending) {
+      queueProjectRefresh({
+        tree: true,
+        gitStatus: true,
+        gitLog: true,
+        liveDiff: true,
+      }, 0)
+    }
+  }, [currentWorkspace, currentMode, sessionSending, queueProjectRefresh])
+
+  useEffect(() => {
+    if (!currentWorkspace) return
+    const handleFocusRefresh = () => {
+      queueProjectRefresh({
+        tree: true,
+        gitStatus: true,
+        gitLog: currentMode === 'agent',
+        liveDiff: currentMode === 'agent',
+      }, 0)
+    }
+    const handleVisibilityChange = () => {
+      if (!document.hidden) handleFocusRefresh()
+    }
+    window.addEventListener('focus', handleFocusRefresh)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      window.removeEventListener('focus', handleFocusRefresh)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [currentWorkspace, currentMode, queueProjectRefresh])
+
+  useEffect(() => {
+    return () => {
+      const state = refreshQueueRef.current
+      if (state.timer) {
+        window.clearTimeout(state.timer)
+        state.timer = null
+      }
+    }
+  }, [])
 
   // （浏览器模式已统一为外部 BrowserWindow，不再需要模式切换）
 
@@ -480,9 +1100,15 @@ export default function App() {
 
   // 选中的文件变更信息
   const selectedFileChange = useMemo(
-    () => dedupedFileChanges.find((fc) => fc.filePath === selectedFile) ?? null,
-    [dedupedFileChanges, selectedFile]
+    () => effectiveFileChanges.find((fc) => fc.filePath === selectedFile) ?? null,
+    [effectiveFileChanges, selectedFile]
   )
+
+  // 右侧面板采用延后值，避免高频刷新时阻塞主线程
+  const deferredWorkspaceTree = useDeferredValue(workspaceTree)
+  const deferredFileChanges = useDeferredValue(effectiveFileChanges)
+  const deferredGitStagedFiles = useDeferredValue(gitStagedFiles)
+  const deferredGitUnstagedFiles = useDeferredValue(gitUnstagedFiles)
 
   // 文件变更审核状态：key = filePath, value = 'pending' | 'accepted' | 'rejected'
   // 按 sessionId 持久化到 localStorage
@@ -499,31 +1125,138 @@ export default function App() {
     )
   }, [fileStatuses])
 
-  /** 保存（接受）单个文件变更 */
-  const handleAcceptFile = useCallback((filePath: string) => {
-    setFileStatuses((prev) => ({ ...prev, [filePath]: 'accepted' }))
-  }, [])
+  /** 从当前会话手动变更列表中移除指定文件 */
+  const removeManualChanges = useCallback((paths: string[]) => {
+    if (!sessionId || paths.length === 0) return
+    const normalizedTargets = new Set(
+      paths.map((p) => normalizeWorkspaceRelativePath(p, currentWorkspace)).filter(Boolean)
+    )
+    if (normalizedTargets.size === 0) return
+    setManualFileChangesBySession((prev) => {
+      const current = prev[sessionId] ?? []
+      const next = current.filter((fc) => !normalizedTargets.has(normalizeWorkspaceRelativePath(fc.filePath, currentWorkspace)))
+      if (next.length === current.length) return prev
+      return { ...prev, [sessionId]: next }
+    })
+  }, [sessionId, currentWorkspace])
 
-  /** 将相对路径解析为绝对路径 */
-  const resolveFilePath = useCallback((filePath: string) => {
-    // 如果已经是绝对路径则直接返回
-    if (filePath.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(filePath) || filePath.startsWith('\\\\')) {
-      return filePath
+  /** 生成 git add 的候选路径（兼容不同工作区层级与路径格式） */
+  const buildGitStageCandidates = useCallback((filePath: string): string[] => {
+    const set = new Set<string>()
+    const push = (value: string) => {
+      const v = String(value ?? '').trim()
+      if (!v) return
+      set.add(v)
+      set.add(v.replace(/\\/g, '/'))
+      set.add(v.replace(/\//g, '\\'))
     }
-    // 否则拼接工作空间路径
+
+    const raw = String(filePath ?? '').trim()
+    const normalized = normalizeWorkspaceRelativePath(raw, currentWorkspace) || normalizeSlashPath(raw)
+    push(raw)
+    push(normalized)
+
     if (currentWorkspace) {
-      const base = currentWorkspace.replace(/[\\/]+$/, '')
-      const rel = normalizeSlashPath(filePath).replace(/^\.\//, '')
-      const isWindowsWorkspace = /[a-zA-Z]:[\\/]/.test(base) || base.includes('\\')
-      if (isWindowsWorkspace) return `${base}\\${rel.replace(/\//g, '\\')}`
-      return `${base}/${rel}`
+      const workspaceNorm = normalizeSlashPath(currentWorkspace).replace(/\/+$/, '')
+      const workspaceBase = workspaceNorm.split('/').pop() ?? ''
+      if (workspaceBase) {
+        const lowNorm = normalized.toLowerCase()
+        const lowBase = workspaceBase.toLowerCase()
+        if (lowNorm.startsWith(`${lowBase}/`)) {
+          push(normalized.slice(workspaceBase.length + 1))
+        }
+      }
     }
-    return filePath
-  }, [currentWorkspace])
+
+    const abs = resolveFilePath(normalized || raw)
+    push(abs)
+    return Array.from(set).filter(Boolean)
+  }, [currentWorkspace, resolveFilePath])
+
+  const stageSingleFileWithFallback = useCallback(async (filePath: string) => {
+    if (!currentWorkspace) throw new Error('未选择工作区')
+    const candidates = buildGitStageCandidates(filePath)
+    let lastErr: unknown = null
+    for (const candidate of candidates) {
+      try {
+        await window.taco.git.stageFiles(currentWorkspace, [candidate])
+        return
+      } catch (err) {
+        lastErr = err
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error('暂存失败')
+  }, [currentWorkspace, buildGitStageCandidates])
+
+  /** 保存（接受）单个文件变更 */
+  const handleAcceptFile = useCallback(async (filePath: string) => {
+    if (!currentWorkspace) return
+    const normalizedPath = normalizeWorkspaceRelativePath(filePath, currentWorkspace)
+    const candidatePath = normalizedPath || filePath
+    // 先本地乐观更新，确保右侧列表即时变化
+    setGitWorkingStatus((prev) => {
+      const staged = new Set(prev.staged ?? [])
+      const unstaged = new Set(prev.unstaged ?? [])
+      staged.add(candidatePath)
+      unstaged.delete(candidatePath)
+      unstaged.delete(candidatePath.replace(/\//g, '\\'))
+      unstaged.delete(candidatePath.replace(/\\/g, '/'))
+      return { staged: Array.from(staged), unstaged: Array.from(unstaged) }
+    })
+    setFileStatuses((prev) => ({ ...prev, [filePath]: 'accepted' }))
+    try {
+      await stageSingleFileWithFallback(filePath)
+      queueProjectRefresh({
+        tree: true,
+        gitStatus: true,
+        gitLog: currentMode === 'agent',
+        liveDiff: currentMode === 'agent',
+      }, 0)
+    } catch (err) {
+      setFileStatuses((prev) => ({ ...prev, [filePath]: 'pending', [candidatePath]: 'pending' }))
+      queueProjectRefresh({
+        tree: true,
+        gitStatus: true,
+        gitLog: currentMode === 'agent',
+        liveDiff: currentMode === 'agent',
+      }, 0)
+      console.error('暂存文件候选路径:', buildGitStageCandidates(filePath))
+      console.error('暂存文件失败:', filePath, err)
+    }
+  }, [currentWorkspace, currentMode, queueProjectRefresh, stageSingleFileWithFallback, buildGitStageCandidates])
+
+  /** 记录文件编辑器产生的变更（用于实时更新右侧“变更文件”面板） */
+  const handleFileEdited = useCallback((change: FileChangeInfo) => {
+    if (!sessionId) return
+    const normalizedPath = normalizeWorkspaceRelativePath(change.filePath, currentWorkspace)
+    if (!normalizedPath) return
+    const normalizedChange: FileChangeInfo = {
+      filePath: normalizedPath,
+      oldContent: change.oldContent,
+      newContent: change.newContent,
+    }
+    setManualFileChangesBySession((prev) => {
+      const current = prev[sessionId] ?? []
+      const map = new Map<string, FileChangeInfo>()
+      for (const item of current) map.set(item.filePath, item)
+      const existing = map.get(normalizedPath)
+      if (existing) {
+        map.set(normalizedPath, {
+          filePath: normalizedPath,
+          oldContent: existing.oldContent,
+          newContent: normalizedChange.newContent,
+        })
+      } else {
+        map.set(normalizedPath, normalizedChange)
+      }
+      const merged = Array.from(map.values()).filter((fc) => fc.oldContent !== fc.newContent)
+      return { ...prev, [sessionId]: merged }
+    })
+  }, [sessionId, currentWorkspace])
 
   /** 撤销（拒绝）单个文件变更 */
   const handleRejectFile = useCallback(async (filePath: string) => {
-    const change = dedupedFileChanges.find((fc) => fc.filePath === filePath)
+    const change = effectiveFileChanges.find((fc) => fc.filePath === filePath)
     if (!change) return
     const absPath = resolveFilePath(filePath)
     try {
@@ -538,28 +1271,80 @@ export default function App() {
         await window.taco.file.revert(absPath, change.oldContent)
       }
       setFileStatuses((prev) => ({ ...prev, [filePath]: 'rejected' }))
-      refreshGitLog()
+      removeManualChanges([filePath])
+      queueProjectRefresh({
+        tree: true,
+        gitStatus: true,
+        gitLog: currentMode === 'agent',
+        liveDiff: currentMode === 'agent',
+      }, 0)
     } catch (err) {
       console.error('撤销文件变更失败:', filePath, err)
     }
-  }, [dedupedFileChanges, resolveFilePath, refreshGitLog])
+  }, [currentMode, effectiveFileChanges, resolveFilePath, removeManualChanges, queueProjectRefresh])
 
   /** 保存所有 pending 变更 */
-  const handleAcceptAll = useCallback(() => {
+  const handleAcceptAll = useCallback(async () => {
+    if (!currentWorkspace) return
+    // 先乐观更新，提供即时反馈
+    setGitWorkingStatus((prev) => {
+      const staged = new Set(prev.staged ?? [])
+      for (const p of prev.unstaged ?? []) staged.add(p)
+      for (const fc of effectiveFileChanges) {
+        const normalized = normalizeWorkspaceRelativePath(fc.filePath, currentWorkspace)
+        if (normalized) staged.add(normalized)
+      }
+      return { staged: Array.from(staged), unstaged: [] }
+    })
     setFileStatuses((prev) => {
       const next = { ...prev }
-      for (const fc of dedupedFileChanges) {
-        if (!next[fc.filePath] || next[fc.filePath] === 'pending') {
-          next[fc.filePath] = 'accepted'
-        }
-      }
+      for (const fc of effectiveFileChanges) next[fc.filePath] = 'accepted'
       return next
     })
-  }, [dedupedFileChanges])
+    try {
+      try {
+        await window.taco.git.stageAll(currentWorkspace)
+      } catch (errAll) {
+        const fallbackTargets = Array.from(new Set([
+          ...gitUnstagedFiles,
+          ...effectiveFileChanges.map((fc) => fc.filePath),
+        ])).filter(Boolean)
+        let successAny = false
+        for (const p of fallbackTargets) {
+          try {
+            await stageSingleFileWithFallback(p)
+            successAny = true
+          } catch {
+            // continue trying other paths
+          }
+        }
+        if (!successAny) throw errAll
+      }
+      queueProjectRefresh({
+        tree: true,
+        gitStatus: true,
+        gitLog: currentMode === 'agent',
+        liveDiff: currentMode === 'agent',
+      }, 0)
+    } catch (err) {
+      setFileStatuses((prev) => {
+        const next = { ...prev }
+        for (const fc of effectiveFileChanges) next[fc.filePath] = 'pending'
+        return next
+      })
+      queueProjectRefresh({
+        tree: true,
+        gitStatus: true,
+        gitLog: currentMode === 'agent',
+        liveDiff: currentMode === 'agent',
+      }, 0)
+      console.error('暂存全部失败:', err)
+    }
+  }, [currentWorkspace, currentMode, effectiveFileChanges, gitUnstagedFiles, queueProjectRefresh, stageSingleFileWithFallback])
 
   /** 撤销所有 pending 变更 */
   const handleRejectAll = useCallback(async () => {
-    const pending = dedupedFileChanges.filter(
+    const pending = effectiveFileChanges.filter(
       (fc) => readFileStatus(fc.filePath) === 'pending'
     )
     for (const change of pending) {
@@ -580,8 +1365,14 @@ export default function App() {
         console.error('撤销文件变更失败:', change.filePath, err)
       }
     }
-    refreshGitLog()
-  }, [dedupedFileChanges, readFileStatus, resolveFilePath, refreshGitLog])
+    removeManualChanges(pending.map((fc) => fc.filePath))
+    queueProjectRefresh({
+      tree: true,
+      gitStatus: true,
+      gitLog: currentMode === 'agent',
+      liveDiff: currentMode === 'agent',
+    }, 0)
+  }, [currentMode, effectiveFileChanges, readFileStatus, resolveFilePath, removeManualChanges, queueProjectRefresh])
 
   /** 回退到指定 Git 版本 */
   const handleGitRollback = useCallback(async (hash: string) => {
@@ -590,12 +1381,17 @@ export default function App() {
       await window.taco.git.rollback(currentWorkspace, hash)
       // 刷新版本历史
       await refreshGitLog()
+      await refreshGitStatus()
       // 回退后清除文件审核状态（文件内容已变更）
       setFileStatuses({})
+      if (sessionId) {
+        setManualFileChangesBySession((prev) => ({ ...prev, [sessionId]: [] }))
+      }
+      await refreshWorkspaceTree()
     } catch (err) {
       console.error('Git 回退失败:', err)
     }
-  }, [currentWorkspace, refreshGitLog])
+  }, [currentWorkspace, sessionId, refreshWorkspaceTree, refreshGitLog, refreshGitStatus])
 
   /** 回滚到某条消息之前的 Git 版本：reset 到该 commit 的父提交 */
   const handleRollbackBeforeMsg = useCallback(async (commitHash: string) => {
@@ -604,11 +1400,16 @@ export default function App() {
       // 回退到该提交的父版本（即 agent 操作之前的状态）
       await window.taco.git.rollback(currentWorkspace, `${commitHash}~1`)
       await refreshGitLog()
+      await refreshGitStatus()
       setFileStatuses({})
+      if (sessionId) {
+        setManualFileChangesBySession((prev) => ({ ...prev, [sessionId]: [] }))
+      }
+      await refreshWorkspaceTree()
     } catch (err) {
       console.error('Git 回退失败:', err)
     }
-  }, [currentWorkspace, refreshGitLog])
+  }, [currentWorkspace, sessionId, refreshWorkspaceTree, refreshGitLog, refreshGitStatus])
 
   /** 加载某个 Git 提交的变更文件列表 */
   const handleLoadCommitFiles = useCallback(async (hash: string): Promise<string[]> => {
@@ -637,6 +1438,36 @@ export default function App() {
       setFileStatuses(normalizeFileStatusMap(loadJson(`taco.fileStatuses.${sessionId}`, {}), currentWorkspace))
     }
   }, [sessionId, currentWorkspace])
+
+  // 同一会话切换 workspace 时，重置当前变更面板的上下文基线与临时状态
+  useEffect(() => {
+    if (!sessionId) return
+    const prevWorkspace = lastWorkspaceBySessionRef.current[sessionId]
+    if (prevWorkspace === undefined) {
+      lastWorkspaceBySessionRef.current[sessionId] = currentWorkspace
+      return
+    }
+    if (prevWorkspace !== currentWorkspace) {
+      const baseline = messages.length
+      setChangeStartIndexBySession((prev) => ({ ...prev, [sessionId]: baseline }))
+      setManualFileChangesBySession((prev) => ({ ...prev, [sessionId]: [] }))
+      setLiveFileChangeOverrides({})
+      setFileStatuses({})
+      setSelectedFile(null)
+      setViewingFile(null)
+      setViewingSelection(null)
+    }
+    lastWorkspaceBySessionRef.current[sessionId] = currentWorkspace
+  }, [sessionId, currentWorkspace, messages.length])
+
+  // 会话消息被清空/截断后，修正基线下标，避免新消息被错误过滤
+  const currentSessionChangeStart = changeStartIndexBySession[sessionId] ?? 0
+  useEffect(() => {
+    if (!sessionId) return
+    if (currentSessionChangeStart > messages.length) {
+      setChangeStartIndexBySession((prev) => ({ ...prev, [sessionId]: messages.length }))
+    }
+  }, [sessionId, currentSessionChangeStart, messages.length])
 
   /* ---- smart auto-scroll ---- */
   // 用户是否在底部附近（50px 阈值），只有在底部时才自动滚动
@@ -679,6 +1510,7 @@ export default function App() {
     setDraft('')
     setSelectedFile(null)
     setViewingFile(null)
+    setViewingSelection(null)
     setShowTerminal(false)
   }
 
@@ -687,6 +1519,7 @@ export default function App() {
     setDraft('')
     setSelectedFile(null)
     setViewingFile(null)
+    setViewingSelection(null)
   }
 
   function handleDeleteThread(threadId: string) {
@@ -696,7 +1529,21 @@ export default function App() {
       for (const s of thread.sessions) {
         chat.deleteThreadMessages(s.id)
       }
+      setManualFileChangesBySession((prev) => {
+        const next = { ...prev }
+        for (const s of thread.sessions) delete next[s.id]
+        return next
+      })
+      setChangeStartIndexBySession((prev) => {
+        const next = { ...prev }
+        for (const s of thread.sessions) delete next[s.id]
+        return next
+      })
+      for (const s of thread.sessions) {
+        delete lastWorkspaceBySessionRef.current[s.id]
+      }
     }
+    chat.clearProjectTokenStats(threadId)
     threadStore.deleteThread(threadId)
   }
 
@@ -707,6 +1554,7 @@ export default function App() {
     setDraft('')
     setSelectedFile(null)
     setViewingFile(null)
+    setViewingSelection(null)
   }
 
   /** 切换当前项目内的会话 */
@@ -716,17 +1564,33 @@ export default function App() {
     setDraft('')
     setSelectedFile(null)
     setViewingFile(null)
+    setViewingSelection(null)
   }
 
   /** 删除当前项目内的某个会话 */
   function handleDeleteSession(sid: string) {
     if (!tid) return
     chat.deleteThreadMessages(sid)
+    setManualFileChangesBySession((prev) => {
+      const next = { ...prev }
+      delete next[sid]
+      return next
+    })
+    setChangeStartIndexBySession((prev) => {
+      const next = { ...prev }
+      delete next[sid]
+      return next
+    })
+    delete lastWorkspaceBySessionRef.current[sid]
     threadStore.deleteSession(tid, sid)
   }
 
   function handleClearChat() {
     chat.clearMessages(sessionId)
+    if (sessionId) {
+      setManualFileChangesBySession((prev) => ({ ...prev, [sessionId]: [] }))
+      setChangeStartIndexBySession((prev) => ({ ...prev, [sessionId]: 0 }))
+    }
   }
 
   /** 切换当前项目的模式 */
@@ -740,6 +1604,13 @@ export default function App() {
   async function handleSelectWorkspace() {
     const dir = await globalThis.window.taco.dialog.selectDirectory()
     if (dir && tid) {
+      const nextWorkspace = normalizeSlashPath(dir).replace(/\/+$/, '')
+      const prevWorkspace = normalizeSlashPath(currentWorkspace).replace(/\/+$/, '')
+      if (sessionId && nextWorkspace !== prevWorkspace) {
+        // 先记录当前消息下标，后续只展示新目录中的新增变更
+        setChangeStartIndexBySession((prev) => ({ ...prev, [sessionId]: messages.length }))
+        setManualFileChangesBySession((prev) => ({ ...prev, [sessionId]: [] }))
+      }
       threadStore.updateThread(tid, { workspace: dir })
     }
   }
@@ -762,24 +1633,27 @@ export default function App() {
     void window.taco.shell.notify({ title, body, silent: false })
   }, [currentMode])
 
-  function applyMobileSelection(target?: MobileTarget): MobileTarget {
+  const applyMobileSelection = useCallback((target?: MobileTarget): MobileTarget => {
     if (!target) return {}
+    const store = threadStoreRef.current
+    const providerState = providerSettingsRef.current
+    const currentThreadId = activeThreadIdRef.current
     const next: MobileTarget = {}
     let targetThreadId = target.threadId
     if (!targetThreadId && target.sessionId) {
-      const owner = threadStore.threads.find((t) => t.sessions.some((s) => s.id === target.sessionId))
+      const owner = store.threads.find((t) => t.sessions.some((s) => s.id === target.sessionId))
       targetThreadId = owner?.id
     }
-    if (targetThreadId && threadStore.threads.some((t) => t.id === targetThreadId)) {
-      threadStore.switchThread(targetThreadId)
+    if (targetThreadId && store.threads.some((t) => t.id === targetThreadId)) {
+      store.switchThread(targetThreadId)
       next.threadId = targetThreadId
     }
     if (target.sessionId) {
       const owner = next.threadId
-        ? threadStore.threads.find((t) => t.id === next.threadId)
-        : threadStore.threads.find((t) => t.sessions.some((s) => s.id === target.sessionId))
+        ? store.threads.find((t) => t.id === next.threadId)
+        : store.threads.find((t) => t.sessions.some((s) => s.id === target.sessionId))
       if (owner && owner.sessions.some((s) => s.id === target.sessionId)) {
-        threadStore.switchSession(owner.id, target.sessionId)
+        store.switchSession(owner.id, target.sessionId)
         next.threadId = owner.id
         next.sessionId = target.sessionId
       }
@@ -787,24 +1661,24 @@ export default function App() {
     if (target.provider) {
       const provider = providers.find((p) => p.id === target.provider)?.id
       if (provider) {
-        const threadId = next.threadId ?? tid
-        if (threadId) threadStore.updateThread(threadId, { provider })
-        providerSettings.setActiveProvider(provider)
+        const threadId = next.threadId ?? currentThreadId
+        if (threadId) store.updateThread(threadId, { provider })
+        providerState.setActiveProvider(provider)
         next.provider = provider
       }
     }
     if (target.mode === 'chat' || target.mode === 'agent') {
-      const threadId = next.threadId ?? tid
+      const threadId = next.threadId ?? currentThreadId
       if (threadId) {
-        threadStore.updateThread(threadId, { mode: target.mode })
+        store.updateThread(threadId, { mode: target.mode })
         next.mode = target.mode
       }
     }
     return next
-  }
+  }, [])
 
   /** 实际执行发送（使用 sessionId 作为消息存储 key） */
-  function doSend(content: string, images?: import('../types').AttachedImage[], target?: MobileTarget) {
+  function doSend(content: string, images?: import('./types').AttachedImage[], target?: MobileTarget) {
     const threadId = target?.threadId ?? threadStore.ensureActiveThread()
     const thread = threadStore.threads.find((t) => t.id === threadId)
     const sid = target?.sessionId ?? thread?.activeSessionId ?? ''
@@ -817,6 +1691,7 @@ export default function App() {
     chat.sendMessage({
       threadId: sid,
       projectId: threadId,
+      projectRules: thread?.projectRules ?? '',
       content,
       images,
       provider,
@@ -824,8 +1699,14 @@ export default function App() {
       mode,
       workspace,
       maxTokens: targetMaxTokens,
-      onFirstMessage: (title) =>
-        threadStore.updateThread(threadId, { title, updatedAt: Date.now() }),
+      onFirstMessage: (title) => {
+        const latestThread = threadStore.threads.find((t) => t.id === threadId)
+        if (latestThread?.titleLocked) {
+          threadStore.updateThread(threadId, { updatedAt: Date.now() })
+          return
+        }
+        threadStore.updateThread(threadId, { title, updatedAt: Date.now(), titleLocked: false })
+      },
       onComplete: () => {
         threadStore.updateThread(threadId, { updatedAt: Date.now() })
         notifyTaskCompleted(thread?.title)
@@ -849,7 +1730,7 @@ export default function App() {
       doSendRef.current(text, undefined, selected)
     })
     return unsubscribe
-  }, [tid, threadStore, providerSettings])
+  }, [applyMobileSelection])
 
   // 移动端桥接：仅同步选择，不发送消息
   useEffect(() => {
@@ -862,11 +1743,12 @@ export default function App() {
       })
     })
     return unsubscribe
-  }, [tid, threadStore, providerSettings])
+  }, [applyMobileSelection])
 
   // 移动端桥接：停止当前任务（与桌面 stop 语义一致，仅终止在执行任务，队列保留）
   useEffect(() => {
     const unsubscribe = window.taco.mobileBridge.onAbort((evt) => {
+      const store = threadStoreRef.current
       const selected = applyMobileSelection({
         threadId: evt.threadId,
         sessionId: evt.sessionId,
@@ -875,14 +1757,14 @@ export default function App() {
       const targetSessionId =
         selected.sessionId ??
         evt.sessionId ??
-        (targetThreadId ? threadStore.threads.find((t) => t.id === targetThreadId)?.activeSessionId : undefined) ??
-        sessionId
+        (targetThreadId ? store.threads.find((t) => t.id === targetThreadId)?.activeSessionId : undefined) ??
+        activeSessionIdRef.current
       if (targetSessionId) {
-        chat.stopSending(targetSessionId)
+        chatRef.current.stopSending(targetSessionId)
       }
     })
     return unsubscribe
-  }, [tid, threadStore, providerSettings, sessionId, chat])
+  }, [applyMobileSelection])
 
   // 移动端桥接：确认/拒绝当前风险步骤（恢复 agent 执行）
   useEffect(() => {
@@ -895,25 +1777,27 @@ export default function App() {
       window.taco.agent.confirmResponse(evt.confirmId, evt.approved === true)
     })
     return unsubscribe
-  }, [tid, threadStore, providerSettings])
+  }, [applyMobileSelection])
 
   // 移动端桥接：在同一项目内新建会话
   useEffect(() => {
     const unsubscribe = window.taco.mobileBridge.onNewSession((evt) => {
+      const store = threadStoreRef.current
       const selected = applyMobileSelection({ threadId: evt.threadId })
-      const targetThreadId = selected.threadId ?? evt.threadId ?? tid
+      const targetThreadId = selected.threadId ?? evt.threadId ?? activeThreadIdRef.current
       if (!targetThreadId) return
-      const exists = threadStore.threads.some((thread) => thread.id === targetThreadId)
+      const exists = store.threads.some((thread) => thread.id === targetThreadId)
       if (!exists) return
-      threadStore.switchThread(targetThreadId)
-      threadStore.createSession(targetThreadId)
+      store.switchThread(targetThreadId)
+      store.createSession(targetThreadId)
     })
     return unsubscribe
-  }, [tid, threadStore, providerSettings])
+  }, [applyMobileSelection])
 
   // 移动端桥接：清空会话记录（不删除会话本身）
   useEffect(() => {
     const unsubscribe = window.taco.mobileBridge.onClearSession((evt) => {
+      const store = threadStoreRef.current
       const selected = applyMobileSelection({
         threadId: evt.threadId,
         sessionId: evt.sessionId,
@@ -922,96 +1806,128 @@ export default function App() {
       const targetSessionId =
         selected.sessionId ??
         evt.sessionId ??
-        (targetThreadId ? threadStore.threads.find((t) => t.id === targetThreadId)?.activeSessionId : undefined) ??
-        sessionId
+        (targetThreadId ? store.threads.find((t) => t.id === targetThreadId)?.activeSessionId : undefined) ??
+        activeSessionIdRef.current
       if (!targetSessionId) return
-      chat.clearMessages(targetSessionId)
+      chatRef.current.clearMessages(targetSessionId)
     })
     return unsubscribe
-  }, [tid, threadStore, providerSettings, sessionId, chat])
+  }, [applyMobileSelection])
 
-  // 移动端桥接：将桌面端当前会话历史/上下文同步到主进程缓存，供手机端查询
-  useEffect(() => {
-    const snapshot: MobileBridgeContextSnapshot = {
-      updatedAt: Date.now(),
-      activeThreadId: tid || undefined,
-      activeSessionId: sessionId || undefined,
-      activeProvider: currentProvider,
-      providers: providerSettings.configuredProviders.map((p) => ({ id: p.id, label: p.label })),
-      threads: threadStore.threads.map((thread) => {
-        const sessionContexts = thread.sessions.map((session) => {
-          const sid = session.id
-          const sessionMessages = chat.getMessages(sid)
-          return {
-            sessionId: sid,
-            title: session.title,
-            messageCount: sessionMessages.length,
-            messages: sessionMessages.map((msg) => ({
-              id: msg.id,
-              role: msg.role,
-              content: msg.content.slice(0, 4000),
-              screenshotPaths: collectMessageScreenshotPaths(msg).map((p) => p.slice(0, 1024)),
-              agentSteps: Array.isArray(msg.agentSteps)
-                ? msg.agentSteps.map((step) => ({
-                  round: step.round,
-                  thinking: step.thinking.slice(0, 4000),
-                  status: step.status,
-                  confirmId: step.confirmId?.slice(0, 128),
-                  risks: step.risks?.map((r) => ({
-                    toolName: r.toolName.slice(0, 128),
-                    reason: r.reason.slice(0, 1000),
-                    detail: r.detail.slice(0, 2000),
-                    level: r.level,
-                  })),
-                  toolCalls: step.toolCalls.map((tc) => ({
-                    id: tc.id,
-                    name: tc.name,
-                    arguments: tc.arguments.slice(0, 2000),
-                  })),
-                  toolResults: step.toolResults.map((tr) => ({
-                    tool_call_id: tr.tool_call_id,
-                    name: tr.name,
-                    content: tr.content.slice(0, 3000),
-                    success: tr.success,
-                    fileChange: tr.fileChange ? {
-                      filePath: tr.fileChange.filePath.slice(0, 1024),
-                      oldContent: tr.fileChange.oldContent?.slice(0, 12000) ?? null,
-                      newContent: tr.fileChange.newContent?.slice(0, 12000) ?? null,
-                    } : undefined,
-                  })),
-                }))
-                : undefined,
-              activePlan: msg.activePlan
-                ? {
-                  summary: msg.activePlan.summary.slice(0, 500),
-                  reasoning: msg.activePlan.reasoning?.slice(0, 1000),
-                  steps: msg.activePlan.steps.map((s) => ({
-                    text: s.text.slice(0, 500),
-                    status: s.status,
-                    note: s.note?.slice(0, 500),
-                  })),
-                }
-                : undefined,
-            })),
-            sending: chat.isSending(sid),
-            queue: chat.getQueue(sid).map((q) => q.content.slice(0, 500)),
-            streamingContent: chat.getStreamingContent(sid).slice(0, 4000),
-          }
-        })
+  const mobileBridgeSnapshot = useMemo<MobileBridgeContextSnapshot>(() => ({
+    updatedAt: Date.now(),
+    activeThreadId: tid || undefined,
+    activeSessionId: sessionId || undefined,
+    activeProvider: currentProvider,
+    providers: providerSettings.configuredProviders.map((p) => ({ id: p.id, label: p.label })),
+    threads: threadStore.threads.map((thread) => {
+      const sessionContexts = thread.sessions.map((session) => {
+        const sid = session.id
+        const sessionMessages = chat.threadMessages[sid] ?? []
         return {
-          threadId: thread.id,
-          title: thread.title,
-          updatedAt: thread.updatedAt,
-          provider: thread.provider,
-          mode: thread.mode,
-          workspace: thread.workspace,
-          activeSessionId: thread.activeSessionId,
-          sessions: sessionContexts,
+          sessionId: sid,
+          title: session.title,
+          messageCount: sessionMessages.length,
+          messages: sessionMessages.map((msg) => ({
+            id: msg.id,
+            role: msg.role,
+            content: msg.content.slice(0, 4000),
+            screenshotPaths: collectMessageScreenshotPaths(msg).map((p) => p.slice(0, 1024)),
+            agentSteps: Array.isArray(msg.agentSteps)
+              ? msg.agentSteps.map((step) => ({
+                round: step.round,
+                thinking: step.thinking.slice(0, 4000),
+                status: step.status,
+                confirmId: step.confirmId?.slice(0, 128),
+                risks: step.risks?.map((r) => ({
+                  toolName: r.toolName.slice(0, 128),
+                  reason: r.reason.slice(0, 1000),
+                  detail: r.detail.slice(0, 2000),
+                  level: r.level,
+                })),
+                toolCalls: step.toolCalls.map((tc) => ({
+                  id: tc.id,
+                  name: tc.name,
+                  arguments: tc.arguments.slice(0, 2000),
+                })),
+                toolResults: step.toolResults.map((tr) => ({
+                  tool_call_id: tr.tool_call_id,
+                  name: tr.name,
+                  content: tr.content.slice(0, 3000),
+                  success: tr.success,
+                  fileChange: tr.fileChange ? {
+                    filePath: tr.fileChange.filePath.slice(0, 1024),
+                    oldContent: tr.fileChange.oldContent?.slice(0, 12000) ?? null,
+                    newContent: tr.fileChange.newContent?.slice(0, 12000) ?? null,
+                  } : undefined,
+                })),
+              }))
+              : undefined,
+            activePlan: msg.activePlan
+              ? {
+                summary: msg.activePlan.summary.slice(0, 500),
+                reasoning: msg.activePlan.reasoning?.slice(0, 1000),
+                steps: msg.activePlan.steps.map((s) => ({
+                  text: s.text.slice(0, 500),
+                  status: s.status,
+                  note: s.note?.slice(0, 500),
+                })),
+              }
+              : undefined,
+          })),
+          sending: Boolean(chat.sendingThreads[sid]),
+          queue: (chat.queues[sid] ?? []).map((q) => q.content.slice(0, 500)),
+          streamingContent: String(chat.streamingContents[sid] ?? '').slice(0, 4000),
         }
-      }),
+      })
+      return {
+        threadId: thread.id,
+        title: thread.title,
+        updatedAt: thread.updatedAt,
+        provider: thread.provider,
+        mode: thread.mode,
+        workspace: thread.workspace,
+        activeSessionId: thread.activeSessionId,
+        sessions: sessionContexts,
+      }
+    }),
+  }), [
+    tid,
+    sessionId,
+    currentProvider,
+    providerSettings.configuredProviders,
+    threadStore.threads,
+    chat.threadMessages,
+    chat.sendingThreads,
+    chat.queues,
+    chat.streamingContents,
+  ])
+
+  const mobileBridgeSnapshotDigest = useMemo(
+    () => buildMobileBridgeSnapshotDigest(mobileBridgeSnapshot),
+    [mobileBridgeSnapshot],
+  )
+
+  // 移动端桥接：将桌面端当前会话历史/上下文同步到主进程缓存（去重 + 节流），供手机端查询
+  useEffect(() => {
+    if (mobileBridgeSnapshotDigest === lastMobileSnapshotDigestRef.current) return
+    if (mobileSyncTimerRef.current != null) {
+      window.clearTimeout(mobileSyncTimerRef.current)
+      mobileSyncTimerRef.current = null
     }
-    window.taco.mobileBridge.syncContext(snapshot)
-  })
+    mobileSyncTimerRef.current = window.setTimeout(() => {
+      window.taco.mobileBridge.syncContext(mobileBridgeSnapshot)
+      lastMobileSnapshotDigestRef.current = mobileBridgeSnapshotDigest
+      mobileSyncTimerRef.current = null
+    }, 120)
+  }, [mobileBridgeSnapshot, mobileBridgeSnapshotDigest])
+
+  useEffect(() => () => {
+    if (mobileSyncTimerRef.current != null) {
+      window.clearTimeout(mobileSyncTimerRef.current)
+      mobileSyncTimerRef.current = null
+    }
+  }, [])
 
   /** 重新发送：保留该消息，删掉之后的回复，重新请求 */
   function handleResend(msgId: string) {
@@ -1022,6 +1938,7 @@ export default function App() {
     chat.resendFromExisting({
       threadId: sessionId,
       projectId: tid,
+      projectRules: currentProjectRules,
       provider: currentProvider,
       providerForms: providerSettings.providerForms,
       mode: currentMode,
@@ -1044,6 +1961,7 @@ export default function App() {
     chat.resendFromExisting({
       threadId: sessionId,
       projectId: tid,
+      projectRules: currentProjectRules,
       provider: currentProvider,
       providerForms: providerSettings.providerForms,
       mode: currentMode,
@@ -1055,7 +1973,7 @@ export default function App() {
     })
   }
 
-  function handleSend(images?: import('../types').AttachedImage[]) {
+  function handleSend(images?: import('./types').AttachedImage[]) {
     const content = draft.trim()
     if ((!content && (!images || images.length === 0)) || providerSettings.configuredProviders.length === 0) return
     setDraft('')
@@ -1070,16 +1988,26 @@ export default function App() {
   }
 
   /** 在中间区域打开文件（右侧目录树点击普通文件时调用） */
-  const handleOpenFileView = useCallback((filePath: string, forceDiff?: boolean) => {
+  const handleOpenFileView = useCallback((filePath: string, forceDiff?: boolean, selection?: { line: number; column: number } | null) => {
     // 确保切换到聊天视图（FileEditor / DiffView 在 ChatPanel 内渲染）
     setMiddleView('chat')
     if (forceDiff) {
       // 变更文件面板点击 → 走 Diff 视图
       setSelectedFile(selectedFile === filePath ? null : filePath)
       setViewingFile(null)
+      setViewingSelection(null)
     } else {
       // 目录树点击 → 永远走编辑模式
-      setViewingFile(viewingFile === filePath ? null : filePath)
+      if (selection) {
+        setViewingFile(filePath)
+        setViewingSelection({
+          line: Math.max(1, Math.floor(selection.line)),
+          column: Math.max(1, Math.floor(selection.column)),
+        })
+      } else {
+        setViewingFile(viewingFile === filePath ? null : filePath)
+        setViewingSelection(null)
+      }
       setSelectedFile(null)
     }
   }, [selectedFile, viewingFile])
@@ -1087,6 +2015,7 @@ export default function App() {
   /** 关闭文件编辑器 */
   const handleCloseFileEditor = useCallback(() => {
     setViewingFile(null)
+    setViewingSelection(null)
   }, [])
 
   // （浏览器错误反馈统一在外部浏览器窗口处理）
@@ -1094,41 +2023,101 @@ export default function App() {
   /** 从编辑器切换到 Diff 视图 */
   const handleViewDiffFromEditor = useCallback(() => {
     if (viewingFile) {
-      const isChanged = dedupedFileChanges.some((fc) => fc.filePath === viewingFile)
+      const isChanged = effectiveFileChanges.some((fc) => fc.filePath === viewingFile)
       if (isChanged) {
         setSelectedFile(viewingFile)
         setViewingFile(null)
+        setViewingSelection(null)
       }
     }
-  }, [viewingFile, dedupedFileChanges])
+  }, [viewingFile, effectiveFileChanges])
 
   /* ---- render ---- */
+  const isMac = globalThis.window.taco.system.platform === 'darwin'
+  const clampedSidebarRatio = clampNumber(sidebarWidthRatio, sidebarMinRatio, sidebarMaxRatio)
+  const clampedSidebarWidth = sidebarAreaWidth > 0 ? clampedSidebarRatio * sidebarAreaWidth : 0
+  const effectiveSidebarWidth = sidebarVisible ? clampedSidebarWidth : 0
   const gridStyle = {
-    gridTemplateColumns: `280px minmax(0, 1fr) 0px minmax(260px, ${detailWidth}px)`,
+    gridTemplateColumns: `${effectiveSidebarWidth}px 0px minmax(0, 1fr) 0px minmax(${DETAIL_MIN_WIDTH}px, ${effectiveDetailWidth}px)`,
   }
 
   return (
-    <div className="app-shell" style={gridStyle}>
-      <Sidebar
-        sortedThreads={threadStore.sortedThreads}
-        activeThreadId={tid}
-        editingThreadId={threadStore.editingThreadId}
-        editingTitle={threadStore.editingTitle}
-        onEditingTitleChange={threadStore.setEditingTitle}
-        onNewThread={handleNewThread}
-        onSwitchThread={handleSwitchThread}
-        onRenameStart={threadStore.startRename}
-        onRenameCommit={threadStore.commitRename}
-        onCancelRename={threadStore.cancelRename}
-        onDeleteThread={handleDeleteThread}
-        onOpenSettings={() => { setShowSettings(true); setMiddleView('settings') }}
-        isSending={isThreadSending}
-        isCompleted={isThreadCompleted}
-        contextPercent={contextPercent}
-      />
+    <div ref={appShellRef} className="app-shell" style={gridStyle}>
+      <div className={`sidebar-fixed-anchor ${isMac ? 'mac' : ''}`}>
+        <button
+          type="button"
+          className="sidebar-fixed-toggle"
+          onClick={() => setSidebarVisible((v) => !v)}
+          title={sidebarVisible ? '隐藏左侧项目栏' : '显示左侧项目栏'}
+          aria-label={sidebarVisible ? '隐藏左侧项目栏' : '显示左侧项目栏'}
+        >
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <rect x="2.25" y="2.25" width="11.5" height="11.5" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+            <path d="M6 3.2v9.6" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+            {sidebarVisible ? (
+              <path d="M8 6.4 6.6 8 8 9.6" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            ) : (
+              <path d="M7.2 6.4 8.6 8 7.2 9.6" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            )}
+          </svg>
+        </button>
+        {!sidebarVisible && (
+          <div className="sidebar-fixed-title" title={threadStore.activeThread?.title ?? '新项目'}>
+            {threadStore.activeThread?.title ?? '新项目'}
+          </div>
+        )}
+      </div>
+      <div
+        style={{
+          gridColumn: '1 / 2',
+          display: 'block',
+          height: '100%',
+          width: '100%',
+          minWidth: 0,
+          minHeight: 0,
+          overflow: 'hidden',
+          visibility: sidebarVisible ? 'visible' : 'hidden',
+          pointerEvents: sidebarVisible ? 'auto' : 'none',
+        }}
+      >
+        <Sidebar
+          sortedThreads={threadStore.sortedThreads}
+          activeThreadId={tid}
+          editingThreadId={threadStore.editingThreadId}
+          editingTitle={threadStore.editingTitle}
+          onEditingTitleChange={threadStore.setEditingTitle}
+          onNewThread={handleNewThread}
+          onSwitchThread={handleSwitchThread}
+          onRenameStart={threadStore.startRename}
+          onRenameCommit={threadStore.commitRename}
+          onCancelRename={threadStore.cancelRename}
+          onDeleteThread={handleDeleteThread}
+          onReorderThread={threadStore.reorderThread}
+          onOpenSettings={() => { setShowSettings(true); setMiddleView('settings') }}
+          isSending={isThreadSending}
+          isCompleted={isThreadCompleted}
+          contextPercent={contextPercent}
+        />
+      </div>
+
+      <div
+        className="resize-handle resize-handle-left"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整项目列表宽度"
+        tabIndex={0}
+        onMouseDown={handleSidebarResizeMouseDown}
+        style={{
+          gridColumn: '2 / 3',
+          visibility: sidebarVisible ? 'visible' : 'hidden',
+          pointerEvents: sidebarVisible ? 'auto' : 'none',
+        }}
+      >
+        <div className="resize-handle-line" />
+      </div>
 
       {/* 中间区域：多视图叠加，用 CSS 控制显隐（保持浏览器状态） */}
-      <div className="middle-area">
+      <div className="middle-area" style={{ gridColumn: '3 / 4', width: '100%', minWidth: 0 }}>
         {/* 外部浏览器打开时显示切换标签（支持多窗口） */}
         {browserWindows.size > 0 && (
           <div className="middle-tabs">
@@ -1170,6 +2159,13 @@ export default function App() {
               onUpdateField={providerSettings.updateField}
               guiPlusForm={guiPlusSettings.guiPlusForm}
               onUpdateGuiPlusField={guiPlusSettings.updateGuiPlusField}
+              themeMode={themeMode}
+              onThemeModeChange={setThemeMode}
+              projectRules={currentProjectRules}
+              onProjectRulesChange={(rules) => {
+                if (!tid) return
+                threadStore.updateThread(tid, { projectRules: rules })
+              }}
               onClose={() => { setShowSettings(false); setMiddleView('chat') }}
               workspace={currentWorkspace}
               projectId={tid}
@@ -1180,7 +2176,7 @@ export default function App() {
         {/* 聊天视图 */}
         <div className="middle-view" style={{ display: middleView === 'chat' || (middleView === 'settings' && !showSettings) ? 'flex' : 'none' }}>
           <ChatPanel
-            title={threadStore.activeThread?.title ?? '新项目'}
+            title={sidebarVisible ? (threadStore.activeThread?.title ?? '新项目') : ''}
             messages={messages}
             showStreamBubble={showStreamBubble}
             streamingContent={sessionStreamingContent}
@@ -1208,10 +2204,16 @@ export default function App() {
             queue={sessionQueue}
             onRemoveFromQueue={(id) => chat.removeFromQueue(sessionId, id)}
             editor={editor}
-            onEditorChange={handleEditorChange}
+            isSessionSending={(sid) => chat.isSending(sid)}
             selectedFileChange={selectedFileChange}
             onCloseDiff={() => setSelectedFile(null)}
-            selectedFileStatus={selectedFile ? (fileStatuses[selectedFile] || 'pending') : undefined}
+            selectedFileStatus={selectedFile
+              ? (stagedFileSet.has(selectedFile)
+                ? 'accepted'
+                : (unstagedFileSet.has(selectedFile)
+                  ? 'pending'
+                  : (fileStatuses[selectedFile] || 'pending')))
+              : undefined}
             onAcceptFile={handleAcceptFile}
             onRejectFile={handleRejectFile}
             showTerminal={showTerminal}
@@ -1219,53 +2221,79 @@ export default function App() {
             terminalCwd={currentWorkspace || undefined}
             onRollbackBeforeMsg={handleRollbackBeforeMsg}
             viewingFile={viewingFile}
+            viewingSelection={viewingSelection}
             viewingWorkspace={currentWorkspace || undefined}
             onCloseFileEditor={handleCloseFileEditor}
-            onFileSaved={() => { refreshWorkspaceTree(); refreshGitLog() }}
+            onFileSaved={() => {
+              queueProjectRefresh({
+                tree: true,
+                gitStatus: true,
+                gitLog: currentMode === 'agent',
+                liveDiff: currentMode === 'agent',
+              }, 0)
+            }}
+            onFileEdited={handleFileEdited}
             onViewDiffFromEditor={handleViewDiffFromEditor}
+            onOpenFileView={handleOpenFileView}
+            activeTaskStartedAt={activeTaskStartedAt}
           />
         </div>
       </div>
 
       {/* 拖拽调整中间/右侧面板大小的分隔条 */}
       <div
-        className="resize-handle"
+        className="resize-handle resize-handle-right"
         role="separator"
         aria-orientation="vertical"
         aria-label="调整面板大小"
         tabIndex={0}
         onMouseDown={handleResizeMouseDown}
+        style={{ gridColumn: '4 / 5' }}
       >
         <div className="resize-handle-line" />
       </div>
 
-      <DetailPanel
-        title={threadStore.activeThread?.title ?? '未选择项目'}
-        messageCount={messages.length}
-        providerLabel={
-          providerSettings.configuredProviders.length > 0 ? activeProviderLabel : undefined
-        }
-        contextPercent={contextPercent}
-        usedTokens={usedTokens}
-        maxTokens={maxTokens}
-        workspaceTree={workspaceTree}
-        fileChanges={fileChanges.length > 0 ? fileChanges : undefined}
-        selectedFile={selectedFile}
-        onSelectFile={setSelectedFile}
-        fileStatuses={fileStatuses}
-        onAcceptFile={handleAcceptFile}
-        onRejectFile={handleRejectFile}
-        onAcceptAll={handleAcceptAll}
-        onRejectAll={handleRejectAll}
-        gitVersions={gitVersions}
-        onGitRollback={handleGitRollback}
-        onLoadCommitFiles={handleLoadCommitFiles}
-        editor={editor}
-        workspace={currentWorkspace}
-        onRefreshTree={refreshWorkspaceTree}
-        onOpenFileView={handleOpenFileView}
-        viewingFile={viewingFile}
-      />
+      <div style={{ gridColumn: '5 / 6', minWidth: 0, minHeight: 0, width: '100%', display: 'flex', overflow: 'hidden' }}>
+        <DetailPanel
+          title={threadStore.activeThread?.title ?? '未选择项目'}
+          messageCount={messages.length}
+          providerLabel={
+            providerSettings.configuredProviders.length > 0 ? activeProviderLabel : undefined
+          }
+          contextPercent={contextPercent}
+          usedTokens={usedTokens}
+          maxTokens={maxTokens}
+          projectTokenStats={projectTokenStats}
+          workspaceTree={deferredWorkspaceTree}
+          fileChanges={deferredFileChanges.length > 0 ? deferredFileChanges : undefined}
+          selectedFile={selectedFile}
+          onSelectFile={setSelectedFile}
+          fileStatuses={fileStatuses}
+          onAcceptFile={handleAcceptFile}
+          onRejectFile={handleRejectFile}
+          onAcceptAll={handleAcceptAll}
+          onRejectAll={handleRejectAll}
+          stagedFiles={deferredGitStagedFiles}
+          unstagedFiles={deferredGitUnstagedFiles}
+          gitStatusLoaded={gitStatusLoaded}
+          onStageFile={handleAcceptFile}
+          onStageAll={handleAcceptAll}
+          gitVersions={gitVersions}
+          onGitRollback={handleGitRollback}
+          onLoadCommitFiles={handleLoadCommitFiles}
+          workspace={currentWorkspace}
+          onRefreshTree={() => {
+            queueProjectRefresh({
+              tree: true,
+              gitStatus: true,
+              gitLog: currentMode === 'agent',
+              liveDiff: currentMode === 'agent',
+            }, 0)
+          }}
+          onOpenFileView={handleOpenFileView}
+          viewingFile={viewingFile}
+        />
+      </div>
 
     </div>
   )

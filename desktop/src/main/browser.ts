@@ -1086,10 +1086,13 @@ function getMainWindow(): BrowserWindow | null {
 }
 
 function setMainWindowPriority(enabled: boolean) {
+  void enabled
   const mainWin = getMainWindow()
   if (!mainWin) return
-  mainWin.setAlwaysOnTop(enabled, 'floating')
-  if (enabled) mainWin.moveTop()
+  // 主窗口不再使用置顶策略，避免出现“始终在最前”的问题。
+  if (mainWin.isAlwaysOnTop()) {
+    mainWin.setAlwaysOnTop(false)
+  }
 }
 
 function syncMainWindowPriority() {

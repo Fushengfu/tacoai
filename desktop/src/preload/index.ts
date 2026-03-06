@@ -220,8 +220,20 @@ const tacoApi: TacoApi = {
     log: (cwd: string) =>
       ipcRenderer.invoke(IpcChannel.GIT_LOG, cwd),
 
+    status: (cwd: string) =>
+      ipcRenderer.invoke(IpcChannel.GIT_STATUS, cwd),
+
+    fileChange: (cwd: string, filePath: string) =>
+      ipcRenderer.invoke(IpcChannel.GIT_FILE_CHANGE, cwd, filePath),
+
     commit: (cwd: string, message: string) =>
       ipcRenderer.invoke(IpcChannel.GIT_COMMIT, cwd, message),
+
+    stageFiles: (cwd: string, filePaths: string[]) =>
+      ipcRenderer.invoke(IpcChannel.GIT_STAGE_FILES, cwd, filePaths),
+
+    stageAll: (cwd: string) =>
+      ipcRenderer.invoke(IpcChannel.GIT_STAGE_ALL, cwd),
 
     rollback: (cwd: string, hash: string) =>
       ipcRenderer.invoke(IpcChannel.GIT_ROLLBACK, cwd, hash),
@@ -242,6 +254,10 @@ const tacoApi: TacoApi = {
   notes: {
     list: (workspace: string, projectId?: string) =>
       ipcRenderer.invoke(IpcChannel.NOTES_LIST, workspace, projectId),
+    listTaskMemories: (workspace: string, projectId?: string) =>
+      ipcRenderer.invoke(IpcChannel.NOTES_TASK_MEMORIES_LIST, workspace, projectId),
+    deleteTaskMemory: (workspace: string, memoryId: string, projectId?: string) =>
+      ipcRenderer.invoke(IpcChannel.NOTES_TASK_MEMORY_DELETE, workspace, memoryId, projectId),
     save: (workspace: string, note: ProjectNote, projectId?: string) =>
       ipcRenderer.invoke(IpcChannel.NOTES_SAVE, workspace, note, projectId),
     delete: (workspace: string, noteId: string, projectId?: string) =>

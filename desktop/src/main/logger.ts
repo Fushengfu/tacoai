@@ -15,6 +15,9 @@ import { createHash } from 'node:crypto'
 /* ------------------------------------------------------------------ */
 
 const logDirs = new Map<string, string>()
+const cleanedAtByScope = new Map<string, number>()
+const LOG_RETENTION_MS = 24 * 60 * 60 * 1000 // 仅保留最近 24 小时
+const CLEANUP_COOLDOWN_MS = 5 * 60 * 1000
 
 function normalizeScope(scope?: string): string {
   if (!scope) return 'global'
@@ -27,10 +30,12 @@ function normalizeScope(scope?: string): string {
 function ensureLogDir(scope?: string) {
   const key = normalizeScope(scope)
   const cached = logDirs.get(key)
-  if (cached) return cached
-  const dir = path.join(app.getPath('userData'), 'logs', key)
-  fs.mkdirSync(dir, { recursive: true })
-  logDirs.set(key, dir)
+  const dir = cached ?? path.join(app.getPath('userData'), 'logs', key)
+  if (!cached) {
+    fs.mkdirSync(dir, { recursive: true })
+    logDirs.set(key, dir)
+  }
+  cleanupExpiredLogs(dir, key)
   return dir
 }
 
@@ -48,6 +53,47 @@ function appendLog(content: string, scope?: string) {
     fs.appendFileSync(getLogFile(scope), content + '\n', 'utf-8')
   } catch {
     // 写日志失败不应中断主流程
+  }
+}
+
+function cleanupExpiredLogs(dir: string, scopeKey: string) {
+  const now = Date.now()
+  const last = cleanedAtByScope.get(scopeKey) ?? 0
+  if (now - last < CLEANUP_COOLDOWN_MS) return
+  cleanedAtByScope.set(scopeKey, now)
+
+  try {
+    const files = fs.readdirSync(dir, { withFileTypes: true })
+    for (const entry of files) {
+      if (!entry.isFile()) continue
+      if (!entry.name.startsWith('taco-') || !entry.name.endsWith('.log')) continue
+      const filePath = path.join(dir, entry.name)
+      let ts = Number.NaN
+      const m = entry.name.match(/^taco-(\d{4})-(\d{2})-(\d{2})\.log$/)
+      if (m) {
+        const y = Number(m[1])
+        const mm = Number(m[2]) - 1
+        const d = Number(m[3])
+        // 文件名日期来自 toISOString()，按 UTC 解析可避免时区导致的提前清理
+        ts = Date.UTC(y, mm, d)
+      }
+      if (!Number.isFinite(ts)) {
+        try {
+          ts = fs.statSync(filePath).mtimeMs
+        } catch {
+          continue
+        }
+      }
+      if (now - ts > LOG_RETENTION_MS) {
+        try {
+          fs.unlinkSync(filePath)
+        } catch {
+          // ignore cleanup failures
+        }
+      }
+    }
+  } catch {
+    // ignore cleanup failures
   }
 }
 

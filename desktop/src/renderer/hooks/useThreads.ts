@@ -8,16 +8,21 @@ function migrateThreads(saved: Thread[]): Thread[] {
   const validProviders = new Set(providers.map((p) => p.id))
   return saved.map((t) => {
     const provider = t.provider && validProviders.has(t.provider) ? t.provider : undefined
+    const titleLocked = Boolean(t.titleLocked)
+    const projectRules = typeof t.projectRules === 'string' ? t.projectRules : undefined
     if (!t.sessions || t.sessions.length === 0) {
       // 使用 threadId 作为首个 sessionId，这样旧的消息存储键无需迁移
       return {
         ...t,
         provider,
+        titleLocked,
+        projectRules,
         sessions: [{ id: t.id, title: '会话 1', createdAt: t.updatedAt }],
         activeSessionId: t.id,
       }
     }
-    return provider === t.provider ? t : { ...t, provider }
+    if (provider === t.provider && titleLocked === Boolean(t.titleLocked) && projectRules === t.projectRules) return t
+    return { ...t, provider, titleLocked, projectRules }
   })
 }
 
@@ -68,6 +73,7 @@ export function useThreads() {
     const thread: Thread = {
       id,
       title,
+      titleLocked: false,
       updatedAt: Date.now(),
       provider,
       sessions: [session],
@@ -91,7 +97,7 @@ export function useThreads() {
     const title = editingTitle.trim()
     if (title) {
       setThreads((prev) =>
-        prev.map((t) => (t.id === threadId ? { ...t, title, updatedAt: Date.now() } : t))
+        prev.map((t) => (t.id === threadId ? { ...t, title, titleLocked: true, updatedAt: Date.now() } : t))
       )
     }
     setEditingThreadId(null)
@@ -112,6 +118,20 @@ export function useThreads() {
   /** 局部更新某个线程字段 */
   function updateThread(id: string, patch: Partial<Omit<Thread, 'id'>>) {
     setThreads((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)))
+  }
+
+  /** 调整项目顺序（拖拽排序） */
+  function reorderThread(sourceId: string, targetId: string) {
+    if (!sourceId || !targetId || sourceId === targetId) return
+    setThreads((prev) => {
+      const from = prev.findIndex((t) => t.id === sourceId)
+      const to = prev.findIndex((t) => t.id === targetId)
+      if (from < 0 || to < 0) return prev
+      const next = [...prev]
+      const [moved] = next.splice(from, 1)
+      next.splice(to, 0, moved)
+      return next
+    })
   }
 
   /** 确保当前有活跃项目，没有则创建，返回线程 id */
@@ -188,6 +208,7 @@ export function useThreads() {
     cancelRename,
     deleteThread,
     updateThread,
+    reorderThread,
     ensureActiveThread,
     createSession,
     switchSession,

@@ -1,8 +1,8 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { DragBar } from './DragBar'
 import type { FileChangeInfo, FileChangeStatus, GitVersionCommit } from '../types'
-import type { FileTreeEntry, EditorId } from '../../shared/ipc'
-import { editorCommands } from '../../shared/ipc'
+import type { FileTreeEntry } from '../../shared/ipc'
+import type { ProjectTokenStats } from '../hooks/useChat'
 import { computeDiff, diffStats } from '../lib/diff'
 
 type DetailPanelProps = {
@@ -12,6 +12,8 @@ type DetailPanelProps = {
   contextPercent: number
   usedTokens: number
   maxTokens: number
+  /** 当前项目累计 token 统计 */
+  projectTokenStats?: ProjectTokenStats
   /** 完整工作区目录树 */
   workspaceTree?: FileTreeEntry[]
   /** Agent 模式的文件变更列表 */
@@ -30,14 +32,22 @@ type DetailPanelProps = {
   onAcceptAll: () => void
   /** 撤销全部 */
   onRejectAll: () => void
+  /** Git 已暂存文件列表（相对工作区路径） */
+  stagedFiles?: string[]
+  /** Git 未暂存文件列表（相对工作区路径） */
+  unstagedFiles?: string[]
+  /** Git 状态是否已经完成过一次加载 */
+  gitStatusLoaded?: boolean
+  /** Git 暂存单个文件 */
+  onStageFile?: (filePath: string) => void
+  /** Git 暂存全部 */
+  onStageAll?: () => void
   /** Git 版本历史 */
   gitVersions?: GitVersionCommit[]
   /** Git 回退到指定提交 */
   onGitRollback?: (hash: string) => void
   /** 加载某个提交的变更文件列表 */
   onLoadCommitFiles?: (hash: string) => Promise<string[]>
-  /** 编辑器 */
-  editor?: EditorId
   /** 工作空间路径 */
   workspace?: string
   /** 刷新目录树 */
@@ -58,58 +68,154 @@ function formatTokens(n: number): string {
 /*  文件类型图标                                                        */
 /* ------------------------------------------------------------------ */
 
-function getFileIcon(name: string): { color: string; label: string } {
-  const ext = name.includes('.') ? name.split('.').pop()?.toLowerCase() : ''
+type TreeIcon = { color: string; label: string }
+
+const SPECIAL_FILE_ICONS: Record<string, TreeIcon> = {
+  '.gitignore': { color: '#f54d27', label: 'GI' },
+  '.gitattributes': { color: '#f54d27', label: 'GA' },
+  '.editorconfig': { color: '#8f8f8f', label: 'ED' },
+  '.npmrc': { color: '#cb3837', label: 'NP' },
+  '.prettierrc': { color: '#f7b93e', label: 'PR' },
+  '.eslintrc': { color: '#4b32c3', label: 'ES' },
+  '.env': { color: '#ecd53f', label: 'EN' },
+  '.env.local': { color: '#ecd53f', label: 'EL' },
+  '.env.example': { color: '#ecd53f', label: 'EE' },
+  'dockerfile': { color: '#2496ed', label: 'DK' },
+  'docker-compose.yml': { color: '#2496ed', label: 'DC' },
+  'docker-compose.yaml': { color: '#2496ed', label: 'DC' },
+  'makefile': { color: '#6d8086', label: 'MK' },
+  'license': { color: '#d4a853', label: 'LC' },
+  'readme.md': { color: '#519aba', label: 'RD' },
+  'package.json': { color: '#cb3837', label: 'PK' },
+  'package-lock.json': { color: '#cb3837', label: 'PL' },
+  'pnpm-lock.yaml': { color: '#f8ad00', label: 'PN' },
+  'yarn.lock': { color: '#2c8ebb', label: 'YR' },
+  'bun.lockb': { color: '#f2ce77', label: 'BN' },
+  'go.mod': { color: '#00add8', label: 'GM' },
+  'go.sum': { color: '#00add8', label: 'GS' },
+  'cargo.toml': { color: '#dea584', label: 'CT' },
+  'cargo.lock': { color: '#dea584', label: 'CL' },
+  'requirements.txt': { color: '#3572a5', label: 'RQ' },
+  'pyproject.toml': { color: '#3572a5', label: 'PP' },
+  'pipfile': { color: '#3572a5', label: 'PF' },
+  'gemfile': { color: '#cc342d', label: 'GF' },
+  'composer.json': { color: '#8d6748', label: 'CM' },
+  'composer.lock': { color: '#8d6748', label: 'CK' },
+  'pom.xml': { color: '#b07219', label: 'PM' },
+  'build.gradle': { color: '#3f8e99', label: 'GR' },
+  'build.gradle.kts': { color: '#3f8e99', label: 'GR' },
+  'tsconfig.json': { color: '#3178c6', label: 'TC' },
+  'vite.config.ts': { color: '#646cff', label: 'VT' },
+  'vite.config.js': { color: '#646cff', label: 'VT' },
+  'webpack.config.js': { color: '#8ed6fb', label: 'WP' },
+  'rollup.config.js': { color: '#ec4a3f', label: 'RP' },
+  'tailwind.config.js': { color: '#38bdf8', label: 'TW' },
+  'postcss.config.js': { color: '#dd3a0a', label: 'PC' },
+  'next.config.js': { color: '#111111', label: 'NX' },
+  'nuxt.config.ts': { color: '#00dc82', label: 'NU' },
+  'jest.config.js': { color: '#99424f', label: 'JT' },
+  'vitest.config.ts': { color: '#729b1b', label: 'VS' },
+  'biome.json': { color: '#60a5fa', label: 'BM' },
+}
+
+const EXT_FILE_ICONS: Record<string, TreeIcon> = {
+  ts: { color: '#3178c6', label: 'TS' },
+  tsx: { color: '#3178c6', label: 'TX' },
+  js: { color: '#f7df1e', label: 'JS' },
+  jsx: { color: '#f7df1e', label: 'JX' },
+  mjs: { color: '#f7df1e', label: 'JS' },
+  cjs: { color: '#f7df1e', label: 'JS' },
+  json: { color: '#cb8e3e', label: 'JS' },
+  jsonc: { color: '#cb8e3e', label: 'JC' },
+  html: { color: '#e34c26', label: 'HT' },
+  htm: { color: '#e34c26', label: 'HT' },
+  css: { color: '#563d7c', label: 'CS' },
+  scss: { color: '#c6538c', label: 'SC' },
+  less: { color: '#1d365d', label: 'LS' },
+  vue: { color: '#41b883', label: 'VU' },
+  svelte: { color: '#ff3e00', label: 'SV' },
+  md: { color: '#519aba', label: 'MD' },
+  mdx: { color: '#519aba', label: 'MX' },
+  txt: { color: '#8b8b8b', label: 'TX' },
+  log: { color: '#6d8086', label: 'LG' },
+  py: { color: '#3572a5', label: 'PY' },
+  rb: { color: '#cc342d', label: 'RB' },
+  rs: { color: '#dea584', label: 'RS' },
+  rl: { color: '#dea584', label: 'RS' },
+  go: { color: '#00add8', label: 'GO' },
+  java: { color: '#b07219', label: 'JV' },
+  class: { color: '#b07219', label: 'JV' },
+  jar: { color: '#b07219', label: 'JV' },
+  c: { color: '#555555', label: 'C' },
+  cpp: { color: '#f34b7d', label: 'CP' },
+  cc: { color: '#f34b7d', label: 'CP' },
+  cxx: { color: '#f34b7d', label: 'CP' },
+  hxx: { color: '#a074c4', label: 'HP' },
+  hh: { color: '#a074c4', label: 'HP' },
+  hpp: { color: '#a074c4', label: 'HP' },
+  h: { color: '#a074c4', label: 'H' },
+  php: { color: '#777bb4', label: 'PH' },
+  phtml: { color: '#777bb4', label: 'PH' },
+  phar: { color: '#777bb4', label: 'PH' },
+  inc: { color: '#777bb4', label: 'PH' },
+  cs: { color: '#178600', label: 'CS' },
+  scala: { color: '#dc322f', label: 'SC' },
+  r: { color: '#276dc3', label: 'R' },
+  swift: { color: '#f05138', label: 'SW' },
+  kt: { color: '#a97bff', label: 'KT' },
+  kts: { color: '#a97bff', label: 'KT' },
+  dart: { color: '#00b4ab', label: 'DA' },
+  sh: { color: '#89e051', label: 'SH' },
+  bash: { color: '#89e051', label: 'SH' },
+  zsh: { color: '#89e051', label: 'SH' },
+  yml: { color: '#cb171e', label: 'YM' },
+  yaml: { color: '#cb171e', label: 'YM' },
+  toml: { color: '#9c4221', label: 'TM' },
+  ini: { color: '#9c4221', label: 'IN' },
+  env: { color: '#ecd53f', label: 'EN' },
+  xml: { color: '#0060ac', label: 'XM' },
+  sql: { color: '#e38c00', label: 'SQ' },
+  graphql: { color: '#e535ab', label: 'GQ' },
+  gql: { color: '#e535ab', label: 'GQ' },
+  lock: { color: '#6d8086', label: 'LK' },
+  map: { color: '#6d8086', label: 'MP' },
+  wasm: { color: '#654ff0', label: 'WA' },
+  svg: { color: '#ffb13b', label: 'SG' },
+  png: { color: '#a074c4', label: 'IM' },
+  jpg: { color: '#a074c4', label: 'IM' },
+  jpeg: { color: '#a074c4', label: 'IM' },
+  gif: { color: '#a074c4', label: 'IM' },
+  webp: { color: '#a074c4', label: 'IM' },
+  bmp: { color: '#a074c4', label: 'IM' },
+  ico: { color: '#a074c4', label: 'IM' },
+}
+
+function getFileIcon(name: string): TreeIcon {
   const lowerName = name.toLowerCase()
+  const exact = SPECIAL_FILE_ICONS[lowerName]
+  if (exact) return exact
+  if (lowerName.startsWith('.env.')) return { color: '#ecd53f', label: 'EN' }
+  const ext = lowerName.includes('.') ? lowerName.split('.').pop() ?? '' : ''
+  return EXT_FILE_ICONS[ext] ?? { color: '#6d8086', label: 'FI' }
+}
 
-  // 特殊文件名
-  if (lowerName === '.gitignore') return { color: '#f54d27', label: 'GI' }
-  if (lowerName.startsWith('.env')) return { color: '#ecd53f', label: 'EN' }
-  if (lowerName === 'dockerfile') return { color: '#384d54', label: 'DK' }
-  if (lowerName === 'makefile') return { color: '#6d8086', label: 'MK' }
-  if (lowerName === 'license') return { color: '#d4a853', label: 'LI' }
-
-  switch (ext) {
-    case 'ts': return { color: '#3178c6', label: 'TS' }
-    case 'tsx': return { color: '#3178c6', label: 'TX' }
-    case 'js': return { color: '#f7df1e', label: 'JS' }
-    case 'jsx': return { color: '#f7df1e', label: 'JX' }
-    case 'mjs': case 'cjs': return { color: '#f7df1e', label: 'JS' }
-    case 'json': return { color: '#cb8e3e', label: '{ }' }
-    case 'css': return { color: '#563d7c', label: 'CS' }
-    case 'scss': return { color: '#c6538c', label: 'SC' }
-    case 'less': return { color: '#1d365d', label: 'LE' }
-    case 'html': case 'htm': return { color: '#e34c26', label: '<>' }
-    case 'vue': return { color: '#41b883', label: 'VU' }
-    case 'svelte': return { color: '#ff3e00', label: 'SV' }
-    case 'md': case 'mdx': return { color: '#519aba', label: 'MD' }
-    case 'txt': return { color: '#8b8b8b', label: 'TX' }
-    case 'py': return { color: '#3572a5', label: 'PY' }
-    case 'rb': return { color: '#cc342d', label: 'RB' }
-    case 'rs': return { color: '#dea584', label: 'RS' }
-    case 'go': return { color: '#00add8', label: 'GO' }
-    case 'java': return { color: '#b07219', label: 'JA' }
-    case 'c': return { color: '#555555', label: 'C' }
-    case 'cpp': case 'cc': case 'cxx': return { color: '#f34b7d', label: 'C+' }
-    case 'h': case 'hpp': return { color: '#a074c4', label: 'H' }
-    case 'swift': return { color: '#f05138', label: 'SW' }
-    case 'kt': case 'kts': return { color: '#a97bff', label: 'KT' }
-    case 'dart': return { color: '#00b4ab', label: 'DA' }
-    case 'svg': return { color: '#ffb13b', label: 'SV' }
-    case 'png': case 'jpg': case 'jpeg': case 'gif': case 'webp': case 'ico':
-      return { color: '#a074c4', label: 'IM' }
-    case 'sh': case 'bash': case 'zsh': return { color: '#89e051', label: 'SH' }
-    case 'yml': case 'yaml': return { color: '#cb171e', label: 'YM' }
-    case 'toml': return { color: '#9c4221', label: 'TM' }
-    case 'xml': return { color: '#0060ac', label: 'XM' }
-    case 'sql': return { color: '#e38c00', label: 'SQ' }
-    case 'graphql': case 'gql': return { color: '#e535ab', label: 'GQ' }
-    case 'lock': return { color: '#6d8086', label: 'LK' }
-    case 'map': return { color: '#6d8086', label: 'MP' }
-    case 'wasm': return { color: '#654ff0', label: 'WA' }
-    case 'log': return { color: '#6d8086', label: 'LG' }
-    default: return { color: '#6d8086', label: '··' }
-  }
+function FolderSvg({ open }: { open: boolean }) {
+  const fill = '#4a5b73'
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      {open ? (
+        <path
+          d="M2.8 8.4a2.4 2.4 0 0 1 2.4-2.4h5.1l1.9 2h7.8a2.4 2.4 0 0 1 2.3 3.1l-1.7 6.1a2.4 2.4 0 0 1-2.3 1.7H5.1a2.4 2.4 0 0 1-2.4-2.4z"
+          fill={fill}
+        />
+      ) : (
+        <path
+          d="M3 7.8A2.8 2.8 0 0 1 5.8 5h4.7l2 2h5.5A2.8 2.8 0 0 1 20.8 9.8v7.4A2.8 2.8 0 0 1 18 20H5.8A2.8 2.8 0 0 1 3 17.2z"
+          fill={fill}
+        />
+      )}
+    </svg>
+  )
 }
 
 function normalizeSlashPath(input: string): string {
@@ -171,28 +277,10 @@ function buildTreeFromPaths(changes: FileChangeInfo[]): FileTreeEntry[] {
     }
   }
 
-  // 折叠只有一个子目录的中间节点（如 src → renderer → App.tsx 折叠为 src/renderer）
-  function collapse(node: TmpNode): TmpNode {
-    if (node.isDirectory && node.children.size === 1) {
-      const [, child] = [...node.children.entries()][0]
-      if (child.isDirectory) {
-        const merged: TmpNode = {
-          name: node.name ? `${node.name}/${child.name}` : child.name,
-          path: child.path,
-          isDirectory: true,
-          children: child.children,
-        }
-        return collapse(merged)
-      }
-    }
-    return node
-  }
-
   // 转换为 FileTreeEntry[]
   function toEntries(node: TmpNode): FileTreeEntry[] {
-    const collapsed = collapse(node)
     const entries: FileTreeEntry[] = []
-    for (const child of collapsed.children.values()) {
+    for (const child of node.children.values()) {
       if (child.isDirectory) {
         entries.push({
           name: child.name,
@@ -215,6 +303,38 @@ function buildTreeFromPaths(changes: FileChangeInfo[]): FileTreeEntry[] {
   return toEntries(root)
 }
 
+function buildTreeFromFilePaths(paths: string[]): FileTreeEntry[] {
+  return buildTreeFromPaths(
+    (paths ?? [])
+      .map((filePath) => normalizeSlashPath(filePath))
+      .filter(Boolean)
+      .map((filePath) => ({ filePath, oldContent: null, newContent: null })),
+  )
+}
+
+type FileDiffStat = {
+  added: number
+  removed: number
+}
+
+function countLines(text: string | null): number {
+  if (!text) return 0
+  return text.split('\n').length
+}
+
+function scheduleNonBlocking(task: () => void): void {
+  const win = window as Window & {
+    requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number
+  }
+  if (typeof win.requestIdleCallback === 'function') {
+    win.requestIdleCallback(() => task(), { timeout: 120 })
+    return
+  }
+  window.setTimeout(task, 0)
+}
+
+const MAX_RENDER_CHANGE_PATHS = 2_500
+
 /* ------------------------------------------------------------------ */
 /*  变更文件树节点组件（用于变更面板的目录树展示）                            */
 /* ------------------------------------------------------------------ */
@@ -226,6 +346,7 @@ function ChangeTreeNode({
   viewingPath,
   onFileClick,
   changesMap,
+  diffStatsMap,
   fileStatuses,
   statusFilter,
   onAcceptFile,
@@ -237,12 +358,13 @@ function ChangeTreeNode({
   viewingPath?: string | null
   onFileClick: (path: string) => void
   changesMap: Map<string, FileChangeInfo>
+  diffStatsMap: Map<string, FileDiffStat>
   fileStatuses: Record<string, FileChangeStatus>
   statusFilter: 'pending' | 'accepted' | 'rejected'
   onAcceptFile: (filePath: string) => void
   onRejectFile: (filePath: string) => void
 }) {
-  const [expanded, setExpanded] = useState(true)
+  const [expanded, setExpanded] = useState(depth < 1)
 
   if (entry.isDirectory) {
     return (
@@ -253,6 +375,9 @@ function ChangeTreeNode({
           onClick={() => setExpanded((p) => !p)}
         >
           <span className={`ws-tree-arrow ${expanded ? 'open' : ''}`}>›</span>
+          <span className={`ws-folder-icon ${expanded ? 'open' : ''}`}>
+            <FolderSvg open={expanded} />
+          </span>
           <span className="change-tree-dir-name">{entry.name}</span>
         </div>
         {expanded && entry.children?.map((child) => (
@@ -264,6 +389,7 @@ function ChangeTreeNode({
             viewingPath={viewingPath}
             onFileClick={onFileClick}
             changesMap={changesMap}
+            diffStatsMap={diffStatsMap}
             fileStatuses={fileStatuses}
             statusFilter={statusFilter}
             onAcceptFile={onAcceptFile}
@@ -276,13 +402,15 @@ function ChangeTreeNode({
 
   // 文件节点
   const change = changesMap.get(entry.path)
-  if (!change) return null
 
   const isActive = selectedPath === entry.path || viewingPath === entry.path
   const icon = getFileIcon(entry.name)
-  const isDeleted = change.newContent === null
-  const isNew = change.oldContent === null
-  const stats = (!isNew && !isDeleted) ? diffStats(computeDiff(change.oldContent, change.newContent)) : null
+  const isDeleted = Boolean(change && change.newContent === null)
+  const isNew = Boolean(change && change.oldContent === null && change.newContent !== null)
+  const stats = diffStatsMap.get(entry.path) ?? null
+  const parentPath = entry.path.includes('/') ? entry.path.slice(0, entry.path.lastIndexOf('/')) : ''
+  const changeTypeLabel = isNew ? '新增' : isDeleted ? '删除' : '修改'
+  const statusLabel = statusFilter === 'pending' ? '未暂存' : statusFilter === 'accepted' ? '已暂存' : '已撤销'
 
   return (
     <div
@@ -291,12 +419,17 @@ function ChangeTreeNode({
       onClick={() => onFileClick(entry.path)}
       title={entry.path}
     >
-      <span className={`change-file-dot ${statusFilter}`} />
+      <span className={`change-file-status-chip ${statusFilter}`}>{statusLabel}</span>
       <span className="ws-file-icon" style={{ background: icon.color }}>{icon.label}</span>
-      <span className="change-file-name">{entry.name}</span>
-      <span className={`ws-file-change-badge ${isNew ? 'added' : isDeleted ? 'deleted' : 'modified'}`}>
-        {isNew ? 'A' : isDeleted ? 'D' : 'M'}
+      <span className="change-file-main">
+        <span className="change-file-name">{entry.name}</span>
+        {parentPath && <span className="change-file-parent">{parentPath}</span>}
       </span>
+      {change && (
+        <span className={`ws-file-change-badge ${isNew ? 'added' : isDeleted ? 'deleted' : 'modified'}`}>
+          {changeTypeLabel}
+        </span>
+      )}
       {stats && (
         <span className="ws-file-stats">
           {stats.added > 0 && <span className="stat-add">+{stats.added}</span>}
@@ -306,16 +439,8 @@ function ChangeTreeNode({
       {statusFilter === 'pending' && (
         <span className="change-file-actions">
           <button type="button" className="ws-file-action-btn accept"
-            onClick={(e) => { e.stopPropagation(); onAcceptFile(entry.path) }} title="保存">✓</button>
-          <button type="button" className="ws-file-action-btn reject"
-            onClick={(e) => { e.stopPropagation(); onRejectFile(entry.path) }} title="撤销">✗</button>
+            onClick={(e) => { e.stopPropagation(); onAcceptFile(entry.path) }} title="暂存">暂存</button>
         </span>
-      )}
-      {statusFilter === 'accepted' && (
-        <span className="ws-file-status-icon accepted">✓</span>
-      )}
-      {statusFilter === 'rejected' && (
-        <span className="ws-file-status-icon rejected">✗</span>
       )}
     </div>
   )
@@ -332,6 +457,10 @@ function WsTreeNode({
   viewingPath,
   onFileClick,
   changesMap,
+  diffStatsMap,
+  changedPathSet,
+  stagedPathSet,
+  unstagedPathSet,
   fileStatuses,
   onAcceptFile,
   onRejectFile,
@@ -345,11 +474,15 @@ function WsTreeNode({
   /** 文件点击回调（统一处理变更文件和普通文件） */
   onFileClick: (path: string) => void
   changesMap: Map<string, FileChangeInfo>
+  diffStatsMap: Map<string, FileDiffStat>
+  changedPathSet: Set<string>
+  stagedPathSet: Set<string>
+  unstagedPathSet: Set<string>
   fileStatuses: Record<string, FileChangeStatus>
   onAcceptFile: (filePath: string) => void
   onRejectFile: (filePath: string) => void
 }) {
-  const [expanded, setExpanded] = useState(depth < 2)
+  const [expanded, setExpanded] = useState(depth < 1)
 
   if (entry.isDirectory) {
     return (
@@ -360,6 +493,9 @@ function WsTreeNode({
           onClick={() => setExpanded((p) => !p)}
         >
           <span className={`ws-tree-arrow ${expanded ? 'open' : ''}`}>›</span>
+          <span className={`ws-folder-icon ${expanded ? 'open' : ''}`}>
+            <FolderSvg open={expanded} />
+          </span>
           <span className="ws-tree-dir-name">{entry.name}</span>
         </div>
         {expanded && entry.children?.map((child) => (
@@ -371,6 +507,10 @@ function WsTreeNode({
             viewingPath={viewingPath}
             onFileClick={onFileClick}
             changesMap={changesMap}
+            diffStatsMap={diffStatsMap}
+            changedPathSet={changedPathSet}
+            stagedPathSet={stagedPathSet}
+            unstagedPathSet={unstagedPathSet}
             fileStatuses={fileStatuses}
             onAcceptFile={onAcceptFile}
             onRejectFile={onRejectFile}
@@ -382,12 +522,21 @@ function WsTreeNode({
 
   // 文件节点
   const change = changesMap.get(entry.path)
-  const isChanged = !!change
+  const hasDiff = !!change
+  const isChanged = hasDiff || changedPathSet.has(entry.path)
   const isActive = selectedPath === entry.path || viewingPath === entry.path
   const status: FileChangeStatus = (
-    fileStatuses[entry.path]
-    ?? fileStatuses[entry.path.replace(/\//g, '\\')]
-    ?? 'pending'
+    stagedPathSet.has(entry.path)
+      ? 'accepted'
+      : (
+        unstagedPathSet.has(entry.path)
+          ? 'pending'
+          : (
+            fileStatuses[entry.path]
+            ?? fileStatuses[entry.path.replace(/\//g, '\\')]
+            ?? 'pending'
+          )
+      )
   )
   const icon = getFileIcon(entry.name)
 
@@ -397,10 +546,12 @@ function WsTreeNode({
     if (change.oldContent === null) changeBadge = { label: 'A', cls: 'added' }
     else if (change.newContent === null) changeBadge = { label: 'D', cls: 'deleted' }
     else changeBadge = { label: 'M', cls: 'modified' }
+  } else if (isChanged) {
+    changeBadge = { label: 'M', cls: 'modified' }
   }
 
   // diff 统计（仅变更文件）
-  const stats = change ? diffStats(computeDiff(change.oldContent, change.newContent)) : null
+  const stats = diffStatsMap.get(entry.path) ?? null
 
   return (
     <div
@@ -433,14 +584,16 @@ function WsTreeNode({
             type="button"
             className="ws-file-action-btn accept"
             onClick={(e) => { e.stopPropagation(); onAcceptFile(entry.path) }}
-            title="保存"
+            title="暂存"
           >✓</button>
-          <button
-            type="button"
-            className="ws-file-action-btn reject"
-            onClick={(e) => { e.stopPropagation(); onRejectFile(entry.path) }}
-            title="撤销"
-          >✗</button>
+          {hasDiff && (
+            <button
+              type="button"
+              className="ws-file-action-btn reject"
+              onClick={(e) => { e.stopPropagation(); onRejectFile(entry.path) }}
+              title="撤销"
+            >✗</button>
+          )}
         </span>
       )}
       {isChanged && status === 'accepted' && (
@@ -464,6 +617,7 @@ export function DetailPanel({
   contextPercent,
   usedTokens,
   maxTokens,
+  projectTokenStats,
   workspaceTree,
   fileChanges,
   selectedFile,
@@ -473,10 +627,14 @@ export function DetailPanel({
   onRejectFile,
   onAcceptAll,
   onRejectAll,
+  stagedFiles,
+  unstagedFiles,
+  gitStatusLoaded = false,
+  onStageFile,
+  onStageAll,
   gitVersions,
   onGitRollback,
   onLoadCommitFiles,
-  editor,
   workspace,
   onRefreshTree,
   onOpenFileView,
@@ -505,14 +663,6 @@ export function DetailPanel({
     try { await onGitRollback(hash) } finally { setRollingBack(null) }
   }
 
-  const readStatus = useCallback((filePath: string): FileChangeStatus => {
-    return (
-      fileStatuses[filePath]
-      ?? fileStatuses[filePath.replace(/\//g, '\\')]
-      ?? 'pending'
-    )
-  }, [fileStatuses])
-
   // 去重合并文件变更
   const dedupedChanges = useMemo(() => {
     if (!fileChanges || fileChanges.length === 0) return []
@@ -537,14 +687,142 @@ export function DetailPanel({
     return m
   }, [dedupedChanges])
 
-  const hasChanges = dedupedChanges.length > 0
+  const diffStatsJobSeqRef = useRef(0)
+  const [asyncDiffStats, setAsyncDiffStats] = useState<Record<string, FileDiffStat>>({})
+  useEffect(() => {
+    const seq = ++diffStatsJobSeqRef.current
+    const base: Record<string, FileDiffStat> = {}
+    const modifyTargets: FileChangeInfo[] = []
 
-  // pending 文件数
-  const pendingCount = useMemo(() => {
-    return dedupedChanges.filter(
-      (fc) => readStatus(fc.filePath) === 'pending'
-    ).length
-  }, [dedupedChanges, readStatus])
+    for (const fc of dedupedChanges) {
+      if (fc.oldContent === null && fc.newContent !== null) {
+        base[fc.filePath] = { added: countLines(fc.newContent), removed: 0 }
+        continue
+      }
+      if (fc.oldContent !== null && fc.newContent === null) {
+        base[fc.filePath] = { added: 0, removed: countLines(fc.oldContent) }
+        continue
+      }
+      if (fc.oldContent !== null && fc.newContent !== null) {
+        modifyTargets.push(fc)
+      }
+    }
+
+    setAsyncDiffStats(base)
+    if (modifyTargets.length === 0) return
+
+    let i = 0
+    const CHUNK_SIZE = 1
+    const runChunk = () => {
+      if (seq !== diffStatsJobSeqRef.current) return
+      const end = Math.min(i + CHUNK_SIZE, modifyTargets.length)
+      const partial: Record<string, FileDiffStat> = {}
+      for (; i < end; i++) {
+        const fc = modifyTargets[i]
+        try {
+          const oldText = fc.oldContent ?? ''
+          const newText = fc.newContent ?? ''
+          // 极大文本退化为近似统计，避免阻塞主线程。
+          if ((oldText.length + newText.length) > 180_000) {
+            const oldLines = countLines(oldText)
+            const newLines = countLines(newText)
+            partial[fc.filePath] = {
+              added: Math.max(0, newLines - oldLines),
+              removed: Math.max(0, oldLines - newLines),
+            }
+          } else {
+            partial[fc.filePath] = diffStats(computeDiff(oldText, newText))
+          }
+        } catch {
+          partial[fc.filePath] = { added: 0, removed: 0 }
+        }
+      }
+      if (Object.keys(partial).length > 0) {
+        setAsyncDiffStats((prev) => {
+          if (seq !== diffStatsJobSeqRef.current) return prev
+          return { ...prev, ...partial }
+        })
+      }
+      if (i < modifyTargets.length) {
+        scheduleNonBlocking(runChunk)
+      }
+    }
+
+    scheduleNonBlocking(runChunk)
+    return () => {
+      if (seq === diffStatsJobSeqRef.current) {
+        diffStatsJobSeqRef.current++
+      }
+    }
+  }, [dedupedChanges])
+
+  const diffStatsMap = useMemo(() => {
+    const map = new Map<string, FileDiffStat>()
+    for (const [path, stats] of Object.entries(asyncDiffStats)) {
+      map.set(path, stats)
+    }
+    return map
+  }, [asyncDiffStats])
+
+  const normalizedUnstaged = useMemo(() => {
+    const seen = new Set<string>()
+    for (const rawPath of unstagedFiles ?? []) {
+      const normalized = normalizeWorkspaceRelativePath(rawPath, workspace)
+      if (normalized) seen.add(normalized)
+    }
+    return Array.from(seen).sort((a, b) => a.localeCompare(b))
+  }, [unstagedFiles, workspace])
+
+  const normalizedStaged = useMemo(() => {
+    const seen = new Set<string>()
+    for (const rawPath of stagedFiles ?? []) {
+      const normalized = normalizeWorkspaceRelativePath(rawPath, workspace)
+      if (normalized) seen.add(normalized)
+    }
+    return Array.from(seen).sort((a, b) => a.localeCompare(b))
+  }, [stagedFiles, workspace])
+
+  const effectiveUnstaged = useMemo(() => {
+    if (normalizedUnstaged.length > 0 || normalizedStaged.length > 0) return normalizedUnstaged
+    if (gitStatusLoaded) return []
+    const fallback = dedupedChanges.map((fc) => fc.filePath).filter(Boolean)
+    return Array.from(new Set(fallback)).sort((a, b) => a.localeCompare(b))
+  }, [normalizedUnstaged, normalizedStaged, dedupedChanges, gitStatusLoaded])
+
+  const allDisplayChangePaths = useMemo(() => {
+    const set = new Set<string>()
+    for (const p of effectiveUnstaged) set.add(p)
+    for (const p of normalizedStaged) set.add(p)
+    if (set.size === 0 && !gitStatusLoaded) {
+      for (const fc of dedupedChanges) set.add(fc.filePath)
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b))
+  }, [effectiveUnstaged, normalizedStaged, dedupedChanges, gitStatusLoaded])
+  const displayChangePaths = useMemo(
+    () => allDisplayChangePaths.slice(0, MAX_RENDER_CHANGE_PATHS),
+    [allDisplayChangePaths],
+  )
+  const hiddenChangePathsCount = Math.max(0, allDisplayChangePaths.length - displayChangePaths.length)
+  const diffablePathSet = useMemo(
+    () => new Set(dedupedChanges.map((fc) => fc.filePath)),
+    [dedupedChanges],
+  )
+  const changedPathSet = useMemo(
+    () => new Set(displayChangePaths),
+    [displayChangePaths],
+  )
+  const unstagedPathSet = useMemo(
+    () => new Set(effectiveUnstaged),
+    [effectiveUnstaged],
+  )
+  const stagedPathSet = useMemo(
+    () => new Set(normalizedStaged),
+    [normalizedStaged],
+  )
+
+  const hasChanges = allDisplayChangePaths.length > 0
+  const unstagedCount = effectiveUnstaged.length
+  const stagedCount = normalizedStaged.length
 
   const hasTree = workspaceTree && workspaceTree.length > 0
 
@@ -561,24 +839,8 @@ export function DetailPanel({
     return hasTree ? countFiles(workspaceTree) : 0
   }, [workspaceTree, hasTree])
 
-  // 按状态分组变更文件
-  const pendingChanges = useMemo(
-    () => dedupedChanges.filter((fc) => readStatus(fc.filePath) === 'pending'),
-    [dedupedChanges, readStatus],
-  )
-  const acceptedChanges = useMemo(
-    () => dedupedChanges.filter((fc) => readStatus(fc.filePath) === 'accepted'),
-    [dedupedChanges, readStatus],
-  )
-  const rejectedChanges = useMemo(
-    () => dedupedChanges.filter((fc) => readStatus(fc.filePath) === 'rejected'),
-    [dedupedChanges, readStatus],
-  )
-
-  // 为每个状态分组构建目录树
-  const pendingTree = useMemo(() => buildTreeFromPaths(pendingChanges), [pendingChanges])
-  const acceptedTree = useMemo(() => buildTreeFromPaths(acceptedChanges), [acceptedChanges])
-  const rejectedTree = useMemo(() => buildTreeFromPaths(rejectedChanges), [rejectedChanges])
+  const unstagedTree = useMemo(() => buildTreeFromFilePaths(effectiveUnstaged), [effectiveUnstaged])
+  const stagedTree = useMemo(() => buildTreeFromFilePaths(normalizedStaged), [normalizedStaged])
 
   // 目录树面板是否展开（默认折叠，持久化到 localStorage）
   const [treeExpanded, setTreeExpanded] = useState(() => {
@@ -596,6 +858,14 @@ export function DetailPanel({
     try { localStorage.setItem('taco.panel.changesExpanded', String(changesExpanded)) } catch { /* ignore */ }
   }, [changesExpanded])
 
+  // 变更面板状态 Tab（未暂存/已暂存），默认未暂存，持久化到 localStorage
+  const [changeTab, setChangeTab] = useState<'unstaged' | 'staged'>(() => {
+    try { return localStorage.getItem('taco.panel.changeTab') === 'staged' ? 'staged' : 'unstaged' } catch { return 'unstaged' }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('taco.panel.changeTab', changeTab) } catch { /* ignore */ }
+  }, [changeTab])
+
   // 版本历史面板是否展开（默认展开，持久化到 localStorage）
   const [gitExpanded, setGitExpanded] = useState(() => {
     try { const v = localStorage.getItem('taco.panel.gitExpanded'); return v === null ? true : v === 'true' } catch { return true }
@@ -606,29 +876,13 @@ export function DetailPanel({
 
   // fallback: 没有工作区目录树时，从变更文件路径构建树
   const fallbackTree = useMemo(() => {
-    if (hasTree || dedupedChanges.length === 0) return []
-    return buildTreeFromPaths(dedupedChanges)
-  }, [hasTree, dedupedChanges])
+    if (hasTree || displayChangePaths.length === 0) return []
+    return buildTreeFromFilePaths(displayChangePaths)
+  }, [hasTree, displayChangePaths])
 
   const showTree = hasTree || (hasChanges && fallbackTree.length > 0)
   const showGit = !!(gitVersions && gitVersions.length > 0)
-
-  // 被删除的文件（不在目录树中但在 changesMap 中 newContent === null 的）
-  const deletedFiles = useMemo(() => {
-    if (!hasTree) return []
-    return dedupedChanges.filter((fc) => fc.newContent === null)
-  }, [dedupedChanges, hasTree])
-
-  /** 用外部编辑器打开文件（双击时） */
-  const handleOpenExternal = useCallback((filePath: string) => {
-    if (!editor || !workspace) return
-    const isAbs = filePath.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(filePath) || filePath.startsWith('\\\\')
-    const sep = /[a-zA-Z]:[\\/]/.test(workspace) || workspace.includes('\\') ? '\\' : '/'
-    const fullPath = isAbs
-      ? filePath
-      : `${workspace.replace(/[\\/]+$/, '')}${sep}${filePath.replace(/[\\/]/g, sep)}`
-    globalThis.window.taco.shell.openInEditor(fullPath, editor).catch(() => {})
-  }, [editor, workspace])
+  const activeChangeTab: 'unstaged' | 'staged' = changeTab
 
   /** 目录树文件单击：直接进入编辑模式 */
   const handleTreeFileClick = useCallback((path: string) => {
@@ -642,11 +896,11 @@ export function DetailPanel({
   /** 变更文件面板单击：进入 Diff 视图 */
   const handleChangeFileClick = useCallback((path: string) => {
     if (onOpenFileView) {
-      onOpenFileView(path, true)
+      onOpenFileView(path, diffablePathSet.has(path))
     } else {
       onSelectFile(selectedFile === path ? null : path)
     }
-  }, [onOpenFileView, onSelectFile, selectedFile])
+  }, [onOpenFileView, onSelectFile, selectedFile, diffablePathSet])
 
   // ── 面板拖动调整大小 ──
   const treePanelRef = useRef<HTMLDivElement>(null)
@@ -718,6 +972,21 @@ export function DetailPanel({
             style={{ width: `${contextPercent}%` }}
           />
         </div>
+        <div className="detail-token-stats">
+          <div className="detail-token-stats-title">项目累计 Token</div>
+          <div className="detail-token-stats-grid">
+            <span>累计输入</span>
+            <span>{formatTokens(projectTokenStats?.inputTokens ?? 0)}</span>
+            <span>累计输出</span>
+            <span>{formatTokens(projectTokenStats?.outputTokens ?? 0)}</span>
+            <span>命中</span>
+            <span>{formatTokens(projectTokenStats?.hitTokens ?? 0)}</span>
+            <span>未命中</span>
+            <span>{formatTokens(projectTokenStats?.missTokens ?? 0)}</span>
+            <span>总计</span>
+            <span>{formatTokens(projectTokenStats?.totalTokens ?? 0)}</span>
+          </div>
+        </div>
       </div>
 
       {/* ── 工作区文件树（上方，可折叠，与变更面板样式一致） ── */}
@@ -744,40 +1013,15 @@ export function DetailPanel({
                   viewingPath={viewingFile}
                   onFileClick={handleTreeFileClick}
                   changesMap={changesMap}
+                  diffStatsMap={diffStatsMap}
+                  changedPathSet={changedPathSet}
+                  stagedPathSet={stagedPathSet}
+                  unstagedPathSet={unstagedPathSet}
                   fileStatuses={fileStatuses}
                   onAcceptFile={onAcceptFile}
                   onRejectFile={onRejectFile}
                 />
               ))}
-              {/* 已删除的文件（目录树中不存在） */}
-              {deletedFiles.length > 0 && (
-                <div className="ws-tree-deleted-section">
-                  <div className="ws-tree-deleted-label">已删除</div>
-                  {deletedFiles.map((fc) => {
-                    const fileName = normalizeSlashPath(fc.filePath).split('/').pop() || fc.filePath
-                    const icon = getFileIcon(fileName)
-                    const status = readStatus(fc.filePath)
-                    return (
-                      <div
-                        key={fc.filePath}
-                        className={`ws-tree-file changed deleted-ghost ${status !== 'pending' ? `file-${status}` : ''}`}
-                        style={{ paddingLeft: 4 }}
-                        onClick={() => handleTreeFileClick(fc.filePath)}
-                      >
-                        <span className="ws-file-icon" style={{ background: icon.color }}>{icon.label}</span>
-                        <span className="ws-file-name">{fc.filePath}</span>
-                        <span className="ws-file-change-badge deleted">D</span>
-                        {status === 'pending' && (
-                          <span className="ws-file-actions">
-                            <button type="button" className="ws-file-action-btn reject"
-                              onClick={(e) => { e.stopPropagation(); onRejectFile(fc.filePath) }} title="恢复">✗</button>
-                          </span>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
             </div>
           )}
         </div>
@@ -793,7 +1037,7 @@ export function DetailPanel({
           >
             <span className={`ws-tree-arrow ${treeExpanded ? 'open' : ''}`}>›</span>
             <span className="change-group-title">文件</span>
-            <span className="change-group-count">{dedupedChanges.length}</span>
+            <span className="change-group-count">{allDisplayChangePaths.length}</span>
           </div>
           {treeExpanded && (
             <div className="change-group-body">
@@ -805,6 +1049,10 @@ export function DetailPanel({
                   viewingPath={viewingFile}
                   onFileClick={handleTreeFileClick}
                   changesMap={changesMap}
+                  diffStatsMap={diffStatsMap}
+                  changedPathSet={changedPathSet}
+                  stagedPathSet={stagedPathSet}
+                  unstagedPathSet={unstagedPathSet}
                   fileStatuses={fileStatuses}
                   onAcceptFile={onAcceptFile}
                   onRejectFile={onRejectFile}
@@ -836,88 +1084,98 @@ export function DetailPanel({
           >
             <span className={`ws-tree-arrow ${changesExpanded ? 'open' : ''}`}>›</span>
             <span className="change-group-title">变更文件</span>
-            <span className="change-group-count">{dedupedChanges.length}</span>
-            {pendingCount > 0 && (
-              <span className="change-group-pending-badge">{pendingCount} 待审核</span>
+            <span className="change-group-count">{allDisplayChangePaths.length}</span>
+            {unstagedCount > 0 && (
+              <span className="change-group-pending-badge">{unstagedCount} 未暂存</span>
             )}
           </div>
 
           {changesExpanded && (
             <div className="change-group-body">
-              {/* 批量操作 */}
-              {pendingCount > 0 && (
+              {hiddenChangePathsCount > 0 && (
+                <div className="change-tab-empty">
+                  变更过多，仅渲染前 {displayChangePaths.length} 项（其余 {hiddenChangePathsCount} 项已折叠）
+                </div>
+              )}
+              <div className="change-tabs" role="tablist" aria-label="变更状态">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeChangeTab === 'unstaged'}
+                  className={`change-tab ${activeChangeTab === 'unstaged' ? 'active pending' : ''}`}
+                  onClick={() => setChangeTab('unstaged')}
+                >
+                  未暂存 ({unstagedCount})
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeChangeTab === 'staged'}
+                  className={`change-tab ${activeChangeTab === 'staged' ? 'active accepted' : ''}`}
+                  onClick={() => setChangeTab('staged')}
+                >
+                  已暂存 ({stagedCount})
+                </button>
+              </div>
+
+              <div className="change-panel-legend" aria-hidden="true">
+                <span className="legend-item"><span className="legend-pill pending">未暂存</span>待暂存到 Git</span>
+                <span className="legend-item"><span className="legend-pill accepted">已暂存</span>已进入暂存区</span>
+                <span className="legend-item"><span className="legend-pill modified">修改</span>文件内容改动</span>
+              </div>
+
+              {/* 批量操作：仅未暂存 Tab 显示 */}
+              {activeChangeTab === 'unstaged' && unstagedCount > 0 && (
                 <div className="detail-changes-bulk">
-                  <button type="button" className="bulk-action-btn accept" onClick={onAcceptAll} title="保存所有变更">
-                    ✓ 全部保存
-                  </button>
-                  <button type="button" className="bulk-action-btn reject" onClick={onRejectAll} title="撤销所有变更">
-                    ✗ 全部撤销
+                  <button type="button" className="bulk-action-btn accept" onClick={onStageAll ?? onAcceptAll} title="暂存所有变更">
+                    + 全部暂存
                   </button>
                 </div>
               )}
 
-              {/* 待审核 */}
-              {pendingChanges.length > 0 && (
-                <div className="change-status-section">
-                  <div className="change-status-label pending">待审核 ({pendingChanges.length})</div>
-                  {pendingTree.map((entry) => (
-                    <ChangeTreeNode
-                      key={entry.path}
-                      entry={entry}
-                      selectedPath={selectedFile}
-                      viewingPath={viewingFile}
-                      onFileClick={handleChangeFileClick}
-                      changesMap={changesMap}
-                      fileStatuses={fileStatuses}
-                      statusFilter="pending"
-                      onAcceptFile={onAcceptFile}
-                      onRejectFile={onRejectFile}
-                    />
-                  ))}
-                </div>
-              )}
-
-              {/* 已保存 */}
-              {acceptedChanges.length > 0 && (
-                <div className="change-status-section">
-                  <div className="change-status-label accepted">已保存 ({acceptedChanges.length})</div>
-                  {acceptedTree.map((entry) => (
-                    <ChangeTreeNode
-                      key={entry.path}
-                      entry={entry}
-                      selectedPath={selectedFile}
-                      viewingPath={viewingFile}
-                      onFileClick={handleChangeFileClick}
-                      changesMap={changesMap}
-                      fileStatuses={fileStatuses}
-                      statusFilter="accepted"
-                      onAcceptFile={onAcceptFile}
-                      onRejectFile={onRejectFile}
-                    />
-                  ))}
-                </div>
-              )}
-
-              {/* 已撤销 */}
-              {rejectedChanges.length > 0 && (
-                <div className="change-status-section">
-                  <div className="change-status-label rejected">已撤销 ({rejectedChanges.length})</div>
-                  {rejectedTree.map((entry) => (
-                    <ChangeTreeNode
-                      key={entry.path}
-                      entry={entry}
-                      selectedPath={selectedFile}
-                      viewingPath={viewingFile}
-                      onFileClick={handleChangeFileClick}
-                      changesMap={changesMap}
-                      fileStatuses={fileStatuses}
-                      statusFilter="rejected"
-                      onAcceptFile={onAcceptFile}
-                      onRejectFile={onRejectFile}
-                    />
-                  ))}
-                </div>
-              )}
+              <div className="change-tab-pane">
+                {activeChangeTab === 'unstaged' ? (
+                  unstagedTree.length > 0 ? (
+                    unstagedTree.map((entry) => (
+                      <ChangeTreeNode
+                        key={entry.path}
+                        entry={entry}
+                        selectedPath={selectedFile}
+                        viewingPath={viewingFile}
+                        onFileClick={handleChangeFileClick}
+                        changesMap={changesMap}
+                        diffStatsMap={diffStatsMap}
+                        fileStatuses={fileStatuses}
+                        statusFilter="pending"
+                        onAcceptFile={onStageFile ?? onAcceptFile}
+                        onRejectFile={onRejectFile}
+                      />
+                    ))
+                  ) : (
+                    <div className="change-tab-empty">暂无未暂存文件</div>
+                  )
+                ) : (
+                  stagedTree.length > 0 ? (
+                    stagedTree.map((entry) => (
+                      <ChangeTreeNode
+                        key={entry.path}
+                        entry={entry}
+                        selectedPath={selectedFile}
+                        viewingPath={viewingFile}
+                        onFileClick={handleChangeFileClick}
+                        changesMap={changesMap}
+                        diffStatsMap={diffStatsMap}
+                        fileStatuses={fileStatuses}
+                        statusFilter="accepted"
+                        onAcceptFile={onAcceptFile}
+                        onRejectFile={onRejectFile}
+                      />
+                    ))
+                  ) : (
+                    <div className="change-tab-empty">暂无已暂存文件</div>
+                  )
+                )}
+              </div>
             </div>
           )}
         </div>

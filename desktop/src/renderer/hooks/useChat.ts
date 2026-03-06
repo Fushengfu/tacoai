@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ActivePlan, AgentStep, AttachedImage, ChatMsg, ProviderId, ProviderForms, QueuedMessage, RiskInfo, ThreadMode, ToolCallInfo, ToolResultInfo } from '../types'
+import type { ActivePlan, AgentStep, AttachedImage, ChatMsg, ProviderId, ProviderForms, QueuedMessage, TaskTiming, ThreadMode, ToolCallInfo, ToolResultInfo } from '../types'
 import type { PromptConfig } from '../../shared/ipc'
 import { buildSystemPrompt } from '../constants'
 import { loadJson, saveJson, uid } from '../lib/storage'
@@ -13,10 +13,196 @@ function normalizePlanStatus(status: string): 'pending' | 'in_progress' | 'done'
   return 'pending'
 }
 
+function buildTaskTiming(startedAt: number, endedAt = Date.now()): TaskTiming {
+  const safeStart = Number.isFinite(startedAt) ? startedAt : Date.now()
+  const safeEnd = Number.isFinite(endedAt) ? endedAt : Date.now()
+  const normalizedEnd = safeEnd >= safeStart ? safeEnd : safeStart
+  return {
+    startedAt: safeStart,
+    endedAt: normalizedEnd,
+    durationMs: normalizedEnd - safeStart,
+  }
+}
+
+function mapMessageForApi(msg: ChatMsg): { role: ChatMsg['role']; content: string } {
+  if (msg.role !== 'user') return { role: msg.role, content: msg.content }
+  const raw = String(msg.content ?? '')
+  const wrapped = raw.match(/\[USER_QUERY\]([\s\S]*?)\[\/USER_QUERY\]/i)
+  if (wrapped && wrapped[1] !== undefined) {
+    return { role: msg.role, content: raw.trim() }
+  }
+  const body = raw.trim()
+  return { role: msg.role, content: `[USER_QUERY]\n${body}\n[/USER_QUERY]` }
+}
+
+function buildMessagesForApi(messages: ChatMsg[], mode?: ThreadMode): Array<{ role: ChatMsg['role']; content: string }> {
+  if (mode === 'agent') {
+    // Agent 模式优先发送最近上下文，避免“仅发最后一条用户消息”导致在记忆为空时丢失链路。
+    const MAX_RECENT_MESSAGES = 8
+    const MAX_RECENT_USER_TURNS = 3
+    const recent: ChatMsg[] = []
+    let userTurns = 0
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i]
+      if (msg.role === 'system') continue
+      recent.push(msg)
+      if (msg.role === 'user') userTurns++
+      if (recent.length >= MAX_RECENT_MESSAGES || userTurns >= MAX_RECENT_USER_TURNS) break
+    }
+    if (recent.length > 0) {
+      return recent.reverse().map((msg) => mapMessageForApi(msg))
+    }
+    const last = messages[messages.length - 1]
+    return last ? [mapMessageForApi(last)] : []
+  }
+  return messages.map((m) => mapMessageForApi(m))
+}
+
+function isRecallDebugEnabled(): boolean {
+  return localStorage.getItem('taco.recallDebugEnabled') === 'true'
+}
+
+export type ProjectTokenStats = {
+  inputTokens: number
+  outputTokens: number
+  hitTokens: number
+  missTokens: number
+  totalTokens: number
+  turns: number
+  updatedAt: number
+}
+
+type TokenUsageSnapshot = {
+  promptTokens?: number
+  completionTokens?: number
+  totalTokens?: number
+  cachedTokens?: number
+}
+
+type UsageAggregate = {
+  inputTokens: number
+  outputTokens: number
+  hitTokens: number
+  missTokens: number
+  totalTokens: number
+}
+
+function toFiniteTokenCount(value: unknown): number | undefined {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 0) return undefined
+  return Math.floor(n)
+}
+
+function normalizeProjectTokenStatsMap(raw: Record<string, unknown>): Record<string, ProjectTokenStats> {
+  const out: Record<string, ProjectTokenStats> = {}
+  for (const [threadId, value] of Object.entries(raw ?? {})) {
+    if (!threadId.trim() || !value || typeof value !== 'object') continue
+    const obj = value as Record<string, unknown>
+    const inputTokens = toFiniteTokenCount(obj.inputTokens) ?? 0
+    const outputTokens = toFiniteTokenCount(obj.outputTokens) ?? 0
+    const hitTokens = toFiniteTokenCount(obj.hitTokens) ?? 0
+    const missTokens = toFiniteTokenCount(obj.missTokens) ?? 0
+    const totalTokens = toFiniteTokenCount(obj.totalTokens) ?? 0
+    const turns = toFiniteTokenCount(obj.turns) ?? 0
+    const updatedAt = toFiniteTokenCount(obj.updatedAt) ?? Date.now()
+    out[threadId] = { inputTokens, outputTokens, hitTokens, missTokens, totalTokens, turns, updatedAt }
+  }
+  return out
+}
+
+function mergeUsageSnapshot(
+  prev: TokenUsageSnapshot | null,
+  next: TokenUsageSnapshot | undefined,
+): TokenUsageSnapshot | null {
+  if (!next || typeof next !== 'object') return prev
+  const promptTokens = toFiniteTokenCount(next.promptTokens)
+  const completionTokens = toFiniteTokenCount(next.completionTokens)
+  const totalTokens = toFiniteTokenCount(next.totalTokens)
+  const cachedTokens = toFiniteTokenCount(next.cachedTokens)
+
+  const merged: TokenUsageSnapshot = { ...(prev ?? {}) }
+  if (promptTokens !== undefined) merged.promptTokens = promptTokens
+  if (completionTokens !== undefined) merged.completionTokens = completionTokens
+  if (totalTokens !== undefined) merged.totalTokens = totalTokens
+  if (cachedTokens !== undefined) merged.cachedTokens = cachedTokens
+
+  const hasAny =
+    merged.promptTokens !== undefined
+    || merged.completionTokens !== undefined
+    || merged.totalTokens !== undefined
+    || merged.cachedTokens !== undefined
+  return hasAny ? merged : prev
+}
+
+function resolveUsageTotalTokens(usage: TokenUsageSnapshot | null): number | undefined {
+  if (!usage) return undefined
+  if (usage.totalTokens !== undefined) return usage.totalTokens
+  const prompt = usage.promptTokens ?? 0
+  const completion = usage.completionTokens ?? 0
+  const fallback = prompt + completion
+  return fallback > 0 ? fallback : undefined
+}
+
+function usageToAggregate(usage: TokenUsageSnapshot | null): UsageAggregate {
+  if (!usage) {
+    return {
+      inputTokens: 0,
+      outputTokens: 0,
+      hitTokens: 0,
+      missTokens: 0,
+      totalTokens: 0,
+    }
+  }
+  const prompt = usage.promptTokens ?? 0
+  const completion = usage.completionTokens ?? 0
+  const cached = Math.min(prompt, usage.cachedTokens ?? 0)
+  const miss = Math.max(0, prompt - cached)
+  const total = resolveUsageTotalTokens(usage) ?? (prompt + completion)
+  return {
+    inputTokens: Math.max(0, prompt),
+    outputTokens: Math.max(0, completion),
+    hitTokens: Math.max(0, cached),
+    missTokens: Math.max(0, miss),
+    totalTokens: Math.max(0, total),
+  }
+}
+
+function diffUsageAggregate(next: UsageAggregate, prev: UsageAggregate): UsageAggregate {
+  return {
+    inputTokens: Math.max(0, next.inputTokens - prev.inputTokens),
+    outputTokens: Math.max(0, next.outputTokens - prev.outputTokens),
+    hitTokens: Math.max(0, next.hitTokens - prev.hitTokens),
+    missTokens: Math.max(0, next.missTokens - prev.missTokens),
+    totalTokens: Math.max(0, next.totalTokens - prev.totalTokens),
+  }
+}
+
+function hasUsageDelta(delta: UsageAggregate): boolean {
+  return delta.inputTokens > 0
+    || delta.outputTokens > 0
+    || delta.hitTokens > 0
+    || delta.missTokens > 0
+    || delta.totalTokens > 0
+}
+
+function applyUsageDeltaToProjectStats(base: ProjectTokenStats, delta: UsageAggregate, incrementTurn: boolean): ProjectTokenStats {
+  return {
+    inputTokens: base.inputTokens + delta.inputTokens,
+    outputTokens: base.outputTokens + delta.outputTokens,
+    hitTokens: base.hitTokens + delta.hitTokens,
+    missTokens: base.missTokens + delta.missTokens,
+    totalTokens: base.totalTokens + delta.totalTokens,
+    turns: base.turns + (incrementTurn ? 1 : 0),
+    updatedAt: Date.now(),
+  }
+}
+
 export type SendMessageParams = {
   threadId: string
   /** 项目标识（用于项目级日志与笔记隔离） */
   projectId?: string
+  /** 当前项目的自定义规则（自动注入 system prompt） */
+  projectRules?: string
   content: string
   /** 用户附带的图片 */
   images?: AttachedImage[]
@@ -51,6 +237,12 @@ export function useChat() {
   const [queues, setQueues] = useState<Record<string, QueuedMessage[]>>({})
   /** 每个 thread 最近一次真实 usage.total_tokens */
   const [usageTotalTokensByThread, setUsageTotalTokensByThread] = useState<Record<string, number | undefined>>({})
+  /** 每个项目（thread）累计 token 统计 */
+  const [projectTokenStatsByThread, setProjectTokenStatsByThread] = useState<Record<string, ProjectTokenStats>>(() =>
+    normalizeProjectTokenStatsMap(loadJson('taco.projectTokenStatsByThread', {}))
+  )
+  /** 每个 thread 当前任务开始时间（用于实时耗时显示） */
+  const [activeTaskStartedAtByThread, setActiveTaskStartedAtByThread] = useState<Record<string, number | undefined>>({})
   /** 刚完成的 thread（短暂显示 ✓ 后自动清除） */
   const [completedThreads, setCompletedThreads] = useState<Record<string, boolean>>({})
 
@@ -78,6 +270,10 @@ export function useChat() {
   useEffect(() => {
     saveJson('taco.messages', threadMessages)
   }, [threadMessages])
+
+  useEffect(() => {
+    saveJson('taco.projectTokenStatsByThread', projectTokenStatsByThread)
+  }, [projectTokenStatsByThread])
 
   useEffect(() => {
     let cancelled = false
@@ -139,6 +335,34 @@ export function useChat() {
     return typeof value === 'number' && Number.isFinite(value) ? value : undefined
   }
 
+  function getActiveTaskStartedAt(threadId: string): number | undefined {
+    const value = activeTaskStartedAtByThread[threadId]
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+  }
+
+  function getProjectTokenStats(threadId: string): ProjectTokenStats {
+    return projectTokenStatsByThread[threadId] ?? {
+      inputTokens: 0,
+      outputTokens: 0,
+      hitTokens: 0,
+      missTokens: 0,
+      totalTokens: 0,
+      turns: 0,
+      updatedAt: Date.now(),
+    }
+  }
+
+  function clearProjectTokenStats(threadId: string) {
+    const key = String(threadId ?? '').trim()
+    if (!key) return
+    setProjectTokenStatsByThread((prev) => {
+      if (!(key in prev)) return prev
+      const next = { ...prev }
+      delete next[key]
+      return next
+    })
+  }
+
   /* ------------------------------------------------------------------ */
   /*  Message CRUD                                                       */
   /* ------------------------------------------------------------------ */
@@ -164,6 +388,11 @@ export function useChat() {
       delete next[threadId]
       return next
     })
+    setActiveTaskStartedAtByThread((prev) => {
+      const next = { ...prev }
+      delete next[threadId]
+      return next
+    })
   }
 
   function deleteThreadMessages(threadId: string) {
@@ -184,6 +413,11 @@ export function useChat() {
       return next
     })
     setUsageTotalTokensByThread((prev) => {
+      const next = { ...prev }
+      delete next[threadId]
+      return next
+    })
+    setActiveTaskStartedAtByThread((prev) => {
       const next = { ...prev }
       delete next[threadId]
       return next
@@ -268,12 +502,13 @@ export function useChat() {
   /* ------------------------------------------------------------------ */
 
   async function sendMessage(params: SendMessageParams) {
-    const { threadId, projectId, content, images, provider, providerForms, mode, workspace, maxTokens, onFirstMessage, onComplete } = params
+    const { threadId, projectId, projectRules, content, images, provider, providerForms, mode, workspace, maxTokens, onFirstMessage, onComplete } = params
 
     // 保存参数供队列重发
     sendParamsRefs.current.set(threadId, {
       threadId,
       projectId,
+      projectRules,
       provider,
       providerForms,
       mode,
@@ -289,6 +524,7 @@ export function useChat() {
       return
     }
     inFlightThreadsRef.current.add(threadId)
+    const taskStartedAt = Date.now()
 
     // 用 ref 读取最新消息，避免闭包过期
     const currentMsgs = threadMessagesRef.current[threadId] ?? []
@@ -299,6 +535,7 @@ export function useChat() {
     setSendingThreads((prev) => ({ ...prev, [threadId]: true }))
     setStreamingContents((prev) => ({ ...prev, [threadId]: '' }))
     setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: undefined }))
+    setActiveTaskStartedAtByThread((prev) => ({ ...prev, [threadId]: taskStartedAt }))
 
     // 首条消息 → 自动命名
     if (currentMsgs.length === 0 && onFirstMessage) {
@@ -314,22 +551,11 @@ export function useChat() {
       workspace,
       provider,
       model,
+      projectRules,
       promptConfig,
     })
-    const chatMsgs = updatedMsgs.map((m) => ({ role: m.role, content: m.content }))
-
-    // ── 初始上下文预检：截断超长单条消息，防止极端情况下直接超限 ──
-    // （AI 摘要压缩由 Agent 后端在每轮 LLM 请求前自动执行）
-    const tokenBudget = maxTokens ?? 131072
-    const MAX_MSG_CHARS = 32000
-    for (let i = 0; i < chatMsgs.length; i++) {
-      if (chatMsgs[i].content && chatMsgs[i].content.length > MAX_MSG_CHARS) {
-        chatMsgs[i] = {
-          ...chatMsgs[i],
-          content: chatMsgs[i].content.slice(0, MAX_MSG_CHARS) + '\n\n[...内容已截断]',
-        }
-      }
-    }
+    const isAgent = mode === 'agent'
+    const chatMsgs = buildMessagesForApi(updatedMsgs, mode)
 
     const apiMessages = [
       { role: 'system' as const, content: systemContent },
@@ -344,9 +570,44 @@ export function useChat() {
       }
     }
 
-    const isAgent = mode === 'agent'
     let accumulated = ''
-
+    let requestUsage: TokenUsageSnapshot | null = null
+    let appliedUsage: TokenUsageSnapshot | null = null
+    let usageTurnCounted = false
+    const projectKey = String(projectId ?? threadId ?? '').trim()
+    const applyProjectUsage = (usage: TokenUsageSnapshot | null) => {
+      if (!usage || !projectKey) return
+      const nextAgg = usageToAggregate(usage)
+      const prevAgg = usageToAggregate(appliedUsage)
+      const delta = diffUsageAggregate(nextAgg, prevAgg)
+      const shouldCountTurn = !usageTurnCounted && (nextAgg.totalTokens > 0 || nextAgg.inputTokens > 0 || nextAgg.outputTokens > 0)
+      if (!hasUsageDelta(delta) && !shouldCountTurn) return
+      setProjectTokenStatsByThread((prev) => {
+        const base = prev[projectKey] ?? {
+          inputTokens: 0,
+          outputTokens: 0,
+          hitTokens: 0,
+          missTokens: 0,
+          totalTokens: 0,
+          turns: 0,
+          updatedAt: Date.now(),
+        }
+        return {
+          ...prev,
+          [projectKey]: applyUsageDeltaToProjectStats(base, delta, shouldCountTurn),
+        }
+      })
+      appliedUsage = usage
+      if (shouldCountTurn) usageTurnCounted = true
+    }
+    const trackRequestUsage = (usage?: TokenUsageSnapshot) => {
+      requestUsage = mergeUsageSnapshot(requestUsage, usage)
+      const totalTokens = resolveUsageTotalTokens(requestUsage)
+      if (typeof totalTokens === 'number' && Number.isFinite(totalTokens)) {
+        setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: totalTokens }))
+      }
+      applyProjectUsage(requestUsage)
+    }
     try {
       const requestId = `req-${Date.now()}-${threadId}`
       // 记录当前 requestId 以便 stopSending 能发送 abort IPC
@@ -365,7 +626,7 @@ export function useChat() {
           let activePlan: ActivePlan | undefined
 
           // 辅助：更新 agent 消息（追加或更新）
-          const flushAgentMsg = (finalContent?: string) => {
+          const flushAgentMsg = (finalContent?: string, taskTiming?: TaskTiming) => {
             const nextContent = finalContent ?? accumulated
             const hasRenderableContent = Boolean(nextContent.trim())
             const hasRenderableMeta = steps.length > 0 || Boolean(activePlan) || Boolean(commitHash)
@@ -381,6 +642,7 @@ export function useChat() {
                 agentSteps: steps.length > 0 ? [...steps] : undefined,
                 gitCommitHash: commitHash,
                 activePlan: activePlan ? { ...activePlan, steps: activePlan.steps.map((s) => ({ ...s })) } : undefined,
+                taskTiming,
               }
               if (idx === -1) return [...prev, msg]
               const next = [...prev]
@@ -389,17 +651,16 @@ export function useChat() {
             })
           }
 
+          const runningTaskTiming: TaskTiming = { startedAt: taskStartedAt }
           const cleanup = globalThis.window.taco.agent.onEvent((event) => {
             if (event.requestId !== requestId) return
 
             if (event.type === 'text') {
               accumulated += event.content
               // Agent 模式下直接更新消息内容，不使用独立的 streamingContent
-              flushAgentMsg()
+              flushAgentMsg(undefined, runningTaskTiming)
             } else if (event.type === 'usage') {
-              if (typeof event.usage.totalTokens === 'number' && Number.isFinite(event.usage.totalTokens)) {
-                setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: event.usage.totalTokens }))
-              }
+              trackRequestUsage(event.usage)
             } else if (event.type === 'tool_calls') {
               // AI 决定调用工具 → 当前文本作为该步骤的 thinking
               currentRound++
@@ -417,7 +678,7 @@ export function useChat() {
               })
               // 清空累积文本，后续文本属于下一轮或最终回复
               accumulated = ''
-              flushAgentMsg()
+              flushAgentMsg(undefined, runningTaskTiming)
             } else if (event.type === 'confirm') {
               // 风险操作需要用户确认 → 更新当前步骤状态
               const lastStep = steps[steps.length - 1]
@@ -432,7 +693,7 @@ export function useChat() {
                   detail: r.detail,
                 }))
               }
-              flushAgentMsg()
+              flushAgentMsg(undefined, runningTaskTiming)
             } else if (event.type === 'tool_results') {
               const results: ToolResultInfo[] = event.results.map((r) => ({
                 tool_call_id: r.tool_call_id,
@@ -451,11 +712,11 @@ export function useChat() {
                 lastStep.toolResults = results
                 lastStep.status = 'done'
               }
-              flushAgentMsg()
+              flushAgentMsg(undefined, runningTaskTiming)
             } else if (event.type === 'git_commit') {
               // Agent 自动提交完成，记录 commit hash
               commitHash = event.hash
-              flushAgentMsg()
+              flushAgentMsg(undefined, runningTaskTiming)
             } else if (event.type === 'plan_init') {
               // 计划初始化：用户确认了执行计划
               activePlan = {
@@ -464,23 +725,25 @@ export function useChat() {
                 steps: event.steps.map((text) => ({ text, status: 'pending' as const })),
                 startedAt: Date.now(),
               }
-              flushAgentMsg()
+              flushAgentMsg(undefined, runningTaskTiming)
             } else if (event.type === 'plan_progress') {
               // 计划步骤进度更新
               if (activePlan && event.stepIndex >= 0 && event.stepIndex < activePlan.steps.length) {
                 activePlan.steps[event.stepIndex].status = normalizePlanStatus(event.status)
                 if (event.note) activePlan.steps[event.stepIndex].note = event.note
               }
-              flushAgentMsg()
+              flushAgentMsg(undefined, runningTaskTiming)
             } else if (event.type === 'done') {
               // 最终回复写入 content
-              if (activePlan && !activePlan.endedAt) activePlan.endedAt = Date.now()
-              flushAgentMsg(accumulated)
+              const finishedAt = Date.now()
+              if (activePlan && !activePlan.endedAt) activePlan.endedAt = finishedAt
+              flushAgentMsg(accumulated, buildTaskTiming(taskStartedAt, finishedAt))
               cleanup()
               resolve()
             } else if (event.type === 'error') {
-              if (activePlan && !activePlan.endedAt) activePlan.endedAt = Date.now()
-              flushAgentMsg(accumulated)
+              const finishedAt = Date.now()
+              if (activePlan && !activePlan.endedAt) activePlan.endedAt = finishedAt
+              flushAgentMsg(accumulated, buildTaskTiming(taskStartedAt, finishedAt))
               cleanup()
               reject(new Error(event.message))
             }
@@ -496,6 +759,7 @@ export function useChat() {
             projectId,
             workspace: params.workspace ?? '',
             maxTokens,
+            recallDebug: isRecallDebugEnabled(),
             ...(lastUserImages && lastUserImages.length > 0 ? { images: lastUserImages } : {}),
           })
         })
@@ -508,10 +772,7 @@ export function useChat() {
             if (data.requestId !== requestId) return
             if (data.error) { cleanup(); reject(new Error(data.error)); return }
             if (data.done) {
-              const totalTokens = data.usage?.totalTokens
-              if (typeof totalTokens === 'number' && Number.isFinite(totalTokens)) {
-                setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: totalTokens }))
-              }
+              trackRequestUsage(data.usage)
               cleanup()
               resolve()
               return
@@ -529,7 +790,12 @@ export function useChat() {
       if (!isAgent) {
         // Chat 模式才在此追加消息，Agent 模式已在事件回调中维护
         if (accumulated) {
-          const assistantMsg: ChatMsg = { id: uid(), role: 'assistant', content: accumulated }
+          const assistantMsg: ChatMsg = {
+            id: uid(),
+            role: 'assistant',
+            content: accumulated,
+            taskTiming: buildTaskTiming(taskStartedAt),
+          }
           setMessages(threadId, (prev) => [...prev, assistantMsg])
         }
       }
@@ -541,33 +807,48 @@ export function useChat() {
       if (errMsg === '__stopped__') {
         if (isAgent) {
           // Agent 模式：消息已在事件流中维护，追加 [已停止] 标记
-          if (accumulated) {
-            setMessages(threadId, (prev) => {
-              const last = prev[prev.length - 1]
-              if (last?.role === 'assistant') {
-                const updated = [...prev]
-                updated[prev.length - 1] = { ...last, content: (last.content || accumulated) + '\n\n*[已停止]*' }
-                return updated
-              }
-              return [...prev, { id: uid(), role: 'assistant', content: accumulated + '\n\n*[已停止]*' }]
-            })
-          }
+          const timing = buildTaskTiming(taskStartedAt)
+          setMessages(threadId, (prev) => {
+            for (let i = prev.length - 1; i >= 0; i--) {
+              if (prev[i]?.role !== 'assistant') continue
+              const updated = [...prev]
+              const tail = updated[i]
+              const stoppedContent = (tail.content || accumulated).includes('*[已停止]*')
+                ? (tail.content || accumulated)
+                : `${tail.content || accumulated}\n\n*[已停止]*`
+              updated[i] = { ...tail, content: stoppedContent, taskTiming: timing }
+              return updated
+            }
+            if (!accumulated) return prev
+            return [...prev, { id: uid(), role: 'assistant', content: accumulated + '\n\n*[已停止]*', taskTiming: timing }]
+          })
         } else if (accumulated) {
           const stoppedMsg: ChatMsg = {
             id: uid(),
             role: 'assistant',
-            content: accumulated + '\n\n*[已停止]*'
+            content: accumulated + '\n\n*[已停止]*',
+            taskTiming: buildTaskTiming(taskStartedAt),
           }
           setMessages(threadId, (prev) => [...prev, stoppedMsg])
         }
       } else {
-        const errChatMsg: ChatMsg = { id: uid(), role: 'assistant', content: `[Error] ${errMsg}` }
+        const errChatMsg: ChatMsg = {
+          id: uid(),
+          role: 'assistant',
+          content: `[Error] ${errMsg}`,
+          taskTiming: buildTaskTiming(taskStartedAt),
+        }
         setMessages(threadId, (prev) => [...prev, errChatMsg])
       }
     } finally {
       inFlightThreadsRef.current.delete(threadId)
       setSendingThreads((prev) => ({ ...prev, [threadId]: false }))
       setStreamingContents((prev) => {
+        const next = { ...prev }
+        delete next[threadId]
+        return next
+      })
+      setActiveTaskStartedAtByThread((prev) => {
         const next = { ...prev }
         delete next[threadId]
         return next
@@ -592,25 +873,28 @@ export function useChat() {
    * 用于「编辑后重发」或「原样重发」场景：先由外部修改好 messages，再调用此方法。
    */
   async function resendFromExisting(params: Omit<SendMessageParams, 'content'>) {
-    const { threadId, projectId, provider, providerForms, mode, workspace, maxTokens, onFirstMessage, onComplete } = params
+    const { threadId, projectId, projectRules, provider, providerForms, mode, workspace, maxTokens, onFirstMessage, onComplete } = params
 
     const currentMsgs = threadMessagesRef.current[threadId] ?? []
     if (currentMsgs.length === 0) return
 
     if (inFlightThreadsRef.current.has(threadId)) return
     inFlightThreadsRef.current.add(threadId)
+    const taskStartedAt = Date.now()
 
-    sendParamsRefs.current.set(threadId, { threadId, projectId, provider, providerForms, mode, workspace, onFirstMessage, onComplete })
+    sendParamsRefs.current.set(threadId, { threadId, projectId, projectRules, provider, providerForms, mode, workspace, onFirstMessage, onComplete })
 
     setSendingThreads((prev) => ({ ...prev, [threadId]: true }))
     setStreamingContents((prev) => ({ ...prev, [threadId]: '' }))
     setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: undefined }))
+    setActiveTaskStartedAtByThread((prev) => ({ ...prev, [threadId]: taskStartedAt }))
 
     const promptConfig = await ensurePromptConfigLoaded()
     const model = String(providerForms[provider]?.model ?? '').trim() || undefined
+    const isAgent = mode === 'agent'
     const apiMessages = [
-      { role: 'system' as const, content: buildSystemPrompt({ mode, workspace, provider, model, promptConfig }) },
-      ...currentMsgs.map((m) => ({ role: m.role, content: m.content }))
+      { role: 'system' as const, content: buildSystemPrompt({ mode, workspace, provider, model, projectRules, promptConfig }) },
+      ...buildMessagesForApi(currentMsgs, mode)
     ]
 
     const overrides = {
@@ -621,8 +905,44 @@ export function useChat() {
       }
     }
 
-    const isAgent = mode === 'agent'
     let accumulated = ''
+    let requestUsage: TokenUsageSnapshot | null = null
+    let appliedUsage: TokenUsageSnapshot | null = null
+    let usageTurnCounted = false
+    const projectKey = String(projectId ?? threadId ?? '').trim()
+    const applyProjectUsage = (usage: TokenUsageSnapshot | null) => {
+      if (!usage || !projectKey) return
+      const nextAgg = usageToAggregate(usage)
+      const prevAgg = usageToAggregate(appliedUsage)
+      const delta = diffUsageAggregate(nextAgg, prevAgg)
+      const shouldCountTurn = !usageTurnCounted && (nextAgg.totalTokens > 0 || nextAgg.inputTokens > 0 || nextAgg.outputTokens > 0)
+      if (!hasUsageDelta(delta) && !shouldCountTurn) return
+      setProjectTokenStatsByThread((prev) => {
+        const base = prev[projectKey] ?? {
+          inputTokens: 0,
+          outputTokens: 0,
+          hitTokens: 0,
+          missTokens: 0,
+          totalTokens: 0,
+          turns: 0,
+          updatedAt: Date.now(),
+        }
+        return {
+          ...prev,
+          [projectKey]: applyUsageDeltaToProjectStats(base, delta, shouldCountTurn),
+        }
+      })
+      appliedUsage = usage
+      if (shouldCountTurn) usageTurnCounted = true
+    }
+    const trackRequestUsage = (usage?: TokenUsageSnapshot) => {
+      requestUsage = mergeUsageSnapshot(requestUsage, usage)
+      const totalTokens = resolveUsageTotalTokens(requestUsage)
+      if (typeof totalTokens === 'number' && Number.isFinite(totalTokens)) {
+        setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: totalTokens }))
+      }
+      applyProjectUsage(requestUsage)
+    }
     try {
       const requestId = `req-${Date.now()}-${threadId}`
       requestIdRefs.current.set(threadId, requestId)
@@ -637,7 +957,7 @@ export function useChat() {
           let commitHash: string | undefined
           let activePlan: ActivePlan | undefined
 
-          const flushAgentMsg = (finalContent?: string) => {
+          const flushAgentMsg = (finalContent?: string, taskTiming?: TaskTiming) => {
             const nextContent = finalContent ?? accumulated
             const hasRenderableContent = Boolean(nextContent.trim())
             const hasRenderableMeta = steps.length > 0 || Boolean(activePlan) || Boolean(commitHash)
@@ -651,6 +971,7 @@ export function useChat() {
                 agentSteps: steps.length > 0 ? [...steps] : undefined,
                 gitCommitHash: commitHash,
                 activePlan: activePlan ? { ...activePlan, steps: activePlan.steps.map((s) => ({ ...s })) } : undefined,
+                taskTiming,
               }
               if (idx === -1) return [...prev, msg]
               const next = [...prev]
@@ -659,16 +980,15 @@ export function useChat() {
             })
           }
 
+          const runningTaskTiming: TaskTiming = { startedAt: taskStartedAt }
           const cleanup = window.taco.agent.onEvent((evt) => {
             if (evt.requestId !== requestId) return
 
             if (evt.type === 'text') {
               accumulated += evt.content
-              flushAgentMsg()
+              flushAgentMsg(undefined, runningTaskTiming)
             } else if (evt.type === 'usage') {
-              if (typeof evt.usage.totalTokens === 'number' && Number.isFinite(evt.usage.totalTokens)) {
-                setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: evt.usage.totalTokens }))
-              }
+              trackRequestUsage(evt.usage)
             } else if (evt.type === 'tool_calls') {
               currentRound++
               const toolCalls: ToolCallInfo[] = evt.toolCalls.map((tc) => ({
@@ -684,7 +1004,7 @@ export function useChat() {
                 status: 'running',
               })
               accumulated = ''
-              flushAgentMsg()
+              flushAgentMsg(undefined, runningTaskTiming)
             } else if (evt.type === 'confirm') {
               const lastStep = steps[steps.length - 1]
               if (lastStep) {
@@ -698,7 +1018,7 @@ export function useChat() {
                   detail: r.detail,
                 }))
               }
-              flushAgentMsg()
+              flushAgentMsg(undefined, runningTaskTiming)
             } else if (evt.type === 'tool_results') {
               const results: ToolResultInfo[] = evt.results.map((r) => ({
                 tool_call_id: r.tool_call_id,
@@ -716,10 +1036,10 @@ export function useChat() {
                 lastStep.toolResults = results
                 lastStep.status = 'done'
               }
-              flushAgentMsg()
+              flushAgentMsg(undefined, runningTaskTiming)
             } else if (evt.type === 'git_commit') {
               commitHash = evt.hash
-              flushAgentMsg()
+              flushAgentMsg(undefined, runningTaskTiming)
             } else if (evt.type === 'plan_init') {
               activePlan = {
                 summary: evt.summary,
@@ -727,21 +1047,23 @@ export function useChat() {
                 steps: evt.steps.map((text) => ({ text, status: 'pending' as const })),
                 startedAt: Date.now(),
               }
-              flushAgentMsg()
+              flushAgentMsg(undefined, runningTaskTiming)
             } else if (evt.type === 'plan_progress') {
               if (activePlan && evt.stepIndex >= 0 && evt.stepIndex < activePlan.steps.length) {
                 activePlan.steps[evt.stepIndex].status = normalizePlanStatus(evt.status)
                 if (evt.note) activePlan.steps[evt.stepIndex].note = evt.note
               }
-              flushAgentMsg()
+              flushAgentMsg(undefined, runningTaskTiming)
             } else if (evt.type === 'done') {
-              if (activePlan && !activePlan.endedAt) activePlan.endedAt = Date.now()
-              flushAgentMsg(accumulated)
+              const finishedAt = Date.now()
+              if (activePlan && !activePlan.endedAt) activePlan.endedAt = finishedAt
+              flushAgentMsg(accumulated, buildTaskTiming(taskStartedAt, finishedAt))
               cleanup()
               resolve()
             } else if (evt.type === 'error') {
-              if (activePlan && !activePlan.endedAt) activePlan.endedAt = Date.now()
-              flushAgentMsg(accumulated)
+              const finishedAt = Date.now()
+              if (activePlan && !activePlan.endedAt) activePlan.endedAt = finishedAt
+              flushAgentMsg(accumulated, buildTaskTiming(taskStartedAt, finishedAt))
               cleanup()
               reject(new Error(evt.message))
             }
@@ -755,6 +1077,7 @@ export function useChat() {
             projectId,
             workspace: workspace ?? '',
             maxTokens,
+            recallDebug: isRecallDebugEnabled(),
           })
         })
       } else {
@@ -765,10 +1088,7 @@ export function useChat() {
             if (data.requestId !== requestId) return
             if (data.error) { cleanup(); reject(new Error(data.error)); return }
             if (data.done) {
-              const totalTokens = data.usage?.totalTokens
-              if (typeof totalTokens === 'number' && Number.isFinite(totalTokens)) {
-                setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: totalTokens }))
-              }
+              trackRequestUsage(data.usage)
               cleanup()
               resolve()
               return
@@ -784,7 +1104,12 @@ export function useChat() {
       abortRejectRefs.current.delete(threadId)
       requestIdRefs.current.delete(threadId)
       if (!isAgent && accumulated) {
-        const assistantMsg: ChatMsg = { id: uid(), role: 'assistant', content: accumulated }
+        const assistantMsg: ChatMsg = {
+          id: uid(),
+          role: 'assistant',
+          content: accumulated,
+          taskTiming: buildTaskTiming(taskStartedAt),
+        }
         setMessages(threadId, (prev) => [...prev, assistantMsg])
       }
       onComplete?.()
@@ -794,29 +1119,48 @@ export function useChat() {
       const errMsg = error instanceof Error ? error.message : '请求失败'
       if (errMsg === '__stopped__') {
         if (isAgent) {
-          if (accumulated) {
-            setMessages(threadId, (prev) => {
-              const last = prev[prev.length - 1]
-              if (last?.role === 'assistant') {
-                const updated = [...prev]
-                updated[prev.length - 1] = { ...last, content: (last.content || accumulated) + '\n\n*[已停止]*' }
-                return updated
-              }
-              return [...prev, { id: uid(), role: 'assistant', content: accumulated + '\n\n*[已停止]*' }]
-            })
-          }
+          const timing = buildTaskTiming(taskStartedAt)
+          setMessages(threadId, (prev) => {
+            for (let i = prev.length - 1; i >= 0; i--) {
+              if (prev[i]?.role !== 'assistant') continue
+              const updated = [...prev]
+              const tail = updated[i]
+              const stoppedContent = (tail.content || accumulated).includes('*[已停止]*')
+                ? (tail.content || accumulated)
+                : `${tail.content || accumulated}\n\n*[已停止]*`
+              updated[i] = { ...tail, content: stoppedContent, taskTiming: timing }
+              return updated
+            }
+            if (!accumulated) return prev
+            return [...prev, { id: uid(), role: 'assistant', content: accumulated + '\n\n*[已停止]*', taskTiming: timing }]
+          })
         } else if (accumulated) {
-          const stoppedMsg: ChatMsg = { id: uid(), role: 'assistant', content: accumulated + '\n\n*[已停止]*' }
+          const stoppedMsg: ChatMsg = {
+            id: uid(),
+            role: 'assistant',
+            content: accumulated + '\n\n*[已停止]*',
+            taskTiming: buildTaskTiming(taskStartedAt),
+          }
           setMessages(threadId, (prev) => [...prev, stoppedMsg])
         }
       } else {
-        const errChatMsg: ChatMsg = { id: uid(), role: 'assistant', content: `[Error] ${errMsg}` }
+        const errChatMsg: ChatMsg = {
+          id: uid(),
+          role: 'assistant',
+          content: `[Error] ${errMsg}`,
+          taskTiming: buildTaskTiming(taskStartedAt),
+        }
         setMessages(threadId, (prev) => [...prev, errChatMsg])
       }
     } finally {
       inFlightThreadsRef.current.delete(threadId)
       setSendingThreads((prev) => ({ ...prev, [threadId]: false }))
       setStreamingContents((prev) => { const next = { ...prev }; delete next[threadId]; return next })
+      setActiveTaskStartedAtByThread((prev) => {
+        const next = { ...prev }
+        delete next[threadId]
+        return next
+      })
       streamCleanupRefs.current.delete(threadId)
 
       setCompletedThreads((prev) => ({ ...prev, [threadId]: true }))
@@ -833,15 +1177,21 @@ export function useChat() {
 
   return {
     threadMessages,
+    sendingThreads,
+    streamingContents,
+    queues,
     isSending,
     isCompleted,
     getStreamingContent,
     getQueue,
     getMessages,
     getUsageTotalTokens,
+    getActiveTaskStartedAt,
+    getProjectTokenStats,
     setMessages,
     clearMessages,
     deleteThreadMessages,
+    clearProjectTokenStats,
     sendMessage,
     resendFromExisting,
     stopSending,

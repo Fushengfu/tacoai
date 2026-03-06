@@ -1,0 +1,500 @@
+/* ==================================================================== */
+/*  File Editor — 中间区域内嵌代码编辑器                                  */
+/* ==================================================================== */
+
+.file-editor {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* ---- Header ---- */
+.file-editor-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  min-height: 40px;
+}
+
+.file-editor-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.file-editor-filename {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.file-editor-path {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.file-editor-modified {
+  color: #f59e0b;
+  font-size: 16px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.file-editor-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.file-editor-lang,
+.file-editor-size,
+.file-editor-lines {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.file-editor-truncated {
+  font-size: 11px;
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.file-editor-lang {
+  background: rgba(86, 217, 197, 0.12);
+  color: var(--accent);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-weight: 500;
+}
+
+.file-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.file-editor-btn {
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.file-editor-btn.diff {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.3);
+  color: #f59e0b;
+  font-weight: 500;
+}
+.file-editor-btn.diff:hover {
+  background: rgba(245, 158, 11, 0.22);
+}
+.file-editor-btn.save {
+  background: rgba(52, 211, 153, 0.15);
+  border-color: rgba(52, 211, 153, 0.35);
+  color: #34d399;
+}
+.file-editor-btn.save:hover:not(:disabled) {
+  background: rgba(52, 211, 153, 0.25);
+}
+.file-editor-btn.save:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.file-editor-btn.close {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  border: none;
+  border-radius: 4px;
+}
+.file-editor-btn.close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.file-editor-saved {
+  font-size: 11px;
+  color: #34d399;
+  animation: fadeInOut 2s ease forwards;
+}
+
+@keyframes fadeInOut {
+  0% { opacity: 0; }
+  15% { opacity: 1; }
+  75% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* ---- Body ---- */
+.file-editor-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.file-editor-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 1;
+  color: var(--muted);
+  font-size: 13px;
+}
+.file-editor-status.error {
+  color: #f87171;
+}
+.file-editor-size-detail {
+  font-size: 11px;
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+.file-editor-image-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.file-editor-image-preview {
+  max-width: 100%;
+  height: auto;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #0b111b;
+}
+
+/* ---- Code area (line numbers + code wrapper) ---- */
+.file-editor-code {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+/* 行号列 */
+.file-editor-line-numbers {
+  width: 52px;
+  flex-shrink: 0;
+  overflow: hidden;
+  background: var(--panel-2);
+  padding: 8px 0;
+  border-right: 1px solid var(--border);
+  user-select: none;
+  position: relative;
+  z-index: 1;
+}
+
+.file-editor-line-no {
+  height: 20px;
+  line-height: 20px;
+  font-size: 12px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace;
+  color: rgba(255, 255, 255, 0.2);
+  text-align: right;
+  padding-right: 12px;
+  transition: color 0.1s;
+}
+
+/* 当前光标所在行号高亮 */
+.file-editor-line-no.active {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* 当前行高亮条 */
+.file-editor-active-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background: rgba(255, 255, 255, 0.04);
+  pointer-events: none;
+  z-index: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+/* ---- 代码编辑区包装器（overlay 结构容器） ---- */
+.file-editor-code-wrapper {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 语法高亮渲染层（textarea 背后） */
+.file-editor-highlight {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace;
+  line-height: 20px;
+  tab-size: 2;
+  white-space: pre;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+  background: transparent;
+  border: none;
+  word-wrap: normal;
+  overflow-wrap: normal;
+}
+
+/* 编辑文本区域（透明文字，光标可见，叠加在高亮层之上） */
+.file-editor-textarea {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: transparent;
+  caret-color: #e8e9ee;
+  font-size: 13px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace;
+  line-height: 20px;
+  padding: 8px 12px;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  z-index: 1;
+}
+
+.file-editor-textarea::selection {
+  background: rgba(86, 217, 197, 0.25);
+  color: transparent;
+}
+
+.file-editor-textarea::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.file-editor-textarea::-webkit-scrollbar-track {
+  background: transparent;
+}
+.file-editor-textarea::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+.file-editor-textarea::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+/* ==================================================================== */
+/*  Diff View — 内联编辑模式                                              */
+/* ==================================================================== */
+
+.diff-edit-mode-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(76, 123, 255, 0.15);
+  color: #6b8aff;
+  letter-spacing: 0.3px;
+}
+
+.diff-action-btn.edit.active {
+  background: rgba(76, 123, 255, 0.3);
+  border-color: rgba(76, 123, 255, 0.5);
+}
+
+.diff-edit-content {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ---- 编辑模式 gutter（行号 + diff 标记） ---- */
+.diff-edit-gutter {
+  width: 70px;
+  flex-shrink: 0;
+  overflow: hidden;
+  background: var(--panel-2);
+  border-right: 1px solid var(--border);
+  padding-top: 8px;
+  user-select: none;
+}
+
+.diff-edit-gutter-line {
+  height: 20px;
+  line-height: 20px;
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+  font-size: 12px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace;
+}
+
+.diff-edit-gutter-line.add {
+  background: rgba(72, 187, 120, 0.1);
+}
+
+.diff-edit-gutter-marker {
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+  color: transparent;
+}
+.diff-edit-gutter-line.add .diff-edit-gutter-marker {
+  color: #48bb78;
+  font-weight: 700;
+}
+
+.diff-edit-gutter-no {
+  flex: 1;
+  text-align: right;
+  padding-right: 8px;
+  color: rgba(255, 255, 255, 0.2);
+  transition: color 0.1s;
+}
+.diff-edit-gutter-line.add .diff-edit-gutter-no {
+  color: rgba(72, 187, 120, 0.6);
+}
+/* 当前光标所在行号高亮 */
+.diff-edit-gutter-line.active .diff-edit-gutter-no {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* ---- 编辑模式代码区域 ---- */
+.diff-edit-code-area {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 当前行高亮条 */
+.diff-edit-active-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background: rgba(255, 255, 255, 0.04);
+  pointer-events: none;
+  z-index: 3;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+/* 逐行 diff 背景色层 */
+.diff-edit-bg {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+  padding-top: 8px;
+}
+
+.diff-edit-bg-line {
+  height: 20px;
+}
+.diff-edit-bg-line.add {
+  background: rgba(72, 187, 120, 0.06);
+}
+
+/* 语法高亮叠加层 */
+.diff-edit-highlight {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace;
+  line-height: 20px;
+  tab-size: 2;
+  white-space: pre;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 1;
+  background: transparent;
+  border: none;
+  word-wrap: normal;
+  overflow-wrap: normal;
+}
+
+/* 编辑区 textarea */
+.diff-edit-textarea {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: transparent;
+  caret-color: #e8e9ee;
+  font-size: 13px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace;
+  line-height: 20px;
+  padding: 8px 12px;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  z-index: 2;
+}
+
+.diff-edit-textarea::selection {
+  background: rgba(86, 217, 197, 0.25);
+  color: transparent;
+}
+
+.diff-edit-textarea::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.diff-edit-textarea::-webkit-scrollbar-track {
+  background: transparent;
+}
+.diff-edit-textarea::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+.diff-edit-textarea::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.18);
+}

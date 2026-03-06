@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 import '../models/bridge_models.dart';
 import '../services/bridge_client.dart';
@@ -20,6 +21,7 @@ class MobileBridgePage extends StatefulWidget {
 class _MobileBridgePageState extends State<MobileBridgePage> {
   final TextEditingController _commandController = TextEditingController();
   final ScrollController _historyScrollController = ScrollController();
+  final stt.SpeechToText _speech = stt.SpeechToText();
 
   BridgeConfig _config = const BridgeConfig(
     host: '192.168.1.100',
@@ -30,6 +32,10 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
   bool _sendingQueue = false;
   bool _syncing = false;
   bool _stickToLatest = true;
+  bool _speechReady = false;
+  bool _listening = false;
+  String _voiceBaseText = '';
+  String? _speechLocaleId;
   String _status = '未连接';
   Timer? _syncTimer;
   WebSocket? _contextSocket;
@@ -63,12 +69,16 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
     });
     unawaited(_checkHealth(notify: false));
     unawaited(_connectContextSocket());
+    unawaited(_initSpeech());
   }
 
   @override
   void dispose() {
     _syncTimer?.cancel();
     unawaited(_closeContextSocket());
+    if (_speech.isListening) {
+      unawaited(_speech.stop());
+    }
     _commandController.dispose();
     _historyScrollController.dispose();
     super.dispose();
@@ -249,6 +259,135 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
     }
   }
 
+  String? _pickSpeechLocale(List<stt.LocaleName> locales) {
+    if (locales.isEmpty) return null;
+    const preferred = <String>[
+      'zh_CN',
+      'zh-CN',
+      'cmn-Hans-CN',
+      'cmn-Hans',
+      'zh',
+      'en_US',
+      'en-US',
+    ];
+    final index = <String, String>{};
+    for (final locale in locales) {
+      index[locale.localeId.toLowerCase()] = locale.localeId;
+    }
+    for (final id in preferred) {
+      final found = index[id.toLowerCase()];
+      if (found != null) return found;
+    }
+    return locales.first.localeId;
+  }
+
+  Future<void> _initSpeech() async {
+    try {
+      final available = await _speech.initialize(
+        onStatus: (status) {
+          if (!mounted) return;
+          final normalized = status.toLowerCase();
+          final listening = normalized == 'listening';
+          if (_listening != listening) {
+            setState(() {
+              _listening = listening;
+            });
+          }
+        },
+        onError: (error) {
+          if (!mounted) return;
+          setState(() {
+            _listening = false;
+          });
+          _showNotice('语音识别异常: ${error.errorMsg}');
+        },
+      );
+      if (!mounted) return;
+      if (!available) {
+        setState(() {
+          _speechReady = false;
+          _listening = false;
+          _speechLocaleId = null;
+        });
+        return;
+      }
+      final locales = await _speech.locales();
+      if (!mounted) return;
+      setState(() {
+        _speechReady = true;
+        _speechLocaleId = _pickSpeechLocale(locales);
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _speechReady = false;
+        _listening = false;
+        _speechLocaleId = null;
+      });
+    }
+  }
+
+  Future<void> _startVoiceInput() async {
+    if (_listening || _speech.isListening) {
+      return;
+    }
+    if (!_speechReady) {
+      await _initSpeech();
+      if (!_speechReady) {
+        _showNotice('当前设备不支持语音输入');
+        return;
+      }
+    }
+
+    _voiceBaseText = _commandController.text.trim();
+    try {
+      await _speech.listen(
+        localeId: _speechLocaleId,
+        listenOptions: stt.SpeechListenOptions(
+          listenMode: stt.ListenMode.dictation,
+          partialResults: true,
+          cancelOnError: true,
+        ),
+        onResult: (result) {
+          final words = result.recognizedWords.trim();
+          final suffix = words.isEmpty
+              ? ''
+              : (_voiceBaseText.isEmpty ? words : ' $words');
+          final next = '${_voiceBaseText.trim()}$suffix'.trim();
+          _commandController.value = _commandController.value.copyWith(
+            text: next,
+            selection: TextSelection.collapsed(offset: next.length),
+            composing: TextRange.empty,
+          );
+        },
+      );
+      if (!mounted) return;
+      setState(() {
+        _listening = _speech.isListening;
+      });
+      if (!_speech.isListening) {
+        _showNotice('语音识别启动失败');
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _listening = false;
+      });
+      _showNotice('语音识别启动失败');
+    }
+  }
+
+  Future<void> _stopVoiceInput() async {
+    if (!(_listening || _speech.isListening)) {
+      return;
+    }
+    await _speech.stop();
+    if (!mounted) return;
+    setState(() {
+      _listening = false;
+    });
+  }
+
   Future<void> _openSettingsPage() async {
     final next = await Navigator.of(context).push<BridgeConfig>(
       MaterialPageRoute(
@@ -290,7 +429,10 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
     final map = <String, DesktopBridgeProvider>{};
     for (final t in context.threads) {
       if (t.provider.isEmpty) continue;
-      map[t.provider] = DesktopBridgeProvider(id: t.provider, label: t.provider);
+      map[t.provider] = DesktopBridgeProvider(
+        id: t.provider,
+        label: t.provider,
+      );
     }
     return map.values.toList();
   }
@@ -357,10 +499,7 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
                 minScale: 0.8,
                 maxScale: 4.0,
                 child: Center(
-                  child: Image.network(
-                    imageUrl,
-                    fit: BoxFit.contain,
-                  ),
+                  child: Image.network(imageUrl, fit: BoxFit.contain),
                 ),
               ),
             ),
@@ -404,7 +543,8 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
 
   void _reconcileSelection(DesktopBridgeContext context) {
     final threadIds = context.threads.map((t) => t.threadId).toSet();
-    final fallbackThreadId = context.activeThreadId ??
+    final fallbackThreadId =
+        context.activeThreadId ??
         (context.threads.isNotEmpty ? context.threads.first.threadId : null);
     final selectedThreadId = threadIds.contains(_selectedThreadId)
         ? _selectedThreadId
@@ -424,12 +564,14 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
     String? selectedProviderId = _selectedProviderId;
     String? selectedMode = _selectedMode;
     if (selectedThread != null) {
-      final sessionIds = selectedThread.sessions.map((s) => s.sessionId).toSet();
+      final sessionIds = selectedThread.sessions
+          .map((s) => s.sessionId)
+          .toSet();
       final fallbackSessionId = selectedThread.activeSessionId.isNotEmpty
           ? selectedThread.activeSessionId
           : (selectedThread.sessions.isNotEmpty
-              ? selectedThread.sessions.first.sessionId
-              : null);
+                ? selectedThread.sessions.first.sessionId
+                : null);
       selectedSessionId = sessionIds.contains(_selectedSessionId)
           ? _selectedSessionId
           : fallbackSessionId;
@@ -447,10 +589,11 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
     final providerIds = context.providers.isNotEmpty
         ? context.providers.map((p) => p.id).toSet()
         : context.threads
-            .where((t) => t.provider.isNotEmpty)
-            .map((t) => t.provider)
-            .toSet();
-    if (selectedProviderId != null && !providerIds.contains(selectedProviderId)) {
+              .where((t) => t.provider.isNotEmpty)
+              .map((t) => t.provider)
+              .toSet();
+    if (selectedProviderId != null &&
+        !providerIds.contains(selectedProviderId)) {
       selectedProviderId = providerIds.isNotEmpty ? providerIds.first : null;
     }
 
@@ -463,6 +606,8 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
   }
 
   Future<void> _enqueueCommand() async {
+    await _stopVoiceInput();
+
     final text = _commandController.text.trim();
     if (text.isEmpty) {
       _showNotice('请输入指令');
@@ -652,10 +797,12 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
             break;
           }
         }
-        final nextProvider =
-            (selected?.provider ?? '').isNotEmpty ? selected!.provider : _selectedProviderId;
-        final nextMode =
-            (selected?.mode ?? '').isNotEmpty ? selected!.mode : _selectedMode;
+        final nextProvider = (selected?.provider ?? '').isNotEmpty
+            ? selected!.provider
+            : _selectedProviderId;
+        final nextMode = (selected?.mode ?? '').isNotEmpty
+            ? selected!.mode
+            : _selectedMode;
         setState(() {
           _selectedThreadId = value;
           _selectedSessionId = selected?.activeSessionId;
@@ -664,12 +811,14 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
               ? nextMode
               : _selectedMode;
         });
-        unawaited(_syncSelectionToDesktop(
-          threadId: value,
-          sessionId: selected?.activeSessionId,
-          provider: nextProvider,
-          mode: nextMode,
-        ));
+        unawaited(
+          _syncSelectionToDesktop(
+            threadId: value,
+            sessionId: selected?.activeSessionId,
+            provider: nextProvider,
+            mode: nextMode,
+          ),
+        );
       },
       itemBuilder: (ctx) {
         final threads = bridgeContext?.threads ?? <DesktopBridgeThread>[];
@@ -683,10 +832,12 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
           ];
         }
         return threads
-            .map((t) => PopupMenuItem<String>(
-                  value: t.threadId,
-                  child: Text(t.title),
-                ))
+            .map(
+              (t) => PopupMenuItem<String>(
+                value: t.threadId,
+                child: Text(t.title),
+              ),
+            )
             .toList();
       },
       child: _MenuIcon(
@@ -715,21 +866,20 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
         setState(() {
           _selectedSessionId = value;
         });
-        unawaited(_syncSelectionToDesktop(
-          threadId: _selectedThreadId,
-          sessionId: value,
-          provider: _selectedProviderId,
-          mode: _selectedMode,
-        ));
+        unawaited(
+          _syncSelectionToDesktop(
+            threadId: _selectedThreadId,
+            sessionId: value,
+            provider: _selectedProviderId,
+            mode: _selectedMode,
+          ),
+        );
       },
       itemBuilder: (ctx) {
         final sessions = currentThread?.sessions ?? <DesktopBridgeSession>[];
         if (sessions.isEmpty) {
           return [
-            const PopupMenuItem<String>(
-              value: actionNew,
-              child: Text('新建会话'),
-            ),
+            const PopupMenuItem<String>(value: actionNew, child: Text('新建会话')),
             const PopupMenuItem<String>(
               value: actionClear,
               child: Text('清空当前会话'),
@@ -743,20 +893,17 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
           ];
         }
         return [
-          const PopupMenuItem<String>(
-            value: actionNew,
-            child: Text('新建会话'),
-          ),
+          const PopupMenuItem<String>(value: actionNew, child: Text('新建会话')),
           PopupMenuItem<String>(
             value: actionClear,
             enabled: sessions.isNotEmpty,
             child: const Text('清空当前会话'),
           ),
           const PopupMenuDivider(),
-          ...sessions.map((s) => PopupMenuItem<String>(
-                value: s.sessionId,
-                child: Text(s.title),
-              )),
+          ...sessions.map(
+            (s) =>
+                PopupMenuItem<String>(value: s.sessionId, child: Text(s.title)),
+          ),
         ];
       },
       child: _MenuIcon(
@@ -775,12 +922,14 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
         setState(() {
           _selectedProviderId = value;
         });
-        unawaited(_syncSelectionToDesktop(
-          threadId: _selectedThreadId,
-          sessionId: _selectedSessionId,
-          provider: value,
-          mode: _selectedMode,
-        ));
+        unawaited(
+          _syncSelectionToDesktop(
+            threadId: _selectedThreadId,
+            sessionId: _selectedSessionId,
+            provider: value,
+            mode: _selectedMode,
+          ),
+        );
       },
       itemBuilder: (ctx) {
         if (options.isEmpty) {
@@ -793,10 +942,9 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
           ];
         }
         return options
-            .map((p) => PopupMenuItem<String>(
-                  value: p.id,
-                  child: Text(p.label),
-                ))
+            .map(
+              (p) => PopupMenuItem<String>(value: p.id, child: Text(p.label)),
+            )
             .toList();
       },
       child: _MenuIcon(
@@ -814,22 +962,18 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
         setState(() {
           _selectedMode = value;
         });
-        unawaited(_syncSelectionToDesktop(
-          threadId: _selectedThreadId,
-          sessionId: _selectedSessionId,
-          provider: _selectedProviderId,
-          mode: value,
-        ));
+        unawaited(
+          _syncSelectionToDesktop(
+            threadId: _selectedThreadId,
+            sessionId: _selectedSessionId,
+            provider: _selectedProviderId,
+            mode: value,
+          ),
+        );
       },
       itemBuilder: (ctx) => [
-        const PopupMenuItem<String>(
-          value: 'chat',
-          child: Text('聊天模式'),
-        ),
-        const PopupMenuItem<String>(
-          value: 'agent',
-          child: Text('代理模式'),
-        ),
+        const PopupMenuItem<String>(value: 'chat', child: Text('聊天模式')),
+        const PopupMenuItem<String>(value: 'agent', child: Text('代理模式')),
       ],
       child: _MenuIcon(
         icon: _selectedMode == 'agent'
@@ -859,7 +1003,9 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
         controller: _historyScrollController,
         reverse: true,
         addRepaintBoundaries: true,
-        itemCount: messages.length + (currentSession.streamingContent.isNotEmpty ? 1 : 0),
+        itemCount:
+            messages.length +
+            (currentSession.streamingContent.isNotEmpty ? 1 : 0),
         itemBuilder: (context, index) {
           if (index == 0 && currentSession.streamingContent.isNotEmpty) {
             return RepaintBoundary(
@@ -883,7 +1029,8 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
               activePlan: msg.activePlan,
               screenshotUrls: screenshotUrls,
               onOpenImage: (url) => unawaited(_openImagePreview(url)),
-              onConfirmStep: (confirmId, approved) => _confirmStep(confirmId, approved),
+              onConfirmStep: (confirmId, approved) =>
+                  _confirmStep(confirmId, approved),
               confirmStates: _respondedConfirms,
             ),
           );
@@ -897,28 +1044,35 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      color: Theme.of(context).colorScheme.tertiaryContainer.withValues(alpha: 0.7),
+      color: Theme.of(
+        context,
+      ).colorScheme.tertiaryContainer.withValues(alpha: 0.7),
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: Row(
           children: [
-            Text('移动端待发 ${_outgoingQueue.length} 条', style: const TextStyle(fontSize: 12)),
+            Text(
+              '移动端待发 ${_outgoingQueue.length} 条',
+              style: const TextStyle(fontSize: 12),
+            ),
             const SizedBox(width: 8),
-            ..._outgoingQueue.map((q) => Padding(
-                  padding: const EdgeInsets.only(right: 6),
-                  child: InputChip(
-                    label: SizedBox(
-                      width: 120,
-                      child: Text(
-                        q.text,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 11),
-                      ),
+            ..._outgoingQueue.map(
+              (q) => Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: InputChip(
+                  label: SizedBox(
+                    width: 120,
+                    child: Text(
+                      q.text,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11),
                     ),
-                    onDeleted: () => _removeFromOutgoingQueue(q.id),
                   ),
-                )),
+                  onDeleted: () => _removeFromOutgoingQueue(q.id),
+                ),
+              ),
+            ),
           ],
         ),
       ),
@@ -945,7 +1099,9 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
           _buildModeMenu(),
           IconButton(
             tooltip: '同步上下文',
-            onPressed: _syncing ? null : () => unawaited(_fetchContext(silent: false)),
+            onPressed: _syncing
+                ? null
+                : () => unawaited(_fetchContext(silent: false)),
             icon: const Icon(Icons.sync),
           ),
           IconButton(
@@ -970,7 +1126,10 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('桌面会话历史 | 状态: $_status', style: const TextStyle(fontSize: 12)),
+                  Text(
+                    '桌面会话历史 | 状态: $_status',
+                    style: const TextStyle(fontSize: 12),
+                  ),
                   const SizedBox(height: 2),
                   Text(
                     '项目: ${currentThread?.title ?? "-"} | 会话: ${currentSession?.title ?? "-"} | 模型: ${_resolveProviderLabel(_selectedProviderId ?? currentThread?.provider)} | 模式: ${_selectedMode == "agent" ? "代理" : "聊天"}',
@@ -983,9 +1142,15 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
             if (queueCount > 0)
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
                 color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                child: Text('桌面端会话队列: $queueCount 条', style: const TextStyle(fontSize: 12)),
+                child: Text(
+                  '桌面端会话队列: $queueCount 条',
+                  style: const TextStyle(fontSize: 12),
+                ),
               ),
             _buildOutgoingQueueBar(),
             Container(
@@ -993,7 +1158,9 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surface,
                 border: Border(
-                  top: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+                  top: BorderSide(
+                    color: Theme.of(context).colorScheme.outlineVariant,
+                  ),
                 ),
               ),
               child: Row(
@@ -1013,6 +1180,43 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
                     ),
                   ),
                   const SizedBox(width: 8),
+                  Tooltip(
+                    message: _listening ? '松开结束语音输入' : '长按说话',
+                    child: GestureDetector(
+                      onTap: _sendingQueue
+                          ? null
+                          : () => _showNotice('请长按麦克风说话，松开结束'),
+                      onLongPressStart: _sendingQueue
+                          ? null
+                          : (_) => unawaited(_startVoiceInput()),
+                      onLongPressEnd: _sendingQueue
+                          ? null
+                          : (_) => unawaited(_stopVoiceInput()),
+                      onLongPressCancel: _sendingQueue
+                          ? null
+                          : () => unawaited(_stopVoiceInput()),
+                      child: Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: _listening
+                              ? Theme.of(context).colorScheme.errorContainer
+                              : Theme.of(context).colorScheme.primaryContainer,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        alignment: Alignment.center,
+                        child: Icon(
+                          _listening ? Icons.keyboard_voice : Icons.mic,
+                          color: _listening
+                              ? Theme.of(context).colorScheme.onErrorContainer
+                              : Theme.of(
+                                  context,
+                                ).colorScheme.onPrimaryContainer,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
                   if (canAbort)
                     FilledButton.tonal(
                       onPressed: () => unawaited(_abortTask()),
@@ -1020,7 +1224,9 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
                     )
                   else
                     FilledButton(
-                      onPressed: _sendingQueue ? null : () => unawaited(_enqueueCommand()),
+                      onPressed: _sendingQueue
+                          ? null
+                          : () => unawaited(_enqueueCommand()),
                       child: Text(_sendingQueue ? '排队发送' : '发送'),
                     ),
                 ],
@@ -1044,10 +1250,7 @@ class _MenuIcon extends StatelessWidget {
     return Container(
       width: 34,
       height: 34,
-      decoration: BoxDecoration(
-        color: color,
-        shape: BoxShape.circle,
-      ),
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
       child: Icon(icon, size: 18),
     );
   }
