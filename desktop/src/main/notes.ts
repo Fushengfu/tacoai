@@ -18,7 +18,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { app } from 'electron'
 import type { ProjectNote, ProjectTaskMemory } from '../shared/ipc'
 import type { ChatMessage } from './llm'
-import { requestStreamWithTools } from './llm'
+import { requestChatCompletion, requestStreamWithTools } from './llm'
 import type { ProviderKey, ProviderOverrides } from './llm'
 import type { ToolDefinition } from './tools'
 import { log } from './logger'
@@ -44,6 +44,7 @@ function resolveHomeDir(): string {
 const TACO_HOME = path.join(resolveHomeDir(), '.taco')
 const NOTES_DIR = path.join(TACO_HOME, 'notes')
 const MEMORY_DIR = path.join(TACO_HOME, 'memory')
+const MEMORY_ARCHIVE_DIR = path.join(TACO_HOME, 'memory-archive')
 const SNAPSHOT_DIR = path.join(TACO_HOME, 'memory-snapshots')
 
 /** 将工作空间路径转为稳定的文件名 hash */
@@ -71,6 +72,11 @@ function memoryFilePath(workspace: string, projectId?: string): string {
   return path.join(MEMORY_DIR, `${resolveScope(workspace, projectId)}.json`)
 }
 
+/** 获取指定作用域的任务记忆归档文件路径（长期记忆） */
+function memoryArchiveFilePath(workspace: string, projectId?: string): string {
+  return path.join(MEMORY_ARCHIVE_DIR, `${resolveScope(workspace, projectId)}.json`)
+}
+
 /** 获取指定作用域的记忆压缩快照文件路径 */
 function snapshotFilePath(workspace: string, projectId?: string): string {
   return path.join(SNAPSHOT_DIR, `${resolveScope(workspace, projectId)}.json`)
@@ -83,6 +89,7 @@ function snapshotFilePath(workspace: string, projectId?: string): string {
 async function ensureDirs() {
   await fs.mkdir(NOTES_DIR, { recursive: true })
   await fs.mkdir(MEMORY_DIR, { recursive: true })
+  await fs.mkdir(MEMORY_ARCHIVE_DIR, { recursive: true })
   await fs.mkdir(SNAPSHOT_DIR, { recursive: true })
 }
 
@@ -209,6 +216,15 @@ type TaskLogInput = {
   failures?: string[]
 }
 
+export type MemoryMaintainOptions = {
+  provider?: ProviderKey
+  overrides?: ProviderOverrides
+  usageTotalTokens?: number
+  maxTokens?: number
+  signal?: AbortSignal
+  logScope?: string
+}
+
 export type MemorySnapshotEntry = {
   id: string
   summary: string
@@ -227,6 +243,8 @@ type SnapshotLogInput = {
 }
 
 const TASK_MEMORY_MAX_ENTRIES = 400
+const TASK_MEMORY_ARCHIVE_MAX_ENTRIES = 6000
+const TASK_MEMORY_TOTAL_MAX_ENTRIES = TASK_MEMORY_MAX_ENTRIES + TASK_MEMORY_ARCHIVE_MAX_ENTRIES
 const TASK_MEMORY_SUMMARY_MAX_CHARS = 1200
 const TASK_MEMORY_CORE_MAX_CHARS = 560
 const TASK_MEMORY_ASSISTANT_RESULT_MAX_CHARS = 4200
@@ -236,6 +254,9 @@ const MEMORY_SNAPSHOT_MAX_ENTRIES = 120
 const MEMORY_SNAPSHOT_SUMMARY_MAX_CHARS = 5600
 
 const MEMORY_META_PREFIX = /^(用户问题|用户意图|意图来源|意图目标|意图|结果|动作|文件|异常)[:：]/u
+const MEMORY_MAINTAIN_RATIO = 0.8
+const MEMORY_MAINTAIN_MIN_INTERVAL_MS = 90 * 1000
+const memoryMaintainLastRunAtByScope = new Map<string, number>()
 
 function normalizeStringList(value: unknown, max = 120): string[] {
   if (!Array.isArray(value)) return []
@@ -331,9 +352,17 @@ function normalizeTaskMemoryEntry(raw: Partial<TaskMemoryEntry>, index: number):
     changedFiles: normalizeStringList(raw.changedFiles, 160),
     identifiers: normalizeStringList(raw.identifiers, 160),
     failures: normalizeStringList(raw.failures, 32),
+    ...(normalizeIso((raw as Record<string, unknown>).deletedAt) ? { deletedAt: normalizeIso((raw as Record<string, unknown>).deletedAt) } : {}),
+    ...(shortText(String((raw as Record<string, unknown>).deletedReason || ''), 220) ? { deletedReason: shortText(String((raw as Record<string, unknown>).deletedReason || ''), 220) } : {}),
+    ...(shortText(String((raw as Record<string, unknown>).mergedIntoId || ''), 80) ? { mergedIntoId: shortText(String((raw as Record<string, unknown>).mergedIntoId || ''), 80) } : {}),
     createdAt,
     updatedAt,
   }
+}
+
+function isSoftDeletedMemory(item: TaskMemoryEntry): boolean {
+  const ts = Date.parse(String((item as Record<string, unknown>).deletedAt || ''))
+  return Number.isFinite(ts) && ts > 0
 }
 
 async function loadTaskMemories(workspace: string, projectId?: string): Promise<TaskMemoryEntry[]> {
@@ -351,13 +380,66 @@ async function loadTaskMemories(workspace: string, projectId?: string): Promise<
   return []
 }
 
+async function loadTaskMemoryArchive(workspace: string, projectId?: string): Promise<TaskMemoryEntry[]> {
+  const archiveFile = memoryArchiveFilePath(workspace, projectId)
+  const archiveExists = await pathExists(archiveFile)
+  if (!archiveExists) return []
+  const archive = await readJsonArray<TaskMemoryEntry>(archiveFile)
+  return archive.map((item, index) => normalizeTaskMemoryEntry(item, index))
+}
+
 async function saveTaskMemories(workspace: string, items: TaskMemoryEntry[], projectId?: string): Promise<void> {
   await writeJsonArray(memoryFilePath(workspace, projectId), items)
 }
 
+async function saveTaskMemoryArchive(workspace: string, items: TaskMemoryEntry[], projectId?: string): Promise<void> {
+  await writeJsonArray(memoryArchiveFilePath(workspace, projectId), items)
+}
+
+function taskMemoryTs(item: TaskMemoryEntry): number {
+  const updated = Date.parse(item.updatedAt || '')
+  if (Number.isFinite(updated)) return updated
+  const created = Date.parse(item.createdAt || '')
+  if (Number.isFinite(created)) return created
+  return 0
+}
+
+function sortTaskMemoriesByTimeAsc(items: TaskMemoryEntry[]): TaskMemoryEntry[] {
+  return [...items].sort((a, b) => {
+    const ta = taskMemoryTs(a)
+    const tb = taskMemoryTs(b)
+    if (ta !== tb) return ta - tb
+    return String(a.id).localeCompare(String(b.id))
+  })
+}
+
+function mergeTaskMemoryById(items: TaskMemoryEntry[]): TaskMemoryEntry[] {
+  const byId = new Map<string, TaskMemoryEntry>()
+  for (const item of items) {
+    const id = String(item.id || '').trim()
+    if (!id) continue
+    const prev = byId.get(id)
+    if (!prev) {
+      byId.set(id, item)
+      continue
+    }
+    if (taskMemoryTs(item) >= taskMemoryTs(prev)) byId.set(id, item)
+  }
+  return sortTaskMemoriesByTimeAsc(Array.from(byId.values()))
+}
+
+async function loadTaskMemoriesForRecall(workspace: string, projectId?: string): Promise<TaskMemoryEntry[]> {
+  const [active, archived] = await Promise.all([
+    loadTaskMemories(workspace, projectId),
+    loadTaskMemoryArchive(workspace, projectId),
+  ])
+  const merged = archived.length === 0 ? sortTaskMemoriesByTimeAsc(active) : mergeTaskMemoryById([...archived, ...active])
+  return merged.filter((item) => !isSoftDeletedMemory(item))
+}
+
 /** 列出任务执行记忆（按时间倒序） */
 export async function listTaskMemories(workspace: string, projectId?: string): Promise<TaskMemoryEntry[]> {
-  const items = await loadTaskMemories(workspace, projectId)
+  const items = await loadTaskMemoriesForRecall(workspace, projectId)
   return [...items].sort((a, b) => {
     const ta = Date.parse(a.updatedAt || a.createdAt || '')
     const tb = Date.parse(b.updatedAt || b.createdAt || '')
@@ -370,9 +452,27 @@ export async function listTaskMemories(workspace: string, projectId?: string): P
 
 /** 删除任务执行记忆 */
 export async function deleteTaskMemory(workspace: string, memoryId: string, projectId?: string): Promise<void> {
-  const items = await loadTaskMemories(workspace, projectId)
-  const filtered = items.filter((item) => item.id !== memoryId)
-  await saveTaskMemories(workspace, filtered, projectId)
+  const now = new Date().toISOString()
+  const [active, archived] = await Promise.all([
+    loadTaskMemories(workspace, projectId),
+    loadTaskMemoryArchive(workspace, projectId),
+  ])
+  const softDelete = (item: TaskMemoryEntry): TaskMemoryEntry => {
+    if (item.id !== memoryId) return item
+    if (isSoftDeletedMemory(item)) return item
+    return {
+      ...item,
+      deletedAt: now,
+      deletedReason: 'manual_delete',
+      updatedAt: now,
+    }
+  }
+  const nextActive = active.map(softDelete)
+  const nextArchive = archived.map(softDelete)
+  await Promise.all([
+    saveTaskMemories(workspace, nextActive, projectId),
+    saveTaskMemoryArchive(workspace, nextArchive, projectId),
+  ])
 }
 
 function normalizeMemorySnapshotEntry(raw: Partial<MemorySnapshotEntry>, index: number): MemorySnapshotEntry {
@@ -571,6 +671,7 @@ export async function recordTaskLog(workspace: string, input: TaskLogInput, proj
 
   // 近似去重：短时间内完全相同目标+总结+结果，视为同一条，更新而不重复堆积
   const duplicateIdx = current.findIndex((entry) =>
+    !isSoftDeletedMemory(entry) &&
     (entry.userQuery ?? '') === (item.userQuery ?? '') &&
     (entry.userAssetsBlock ?? '') === (item.userAssetsBlock ?? '') &&
     entry.goal === item.goal &&
@@ -586,9 +687,327 @@ export async function recordTaskLog(workspace: string, input: TaskLogInput, proj
     return current[duplicateIdx]
   }
 
-  const merged = [...current, item].slice(-TASK_MEMORY_MAX_ENTRIES)
-  await saveTaskMemories(workspace, merged, projectId)
+  const merged = sortTaskMemoriesByTimeAsc([...current, item])
+  if (merged.length <= TASK_MEMORY_MAX_ENTRIES) {
+    await saveTaskMemories(workspace, merged, projectId)
+    return item
+  }
+
+  const overflowCount = Math.max(0, merged.length - TASK_MEMORY_MAX_ENTRIES)
+  const overflow = merged.slice(0, overflowCount)
+  const keepActive = merged.slice(overflowCount)
+  const archive = await loadTaskMemoryArchive(workspace, projectId)
+  const mergedArchive = mergeTaskMemoryById([...archive, ...overflow])
+  const trimmedArchive = mergedArchive.length > TASK_MEMORY_ARCHIVE_MAX_ENTRIES
+    ? mergedArchive.slice(-TASK_MEMORY_ARCHIVE_MAX_ENTRIES)
+    : mergedArchive
+
+  await Promise.all([
+    saveTaskMemories(workspace, keepActive, projectId),
+    saveTaskMemoryArchive(workspace, trimmedArchive, projectId),
+  ])
   return item
+}
+
+type MemoryConsolidationPatch = {
+  goal?: string
+  intentType?: string
+  intentSummary?: string
+  intentGoal?: string
+  summary?: string
+  assistantResult?: string
+  outcome?: 'success' | 'aborted' | 'error'
+  tools?: string[]
+  changedFiles?: string[]
+  identifiers?: string[]
+  failures?: string[]
+}
+
+type MemoryConsolidationAction = {
+  target_id?: string
+  source_ids?: string[]
+  merged_record?: MemoryConsolidationPatch
+}
+
+type MemoryConsolidationDecision = {
+  merge_actions: MemoryConsolidationAction[]
+  drop_ids: string[]
+  keep_ids: string[]
+}
+
+function safeParseObjectFromText(raw: string): Record<string, unknown> | null {
+  const direct = safeParseObject(raw.trim())
+  if (direct) return direct
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  if (fenced && fenced[1]) {
+    const parsed = safeParseObject(fenced[1].trim())
+    if (parsed) return parsed
+  }
+  const braces = raw.match(/\{[\s\S]*\}/)
+  if (braces && braces[0]) {
+    const parsed = safeParseObject(braces[0].trim())
+    if (parsed) return parsed
+  }
+  return null
+}
+
+function normalizeConsolidationDecision(value: unknown): MemoryConsolidationDecision | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const obj = value as Record<string, unknown>
+  const mergeRaw = Array.isArray(obj.merge_actions) ? obj.merge_actions : []
+  const mergeActions: MemoryConsolidationAction[] = mergeRaw
+    .filter((item) => item && typeof item === 'object' && !Array.isArray(item))
+    .map((item) => item as MemoryConsolidationAction)
+    .slice(0, 200)
+  const dropIds = normalizeStringArray(obj.drop_ids, 1200)
+  const keepIds = normalizeStringArray(obj.keep_ids, 1200)
+  return {
+    merge_actions: mergeActions,
+    drop_ids: dropIds,
+    keep_ids: keepIds,
+  }
+}
+
+function applyConsolidationPatch(base: TaskMemoryEntry, patch: MemoryConsolidationPatch | undefined, now: string): TaskMemoryEntry {
+  if (!patch || typeof patch !== 'object') return { ...base, updatedAt: now }
+  const next: TaskMemoryEntry = { ...base, updatedAt: now }
+  const goal = shortText(String(patch.goal || '').trim(), 800)
+  const intentType = shortText(String(patch.intentType || '').trim(), 48)
+  const intentSummary = shortText(String(patch.intentSummary || '').trim(), 280)
+  const intentGoal = shortText(String(patch.intentGoal || '').trim(), 220)
+  const summaryRaw = String(patch.summary || '').trim()
+  const assistantResultRaw = String(patch.assistantResult || '').trim()
+  if (goal) next.goal = goal
+  if (intentType) next.intentType = intentType
+  if (intentSummary) next.intentSummary = intentSummary
+  if (intentGoal) next.intentGoal = intentGoal
+  if (summaryRaw) next.summary = shortText(summaryRaw, TASK_MEMORY_SUMMARY_MAX_CHARS)
+  if (assistantResultRaw) next.assistantResult = buildAssistantResultBody(assistantResultRaw)
+  if (patch.outcome === 'success' || patch.outcome === 'aborted' || patch.outcome === 'error') {
+    next.outcome = patch.outcome
+  }
+  if (Array.isArray(patch.tools)) next.tools = normalizeStringList(patch.tools, 120)
+  if (Array.isArray(patch.changedFiles)) next.changedFiles = normalizeStringList(patch.changedFiles, 160)
+  if (Array.isArray(patch.identifiers)) next.identifiers = normalizeStringList(patch.identifiers, 160)
+  if (Array.isArray(patch.failures)) next.failures = normalizeStringList(patch.failures, 32)
+  delete (next as Record<string, unknown>).deletedAt
+  delete (next as Record<string, unknown>).deletedReason
+  delete (next as Record<string, unknown>).mergedIntoId
+  return next
+}
+
+function repartitionTaskMemories(items: TaskMemoryEntry[]): { active: TaskMemoryEntry[]; archive: TaskMemoryEntry[] } {
+  let all = sortTaskMemoriesByTimeAsc(items)
+  if (all.length > TASK_MEMORY_TOTAL_MAX_ENTRIES) {
+    let overflow = all.length - TASK_MEMORY_TOTAL_MAX_ENTRIES
+    const kept: TaskMemoryEntry[] = []
+    for (const item of all) {
+      if (overflow > 0 && isSoftDeletedMemory(item)) {
+        overflow--
+        continue
+      }
+      kept.push(item)
+    }
+    if (overflow > 0) {
+      all = kept.slice(overflow)
+    } else {
+      all = kept
+    }
+  }
+
+  if (all.length <= TASK_MEMORY_MAX_ENTRIES) {
+    return { active: all, archive: [] }
+  }
+
+  const active = all.slice(-TASK_MEMORY_MAX_ENTRIES)
+  const archiveRaw = all.slice(0, -TASK_MEMORY_MAX_ENTRIES)
+  const archive = archiveRaw.length > TASK_MEMORY_ARCHIVE_MAX_ENTRIES
+    ? archiveRaw.slice(-TASK_MEMORY_ARCHIVE_MAX_ENTRIES)
+    : archiveRaw
+  return { active, archive }
+}
+
+function shouldRunMemoryMaintain(scope: string, options?: MemoryMaintainOptions): { run: boolean; reason: string } {
+  const usage = typeof options?.usageTotalTokens === 'number' && Number.isFinite(options.usageTotalTokens) && options.usageTotalTokens > 0
+    ? options.usageTotalTokens
+    : undefined
+  const max = typeof options?.maxTokens === 'number' && Number.isFinite(options.maxTokens) && options.maxTokens > 0
+    ? options.maxTokens
+    : undefined
+  if (!usage || !max) return { run: false, reason: 'missing_usage_or_budget' }
+  const ratio = usage / max
+  if (ratio < MEMORY_MAINTAIN_RATIO) return { run: false, reason: `ratio_lt_${MEMORY_MAINTAIN_RATIO}` }
+  const now = Date.now()
+  const last = memoryMaintainLastRunAtByScope.get(scope) ?? 0
+  if (now - last < MEMORY_MAINTAIN_MIN_INTERVAL_MS) return { run: false, reason: 'cooldown' }
+  return { run: true, reason: `ratio_${ratio.toFixed(3)}` }
+}
+
+/**
+ * 在高上下文压力下触发“全量记忆交给 AI 判定”的整理：
+ * - AI 返回 merge/drop/keep 的 ID 决策
+ * - 主进程仅按 ID 执行更新和软删除
+ */
+export async function maintainTaskMemoriesByAI(
+  workspace: string,
+  projectId: string | undefined,
+  options?: MemoryMaintainOptions,
+): Promise<{ applied: boolean; merged: number; dropped: number; total: number; reason: string }> {
+  const provider = options?.provider
+  if (!workspace || !workspace.trim()) return { applied: false, merged: 0, dropped: 0, total: 0, reason: 'empty_workspace' }
+  if (!provider) return { applied: false, merged: 0, dropped: 0, total: 0, reason: 'missing_provider' }
+
+  const scope = resolveScope(workspace, projectId)
+  const gate = shouldRunMemoryMaintain(scope, options)
+  if (!gate.run) return { applied: false, merged: 0, dropped: 0, total: 0, reason: gate.reason }
+
+  const [active, archive] = await Promise.all([
+    loadTaskMemories(workspace, projectId),
+    loadTaskMemoryArchive(workspace, projectId),
+  ])
+  const all = mergeTaskMemoryById([...archive, ...active])
+  const candidates = all.filter((item) => !isSoftDeletedMemory(item))
+  if (candidates.length <= 1) {
+    return { applied: false, merged: 0, dropped: 0, total: candidates.length, reason: 'insufficient_candidates' }
+  }
+
+  const payload = {
+    workspace: path.resolve(workspace),
+    project_id: (projectId ?? '').trim(),
+    rules: [
+      '你必须基于全量记忆进行判定，不要省略。',
+      '只能使用 memories 里已存在的 id，禁止虚构 id。',
+      'merge_actions 表示 source_ids 合并进 target_id，target_id 必须保留。',
+      'drop_ids 表示可淘汰记忆 id。',
+      'keep_ids 表示保留不动记忆 id。',
+      '同一个 id 不能同时出现在 merge/drop/keep 的冲突位置。',
+      '输出必须是 JSON 对象，不要输出解释文本。',
+    ],
+    output_schema: {
+      merge_actions: [{ target_id: 'string', source_ids: ['string'], merged_record: { summary: 'string', assistantResult: 'string' } }],
+      drop_ids: ['string'],
+      keep_ids: ['string'],
+    },
+    memories: candidates.map((item) => ({
+      id: item.id,
+      userQuery: item.userQuery || '',
+      userAssetsBlock: item.userAssetsBlock || '',
+      goal: item.goal,
+      intentType: item.intentType || '',
+      intentSummary: item.intentSummary || '',
+      intentGoal: item.intentGoal || '',
+      summary: item.summary,
+      assistantResult: item.assistantResult || '',
+      outcome: item.outcome,
+      tools: item.tools,
+      changedFiles: item.changedFiles,
+      identifiers: item.identifiers,
+      failures: item.failures,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+    })),
+  }
+
+  const messages: ChatMessage[] = [
+    {
+      role: 'system',
+      content: '你是记忆整理器。请根据输入记忆输出严格 JSON：merge_actions/drop_ids/keep_ids。禁止输出 JSON 之外内容。',
+    },
+    {
+      role: 'user',
+      content: JSON.stringify(payload),
+    },
+  ]
+
+  let parsedDecision: MemoryConsolidationDecision | null = null
+  try {
+    const raw = await requestChatCompletion(provider, messages, options?.overrides, options?.signal, options?.logScope)
+    const parsed = safeParseObjectFromText(raw)
+    parsedDecision = normalizeConsolidationDecision(parsed)
+    if (!parsedDecision) {
+      log('TASK_MEMORY_MAINTAIN_PARSE_FAIL', { reason: 'invalid_json', raw: shortText(raw, 1200) }, options?.logScope)
+      return { applied: false, merged: 0, dropped: 0, total: candidates.length, reason: 'invalid_json' }
+    }
+  } catch (err) {
+    log('TASK_MEMORY_MAINTAIN_AI_FAIL', { error: err instanceof Error ? err.message : String(err) }, options?.logScope)
+    return { applied: false, merged: 0, dropped: 0, total: candidates.length, reason: 'ai_fail' }
+  }
+
+  const byId = new Map<string, TaskMemoryEntry>()
+  for (const item of all) byId.set(item.id, item)
+  const now = new Date().toISOString()
+  const mergedSources = new Set<string>()
+  const keptTargets = new Set<string>()
+  let mergedCount = 0
+  let droppedCount = 0
+
+  for (const action of parsedDecision.merge_actions) {
+    const targetId = String(action.target_id || '').trim()
+    if (!targetId) continue
+    const target = byId.get(targetId)
+    if (!target || isSoftDeletedMemory(target)) continue
+    const sourceIds = normalizeStringArray(action.source_ids, 240)
+      .filter((id) => id !== targetId)
+      .filter((id) => !mergedSources.has(id))
+      .filter((id) => {
+        const item = byId.get(id)
+        return Boolean(item && !isSoftDeletedMemory(item))
+      })
+    if (sourceIds.length === 0) continue
+
+    const nextTarget = applyConsolidationPatch(target, action.merged_record, now)
+    byId.set(targetId, nextTarget)
+    keptTargets.add(targetId)
+    for (const sid of sourceIds) {
+      const src = byId.get(sid)
+      if (!src || isSoftDeletedMemory(src)) continue
+      byId.set(sid, {
+        ...src,
+        deletedAt: now,
+        deletedReason: `ai_merge_into:${targetId}`,
+        mergedIntoId: targetId,
+        updatedAt: now,
+      })
+      mergedSources.add(sid)
+      mergedCount++
+    }
+  }
+
+  const dropIds = new Set(normalizeStringArray(parsedDecision.drop_ids, 1200))
+  for (const id of dropIds) {
+    if (mergedSources.has(id) || keptTargets.has(id)) continue
+    const item = byId.get(id)
+    if (!item || isSoftDeletedMemory(item)) continue
+    byId.set(id, {
+      ...item,
+      deletedAt: now,
+      deletedReason: 'ai_drop',
+      updatedAt: now,
+    })
+    droppedCount++
+  }
+
+  if (mergedCount <= 0 && droppedCount <= 0) {
+    memoryMaintainLastRunAtByScope.set(scope, Date.now())
+    return { applied: false, merged: 0, dropped: 0, total: candidates.length, reason: 'no_changes' }
+  }
+
+  const repartitioned = repartitionTaskMemories(Array.from(byId.values()))
+  await Promise.all([
+    saveTaskMemories(workspace, repartitioned.active, projectId),
+    saveTaskMemoryArchive(workspace, repartitioned.archive, projectId),
+  ])
+  memoryMaintainLastRunAtByScope.set(scope, Date.now())
+  log('TASK_MEMORY_MAINTAIN_APPLIED', {
+    total: candidates.length,
+    mergeActions: parsedDecision.merge_actions.length,
+    mergedCount,
+    droppedCount,
+    keepIds: parsedDecision.keep_ids.length,
+    repartitionActive: repartitioned.active.length,
+    repartitionArchive: repartitioned.archive.length,
+  }, options?.logScope)
+  return { applied: true, merged: mergedCount, dropped: droppedCount, total: candidates.length, reason: gate.reason }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1001,7 +1420,7 @@ async function recallBackgroundContext(
       title: stripControlChars(note.title),
       content: stripControlChars(note.content),
     }))
-  const taskMemories = (await loadTaskMemories(workspace, projectId))
+  const taskMemories = (await loadTaskMemoriesForRecall(workspace, projectId))
     .map((task) => ({
       ...task,
       userQuery: stripControlChars(task.userQuery || ''),
@@ -1424,7 +1843,6 @@ export async function buildBackgroundContextConversationMessages(
   const userAssetsBlock = extractUserAssetsBlock(userQuery)
   const forceEmptyReplay = recalled.meta.selectionMethod === 'tool_call' && recalled.meta.toolSelectedCount === 0
 
-  const selectedTaskIds = new Set(recalled.recalled.filter((item) => item.source === 'task').map((item) => item.id))
   const selectedSnapshotIds = new Set(recalled.recalled.filter((item) => item.source === 'snapshot').map((item) => item.id))
 
   const orderedTaskMemories = sortTaskMemoriesAsc(recalled.taskMemories)
@@ -1432,9 +1850,7 @@ export async function buildBackgroundContextConversationMessages(
 
   const taskCandidates = forceEmptyReplay
     ? []
-    : (selectedTaskIds.size > 0
-      ? orderedTaskMemories.filter((item) => selectedTaskIds.has(item.id))
-      : orderedTaskMemories)
+    : orderedTaskMemories
   const snapshotCandidates = forceEmptyReplay
     ? []
     : (selectedSnapshotIds.size > 0

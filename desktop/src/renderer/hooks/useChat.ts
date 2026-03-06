@@ -781,7 +781,7 @@ export function useChat() {
             setStreamingContents((prev) => ({ ...prev, [threadId]: accumulated }))
           })
           streamCleanupRefs.current.set(threadId, cleanup)
-          globalThis.window.taco.chat.stream({ requestId, provider, messages: apiMessages, overrides, projectId, workspace })
+          globalThis.window.taco.chat.stream({ requestId, provider, messages: apiMessages, overrides, projectId, workspace, maxTokens })
         })
       }
 
@@ -1097,7 +1097,7 @@ export function useChat() {
             setStreamingContents((prev) => ({ ...prev, [threadId]: accumulated }))
           })
           streamCleanupRefs.current.set(threadId, cleanup)
-          window.taco.chat.stream({ requestId, provider, messages: apiMessages, overrides, projectId, workspace })
+          window.taco.chat.stream({ requestId, provider, messages: apiMessages, overrides, projectId, workspace, maxTokens })
         })
       }
 

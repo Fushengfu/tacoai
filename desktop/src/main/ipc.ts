@@ -32,7 +32,7 @@ import { requestChatCompletion, requestChatCompletionStream } from './llm'
 import { runAgent, resolveConfirm } from './agent'
 import { gitLog, gitCommit, gitRollback, gitCommitFiles, gitStatus, gitFileChange, gitStageFiles, gitStageAll } from './git'
 import { initSkills, listSkills, installSkill, uninstallSkill, toggleSkill } from './skills'
-import { inferIntentFromBackground, listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, recordTaskLog } from './notes'
+import { inferIntentFromBackground, listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, maintainTaskMemoriesByAI, recordTaskLog } from './notes'
 import { initMcp, listMcpServers, saveMcpServer, removeMcpServer, toggleMcpServer, saveScreenshot } from './mcp'
 import { getGuiPlusConfig, saveGuiPlusConfig } from './gui-plus'
 import { getPromptConfig, savePromptConfig } from './prompt-config'
@@ -137,7 +137,7 @@ async function handleChatSend(_event: IpcMainInvokeEvent, payload: ChatSendPaylo
 
 /** 流式：renderer send → main on → 逐块 send 回 renderer */
 async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload) {
-  const { requestId, provider, messages, overrides, projectId, workspace } = payload
+  const { requestId, provider, messages, overrides, projectId, workspace, maxTokens } = payload
   const turnStartedAt = Date.now()
   const logScope = buildLogScope(projectId, workspace)
   const abortController = new AbortController()
@@ -204,6 +204,19 @@ async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload)
         },
         projectId,
       )
+      try {
+        await maintainTaskMemoriesByAI(workspace?.trim() ?? '', projectId, {
+          provider: provider as ProviderKey,
+          overrides: overrides as ProviderOverrides | undefined,
+          usageTotalTokens: lastUsage?.totalTokens,
+          maxTokens,
+          logScope,
+        })
+      } catch (maintainErr) {
+        log('CHAT_TASK_MEMORY_MAINTAIN_FAIL', {
+          error: maintainErr instanceof Error ? maintainErr.message : String(maintainErr),
+        }, logScope)
+      }
       log('CHAT_TASK_MEMORY_SAVED', {
         outcome,
         hasGoal: Boolean(plainUserQuery || lastUserGoal),

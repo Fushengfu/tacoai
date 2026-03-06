@@ -203,6 +203,8 @@ export type ChatStreamPayload = {
   projectId?: string
   /** 当前工作空间（用于日志隔离） */
   workspace?: string
+  /** 模型上下文窗口大小（token 数），用于记忆整理阈值判定 */
+  maxTokens?: number
 }
 
 /* ------------------------------------------------------------------ */
@@ -449,6 +451,12 @@ export type ProjectTaskMemory = {
   changedFiles: string[]
   identifiers: string[]
   failures: string[]
+  /** 软删除时间（存在即表示已删除） */
+  deletedAt?: string
+  /** 软删除原因（manual_delete/ai_drop/ai_merge_into:xxx） */
+  deletedReason?: string
+  /** 若由合并淘汰，指向保留的目标记忆 ID */
+  mergedIntoId?: string
   createdAt: string
   updatedAt: string
 }

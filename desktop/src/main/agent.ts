@@ -17,7 +17,7 @@ import type { ToolCall, ToolResult, RiskInfo } from './tools'
 import { log } from './logger'
 import { gitCommit, gitEnsureRepo } from './git'
 import { getActiveSkillInstructions } from './skills'
-import { buildBackgroundContextConversationMessages, inferIntentFromBackground, recordMemorySnapshot, recordTaskLog } from './notes'
+import { buildBackgroundContextConversationMessages, inferIntentFromBackground, maintainTaskMemoriesByAI, recordMemorySnapshot, recordTaskLog } from './notes'
 import type { RecallMeta } from './notes'
 import { buildAgentRequestMessages, validateCompletionClaim } from './context-builder'
 import { applyRewardScore } from './reward-score'
@@ -336,6 +336,20 @@ async function compressAgentContext(
     log('AGENT_MEMORY_SNAPSHOT_SAVE_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
   }
 
+  // 上下文压力达到阈值时，触发一次“全量记忆交给 AI”的整理（merge/drop/keep by ID）
+  try {
+    await maintainTaskMemoriesByAI(workspace, projectId, {
+      provider,
+      overrides,
+      usageTotalTokens: usageTotalTokensHint,
+      maxTokens: tokenBudget,
+      signal,
+      logScope,
+    })
+  } catch (err) {
+    log('AGENT_TASK_MEMORY_MAINTAIN_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
+  }
+
   // ── 第六步：压缩后按需召回项目上下文，并重新放入最新用户目标 ──
   try {
     const injected = await buildBackgroundContextConversationMessages(
@@ -623,6 +637,18 @@ export async function runAgent(
         },
         projectId,
       )
+      try {
+        await maintainTaskMemoriesByAI(workspace, projectId, {
+          provider,
+          overrides,
+          usageTotalTokens: lastUsageTotalTokens,
+          maxTokens,
+          signal,
+          logScope,
+        })
+      } catch (err) {
+        log('TASK_MEMORY_MAINTAIN_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
+      }
       log('TASK_CORE_NOTE_SAVED', {
         reason: decision.reason,
         intentType: finalIntentType,
