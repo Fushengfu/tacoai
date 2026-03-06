@@ -813,6 +813,12 @@ body.is-dragging * {
   height: 100%;
   object-fit: cover;
   display: block;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.composer-image-thumb:hover {
+  transform: scale(1.03);
 }
 .composer-image-remove {
   position: absolute;

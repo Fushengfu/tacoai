@@ -1250,7 +1250,14 @@ export function ChatPanel({
                       {msg.images && msg.images.length > 0 && (
                         <div className="msg-images">
                           {msg.images.map((img) => (
-                            <img key={img.id} src={img.dataUrl} alt={img.name} className="msg-image-thumb" />
+                            <img
+                              key={img.id}
+                              src={img.dataUrl}
+                              alt={img.name}
+                              className="msg-image-thumb"
+                              title="点击预览"
+                              onClick={() => setPreviewImageUrl(img.dataUrl)}
+                            />
                           ))}
                         </div>
                       )}
@@ -1401,11 +1408,20 @@ export function ChatPanel({
             <div className="composer-images">
               {attachedImages.map((img) => (
                 <div key={img.id} className="composer-image-item">
-                  <img src={img.dataUrl} alt={img.name} className="composer-image-thumb" />
+                  <img
+                    src={img.dataUrl}
+                    alt={img.name}
+                    className="composer-image-thumb"
+                    title="点击预览"
+                    onClick={() => setPreviewImageUrl(img.dataUrl)}
+                  />
                   <button
                     type="button"
                     className="composer-image-remove"
-                    onClick={() => removeImage(img.id)}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      removeImage(img.id)
+                    }}
                     title="移除图片"
                   >×</button>
                 </div>

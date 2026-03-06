@@ -334,6 +334,67 @@ function scheduleNonBlocking(task: () => void): void {
 }
 
 const MAX_RENDER_CHANGE_PATHS = 2_500
+const MAX_RENDER_WORKSPACE_TREE_NODES = 2_000
+
+type TreeCountStats = {
+  nodes: number
+  files: number
+}
+
+type LimitedWorkspaceTree = {
+  entries: FileTreeEntry[]
+  hiddenNodes: number
+  totalFiles: number
+}
+
+function countTreeEntryStats(entry: FileTreeEntry): TreeCountStats {
+  if (!entry.isDirectory) return { nodes: 1, files: 1 }
+  let nodes = 1
+  let files = 0
+  for (const child of entry.children ?? []) {
+    const childStats = countTreeEntryStats(child)
+    nodes += childStats.nodes
+    files += childStats.files
+  }
+  return { nodes, files }
+}
+
+function limitWorkspaceTree(entries: FileTreeEntry[] | undefined, maxNodes: number): LimitedWorkspaceTree {
+  if (!entries || entries.length === 0 || maxNodes <= 0) {
+    return { entries: [], hiddenNodes: 0, totalFiles: 0 }
+  }
+  let remaining = maxNodes
+  let hiddenNodes = 0
+  let totalFiles = 0
+
+  const walk = (list: FileTreeEntry[]): FileTreeEntry[] => {
+    const out: FileTreeEntry[] = []
+    for (const entry of list) {
+      if (remaining <= 0) {
+        const stats = countTreeEntryStats(entry)
+        hiddenNodes += stats.nodes
+        totalFiles += stats.files
+        continue
+      }
+
+      remaining--
+      if (entry.isDirectory) {
+        const children = walk(entry.children ?? [])
+        out.push({ ...entry, children })
+      } else {
+        totalFiles++
+        out.push(entry)
+      }
+    }
+    return out
+  }
+
+  return {
+    entries: walk(entries),
+    hiddenNodes,
+    totalFiles,
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /*  变更文件树节点组件（用于变更面板的目录树展示）                            */
@@ -482,7 +543,7 @@ function WsTreeNode({
   onAcceptFile: (filePath: string) => void
   onRejectFile: (filePath: string) => void
 }) {
-  const [expanded, setExpanded] = useState(depth < 1)
+  const [expanded, setExpanded] = useState(false)
 
   if (entry.isDirectory) {
     return (
@@ -826,18 +887,13 @@ export function DetailPanel({
 
   const hasTree = workspaceTree && workspaceTree.length > 0
 
-  // 统计工作区文件总数
-  const totalFileCount = useMemo(() => {
-    function countFiles(entries: FileTreeEntry[]): number {
-      let count = 0
-      for (const e of entries) {
-        if (e.isDirectory) count += countFiles(e.children ?? [])
-        else count++
-      }
-      return count
-    }
-    return hasTree ? countFiles(workspaceTree) : 0
-  }, [workspaceTree, hasTree])
+  const workspaceTreeLimited = useMemo(
+    () => limitWorkspaceTree(workspaceTree, MAX_RENDER_WORKSPACE_TREE_NODES),
+    [workspaceTree],
+  )
+  const renderedWorkspaceTree = workspaceTreeLimited.entries
+  const hiddenWorkspaceNodeCount = workspaceTreeLimited.hiddenNodes
+  const totalFileCount = hasTree ? workspaceTreeLimited.totalFiles : 0
 
   const unstagedTree = useMemo(() => buildTreeFromFilePaths(effectiveUnstaged), [effectiveUnstaged])
   const stagedTree = useMemo(() => buildTreeFromFilePaths(normalizedStaged), [normalizedStaged])
@@ -1005,7 +1061,12 @@ export function DetailPanel({
           </div>
           {treeExpanded && (
             <div className="change-group-body">
-              {workspaceTree.map((entry) => (
+              {hiddenWorkspaceNodeCount > 0 && (
+                <div className="change-tab-empty">
+                  文件过多，仅渲染前 {MAX_RENDER_WORKSPACE_TREE_NODES} 个节点（其余 {hiddenWorkspaceNodeCount} 个节点已折叠）
+                </div>
+              )}
+              {renderedWorkspaceTree.map((entry) => (
                 <WsTreeNode
                   key={entry.path}
                   entry={entry}

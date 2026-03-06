@@ -100,6 +100,7 @@ function safeParseObject(raw: string): Record<string, unknown> | null {
 }
 
 const USER_ASSETS_BLOCK_REGEX = /\s*\[USER_ASSETS\][\s\S]*?\[\/USER_ASSETS\]\s*/gi
+const USER_ASSETS_BLOCK_CAPTURE_REGEX = /\[USER_ASSETS\]([\s\S]*?)\[\/USER_ASSETS\]/i
 
 function stripUserAssetsBlock(content: string): string {
   return String(content ?? '')
@@ -113,6 +114,13 @@ function extractUserQueryText(content: string): string {
   const wrapped = raw.match(/\[USER_QUERY\]([\s\S]*?)\[\/USER_QUERY\]/i)
   if (wrapped && wrapped[1]) return wrapped[1].trim()
   return raw.trim()
+}
+
+function extractUserAssetsBlock(content: string): string {
+  const raw = String(content ?? '')
+  const wrapped = raw.match(USER_ASSETS_BLOCK_CAPTURE_REGEX)
+  if (!wrapped || !wrapped[1]) return ''
+  return wrapped[1].trim()
 }
 
 function inferIntentTypeFromQuery(query: string): string {
@@ -411,6 +419,7 @@ export async function runAgent(
   const workingMessages = [...messages]
   const lastUserGoal = [...messages].reverse().find((m) => m.role === 'user')?.content?.trim() || ''
   const plainUserQuery = extractUserQueryText(lastUserGoal)
+  const userAssetsBlock = extractUserAssetsBlock(lastUserGoal)
   let latestRecallMeta: Pick<RecallMeta, 'intentSource' | 'intentType' | 'intentSummary' | 'intentGoal'> | null = null
 
   // 每轮任务：将历史任务记忆重组为 user/assistant 消息序列，并在末尾追加本轮用户提问
@@ -601,6 +610,7 @@ export async function runAgent(
         {
           goal: plainUserQuery || lastUserGoal,
           userQuery: plainUserQuery || lastUserGoal,
+          ...(userAssetsBlock ? { userAssetsBlock } : {}),
           intentType: finalIntentType,
           intentSummary: finalIntentSummary,
           intentGoal: finalIntentGoal,

@@ -786,7 +786,7 @@ export default function App() {
         let didWork = false
         if (shouldTree) {
           const now = Date.now()
-          const minTreeInterval = refreshFns.sessionSending ? 1400 : 420
+          const minTreeInterval = refreshFns.sessionSending ? 2800 : 1200
           if ((now - state.lastTreeAt) >= minTreeInterval) {
             didWork = true
             state.lastTreeAt = now
@@ -798,7 +798,7 @@ export default function App() {
         }
         if (shouldGitStatus) {
           const now = Date.now()
-          const minGitStatusInterval = refreshFns.sessionSending ? 900 : 260
+          const minGitStatusInterval = refreshFns.sessionSending ? 1400 : 600
           if ((now - state.lastGitStatusAt) >= minGitStatusInterval) {
             didWork = true
             state.lastGitStatusAt = now
@@ -905,7 +905,7 @@ export default function App() {
         gitStatus: true,
         gitLog: currentMode === 'agent' && sessionSending,
         liveDiff: currentMode === 'agent',
-      }, 120)
+      }, 260)
     })
     return unsubscribe
   }, [currentMode, sessionSending, queueProjectRefresh])
@@ -923,7 +923,7 @@ export default function App() {
   // 低频兜底轮询（监听漏事件时保持状态最终一致）
   useEffect(() => {
     if (!currentWorkspace) return
-    const intervalMs = sessionSending ? 2200 : 6000
+    const intervalMs = sessionSending ? 3000 : 10000
     const timer = window.setInterval(() => {
       queueProjectRefresh({
         tree: !sessionSending,

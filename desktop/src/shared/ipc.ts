@@ -432,6 +432,8 @@ export type ProjectTaskMemory = {
   id: string
   /** 本轮用户原始提问（纯文本） */
   userQuery?: string
+  /** 本轮用户附件信息（[USER_ASSETS] 内部正文） */
+  userAssetsBlock?: string
   goal: string
   /** 意图类型（qa/debug/implement/refactor/ops/other） */
   intentType?: string

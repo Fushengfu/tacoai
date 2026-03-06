@@ -58,6 +58,7 @@ function cleanupAssistantMemoryText(text: string): string {
 }
 
 const USER_ASSETS_BLOCK_REGEX = /\s*\[USER_ASSETS\][\s\S]*?\[\/USER_ASSETS\]\s*/gi
+const USER_ASSETS_BLOCK_CAPTURE_REGEX = /\[USER_ASSETS\]([\s\S]*?)\[\/USER_ASSETS\]/i
 
 function stripUserAssetsBlock(content: string): string {
   return String(content ?? '')
@@ -74,6 +75,13 @@ function buildUserAssetsBlock(imagePaths: string[]): string {
   }
   lines.push('[/USER_ASSETS]')
   return lines.join('\n')
+}
+
+function extractUserAssetsBlock(content: string): string {
+  const raw = String(content ?? '')
+  const wrapped = raw.match(USER_ASSETS_BLOCK_CAPTURE_REGEX)
+  if (!wrapped || !wrapped[1]) return ''
+  return wrapped[1].trim()
 }
 
 function extractUserQueryText(content: string): string {
@@ -139,6 +147,7 @@ async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload)
   let emittedSanitizedText = ''
   const lastUserGoal = [...messages].reverse().find((m) => m.role === 'user')?.content?.trim() || ''
   const plainUserQuery = extractUserQueryText(lastUserGoal)
+  const userAssetsBlock = extractUserAssetsBlock(lastUserGoal)
 
   async function persistChatTurnMemory(
     outcome: 'success' | 'aborted' | 'error',
@@ -182,6 +191,7 @@ async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload)
         {
           goal: plainUserQuery || lastUserGoal || '(未提取到用户提问)',
           userQuery: plainUserQuery || lastUserGoal,
+          ...(userAssetsBlock ? { userAssetsBlock } : {}),
           intentType,
           intentSummary,
           intentGoal,

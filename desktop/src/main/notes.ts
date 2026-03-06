@@ -197,6 +197,7 @@ export type TaskMemoryEntry = ProjectTaskMemory
 type TaskLogInput = {
   goal: string
   userQuery?: string
+  userAssetsBlock?: string
   intentType?: string
   intentSummary?: string
   intentGoal?: string
@@ -230,6 +231,7 @@ const TASK_MEMORY_SUMMARY_MAX_CHARS = 1200
 const TASK_MEMORY_CORE_MAX_CHARS = 560
 const TASK_MEMORY_ASSISTANT_RESULT_MAX_CHARS = 4200
 const TASK_MEMORY_REPLAY_RESULT_MAX_CHARS = 1800
+const TASK_MEMORY_USER_ASSETS_MAX_CHARS = 3000
 const MEMORY_SNAPSHOT_MAX_ENTRIES = 120
 const MEMORY_SNAPSHOT_SUMMARY_MAX_CHARS = 5600
 
@@ -290,7 +292,13 @@ function stripMemoryMetaLines(text: string): string {
 function normalizeTaskMemoryEntry(raw: Partial<TaskMemoryEntry>, index: number): TaskMemoryEntry {
   const now = new Date().toISOString()
   const goal = shortText(String(raw.goal || raw.userQuery || '(未记录目标)'), 800)
-  const userQuery = shortText(String(raw.userQuery || goal), 800)
+  const userQueryRaw = String(raw.userQuery || goal)
+  const userQuery = shortText(extractUserQueryText(userQueryRaw) || goal, 800)
+  const userAssetsBlockRaw = String(raw.userAssetsBlock || '')
+  const userAssetsBlock = shortText(
+    stripControlChars(userAssetsBlockRaw || extractUserAssetsBlock(userQueryRaw)),
+    TASK_MEMORY_USER_ASSETS_MAX_CHARS,
+  )
   const intentType = shortText(String(raw.intentType || ''), 48) || 'other'
   const intentSummary = shortText(String(raw.intentSummary || ''), 280)
   const intentGoal = shortText(String(raw.intentGoal || goal), 220)
@@ -311,6 +319,7 @@ function normalizeTaskMemoryEntry(raw: Partial<TaskMemoryEntry>, index: number):
   return {
     id: stableId,
     userQuery,
+    ...(userAssetsBlock ? { userAssetsBlock } : {}),
     goal,
     intentType,
     intentSummary,
@@ -534,9 +543,15 @@ export async function recordTaskLog(workspace: string, input: TaskLogInput, proj
   const now = new Date().toISOString()
   const assistantResult = buildAssistantResultBody(input.summary)
   const compactSummary = buildCompactMemorySummary(input)
+  const normalizedUserQuery = extractUserQueryText(input.userQuery || input.goal)
+  const normalizedUserAssetsBlock = shortText(
+    stripControlChars(String(input.userAssetsBlock || extractUserAssetsBlock(input.userQuery || input.goal || ''))),
+    TASK_MEMORY_USER_ASSETS_MAX_CHARS,
+  )
   const item: TaskMemoryEntry = {
     id: `task-${Date.now()}-${randomUUID().slice(0, 8)}`,
-    userQuery: shortText(input.userQuery || input.goal, 800),
+    userQuery: shortText(normalizedUserQuery || input.goal, 800),
+    ...(normalizedUserAssetsBlock ? { userAssetsBlock: normalizedUserAssetsBlock } : {}),
     goal: shortText(input.goal, 800),
     intentType: shortText(input.intentType || '', 48) || 'other',
     intentSummary: shortText(input.intentSummary || '', 280),
@@ -556,6 +571,8 @@ export async function recordTaskLog(workspace: string, input: TaskLogInput, proj
 
   // 近似去重：短时间内完全相同目标+总结+结果，视为同一条，更新而不重复堆积
   const duplicateIdx = current.findIndex((entry) =>
+    (entry.userQuery ?? '') === (item.userQuery ?? '') &&
+    (entry.userAssetsBlock ?? '') === (item.userAssetsBlock ?? '') &&
     entry.goal === item.goal &&
     entry.summary === item.summary &&
     (entry.assistantResult ?? '') === (item.assistantResult ?? '') &&
@@ -677,9 +694,10 @@ function extractUserQueryText(input: string): string {
   return raw.trim()
 }
 
-function wrapUserQueryText(input: string): string {
+function wrapUserQueryText(input: string, assetsOverride?: string): string {
   const plain = extractUserQueryText(input)
-  const assetsBlock = extractUserAssetsBlock(input)
+  const inferredAssets = extractUserAssetsBlock(input)
+  const assetsBlock = stripControlChars(String(assetsOverride ?? inferredAssets)).trim()
   if (!assetsBlock) return `[USER_QUERY]\n${plain}\n[/USER_QUERY]`
   return [
     '[USER_QUERY]',
@@ -947,6 +965,7 @@ function toRecalledItem(candidate: RecallCandidate): RecalledItem {
     reason: candidate.reason,
     data: {
       userQuery: task.userQuery || task.goal,
+      userAssetsBlock: task.userAssetsBlock || '',
       intentType: task.intentType || 'other',
       intentSummary: task.intentSummary || '',
       intentGoal: task.intentGoal || task.goal,
@@ -986,6 +1005,7 @@ async function recallBackgroundContext(
     .map((task) => ({
       ...task,
       userQuery: stripControlChars(task.userQuery || ''),
+      userAssetsBlock: stripControlChars(task.userAssetsBlock || ''),
       intentType: stripControlChars(task.intentType || ''),
       intentSummary: stripControlChars(task.intentSummary || ''),
       intentGoal: stripControlChars(task.intentGoal || ''),
@@ -1040,7 +1060,7 @@ async function recallBackgroundContext(
   }
 
   for (const task of taskMemories) {
-    const taskText = `${task.userQuery || ''}\n${task.intentType || ''}\n${task.intentSummary || ''}\n${task.intentGoal || ''}\n${task.goal}\n${task.assistantResult || ''}\n${task.summary}\n${task.tools.join('\n')}\n${task.changedFiles.join('\n')}\n${task.identifiers.join('\n')}\n${task.failures.join('\n')}`.toLowerCase()
+    const taskText = `${task.userQuery || ''}\n${task.userAssetsBlock || ''}\n${task.intentType || ''}\n${task.intentSummary || ''}\n${task.intentGoal || ''}\n${task.goal}\n${task.assistantResult || ''}\n${task.summary}\n${task.tools.join('\n')}\n${task.changedFiles.join('\n')}\n${task.identifiers.join('\n')}\n${task.failures.join('\n')}`.toLowerCase()
     const overlap = scoreByTokenOverlap(queryTokens, taskText)
     const timestamp = Date.parse(task.updatedAt || task.createdAt || '')
     // 任务记忆仅在命中当前问题关键词时参与注入，避免无关历史污染本轮上下文。
@@ -1455,9 +1475,10 @@ export async function buildBackgroundContextConversationMessages(
     }
     const item = taskCandidates[i]
     const userText = String(item.userQuery || item.goal || '').trim()
+    const userAssets = String(item.userAssetsBlock || '').trim()
     const assistantText = extractReplayAssistantResult(item)
-    if (!userText && !assistantText) continue
-    const pairSize = userText.length + assistantText.length + 24
+    if (!userText && !assistantText && !userAssets) continue
+    const pairSize = userText.length + assistantText.length + userAssets.length + 48
     if (usedChars + pairSize > replayBudgetChars && selectedFromEnd.length > 0) {
       droppedReplayCount++
       continue
@@ -1476,8 +1497,14 @@ export async function buildBackgroundContextConversationMessages(
   }
   for (const item of replayedTaskMemories) {
     const userText = String(item.userQuery || item.goal || '').trim()
+    const userAssets = String(item.userAssetsBlock || '').trim()
     const assistantText = extractReplayAssistantResult(item)
-    if (userText) messages.push({ role: 'user', content: wrapUserQueryText(userText) })
+    if (userText || userAssets) {
+      messages.push({
+        role: 'user',
+        content: wrapUserQueryText(userText || item.goal || '(附件相关请求)', userAssets),
+      })
+    }
     if (assistantText) messages.push({ role: 'assistant', content: assistantText })
   }
   messages.push({ role: 'user', content: wrapUserQueryText(userQuery) })
