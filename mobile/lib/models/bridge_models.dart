@@ -146,6 +146,7 @@ class DesktopBridgeSession {
     required this.sessionId,
     required this.title,
     required this.messageCount,
+    required this.detailLevel,
     required this.messages,
     required this.sending,
     required this.queue,
@@ -155,6 +156,7 @@ class DesktopBridgeSession {
   final String sessionId;
   final String title;
   final int messageCount;
+  final String detailLevel;
   final List<DesktopBridgeMessage> messages;
   final bool sending;
   final List<String> queue;
@@ -169,6 +171,7 @@ class DesktopBridgeSession {
       sessionId: json['sessionId']?.toString() ?? '',
       title: json['title']?.toString() ?? '',
       messageCount: (json['messageCount'] as num?)?.toInt() ?? 0,
+      detailLevel: json['detailLevel']?.toString() == 'meta' ? 'meta' : 'full',
       messages: messageList
           .whereType<Map>()
           .map((item) => DesktopBridgeMessage.fromJson(Map<String, dynamic>.from(item)))

@@ -901,24 +901,24 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = window.taco.workspace.onChanged(() => {
       queueProjectRefresh({
-        tree: !sessionSending,
+        tree: true,
         gitStatus: true,
-        gitLog: currentMode === 'agent' && sessionSending,
+        gitLog: currentMode === 'agent',
         liveDiff: currentMode === 'agent',
       }, 260)
     })
     return unsubscribe
-  }, [currentMode, sessionSending, queueProjectRefresh])
+  }, [currentMode, queueProjectRefresh])
 
   useEffect(() => {
     if (!currentWorkspace || currentMode !== 'agent' || !changeSyncSignal) return
     queueProjectRefresh({
-      tree: !sessionSending,
+      tree: true,
       gitStatus: true,
       gitLog: true,
       liveDiff: true,
     }, 80)
-  }, [currentWorkspace, currentMode, changeSyncSignal, sessionSending, queueProjectRefresh])
+  }, [currentWorkspace, currentMode, changeSyncSignal, queueProjectRefresh])
 
   // 低频兜底轮询（监听漏事件时保持状态最终一致）
   useEffect(() => {
@@ -926,9 +926,9 @@ export default function App() {
     const intervalMs = sessionSending ? 3000 : 10000
     const timer = window.setInterval(() => {
       queueProjectRefresh({
-        tree: !sessionSending,
+        tree: true,
         gitStatus: true,
-        gitLog: currentMode === 'agent' && sessionSending,
+        gitLog: currentMode === 'agent',
         liveDiff: currentMode === 'agent',
       }, 100)
     }, intervalMs)
@@ -1814,84 +1814,94 @@ export default function App() {
     return unsubscribe
   }, [applyMobileSelection])
 
-  const mobileBridgeSnapshot = useMemo<MobileBridgeContextSnapshot>(() => ({
-    updatedAt: Date.now(),
-    activeThreadId: tid || undefined,
-    activeSessionId: sessionId || undefined,
-    activeProvider: currentProvider,
-    providers: providerSettings.configuredProviders.map((p) => ({ id: p.id, label: p.label })),
-    threads: threadStore.threads.map((thread) => {
-      const sessionContexts = thread.sessions.map((session) => {
-        const sid = session.id
-        const sessionMessages = chat.threadMessages[sid] ?? []
-        return {
-          sessionId: sid,
-          title: session.title,
-          messageCount: sessionMessages.length,
-          messages: sessionMessages.map((msg) => ({
-            id: msg.id,
-            role: msg.role,
-            content: msg.content.slice(0, 4000),
-            screenshotPaths: collectMessageScreenshotPaths(msg).map((p) => p.slice(0, 1024)),
-            agentSteps: Array.isArray(msg.agentSteps)
-              ? msg.agentSteps.map((step) => ({
-                round: step.round,
-                thinking: step.thinking.slice(0, 4000),
-                status: step.status,
-                confirmId: step.confirmId?.slice(0, 128),
-                risks: step.risks?.map((r) => ({
-                  toolName: r.toolName.slice(0, 128),
-                  reason: r.reason.slice(0, 1000),
-                  detail: r.detail.slice(0, 2000),
-                  level: r.level,
-                })),
-                toolCalls: step.toolCalls.map((tc) => ({
-                  id: tc.id,
-                  name: tc.name,
-                  arguments: tc.arguments.slice(0, 2000),
-                })),
-                toolResults: step.toolResults.map((tr) => ({
-                  tool_call_id: tr.tool_call_id,
-                  name: tr.name,
-                  content: tr.content.slice(0, 3000),
-                  success: tr.success,
-                  fileChange: tr.fileChange ? {
-                    filePath: tr.fileChange.filePath.slice(0, 1024),
-                    oldContent: tr.fileChange.oldContent?.slice(0, 12000) ?? null,
-                    newContent: tr.fileChange.newContent?.slice(0, 12000) ?? null,
-                  } : undefined,
-                })),
-              }))
-              : undefined,
-            activePlan: msg.activePlan
-              ? {
-                summary: msg.activePlan.summary.slice(0, 500),
-                reasoning: msg.activePlan.reasoning?.slice(0, 1000),
-                steps: msg.activePlan.steps.map((s) => ({
-                  text: s.text.slice(0, 500),
-                  status: s.status,
-                  note: s.note?.slice(0, 500),
-                })),
-              }
-              : undefined,
+  const mobileBridgeSnapshot = useMemo<MobileBridgeContextSnapshot>(() => {
+    const activeThreadId = tid || undefined
+    const activeSessionId = sessionId || undefined
+    const toMobileMessage = (msg: ChatMsg) => ({
+      id: msg.id,
+      role: msg.role,
+      content: msg.content.slice(0, 4000),
+      screenshotPaths: collectMessageScreenshotPaths(msg).map((p) => p.slice(0, 1024)),
+      agentSteps: Array.isArray(msg.agentSteps)
+        ? msg.agentSteps.map((step) => ({
+          round: step.round,
+          thinking: step.thinking.slice(0, 4000),
+          status: step.status,
+          confirmId: step.confirmId?.slice(0, 128),
+          risks: step.risks?.map((r) => ({
+            toolName: r.toolName.slice(0, 128),
+            reason: r.reason.slice(0, 1000),
+            detail: r.detail.slice(0, 2000),
+            level: r.level,
           })),
-          sending: Boolean(chat.sendingThreads[sid]),
-          queue: (chat.queues[sid] ?? []).map((q) => q.content.slice(0, 500)),
-          streamingContent: String(chat.streamingContents[sid] ?? '').slice(0, 4000),
+          toolCalls: step.toolCalls.map((tc) => ({
+            id: tc.id,
+            name: tc.name,
+            arguments: tc.arguments.slice(0, 2000),
+          })),
+          toolResults: step.toolResults.map((tr) => ({
+            tool_call_id: tr.tool_call_id,
+            name: tr.name,
+            content: tr.content.slice(0, 3000),
+            success: tr.success,
+            fileChange: tr.fileChange ? {
+              filePath: tr.fileChange.filePath.slice(0, 1024),
+              oldContent: tr.fileChange.oldContent?.slice(0, 12000) ?? null,
+              newContent: tr.fileChange.newContent?.slice(0, 12000) ?? null,
+            } : undefined,
+          })),
+        }))
+        : undefined,
+      activePlan: msg.activePlan
+        ? {
+          summary: msg.activePlan.summary.slice(0, 500),
+          reasoning: msg.activePlan.reasoning?.slice(0, 1000),
+          steps: msg.activePlan.steps.map((s) => ({
+            text: s.text.slice(0, 500),
+            status: s.status,
+            note: s.note?.slice(0, 500),
+          })),
         }
-      })
-      return {
-        threadId: thread.id,
-        title: thread.title,
-        updatedAt: thread.updatedAt,
-        provider: thread.provider,
-        mode: thread.mode,
-        workspace: thread.workspace,
-        activeSessionId: thread.activeSessionId,
-        sessions: sessionContexts,
-      }
-    }),
-  }), [
+        : undefined,
+    })
+
+    return {
+      updatedAt: Date.now(),
+      activeThreadId,
+      activeSessionId,
+      activeProvider: currentProvider,
+      providers: providerSettings.configuredProviders.map((p) => ({ id: p.id, label: p.label })),
+      threads: threadStore.threads.map((thread) => {
+        const isActiveThread = thread.id === activeThreadId
+        const threadActiveSessionId = isActiveThread ? (activeSessionId ?? thread.activeSessionId) : ''
+        const sessionContexts = thread.sessions.map((session) => {
+          const sid = session.id
+          const sessionMessages = chat.threadMessages[sid] ?? []
+          const syncFull = isActiveThread && sid === threadActiveSessionId
+          return {
+            sessionId: sid,
+            title: session.title,
+            messageCount: sessionMessages.length,
+            detailLevel: syncFull ? 'full' as const : 'meta' as const,
+            messages: syncFull ? sessionMessages.map(toMobileMessage) : [],
+            sending: Boolean(chat.sendingThreads[sid]),
+            queue: syncFull ? (chat.queues[sid] ?? []).map((q) => q.content.slice(0, 500)) : [],
+            streamingContent: syncFull ? String(chat.streamingContents[sid] ?? '').slice(0, 4000) : '',
+          }
+        })
+        return {
+          threadId: thread.id,
+          title: thread.title,
+          updatedAt: thread.updatedAt,
+          provider: thread.provider,
+          mode: thread.mode,
+          workspace: thread.workspace,
+          activeSessionId: thread.activeSessionId,
+          sessions: sessionContexts,
+        }
+      }),
+    }
+  }, [
     tid,
     sessionId,
     currentProvider,

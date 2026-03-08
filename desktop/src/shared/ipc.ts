@@ -404,6 +404,10 @@ export type SkillInfo = {
   enabled: boolean
   /** 注入到 Agent system prompt 的指令内容 */
   instructions: string
+  /** Skill 允许开放给本轮任务的工具名或工具分组 */
+  tools?: string[]
+  /** Skill 允许按需读取的附属资源路径模式 */
+  resources?: string[]
 }
 
 /* ------------------------------------------------------------------ */
@@ -652,6 +656,10 @@ export type MobileBridgeSessionContext = {
   sessionId: string
   title: string
   messageCount: number
+  /**
+   * full: 该会话带完整消息体；meta: 仅同步会话元信息（用于降低移动端实时同步负载）
+   */
+  detailLevel?: 'full' | 'meta'
   messages: MobileBridgeMessage[]
   sending: boolean
   queue: string[]
@@ -789,7 +797,7 @@ export type TacoApi = {
   }
   skills: {
     /** 列出所有已安装的 skills */
-    list: () => Promise<SkillInfo[]>
+    list: (workspace?: string) => Promise<SkillInfo[]>
     /** 安装 skill（从 URL 或本地路径） */
     install: (source: string) => Promise<SkillInfo>
     /** 卸载 skill */

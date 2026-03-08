@@ -50,7 +50,7 @@ type DetailPanelProps = {
   onLoadCommitFiles?: (hash: string) => Promise<string[]>
   /** 工作空间路径 */
   workspace?: string
-  /** 刷新目录树 */
+  /** 手动刷新文件目录/变更文件等项目面板 */
   onRefreshTree?: () => void
   /** 在中间区域打开文件查看/编辑，forceDiff=true 时走 Diff 视图 */
   onOpenFileView?: (filePath: string, forceDiff?: boolean) => void
@@ -958,6 +958,12 @@ export function DetailPanel({
     }
   }, [onOpenFileView, onSelectFile, selectedFile, diffablePathSet])
 
+  const handleManualRefreshClick = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    onRefreshTree?.()
+  }, [onRefreshTree])
+
   // ── 面板拖动调整大小 ──
   const treePanelRef = useRef<HTMLDivElement>(null)
   const changesPanelRef = useRef<HTMLDivElement>(null)
@@ -1058,6 +1064,19 @@ export function DetailPanel({
             <span className={`ws-tree-arrow ${treeExpanded ? 'open' : ''}`}>›</span>
             <span className="change-group-title">文件</span>
             <span className="change-group-count">{totalFileCount}</span>
+            {onRefreshTree && (
+              <div className="detail-changes-actions">
+                <button
+                  type="button"
+                  className="tree-refresh-btn"
+                  onClick={handleManualRefreshClick}
+                  aria-label="手动刷新文件目录"
+                  title="手动刷新文件目录"
+                >
+                  ↻
+                </button>
+              </div>
+            )}
           </div>
           {treeExpanded && (
             <div className="change-group-body">
@@ -1099,6 +1118,19 @@ export function DetailPanel({
             <span className={`ws-tree-arrow ${treeExpanded ? 'open' : ''}`}>›</span>
             <span className="change-group-title">文件</span>
             <span className="change-group-count">{allDisplayChangePaths.length}</span>
+            {onRefreshTree && (
+              <div className="detail-changes-actions">
+                <button
+                  type="button"
+                  className="tree-refresh-btn"
+                  onClick={handleManualRefreshClick}
+                  aria-label="手动刷新文件目录"
+                  title="手动刷新文件目录"
+                >
+                  ↻
+                </button>
+              </div>
+            )}
           </div>
           {treeExpanded && (
             <div className="change-group-body">
@@ -1148,6 +1180,19 @@ export function DetailPanel({
             <span className="change-group-count">{allDisplayChangePaths.length}</span>
             {unstagedCount > 0 && (
               <span className="change-group-pending-badge">{unstagedCount} 未暂存</span>
+            )}
+            {onRefreshTree && (
+              <div className="detail-changes-actions">
+                <button
+                  type="button"
+                  className="tree-refresh-btn"
+                  onClick={handleManualRefreshClick}
+                  aria-label="手动刷新变更文件"
+                  title="手动刷新变更文件"
+                >
+                  ↻
+                </button>
+              </div>
             )}
           </div>
 

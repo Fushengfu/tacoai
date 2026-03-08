@@ -184,6 +184,7 @@ function sanitizeContext(raw: MobileBridgeContextSnapshot): MobileBridgeContextS
   const threads: MobileBridgeThreadContext[] = safeThreads.map((thread): MobileBridgeThreadContext => {
     const sessions = Array.isArray(thread.sessions) ? thread.sessions : []
     const safeSessions: MobileBridgeSessionContext[] = sessions.map((session): MobileBridgeSessionContext => {
+      const detailLevel: 'full' | 'meta' = session.detailLevel === 'meta' ? 'meta' : 'full'
       const messages = Array.isArray(session.messages) ? session.messages : []
       const safeMessages: MobileBridgeMessage[] = messages.map((msg): MobileBridgeMessage => {
         const rawSteps = Array.isArray(msg.agentSteps) ? msg.agentSteps : []
@@ -255,10 +256,11 @@ function sanitizeContext(raw: MobileBridgeContextSnapshot): MobileBridgeContextS
         sessionId: trimText(session.sessionId, 128),
         title: trimText(session.title, 256),
         messageCount: Number.isFinite(session.messageCount) ? Math.max(0, Math.trunc(session.messageCount)) : safeMessages.length,
-        messages: safeMessages,
+        detailLevel,
+        messages: detailLevel === 'meta' ? [] : safeMessages,
         sending: Boolean(session.sending),
-        queue: queue.map((q) => fullText(q)),
-        streamingContent: fullText(session.streamingContent),
+        queue: detailLevel === 'meta' ? [] : queue.map((q) => fullText(q)),
+        streamingContent: detailLevel === 'meta' ? '' : fullText(session.streamingContent),
       }
     })
     return {

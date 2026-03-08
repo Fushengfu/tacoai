@@ -12,12 +12,12 @@
 import type { ChatMessage, ProviderOverrides, TokenUsage } from './llm'
 import type { ProviderKey } from './llm'
 import { requestChatCompletion, requestStreamWithTools } from './llm'
-import { getAllToolDefinitions, executeToolCalls, assessToolCallsRisk, setBrowserAutoApproved, setDesktopAutoApproved, getWorkspaceTree, getToolDesignPromptBlock } from './tools'
+import { getFilteredToolDefinitions, buildAllowedToolNamesForRequest, executeToolCalls, assessToolCallsRisk, setBrowserAutoApproved, setDesktopAutoApproved, getWorkspaceTree, getToolDesignPromptBlock } from './tools'
 import type { ToolCall, ToolResult, RiskInfo } from './tools'
 import { log } from './logger'
 import { gitCommit, gitEnsureRepo } from './git'
-import { getActiveSkillInstructions } from './skills'
-import { buildBackgroundContextConversationMessages, inferIntentFromBackground, maintainTaskMemoriesByAI, recordMemorySnapshot, recordTaskLog } from './notes'
+import { refreshSkills, buildActiveSkillsCatalogBlock, getActiveSkillEnv, applySkillEnvironment } from './skills'
+import { buildBackgroundContextConversationMessages, inferIntentFromBackground, maintainTaskMemoriesByAI, recordMemorySnapshot, recordTaskLog, stripInternalContextTags } from './notes'
 import type { RecallMeta } from './notes'
 import { buildAgentRequestMessages, validateCompletionClaim } from './context-builder'
 import { applyRewardScore } from './reward-score'
@@ -147,7 +147,7 @@ const USER_VISIBLE_SOURCE_PHRASE_RULES: Array<{ pattern: RegExp; replacement: st
 ]
 
 function sanitizeUserFacingText(input: string): string {
-  let output = String(input ?? '')
+  let output = stripInternalContextTags(String(input ?? ''))
   for (const rule of USER_VISIBLE_SOURCE_PHRASE_RULES) {
     output = output.replace(rule.pattern, rule.replacement)
   }
@@ -421,6 +421,13 @@ export async function runAgent(
   recallDebug = false,
 ): Promise<void> {
   const taskStartedAt = Date.now()
+  try {
+    await refreshSkills(workspace)
+  } catch (err) {
+    log('SKILLS_REFRESH_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
+  }
+  const restoreSkillEnv = applySkillEnvironment(getActiveSkillEnv())
+  try {
   // 确保工作空间是 git 仓库
   try {
     await gitEnsureRepo(workspace)
@@ -428,13 +435,35 @@ export async function runAgent(
     log('GIT_INIT_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
   }
 
-  // 将启用的 skills 指令注入 system prompt
-  const skillInstructions = getActiveSkillInstructions()
+  // 将启用的 skills 目录注入 system prompt
+  const skillsCatalogBlock = buildActiveSkillsCatalogBlock()
   const workingMessages = [...messages]
+  const activatedSkillIds = new Set<string>()
   const lastUserGoal = [...messages].reverse().find((m) => m.role === 'user')?.content?.trim() || ''
   const plainUserQuery = extractUserQueryText(lastUserGoal)
   const userAssetsBlock = extractUserAssetsBlock(lastUserGoal)
   let latestRecallMeta: Pick<RecallMeta, 'intentSource' | 'intentType' | 'intentSummary' | 'intentGoal'> | null = null
+  const TOOL_PROMPT_BLOCK_START = '[RUNTIME_TOOL_PROMPT]'
+  const TOOL_PROMPT_BLOCK_END = '[/RUNTIME_TOOL_PROMPT]'
+
+  function buildRuntimeToolPrompt(allowedToolNames: Iterable<string>): string {
+    return `${TOOL_PROMPT_BLOCK_START}\n${getToolDesignPromptBlock(allowedToolNames)}\n${TOOL_PROMPT_BLOCK_END}`
+  }
+
+  function syncRuntimeToolPrompt(allowedToolNames: Iterable<string>) {
+    if (!workingMessages.length || workingMessages[0].role !== 'system') return
+    const nextBlock = buildRuntimeToolPrompt(allowedToolNames)
+    const current = String(workingMessages[0].content ?? '')
+    const startIndex = current.indexOf(TOOL_PROMPT_BLOCK_START)
+    const endIndex = startIndex >= 0 ? current.indexOf(TOOL_PROMPT_BLOCK_END, startIndex) : -1
+    const replaced = startIndex >= 0 && endIndex >= 0
+      ? `${current.slice(0, startIndex)}${nextBlock}${current.slice(endIndex + TOOL_PROMPT_BLOCK_END.length)}`
+      : current
+    workingMessages[0] = {
+      ...workingMessages[0],
+      content: replaced === current ? `${current}\n\n${nextBlock}` : replaced,
+    }
+  }
 
   // 每轮任务：将历史任务记忆重组为 user/assistant 消息序列，并在末尾追加本轮用户提问
   try {
@@ -490,14 +519,14 @@ export async function runAgent(
   if (workingMessages.length > 0 && workingMessages[0].role === 'system') {
     let extraPrompt = ''
 
-    // Skills 注入
-    if (skillInstructions.length > 0) {
-      extraPrompt += '\n\n# 已启用的 Skills\n以下是你应当遵循的额外能力指令：\n\n' + skillInstructions.join('\n\n---\n\n')
+    // Skills 目录注入
+    if (skillsCatalogBlock.trim()) {
+      extraPrompt += `\n\n${skillsCatalogBlock}`
     }
 
     // 工作空间目录结构注入（让 AI 从一开始就了解项目全貌，减少重复 list_dir 调用）
     try {
-      const tree = await getWorkspaceTree(workspace, 6, true)
+      const tree = await getWorkspaceTree(workspace, 3, true)
       if (tree) {
         extraPrompt += '\n\n# 当前工作空间目录结构\n以下是项目目录树（自动生成，无需再次调用 list_dir 查看根目录结构）：\n```\n' + tree + '\n```\n注意：此目录树在对话开始时生成。如果你在执行过程中创建了新文件，目录树不会实时更新，可按需调用 list_dir 查看最新状态。'
       }
@@ -507,7 +536,7 @@ export async function runAgent(
 
     // 工具设计清单注入（与后端工具 schema 同步）
     try {
-      extraPrompt += `\n\n${getToolDesignPromptBlock()}`
+      extraPrompt += `\n\n${buildRuntimeToolPrompt(buildAllowedToolNamesForRequest(activatedSkillIds))}`
     } catch (err) {
       log('TOOL_DESIGN_PROMPT_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
     }
@@ -696,7 +725,7 @@ export async function runAgent(
   let completionRejectCount = 0
 
   function cleanupAssistantText(text: string): string {
-    return String(text ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+    return stripInternalContextTags(String(text ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '')).trim()
   }
 
   async function persistTaskCoreLogWithOutcome(
@@ -781,6 +810,8 @@ export async function runAgent(
       return
     }
 
+    syncRuntimeToolPrompt(buildAllowedToolNamesForRequest(activatedSkillIds))
+
     const requestMessages = buildAgentRequestMessages(workingMessages, {
       round,
       goal: lastUserGoal,
@@ -793,6 +824,7 @@ export async function runAgent(
     })
 
     log('AGENT', { round, messageCount: requestMessages.length }, logScope)
+    const allowedToolNames = buildAllowedToolNamesForRequest(activatedSkillIds)
 
     let textContent = ''
     let rawTextContent = ''
@@ -804,7 +836,7 @@ export async function runAgent(
         provider,
         requestMessages,
         overrides,
-        { tools: getAllToolDefinitions(), toolChoice: 'auto' },
+        { tools: getFilteredToolDefinitions(allowedToolNames), toolChoice: 'auto' },
         signal,
         logScope,
       )) {
@@ -1190,7 +1222,10 @@ export async function runAgent(
 
     // ── 执行工具（限制在 workspace 内，异步不阻塞主进程）──
     trackToolCallsInputs(toolCalls)
-    const results = await executeToolCalls(toolCalls, workspace, signal, logScope, projectId)
+    const results = await executeToolCalls(toolCalls, workspace, signal, logScope, projectId, {
+      allowedToolNames,
+      activatedSkillIds,
+    })
     if (signal?.aborted) {
       log('AGENT_ABORTED', { round, reason: 'signal aborted during tool execution' }, logScope)
       await finalizeAndDone(lastAssistantText, 'aborted')
@@ -1217,4 +1252,7 @@ export async function runAgent(
   // 超出最大轮次
   await persistTaskCoreLogWithOutcome(lastAssistantText, 'error', `Agent exceeded max tool rounds (${MAX_TOOL_ROUNDS})`)
   onEvent?.({ type: 'error', message: `Agent exceeded max tool rounds (${MAX_TOOL_ROUNDS})` })
+  } finally {
+    restoreSkillEnv()
+  }
 }

@@ -17,6 +17,7 @@ import type { BrowserActionType } from '../shared/ipc'
 import { saveScreenshot, getActiveMcpTools, callMcpTool } from './mcp'
 import { fileToDataUrl, getGuiPlusConfig, runGuiPlus } from './gui-plus'
 import { callDesktopService } from './desktop-service'
+import { getAllowedToolsForSkills, readActiveSkillDetail, readActiveSkillResource } from './skills'
 
 type DesktopScreenshotMeta = {
   screenshotPath: string
@@ -87,6 +88,28 @@ export type ToolDefinition = {
     parameters: Record<string, unknown>
   }
 }
+
+export type ToolRuntimeContext = {
+  allowedToolNames?: Set<string>
+  activatedSkillIds?: Set<string>
+}
+
+const ALWAYS_AVAILABLE_TOOL_NAMES = [
+  'read_file',
+  'write_file',
+  'edit_file',
+  'list_dir',
+  'run_command',
+  'delete_file',
+  'propose_plan',
+  'update_plan_progress',
+  'find_file',
+  'codebase_search',
+  'read_skill',
+  'read_skill_resource',
+  'save_note',
+  'delete_note',
+]
 
 export const toolDefinitions: ToolDefinition[] = [
   {
@@ -262,6 +285,35 @@ export const toolDefinitions: ToolDefinition[] = [
           caseSensitive: { type: 'boolean', description: '是否区分大小写，默认 false' },
         },
         required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_skill',
+      description: '读取当前已开启技能目录中的某个技能的完整内容。应先根据系统注入的 SKILLS_CATALOG 判断需要哪个技能，再调用此工具查看完整技能说明。',
+      parameters: {
+        type: 'object',
+        properties: {
+          skill_id: { type: 'string', description: '技能 ID，必须来自当前请求注入的 SKILLS_CATALOG' },
+        },
+        required: ['skill_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_skill_resource',
+      description: '读取某个已激活技能目录中的附属资源文件。适用于按需查看 references/scripts/assets/templates 下的具体内容。',
+      parameters: {
+        type: 'object',
+        properties: {
+          skill_id: { type: 'string', description: '技能 ID，必须已在当前任务中通过 read_skill 成功读取过' },
+          resource_path: { type: 'string', description: '技能目录内的相对路径，例如 "references/api.md"、"scripts/check.sh"' },
+        },
+        required: ['skill_id', 'resource_path'],
       },
     },
   },
@@ -746,7 +798,31 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
     usage: [
       '用于在内容层面定位符号、变量、配置、报错文本。',
       '优先使用精确关键词或正则，必要时加 glob 限定语言范围。',
+      '若需要同时排查多个相关标识符，优先合并为一次正则或多关键词搜索。',
       '命中后必须 read_file 查看上下文，不可仅凭命中行下结论。',
+      '搜索范围尽量收敛到相关目录；大文件场景先搜索再按行范围 read_file。',
+    ],
+  },
+  read_skill: {
+    usage: [
+      '先查看系统注入的 `SKILLS_CATALOG`，确认需要的技能 ID 后再调用。',
+      '该工具只返回当前已开启且当前环境可用的技能详情。',
+      '读取技能全文后，再按技能规则继续执行任务。',
+    ],
+    cautions: [
+      '禁止凭经验假设技能全文，必须先读取。',
+      '若技能不在当前目录清单中，不允许调用。',
+    ],
+  },
+  read_skill_resource: {
+    usage: [
+      '仅在某个技能已经通过 `read_skill` 激活后，再按需读取该技能的附属资源文件。',
+      'resource_path 必须是技能目录内的相对路径，优先读取具体文件而不是整个目录。',
+      '读取 references/scripts/assets/templates 时，读完后要回到任务本身，不要把资源全文反复回灌。',
+    ],
+    cautions: [
+      '如果当前任务还没有成功读取该技能详情，此调用必须被视为无效。',
+      '禁止传绝对路径或越界路径。',
     ],
   },
   save_note: {
@@ -762,144 +838,6 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
       '必须使用准确 noteId，删除前确认目标笔记。',
       '删除后给出已删除项，避免用户误解。 ',
     ],
-  },
-  browser_navigate: {
-    usage: [
-      '浏览器任务通常先导航到目标 URL，再进行后续观察/操作。',
-      '同一项目测试优先固定 appId，保持会话隔离和状态连续。',
-      '页面跳转后应配合 browser_wait 或 browser_screenshot 验证加载完成。',
-    ],
-  },
-  browser_screenshot: {
-    usage: [
-      '每次截图必须提供 goal，明确“本次要验证什么”。',
-      '用于操作前观察、操作后复核，不做无目的连续截图。',
-      '截图结果要用于下一步决策（点击、输入、滚动、断言）。',
-    ],
-    cautions: ['同一状态重复截图超过一次前，先判断是否真的有新信息。'],
-  },
-  desktop_screenshot: {
-    usage: [
-      '桌面语义目标（例如“点某按钮”）先截图，再分析，再执行。',
-      '优先使用默认主屏参数，除非任务明确多屏或指定分辨率。',
-      '截图路径用于后续 gui_plus_analyze，不要把大 dataUrl 传回上下文。',
-    ],
-  },
-  gui_plus_analyze: {
-    usage: [
-      'instruction 必须明确动作意图，建议同时提供 analysisGoal 明确成功标准。',
-      '优先传 imagePath，避免传 imageDataUrl 造成 token 浪费。',
-      '输出只保留必要字段（目标、坐标、置信度、理由）用于下一步执行。',
-    ],
-    cautions: ['当目标不确定时先悬停复核，再执行点击。'],
-  },
-  desktop_action: {
-    usage: [
-      '用户给出明确坐标/按键/文本时可直接执行，无需先截图。',
-      '语义目标先走 screenshot + analyze，再执行 action。',
-      '点击后若紧跟输入，建议间隔约 1 秒确保焦点生效。',
-    ],
-    cautions: ['双击必须使用 double_click 或 clicks=2，不要拆成两次普通点击。'],
-  },
-  browser_click: {
-    usage: [
-      '优先使用稳定 selector；仅在必要时使用坐标点击。',
-      '点击前确认元素可见且可交互，必要时先 browser_wait。',
-      '点击后立即复核页面变化（截图或内容读取）。',
-    ],
-  },
-  browser_type: {
-    usage: [
-      '先定位输入框再输入，必要时 clear=true 清空旧值。',
-      '对搜索/登录等场景可按需设置 submit。',
-      '输入后通过 browser_get_content 或截图校验值已生效。',
-    ],
-  },
-  browser_scroll: {
-    usage: [
-      '用于进入可视区域或触发懒加载，方向与幅度必须明确。',
-      '局部滚动场景应提供 selector，避免滚错容器。',
-      '滚动后复核目标元素是否已出现。 ',
-    ],
-  },
-  browser_get_content: {
-    usage: [
-      '用于读取文本、HTML 或表单值，支撑断言和数据提取。',
-      '优先传 selector 缩小范围，避免抓取整页噪声。',
-      '提取到关键字段后再决定后续操作。 ',
-    ],
-  },
-  browser_wait: {
-    usage: [
-      '页面跳转、异步加载、提交后状态变化时优先等待关键元素。',
-      'selector 要能代表“成功状态”，而不是任意静态元素。',
-      '超时后给出失败证据并转入诊断（截图/控制台日志）。',
-    ],
-  },
-  browser_evaluate: {
-    usage: [
-      '仅在标准浏览器工具不足以完成任务时使用脚本求值。',
-      '表达式应最小化且聚焦目标（读取状态或执行必要操作）。',
-      '执行后必须验证副作用是否符合预期。',
-    ],
-    cautions: ['避免注入大段脚本或与任务无关的全局副作用代码。'],
-  },
-  browser_get_info: {
-    usage: [
-      '用于快速确认当前 URL、标题、视口等基础状态。',
-      '常用于导航后或异常诊断前的基线确认。',
-      '结果应服务于下一步操作，不单独重复调用。',
-    ],
-  },
-  browser_get_console_logs: {
-    usage: [
-      '仅在需要诊断页面异常时调用，不要每步都读日志。',
-      '优先读取 error/warn 或候选异常（includeCandidates）。',
-      '读取后默认 clearAfterRead=true，避免重复噪声。',
-    ],
-  },
-  browser_hover: {
-    usage: [
-      '用于触发 tooltip、悬浮菜单、隐藏按钮等 hover 态。',
-      '优先 selector 定位，必要时再使用坐标。',
-      '悬停后通过截图或内容读取确认目标状态出现。',
-    ],
-  },
-  browser_keypress: {
-    usage: [
-      '用于回车提交、快捷键、方向键导航等键盘交互。',
-      '组合键通过 modifiers 明确声明，不要隐式假设平台键位。',
-      '按键后复核页面状态是否变化。 ',
-    ],
-  },
-  browser_drag: {
-    usage: [
-      '用于拖拽组件、滑块验证、排序等场景。',
-      '优先元素到元素拖拽；坐标拖拽需保证起终点准确。',
-      '根据场景调整 steps 以提高稳定性和拟人化。 ',
-    ],
-  },
-  browser_select: {
-    usage: [
-      '专用于 <select> 控件，优先按 value 匹配，失败再按 label。',
-      '选择后读取 value 或截图确认选项已生效。',
-      '不适用于自定义下拉组件，自定义组件请用 click/type。 ',
-    ],
-  },
-  mcp_list_tools: {
-    usage: [
-      '调用 MCP 前先拉取工具清单和 inputSchema。',
-      '当 schema 更新或切换 server_id 时必须重新拉取。',
-      '结果用于构造后续 mcp_call 参数，不可凭记忆猜字段。',
-    ],
-  },
-  mcp_call: {
-    usage: [
-      '严格按 mcp_list_tools 返回的 inputSchema 组装 arguments。',
-      '调用前确认 server_id、tool_name、参数类型完全匹配。',
-      '失败时先修正参数或连接，再给降级方案。',
-    ],
-    cautions: ['禁止调用不存在的 MCP 工具名。'],
   },
 }
 
@@ -948,7 +886,30 @@ function buildToolSignature(name: string, parameters: Record<string, unknown>): 
   return `${name}(${args})`
 }
 
-export function getToolDesignPromptBlock(): string {
+export function getToolDesignPromptBlock(allowedToolNames: Iterable<string>): string {
+  return buildToolDesignPromptBlock(allowedToolNames)
+}
+
+function filterToolDefinitions(allowedToolNames?: Iterable<string>): ToolDefinition[] {
+  if (!allowedToolNames) return [...toolDefinitions]
+  const allowed = new Set<string>()
+  for (const name of allowedToolNames) {
+    const normalized = normalizeToolName(String(name ?? '').trim())
+    if (normalized) allowed.add(normalized)
+  }
+  return toolDefinitions.filter((definition) => allowed.has(normalizeToolName(definition.function.name)))
+}
+
+export function buildAllowedToolNamesForRequest(activatedSkillIds: Iterable<string> = []): Set<string> {
+  const allowed = new Set<string>(ALWAYS_AVAILABLE_TOOL_NAMES.map((name) => normalizeToolName(name)))
+  for (const toolName of getAllowedToolsForSkills(activatedSkillIds)) {
+    const normalized = normalizeToolName(toolName)
+    if (normalized) allowed.add(normalized)
+  }
+  return allowed
+}
+
+export function buildToolDesignPromptBlock(allowedToolNames: Iterable<string>): string {
   const lines: string[] = [
     '# 工具定义与调用规范（逐个工具，强制执行）',
     '## 工具调用规则',
@@ -972,7 +933,7 @@ export function getToolDesignPromptBlock(): string {
     '## 工具清单（每个工具都要遵守对应规范）',
   ]
 
-  for (const definition of toolDefinitions) {
+  for (const definition of filterToolDefinitions(allowedToolNames)) {
     const name = definition.function.name
     const signature = buildToolSignature(name, definition.function.parameters)
     const desc = shortDescription(definition.function.description)
@@ -1013,6 +974,10 @@ export function getToolDesignPromptBlock(): string {
 export function getAllToolDefinitions(): ToolDefinition[] {
   // 基础工具始终可用
   return [...toolDefinitions]
+}
+
+export function getFilteredToolDefinitions(allowedToolNames?: Iterable<string>): ToolDefinition[] {
+  return filterToolDefinitions(allowedToolNames)
 }
 
 /* ------------------------------------------------------------------ */
@@ -1402,6 +1367,7 @@ async function executeTool(
   signal?: AbortSignal,
   projectId?: string,
   logScope?: string,
+  runtimeContext?: ToolRuntimeContext,
 ): Promise<ExecResult & { fileChange?: FileChange }> {
   try {
     if (signal?.aborted) throw makeAbortError()
@@ -1409,6 +1375,10 @@ async function executeTool(
     switch (normalizedName) {
       case 'read_file':
         return await execReadFile(args, workspace)
+      case 'read_skill':
+        return await execReadSkill(args, runtimeContext)
+      case 'read_skill_resource':
+        return await execReadSkillResource(args, runtimeContext)
       case 'write_file':
         return await execWriteFile(args, workspace)
       case 'edit_file':
@@ -1567,6 +1537,52 @@ async function execReadFile(args: Record<string, unknown>, workspace: string): P
       return { content: `Error: File not found: ${resolved}`, success: false }
     }
     throw err
+  }
+}
+
+async function execReadSkill(args: Record<string, unknown>, runtimeContext?: ToolRuntimeContext): Promise<ExecResult> {
+  const skillId = String(args.skill_id ?? '').trim()
+  if (!skillId) return { content: 'Error: skill_id is required', success: false }
+
+  const detail = readActiveSkillDetail(skillId)
+  if (!detail) {
+    return {
+      content: `Error: Skill not found or not enabled for current request: ${skillId}`,
+      success: false,
+    }
+  }
+
+  runtimeContext?.activatedSkillIds?.add(skillId)
+  return { content: detail.content, success: true }
+}
+
+async function execReadSkillResource(args: Record<string, unknown>, runtimeContext?: ToolRuntimeContext): Promise<ExecResult> {
+  const skillId = String(args.skill_id ?? '').trim()
+  const resourcePath = String(args.resource_path ?? '').trim()
+  if (!skillId) return { content: 'Error: skill_id is required', success: false }
+  if (!resourcePath) return { content: 'Error: resource_path is required', success: false }
+  if (!runtimeContext?.activatedSkillIds?.has(skillId)) {
+    return {
+      content: `Error: Skill is not activated in current task: ${skillId}. You must call read_skill first.`,
+      success: false,
+    }
+  }
+
+  const detail = await readActiveSkillResource(skillId, resourcePath)
+  if (!detail) {
+    return {
+      content: `Error: Skill resource not found or not allowed: ${skillId}/${resourcePath}`,
+      success: false,
+    }
+  }
+
+  return {
+    content: [
+      `[SKILL_RESOURCE skill_id="${skillId}" path="${resourcePath}"]`,
+      detail.content,
+      '[/SKILL_RESOURCE]',
+    ].join('\n'),
+    success: true,
   }
 }
 
@@ -3631,11 +3647,22 @@ export async function executeToolCalls(
   signal?: AbortSignal,
   logScope?: string,
   projectId?: string,
+  runtimeContext?: ToolRuntimeContext,
 ): Promise<ToolResult[]> {
   const results: ToolResult[] = []
 
   for (const tc of toolCalls) {
     if (signal?.aborted) break
+    const normalizedName = normalizeToolName(tc.function.name)
+    if (runtimeContext?.allowedToolNames && !runtimeContext.allowedToolNames.has(normalizedName)) {
+      results.push({
+        tool_call_id: tc.id,
+        name: tc.function.name,
+        content: `Error: Tool is not enabled for current task: ${normalizedName}. If this tool belongs to a skill, call read_skill first and continue in the next round.`,
+        success: false,
+      })
+      continue
+    }
     let args: Record<string, unknown> = {}
     try {
       args = JSON.parse(tc.function.arguments)
@@ -3653,7 +3680,7 @@ export async function executeToolCalls(
 
     let result: ExecResult & { fileChange?: FileChange }
     try {
-      result = await executeTool(tc.function.name, args, workspace, signal, projectId, logScope)
+      result = await executeTool(tc.function.name, args, workspace, signal, projectId, logScope, runtimeContext)
     } catch (err) {
       if (isAbortError(err)) break
       const msg = err instanceof Error ? err.message : String(err)

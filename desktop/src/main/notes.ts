@@ -577,7 +577,7 @@ function compactJoin(items: string[], limit: number): string {
 }
 
 function extractCoreSummary(summary: string): string {
-  const raw = String(summary ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+  const raw = stripInternalContextTags(String(summary ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '')).trim()
   if (!raw) return ''
 
   const marker = '处理总结:'
@@ -596,7 +596,7 @@ function extractCoreSummary(summary: string): string {
 }
 
 function buildAssistantResultBody(summary: string): string {
-  const cleaned = String(summary ?? '')
+  const cleaned = stripInternalContextTags(String(summary ?? ''))
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
     .replace(/\r/g, '')
     .trim()
@@ -634,6 +634,65 @@ function buildCompactMemorySummary(input: TaskLogInput): string {
   ].filter(Boolean)
 
   return shortText(lines.join('\n'), TASK_MEMORY_SUMMARY_MAX_CHARS)
+}
+
+function normalizeHistoricalField(input: string, max: number): string {
+  return shortText(
+    stripControlChars(stripInternalContextTags(String(input ?? '')).replace(/\r/g, '').replace(/\n+/g, '；').trim()),
+    max,
+  )
+}
+
+function extractHistoricalFollowUpHint(summary: string): string {
+  const cleaned = stripInternalContextTags(String(summary ?? ''))
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/\r/g, '')
+    .trim()
+  if (!cleaned) return ''
+
+  const lines = cleaned
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  const pattern = /(是否需要|要不要|需不需要|还需要|如果需要|如需|需要我|继续吗|是否继续|可继续|要我继续|让我继续|\?|？)/i
+
+  let candidate = ''
+  for (const line of lines) {
+    if (pattern.test(line)) candidate = line
+  }
+  return normalizeHistoricalField(candidate, 220)
+}
+
+function buildHistoricalTaskResultBlock(item: TaskMemoryEntry): string {
+  const lines = ['[HISTORICAL_TASK_RESULT]']
+  lines.push(`outcome: ${item.outcome}`)
+
+  const intentType = normalizeHistoricalField(String(item.intentType || ''), 48)
+  if (intentType) lines.push(`intent_type: ${intentType}`)
+
+  const tools = compactJoin(item.tools ?? [], 6)
+  if (tools) lines.push(`tools: ${tools}`)
+
+  const changedFiles = compactJoin(item.changedFiles ?? [], 6)
+  if (changedFiles) lines.push(`changed_files: ${changedFiles}`)
+
+  const identifiers = compactJoin(item.identifiers ?? [], 6)
+  if (identifiers) lines.push(`identifiers: ${identifiers}`)
+
+  const failures = compactJoin((item.failures ?? []).slice(0, 3), 3)
+  if (failures) lines.push(`failures: ${failures}`)
+
+  const summary = normalizeHistoricalField(
+    extractCoreSummary(String(item.assistantResult || item.summary || item.goal)) || String(item.summary || item.goal),
+    TASK_MEMORY_REPLAY_RESULT_MAX_CHARS,
+  )
+  if (summary) lines.push(`summary: ${summary}`)
+
+  const followUpHint = extractHistoricalFollowUpHint(String(item.assistantResult || ''))
+  if (followUpHint) lines.push(`follow_up_hint: ${followUpHint}`)
+
+  lines.push('[/HISTORICAL_TASK_RESULT]')
+  return lines.join('\n')
 }
 
 /**
@@ -1127,6 +1186,59 @@ function wrapUserQueryText(input: string, assetsOverride?: string): string {
     assetsBlock,
     '[/USER_ASSETS]',
   ].join('\n')
+}
+
+const INTERNAL_CONTEXT_BLOCK_TAGS = [
+  'HISTORICAL_TASK_RESULT',
+  'HISTORICAL_PENDING_STATE',
+  'MEMORY_SNAPSHOT',
+  'BACKGROUND_CONTEXT',
+  'SKILLS_CATALOG',
+  'SKILL_ALLOWED_TOOLS',
+  'SKILL_RESOURCES',
+  'USER_QUERY',
+  'USER_ASSETS',
+  'RUNTIME_TOOL_PROMPT',
+]
+
+const INTERNAL_CONTEXT_ATTR_BLOCK_TAGS = [
+  'SKILL_DETAIL',
+  'SKILL_RESOURCE',
+]
+
+const INTERNAL_CONTEXT_TAG_NAME_RULES: Array<{ pattern: RegExp; replacement: string }> = [
+  { pattern: /\bHISTORICAL_TASK_RESULT\b/g, replacement: '历史任务总结' },
+  { pattern: /\bHISTORICAL_PENDING_STATE\b/g, replacement: '历史待继续状态' },
+  { pattern: /\bMEMORY_SNAPSHOT\b/g, replacement: '历史记忆快照' },
+  { pattern: /\bSKILLS_CATALOG\b/g, replacement: '技能目录' },
+  { pattern: /\bSKILL_DETAIL\b/g, replacement: '技能详情' },
+  { pattern: /\bSKILL_RESOURCE\b/g, replacement: '技能资源' },
+]
+
+export function stripInternalContextTags(input: string): string {
+  let output = String(input ?? '')
+
+  for (const tag of INTERNAL_CONTEXT_ATTR_BLOCK_TAGS) {
+    output = output.replace(new RegExp(`\\[${tag}[^\\]]*\\][\\s\\S]*?\\[\\/${tag}\\]`, 'gi'), '')
+  }
+  for (const tag of INTERNAL_CONTEXT_BLOCK_TAGS) {
+    output = output.replace(new RegExp(`\\[${tag}\\][\\s\\S]*?\\[\\/${tag}\\]`, 'gi'), '')
+  }
+
+  for (const tag of INTERNAL_CONTEXT_ATTR_BLOCK_TAGS) {
+    output = output.replace(new RegExp(`\\[${tag}[^\\]]*\\][\\s\\S]*$`, 'gi'), '')
+  }
+  for (const tag of INTERNAL_CONTEXT_BLOCK_TAGS) {
+    output = output.replace(new RegExp(`\\[${tag}\\][\\s\\S]*$`, 'gi'), '')
+  }
+
+  output = output.replace(/\[(?:\/)?(?:HISTORICAL_TASK_RESULT|HISTORICAL_PENDING_STATE|MEMORY_SNAPSHOT|BACKGROUND_CONTEXT|SKILLS_CATALOG|SKILL_ALLOWED_TOOLS|SKILL_RESOURCES|USER_QUERY|USER_ASSETS|RUNTIME_TOOL_PROMPT|SKILL_DETAIL|SKILL_RESOURCE)[^\]]*\]/gi, '')
+
+  for (const rule of INTERNAL_CONTEXT_TAG_NAME_RULES) {
+    output = output.replace(rule.pattern, rule.replacement)
+  }
+
+  return output.replace(/\n{3,}/g, '\n\n')
 }
 
 function daysAgoScore(ts: number): number {
@@ -1811,13 +1923,8 @@ function estimateReplayBudgetChars(maxTokens?: number, replayMode: 'full' | 'com
 }
 
 function extractReplayAssistantResult(item: TaskMemoryEntry): string {
-  const direct = stripMemoryMetaLines(buildAssistantResultBody(String(item.assistantResult || '')))
-  if (direct) return shortText(direct, TASK_MEMORY_REPLAY_RESULT_MAX_CHARS)
-
-  const fallback = stripMemoryMetaLines(buildAssistantResultBody(String(item.summary || '')))
-  if (fallback) return shortText(fallback, TASK_MEMORY_REPLAY_RESULT_MAX_CHARS)
-
-  return ''
+  const block = buildHistoricalTaskResultBlock(item)
+  return block.trim() ? block : ''
 }
 
 export async function buildBackgroundContextConversationMessages(

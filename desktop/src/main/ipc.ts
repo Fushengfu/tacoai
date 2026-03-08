@@ -31,8 +31,8 @@ import type { ProviderKey, ProviderOverrides, TokenUsage } from './llm'
 import { requestChatCompletion, requestChatCompletionStream } from './llm'
 import { runAgent, resolveConfirm } from './agent'
 import { gitLog, gitCommit, gitRollback, gitCommitFiles, gitStatus, gitFileChange, gitStageFiles, gitStageAll } from './git'
-import { initSkills, listSkills, installSkill, uninstallSkill, toggleSkill } from './skills'
-import { inferIntentFromBackground, listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, maintainTaskMemoriesByAI, recordTaskLog } from './notes'
+import { initSkills, listSkills, installSkill, uninstallSkill, toggleSkill, refreshSkills, buildActiveSkillsCatalogBlock, getActiveSkillEnv, applySkillEnvironment } from './skills'
+import { inferIntentFromBackground, listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, maintainTaskMemoriesByAI, recordTaskLog, stripInternalContextTags } from './notes'
 import { initMcp, listMcpServers, saveMcpServer, removeMcpServer, toggleMcpServer, saveScreenshot } from './mcp'
 import { getGuiPlusConfig, saveGuiPlusConfig } from './gui-plus'
 import { getPromptConfig, savePromptConfig } from './prompt-config'
@@ -54,7 +54,7 @@ function buildLogScope(projectId?: string, workspace?: string): string | undefin
 }
 
 function cleanupAssistantMemoryText(text: string): string {
-  return String(text ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+  return stripInternalContextTags(String(text ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '')).trim()
 }
 
 const USER_ASSETS_BLOCK_REGEX = /\s*\[USER_ASSETS\][\s\S]*?\[\/USER_ASSETS\]\s*/gi
@@ -115,31 +115,64 @@ const USER_VISIBLE_SOURCE_PHRASE_RULES: Array<{ pattern: RegExp; replacement: st
 ]
 
 function sanitizeUserFacingText(input: string): string {
-  let output = String(input ?? '')
+  let output = stripInternalContextTags(String(input ?? ''))
   for (const rule of USER_VISIBLE_SOURCE_PHRASE_RULES) {
     output = output.replace(rule.pattern, rule.replacement)
   }
   return output
 }
 
+function withActiveSkillsPrompt<T extends { role: string; content?: string }>(messages: T[]): T[] {
+  const skillCatalog = buildActiveSkillsCatalogBlock()
+  if (!skillCatalog.trim()) return messages
+
+  const systemIdx = messages.findIndex((m) => m.role === 'system')
+  if (systemIdx < 0) return messages
+
+  const current = String(messages[systemIdx].content ?? '')
+  if (current.includes('[SKILLS_CATALOG]')) return messages
+
+  const next = [...messages]
+  next[systemIdx] = { ...next[systemIdx], content: `${current}\n\n${skillCatalog}` }
+  return next
+}
+
 /** 非流式：renderer invoke → main handle → 返回完整回复 */
 async function handleChatSend(_event: IpcMainInvokeEvent, payload: ChatSendPayload) {
   const logScope = buildLogScope(payload.projectId, undefined)
-  const raw = await requestChatCompletion(
-    payload.provider as ProviderKey,
-    payload.messages,
-    payload.overrides as ProviderOverrides | undefined,
-    undefined,
-    logScope,
-  )
-  return sanitizeUserFacingText(raw)
+  try {
+    await refreshSkills()
+  } catch (err) {
+    log('SKILLS_REFRESH_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
+  }
+  const messages = withActiveSkillsPrompt(payload.messages)
+  const restoreSkillEnv = applySkillEnvironment(getActiveSkillEnv())
+  try {
+    const raw = await requestChatCompletion(
+      payload.provider as ProviderKey,
+      messages,
+      payload.overrides as ProviderOverrides | undefined,
+      undefined,
+      logScope,
+    )
+    return sanitizeUserFacingText(raw)
+  } finally {
+    restoreSkillEnv()
+  }
 }
 
 /** 流式：renderer send → main on → 逐块 send 回 renderer */
 async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload) {
-  const { requestId, provider, messages, overrides, projectId, workspace, maxTokens } = payload
-  const turnStartedAt = Date.now()
+  const { requestId, provider, overrides, projectId, workspace, maxTokens } = payload
   const logScope = buildLogScope(projectId, workspace)
+  try {
+    await refreshSkills(workspace)
+  } catch (err) {
+    log('SKILLS_REFRESH_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
+  }
+  const messages = withActiveSkillsPrompt(payload.messages)
+  const restoreSkillEnv = applySkillEnvironment(getActiveSkillEnv())
+  const turnStartedAt = Date.now()
   const abortController = new AbortController()
   let lastUsage: TokenUsage | undefined
   let assistantFullText = ''
@@ -311,6 +344,7 @@ async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload)
     await persistChatTurnMemory('error', assistantFullText, error instanceof Error ? error.message : 'Stream failed')
   } finally {
     chatAbortControllers.delete(requestId)
+    restoreSkillEnv()
   }
 }
 
@@ -896,7 +930,7 @@ export function registerIpcHandlers() {
 
   // Skills 管理
   initSkills().catch((err) => console.error('Skills 初始化失败:', err))
-  ipcMain.handle(IpcChannel.SKILLS_LIST, () => listSkills())
+  ipcMain.handle(IpcChannel.SKILLS_LIST, (_e, workspace?: string) => listSkills(workspace))
   ipcMain.handle(IpcChannel.SKILLS_INSTALL, (_e, source: string) => installSkill(source))
   ipcMain.handle(IpcChannel.SKILLS_UNINSTALL, (_e, id: string) => uninstallSkill(id))
   ipcMain.handle(IpcChannel.SKILLS_TOGGLE, (_e, id: string, enabled: boolean) => toggleSkill(id, enabled))

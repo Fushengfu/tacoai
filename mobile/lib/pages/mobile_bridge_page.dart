@@ -58,7 +58,7 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
   @override
   void initState() {
     super.initState();
-    _syncTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+    _syncTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       if (!_socketConnected) {
         unawaited(_fetchContext(silent: true));
       }
@@ -536,6 +536,10 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
         provider: provider,
         mode: mode,
       );
+      Future<void>.delayed(const Duration(milliseconds: 180), () {
+        if (!mounted) return;
+        unawaited(_fetchContext(silent: true));
+      });
     } catch (_) {
       // ignore silent selection sync failures
     }
@@ -997,6 +1001,9 @@ class _MobileBridgePageState extends State<MobileBridgePage> {
     }
 
     final messages = currentSession.messages;
+    if (currentSession.detailLevel == 'meta' && currentSession.messageCount > 0) {
+      return const Center(child: Text('会话内容同步中，请稍候...'));
+    }
     return RefreshIndicator(
       onRefresh: () => _fetchContext(silent: true),
       child: ListView.builder(

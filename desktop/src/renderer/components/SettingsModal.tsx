@@ -189,14 +189,14 @@ export function SettingsPage({
   const loadSkills = useCallback(async () => {
     setSkillsLoading(true)
     try {
-      const list = await window.taco.skills.list()
+      const list = await window.taco.skills.list(workspace ?? undefined)
       setSkills(list)
     } catch (err) {
       console.error('加载 Skills 失败:', err)
     } finally {
       setSkillsLoading(false)
     }
-  }, [])
+  }, [workspace])
 
   useEffect(() => {
     if (tab === 'skills') loadSkills()
@@ -905,11 +905,12 @@ export function SettingsPage({
                   />
                 </label>
                 <label className="settings-field">
-                  <span>High Resolution</span>
+                  <span>高清图像模式</span>
                   <div className="settings-toggle-row">
-                    <label className="settings-toggle-label">
-                      <strong>{guiPlusForm.highResolution ? '开启' : '关闭'}</strong>
-                    </label>
+                    <span className="settings-toggle-label">
+                      <strong>{guiPlusForm.highResolution ? '已开启' : '已关闭'}</strong>
+                      <small>开启后截图会按更高分辨率发送给 GUI-Plus，细节更清晰，但请求更慢、消耗更多 token。</small>
+                    </span>
                     <input
                       className="settings-toggle"
                       type="checkbox"
@@ -919,11 +920,12 @@ export function SettingsPage({
                   </div>
                 </label>
                 <label className="settings-field">
-                  <span>Include Usage</span>
+                  <span>返回 Token 用量</span>
                   <div className="settings-toggle-row">
-                    <label className="settings-toggle-label">
-                      <strong>{guiPlusForm.includeUsage ? '开启' : '关闭'}</strong>
-                    </label>
+                    <span className="settings-toggle-label">
+                      <strong>{guiPlusForm.includeUsage ? '已开启' : '已关闭'}</strong>
+                      <small>开启后会在响应中包含 token 用量统计（输入/输出/总量），便于在面板中做消耗追踪。</small>
+                    </span>
                     <input
                       className="settings-toggle"
                       type="checkbox"
@@ -943,14 +945,14 @@ export function SettingsPage({
               <div className="skills-install-section">
                 <div className="skills-install-title">安装第三方 Skill</div>
                 <div className="skills-install-desc">
-                  输入 GitHub URL 或本地路径（指向包含 SKILL.md 的目录或文件）
+                  输入 GitHub URL 或本地路径（支持 skill 目录、`tree/.../skill-dir`、`blob/.../SKILL.md`）
                 </div>
                 <div className="skills-install-row">
                   <input
                     className="skills-install-input"
                     value={installInput}
                     onChange={(e) => setInstallInput(e.target.value)}
-                    placeholder="https://github.com/user/repo/blob/main/SKILL.md"
+                    placeholder="https://github.com/user/repo/tree/main/path/to/skill"
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleInstallSkill()
                     }}

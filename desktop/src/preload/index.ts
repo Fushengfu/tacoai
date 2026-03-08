@@ -242,8 +242,8 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.GIT_COMMIT_FILES, cwd, hash),
   },
   skills: {
-    list: () =>
-      ipcRenderer.invoke(IpcChannel.SKILLS_LIST),
+    list: (workspace?: string) =>
+      ipcRenderer.invoke(IpcChannel.SKILLS_LIST, workspace),
     install: (source: string) =>
       ipcRenderer.invoke(IpcChannel.SKILLS_INSTALL, source),
     uninstall: (id: string) =>

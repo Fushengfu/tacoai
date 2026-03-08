@@ -566,7 +566,14 @@ export function ChatPanel({
       case 'codebase_search': {
         const query = String(args.query ?? args.pattern ?? '')
         const dir = String(args.path ?? args.directory ?? '.')
-        return { label: '检索内容', detail: `"${query}" in ${dir}` }
+        const glob = String(args.glob ?? args.filePattern ?? '').trim()
+        const isRegex = Boolean(args.regex) || /[|()[\]{}.*+?\\]/.test(query)
+        const compactQuery = query.length > 80 ? `${query.slice(0, 77)}...` : query
+        const scope = glob ? `${dir} (${glob})` : dir
+        return {
+          label: isRegex ? '正则搜索' : '搜索代码',
+          detail: `${compactQuery || '(空查询)'} @ ${scope}`,
+        }
       }
       case 'browser_navigate': {
         const url = String(args.url ?? '')
