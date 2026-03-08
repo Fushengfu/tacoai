@@ -32,7 +32,7 @@ import { requestChatCompletion, requestChatCompletionStream } from './llm'
 import { runAgent, resolveConfirm } from './agent'
 import { gitLog, gitCommit, gitRollback, gitCommitFiles, gitStatus, gitFileChange, gitStageFiles, gitStageAll } from './git'
 import { initSkills, listSkills, installSkill, uninstallSkill, toggleSkill, refreshSkills, buildActiveSkillsCatalogBlock, getActiveSkillEnv, applySkillEnvironment } from './skills'
-import { inferIntentFromBackground, listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, maintainTaskMemoriesByAI, recordTaskLog, stripInternalContextTags } from './notes'
+import { inferIntentFromBackground, listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, maintainTaskMemoriesByAI, recordTaskLog, stripInternalContextTags, getMemoryScopeStats, exportMemoryScope } from './notes'
 import { initMcp, listMcpServers, saveMcpServer, removeMcpServer, toggleMcpServer, saveScreenshot } from './mcp'
 import { getGuiPlusConfig, saveGuiPlusConfig } from './gui-plus'
 import { getPromptConfig, savePromptConfig } from './prompt-config'
@@ -941,6 +941,8 @@ export function registerIpcHandlers() {
   ipcMain.handle(IpcChannel.NOTES_TASK_MEMORY_DELETE, (_e, workspace: string, memoryId: string, projectId?: string) => deleteTaskMemory(workspace, memoryId, projectId))
   ipcMain.handle(IpcChannel.NOTES_SAVE, (_e, workspace: string, note: ProjectNote, projectId?: string) => saveNote(workspace, note, projectId))
   ipcMain.handle(IpcChannel.NOTES_DELETE, (_e, workspace: string, noteId: string, projectId?: string) => deleteNote(workspace, noteId, projectId))
+  ipcMain.handle(IpcChannel.NOTES_STATS, (_e, workspace: string, projectId?: string) => getMemoryScopeStats(workspace, projectId))
+  ipcMain.handle(IpcChannel.NOTES_EXPORT, (_e, workspace: string, projectId?: string) => exportMemoryScope(workspace, projectId))
 
   // 浏览器全局接管设置
   ipcMain.on(IpcChannel.BROWSER_AUTO_TAKEOVER, (_e, enabled: boolean) => {

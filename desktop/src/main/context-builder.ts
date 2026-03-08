@@ -132,6 +132,7 @@ function buildRuntimeStateCard(state: ContextBuildState): string {
     for (const item of pendingSteps.slice(0, 8)) {
       lines.push(`  - [${item.index + 1}] ${item.step.text} (${item.step.status})${item.step.note ? ` | ${item.step.note}` : ''}`)
     }
+    lines.push('- 计划续跑要求: 若继续执行当前计划，开始步骤前调用 update_plan_progress(stepIndex, "in_progress")，完成后调用 update_plan_progress(stepIndex, "done"|"failed")。')
   }
   lines.push('- 约束: 若需要执行动作，必须先调用工具并基于工具结果回复；禁止仅凭历史总结宣称已完成。')
   return lines.join('\n')
@@ -165,6 +166,7 @@ export function buildCurrentTaskCompressionStateCard(state: ContextBuildState): 
     for (const item of pendingSteps.slice(0, 8)) {
       lines.push(`  - [${item.index + 1}] ${item.step.text} (${item.step.status})${item.step.note ? ` | ${item.step.note}` : ''}`)
     }
+    lines.push('- 计划续跑要求: 当前计划未结束，继续执行时必须持续调用 update_plan_progress 维护步骤状态。')
   } else {
     lines.push('- 当前执行计划: 无显式计划')
   }

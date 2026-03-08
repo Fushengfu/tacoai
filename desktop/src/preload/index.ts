@@ -10,6 +10,8 @@ import type {
   TacoApi,
   SystemInfo,
   ProjectNote,
+  MemoryScopeStats,
+  MemoryScopeExportResult,
   McpServerInfo,
   ExternalBrowserStatus,
   GuiPlusConfig,
@@ -262,6 +264,10 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.NOTES_SAVE, workspace, note, projectId),
     delete: (workspace: string, noteId: string, projectId?: string) =>
       ipcRenderer.invoke(IpcChannel.NOTES_DELETE, workspace, noteId, projectId),
+    stats: (workspace: string, projectId?: string): Promise<MemoryScopeStats> =>
+      ipcRenderer.invoke(IpcChannel.NOTES_STATS, workspace, projectId),
+    exportScope: (workspace: string, projectId?: string): Promise<MemoryScopeExportResult> =>
+      ipcRenderer.invoke(IpcChannel.NOTES_EXPORT, workspace, projectId),
   },
   mcp: {
     list: (): Promise<McpServerInfo[]> =>

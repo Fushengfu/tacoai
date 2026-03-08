@@ -84,6 +84,8 @@ export const IpcChannel = {
   NOTES_TASK_MEMORY_DELETE: 'notes:task-memory:delete',
   NOTES_SAVE: 'notes:save',
   NOTES_DELETE: 'notes:delete',
+  NOTES_STATS: 'notes:stats',
+  NOTES_EXPORT: 'notes:export',
 
   /** MCP 管理 */
   MCP_LIST: 'mcp:list',
@@ -465,6 +467,30 @@ export type ProjectTaskMemory = {
   updatedAt: string
 }
 
+export type MemoryScopeStats = {
+  scope: string
+  dbPath: string
+  dbSizeBytes: number
+  manualNotes: number
+  activeTaskMemories: number
+  archivedTaskMemories: number
+  deletedTaskMemories: number
+  snapshots: number
+  maintainRuns: number
+  latestNoteUpdatedAt?: string
+  latestTaskMemoryUpdatedAt?: string
+  latestSnapshotUpdatedAt?: string
+}
+
+export type MemoryScopeExportResult = {
+  filePath: string
+  exportedAt: string
+  manualNotes: number
+  activeTaskMemories: number
+  archivedTaskMemories: number
+  snapshots: number
+}
+
 /* ------------------------------------------------------------------ */
 /*  MCP (Model Context Protocol)                                       */
 /* ------------------------------------------------------------------ */
@@ -816,6 +842,10 @@ export type TacoApi = {
     save: (workspace: string, note: ProjectNote, projectId?: string) => Promise<ProjectNote>
     /** 删除笔记 */
     delete: (workspace: string, noteId: string, projectId?: string) => Promise<void>
+    /** 获取当前作用域记忆库统计 */
+    stats: (workspace: string, projectId?: string) => Promise<MemoryScopeStats>
+    /** 导出当前作用域记忆库 */
+    exportScope: (workspace: string, projectId?: string) => Promise<MemoryScopeExportResult>
   }
   window: {
     /** 开始拖拽窗口（传入鼠标屏幕坐标） */

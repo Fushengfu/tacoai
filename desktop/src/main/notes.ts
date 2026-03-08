@@ -16,12 +16,30 @@ import path from 'node:path'
 import os from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
 import { app } from 'electron'
-import type { ProjectNote, ProjectTaskMemory } from '../shared/ipc'
+import type { ProjectNote, ProjectTaskMemory, MemoryScopeStats, MemoryScopeExportResult } from '../shared/ipc'
 import type { ChatMessage } from './llm'
 import { requestChatCompletion, requestStreamWithTools } from './llm'
 import type { ProviderKey, ProviderOverrides } from './llm'
 import type { ToolDefinition } from './tools'
 import { log } from './logger'
+import {
+  initMemoryDb,
+  hasAnyProjectNotes,
+  listProjectNotesForScope,
+  replaceProjectNotes,
+  importProjectNotes,
+  hasAnyTaskMemories,
+  listTaskMemoriesByTier,
+  replaceTaskMemoriesByTier,
+  importTaskMemoriesByTier,
+  hasAnyMemorySnapshots,
+  listMemorySnapshotsForScope,
+  replaceMemorySnapshots,
+  importMemorySnapshots,
+  insertMemoryMaintainRun,
+  countMemoryMaintainRuns,
+  getMemoryDbInfo,
+} from './memory-db'
 
 /* ------------------------------------------------------------------ */
 /*  存储路径                                                            */
@@ -46,6 +64,7 @@ const NOTES_DIR = path.join(TACO_HOME, 'notes')
 const MEMORY_DIR = path.join(TACO_HOME, 'memory')
 const MEMORY_ARCHIVE_DIR = path.join(TACO_HOME, 'memory-archive')
 const SNAPSHOT_DIR = path.join(TACO_HOME, 'memory-snapshots')
+const MEMORY_EXPORT_DIR = path.join(TACO_HOME, 'exports')
 
 /** 将工作空间路径转为稳定的文件名 hash */
 function workspaceHash(workspace: string): string {
@@ -86,13 +105,6 @@ function snapshotFilePath(workspace: string, projectId?: string): string {
 /*  通用读写                                                            */
 /* ------------------------------------------------------------------ */
 
-async function ensureDirs() {
-  await fs.mkdir(NOTES_DIR, { recursive: true })
-  await fs.mkdir(MEMORY_DIR, { recursive: true })
-  await fs.mkdir(MEMORY_ARCHIVE_DIR, { recursive: true })
-  await fs.mkdir(SNAPSHOT_DIR, { recursive: true })
-}
-
 async function pathExists(filePath: string): Promise<boolean> {
   try {
     await fs.access(filePath)
@@ -110,11 +122,6 @@ async function readJsonArray<T>(filePath: string): Promise<T[]> {
   } catch {
     return []
   }
-}
-
-async function writeJsonArray<T>(filePath: string, data: T[]): Promise<void> {
-  await ensureDirs()
-  await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8')
 }
 
 /* ------------------------------------------------------------------ */
@@ -141,24 +148,45 @@ function sortNotesAsc(notes: ProjectNote[]): ProjectNote[] {
   })
 }
 
-async function loadRawNotes(workspace: string, projectId?: string): Promise<ProjectNote[]> {
-  const primary = notesFilePath(workspace, projectId)
-  const primaryExists = await pathExists(primary)
-  if (primaryExists) {
-    // 作用域文件存在时（即使内容为空数组）也不再回退 legacy，避免“删除后刷新复活”
-    return await readJsonArray<ProjectNote>(primary)
+function normalizeNoteCategory(input: unknown): ProjectNote['category'] {
+  const category = String(input ?? '').trim()
+  if (category === 'convention' || category === 'credential' || category === 'architecture' || category === 'config' || category === 'other') {
+    return category
   }
+  return 'other'
+}
 
-  // 兼容历史数据：项目隔离启用前，笔记按 workspace 存储
-  if (projectId && workspace && workspace.trim()) {
-    const legacy = await readJsonArray<ProjectNote>(notesFilePath(workspace))
-    if (legacy.length > 0) return legacy
+function normalizeProjectNoteEntry(raw: Partial<ProjectNote>, index: number): ProjectNote {
+  const now = new Date().toISOString()
+  const createdAtRaw = normalizeIso(raw.createdAt)
+  const updatedAtRaw = normalizeIso(raw.updatedAt)
+  const createdAt = createdAtRaw || updatedAtRaw || now
+  const updatedAt = updatedAtRaw || createdAt
+  const title = shortText(String(raw.title ?? '').trim(), 280) || '未命名笔记'
+  const content = shortText(String(raw.content ?? '').trim(), 24000)
+  const rawId = String(raw.id || '').trim()
+  const stableId = rawId || `note-legacy-${createHash('sha1').update(`${title}|${createdAt}|${index}`).digest('hex').slice(0, 12)}`
+  return {
+    id: stableId,
+    title,
+    content,
+    category: normalizeNoteCategory(raw.category),
+    createdAt,
+    updatedAt,
   }
-  return []
+}
+
+async function loadRawNotes(workspace: string, projectId?: string): Promise<ProjectNote[]> {
+  await ensureNoteScopeReady(workspace, projectId)
+  return listProjectNotesForScope({ workspace, projectId }).map((item, index) => normalizeProjectNoteEntry(item, index))
 }
 
 async function saveRawNotes(workspace: string, notes: ProjectNote[], projectId?: string): Promise<void> {
-  await writeJsonArray(notesFilePath(workspace, projectId), notes)
+  await ensureNoteScopeReady(workspace, projectId)
+  replaceProjectNotes(
+    { workspace, projectId },
+    notes.map((item, index) => normalizeProjectNoteEntry(item, index)),
+  )
 }
 
 /** 列出指定工作空间的手工笔记（自动任务日志不在此列表展示） */
@@ -366,35 +394,114 @@ function isSoftDeletedMemory(item: TaskMemoryEntry): boolean {
   return Number.isFinite(ts) && ts > 0
 }
 
-async function loadTaskMemories(workspace: string, projectId?: string): Promise<TaskMemoryEntry[]> {
-  const primaryFile = memoryFilePath(workspace, projectId)
+const noteScopeReadyByScope = new Set<string>()
+const taskMemoryScopeReadyByScope = new Set<string>()
+const snapshotScopeReadyByScope = new Set<string>()
+
+async function ensureNoteScopeReady(workspace: string, projectId?: string): Promise<void> {
+  const scope = resolveScope(workspace, projectId)
+  if (noteScopeReadyByScope.has(scope)) return
+  initMemoryDb()
+
+  const primaryFile = notesFilePath(workspace, projectId)
   const primaryExists = await pathExists(primaryFile)
-  if (primaryExists) {
-    const primary = await readJsonArray<TaskMemoryEntry>(primaryFile)
-    return primary.map((item, index) => normalizeTaskMemoryEntry(item, index))
+  const legacyNotes = primaryExists
+    ? (await readJsonArray<ProjectNote>(primaryFile)).map((item, index) => normalizeProjectNoteEntry(item, index))
+    : (projectId && workspace && workspace.trim()
+        ? (await readJsonArray<ProjectNote>(notesFilePath(workspace))).map((item, index) => normalizeProjectNoteEntry(item, index))
+        : [])
+
+  if (legacyNotes.length > 0) {
+    if (!hasAnyProjectNotes({ workspace, projectId })) {
+      importProjectNotes({ workspace, projectId }, legacyNotes)
+      log('PROJECT_NOTES_DB_SCOPE_MIGRATED', {
+        scope,
+        noteCount: legacyNotes.length,
+      })
+    }
   }
 
-  if (projectId && workspace && workspace.trim()) {
-    const legacy = await readJsonArray<TaskMemoryEntry>(memoryFilePath(workspace))
-    if (legacy.length > 0) return legacy.map((item, index) => normalizeTaskMemoryEntry(item, index))
+  noteScopeReadyByScope.add(scope)
+}
+
+async function ensureTaskMemoryScopeReady(workspace: string, projectId?: string): Promise<void> {
+  const scope = resolveScope(workspace, projectId)
+  if (taskMemoryScopeReadyByScope.has(scope)) return
+  initMemoryDb()
+
+  const primaryFile = memoryFilePath(workspace, projectId)
+  const primaryExists = await pathExists(primaryFile)
+  const legacyActive = primaryExists
+    ? (await readJsonArray<TaskMemoryEntry>(primaryFile)).map((item, index) => normalizeTaskMemoryEntry(item, index))
+    : (projectId && workspace && workspace.trim()
+        ? (await readJsonArray<TaskMemoryEntry>(memoryFilePath(workspace))).map((item, index) => normalizeTaskMemoryEntry(item, index))
+        : [])
+
+  const archiveFile = memoryArchiveFilePath(workspace, projectId)
+  const archiveExists = await pathExists(archiveFile)
+  const legacyArchive = archiveExists
+    ? (await readJsonArray<TaskMemoryEntry>(archiveFile)).map((item, index) => normalizeTaskMemoryEntry(item, index))
+    : []
+
+  if (legacyActive.length > 0 || legacyArchive.length > 0) {
+    if (!hasAnyTaskMemories({ workspace, projectId })) {
+      importTaskMemoriesByTier({ workspace, projectId }, legacyActive, 'active')
+      importTaskMemoriesByTier({ workspace, projectId }, legacyArchive, 'archive')
+      log('TASK_MEMORY_DB_SCOPE_MIGRATED', {
+        scope,
+        activeCount: legacyActive.length,
+        archiveCount: legacyArchive.length,
+      })
+    }
   }
-  return []
+
+  taskMemoryScopeReadyByScope.add(scope)
+}
+
+async function ensureSnapshotScopeReady(workspace: string, projectId?: string): Promise<void> {
+  const scope = resolveScope(workspace, projectId)
+  if (snapshotScopeReadyByScope.has(scope)) return
+  initMemoryDb()
+
+  const primaryFile = snapshotFilePath(workspace, projectId)
+  const primaryExists = await pathExists(primaryFile)
+  const legacySnapshots = primaryExists
+    ? (await readJsonArray<MemorySnapshotEntry>(primaryFile)).map((item, index) => normalizeMemorySnapshotEntry(item, index))
+    : (projectId && workspace && workspace.trim()
+        ? (await readJsonArray<MemorySnapshotEntry>(snapshotFilePath(workspace))).map((item, index) => normalizeMemorySnapshotEntry(item, index))
+        : [])
+
+  if (legacySnapshots.length > 0) {
+    if (!hasAnyMemorySnapshots({ workspace, projectId })) {
+      importMemorySnapshots({ workspace, projectId }, legacySnapshots)
+      log('MEMORY_SNAPSHOT_DB_SCOPE_MIGRATED', {
+        scope,
+        snapshotCount: legacySnapshots.length,
+      })
+    }
+  }
+
+  snapshotScopeReadyByScope.add(scope)
+}
+
+async function loadTaskMemories(workspace: string, projectId?: string): Promise<TaskMemoryEntry[]> {
+  await ensureTaskMemoryScopeReady(workspace, projectId)
+  return listTaskMemoriesByTier({ workspace, projectId }, 'active').map((item, index) => normalizeTaskMemoryEntry(item, index))
 }
 
 async function loadTaskMemoryArchive(workspace: string, projectId?: string): Promise<TaskMemoryEntry[]> {
-  const archiveFile = memoryArchiveFilePath(workspace, projectId)
-  const archiveExists = await pathExists(archiveFile)
-  if (!archiveExists) return []
-  const archive = await readJsonArray<TaskMemoryEntry>(archiveFile)
-  return archive.map((item, index) => normalizeTaskMemoryEntry(item, index))
+  await ensureTaskMemoryScopeReady(workspace, projectId)
+  return listTaskMemoriesByTier({ workspace, projectId }, 'archive').map((item, index) => normalizeTaskMemoryEntry(item, index))
 }
 
 async function saveTaskMemories(workspace: string, items: TaskMemoryEntry[], projectId?: string): Promise<void> {
-  await writeJsonArray(memoryFilePath(workspace, projectId), items)
+  await ensureTaskMemoryScopeReady(workspace, projectId)
+  replaceTaskMemoriesByTier({ workspace, projectId }, items, 'active')
 }
 
 async function saveTaskMemoryArchive(workspace: string, items: TaskMemoryEntry[], projectId?: string): Promise<void> {
-  await writeJsonArray(memoryArchiveFilePath(workspace, projectId), items)
+  await ensureTaskMemoryScopeReady(workspace, projectId)
+  replaceTaskMemoriesByTier({ workspace, projectId }, items, 'archive')
 }
 
 function taskMemoryTs(item: TaskMemoryEntry): number {
@@ -510,22 +617,13 @@ function memorySnapshotTimestamp(item: MemorySnapshotEntry): number {
 }
 
 async function loadMemorySnapshots(workspace: string, projectId?: string): Promise<MemorySnapshotEntry[]> {
-  const primaryFile = snapshotFilePath(workspace, projectId)
-  const primaryExists = await pathExists(primaryFile)
-  if (primaryExists) {
-    const primary = await readJsonArray<MemorySnapshotEntry>(primaryFile)
-    return primary.map((item, index) => normalizeMemorySnapshotEntry(item, index))
-  }
-
-  if (projectId && workspace && workspace.trim()) {
-    const legacy = await readJsonArray<MemorySnapshotEntry>(snapshotFilePath(workspace))
-    if (legacy.length > 0) return legacy.map((item, index) => normalizeMemorySnapshotEntry(item, index))
-  }
-  return []
+  await ensureSnapshotScopeReady(workspace, projectId)
+  return listMemorySnapshotsForScope({ workspace, projectId }).map((item, index) => normalizeMemorySnapshotEntry(item, index))
 }
 
 async function saveMemorySnapshots(workspace: string, items: MemorySnapshotEntry[], projectId?: string): Promise<void> {
-  await writeJsonArray(snapshotFilePath(workspace, projectId), items)
+  await ensureSnapshotScopeReady(workspace, projectId)
+  replaceMemorySnapshots({ workspace, projectId }, items)
 }
 
 export async function listMemorySnapshots(workspace: string, projectId?: string): Promise<MemorySnapshotEntry[]> {
@@ -536,6 +634,96 @@ export async function listMemorySnapshots(workspace: string, projectId?: string)
     if (tb !== ta) return tb - ta
     return String(a.id).localeCompare(String(b.id))
   })
+}
+
+function latestIso(values: Array<string | undefined>): string | undefined {
+  let latestTs = 0
+  let latestValue = ''
+  for (const value of values) {
+    const text = String(value || '').trim()
+    const ts = Date.parse(text)
+    if (Number.isFinite(ts) && ts >= latestTs) {
+      latestTs = ts
+      latestValue = new Date(ts).toISOString()
+    }
+  }
+  return latestValue || undefined
+}
+
+export async function getMemoryScopeStats(workspace: string, projectId?: string): Promise<MemoryScopeStats> {
+  await Promise.all([
+    ensureNoteScopeReady(workspace, projectId),
+    ensureTaskMemoryScopeReady(workspace, projectId),
+    ensureSnapshotScopeReady(workspace, projectId),
+  ])
+
+  const [notes, activeTaskMemories, archivedTaskMemories, snapshots] = await Promise.all([
+    listNotes(workspace, projectId),
+    loadTaskMemories(workspace, projectId),
+    loadTaskMemoryArchive(workspace, projectId),
+    loadMemorySnapshots(workspace, projectId),
+  ])
+  const dbInfo = getMemoryDbInfo()
+  const allTaskMemories = [...activeTaskMemories, ...archivedTaskMemories]
+  const visibleActiveTaskMemories = activeTaskMemories.filter((item) => !isSoftDeletedMemory(item))
+  const visibleArchivedTaskMemories = archivedTaskMemories.filter((item) => !isSoftDeletedMemory(item))
+  const deletedTaskMemories = allTaskMemories.filter(isSoftDeletedMemory).length
+
+  return {
+    scope: resolveScope(workspace, projectId),
+    dbPath: dbInfo.dbPath,
+    dbSizeBytes: dbInfo.dbSizeBytes,
+    manualNotes: notes.length,
+    activeTaskMemories: visibleActiveTaskMemories.length,
+    archivedTaskMemories: visibleArchivedTaskMemories.length,
+    deletedTaskMemories,
+    snapshots: snapshots.length,
+    maintainRuns: countMemoryMaintainRuns({ workspace, projectId }),
+    ...(latestIso(notes.map((item) => item.updatedAt || item.createdAt)) ? { latestNoteUpdatedAt: latestIso(notes.map((item) => item.updatedAt || item.createdAt)) } : {}),
+    ...(latestIso(allTaskMemories.map((item) => item.updatedAt || item.createdAt)) ? { latestTaskMemoryUpdatedAt: latestIso(allTaskMemories.map((item) => item.updatedAt || item.createdAt)) } : {}),
+    ...(latestIso(snapshots.map((item) => item.updatedAt || item.createdAt)) ? { latestSnapshotUpdatedAt: latestIso(snapshots.map((item) => item.updatedAt || item.createdAt)) } : {}),
+  }
+}
+
+export async function exportMemoryScope(workspace: string, projectId?: string): Promise<MemoryScopeExportResult> {
+  await Promise.all([
+    ensureNoteScopeReady(workspace, projectId),
+    ensureTaskMemoryScopeReady(workspace, projectId),
+    ensureSnapshotScopeReady(workspace, projectId),
+  ])
+
+  const [notes, activeTaskMemories, archivedTaskMemories, snapshots, stats] = await Promise.all([
+    listNotes(workspace, projectId),
+    loadTaskMemories(workspace, projectId),
+    loadTaskMemoryArchive(workspace, projectId),
+    loadMemorySnapshots(workspace, projectId),
+    getMemoryScopeStats(workspace, projectId),
+  ])
+
+  await fs.mkdir(MEMORY_EXPORT_DIR, { recursive: true })
+  const exportedAt = new Date().toISOString()
+  const scope = resolveScope(workspace, projectId)
+  const filePath = path.join(MEMORY_EXPORT_DIR, `memory-export-${scope}-${Date.now()}.json`)
+  const payload = {
+    exportedAt,
+    workspace,
+    ...(projectId ? { projectId } : {}),
+    stats,
+    notes,
+    activeTaskMemories,
+    archivedTaskMemories,
+    snapshots,
+  }
+  await fs.writeFile(filePath, JSON.stringify(payload, null, 2), 'utf-8')
+
+  return {
+    filePath,
+    exportedAt,
+    manualNotes: notes.length,
+    activeTaskMemories: activeTaskMemories.length,
+    archivedTaskMemories: archivedTaskMemories.length,
+    snapshots: snapshots.length,
+  }
 }
 
 export async function recordMemorySnapshot(workspace: string, input: SnapshotLogInput, projectId?: string): Promise<MemorySnapshotEntry> {
@@ -1079,6 +1267,21 @@ export async function maintainTaskMemoriesByAI(
       saveTaskMemories(workspace, repartitioned.active, projectId),
       saveTaskMemoryArchive(workspace, repartitioned.archive, projectId),
     ])
+    insertMemoryMaintainRun(
+      { workspace, projectId },
+      {
+        usageTotalTokens: options?.usageTotalTokens,
+        maxTokens: options?.maxTokens,
+        pressureRatio: (typeof options?.usageTotalTokens === 'number' && typeof options?.maxTokens === 'number' && options.maxTokens > 0)
+          ? options.usageTotalTokens / options.maxTokens
+          : undefined,
+        totalCandidates: candidates.length,
+        mergedCount,
+        droppedCount,
+        reason: gate.reason,
+        decisionJson: JSON.stringify(parsedDecision),
+      },
+    )
     memoryMaintainLastRunAtByScope.set(scope, Date.now())
     log('TASK_MEMORY_MAINTAIN_APPLIED', {
       total: candidates.length,
@@ -1216,6 +1419,7 @@ function wrapUserQueryText(input: string, assetsOverride?: string): string {
 }
 
 const INTERNAL_CONTEXT_BLOCK_TAGS = [
+  'CURRENT_TASK_SUMMARY',
   'HISTORICAL_TASK_RESULT',
   'HISTORICAL_PENDING_STATE',
   'MEMORY_SNAPSHOT',
@@ -1234,6 +1438,7 @@ const INTERNAL_CONTEXT_ATTR_BLOCK_TAGS = [
 ]
 
 const INTERNAL_CONTEXT_TAG_NAME_RULES: Array<{ pattern: RegExp; replacement: string }> = [
+  { pattern: /\bCURRENT_TASK_SUMMARY\b/g, replacement: '当前任务续跑摘要' },
   { pattern: /\bHISTORICAL_TASK_RESULT\b/g, replacement: '历史任务总结' },
   { pattern: /\bHISTORICAL_PENDING_STATE\b/g, replacement: '历史待继续状态' },
   { pattern: /\bMEMORY_SNAPSHOT\b/g, replacement: '历史记忆快照' },
@@ -1259,7 +1464,7 @@ export function stripInternalContextTags(input: string): string {
     output = output.replace(new RegExp(`\\[${tag}\\][\\s\\S]*$`, 'gi'), '')
   }
 
-  output = output.replace(/\[(?:\/)?(?:HISTORICAL_TASK_RESULT|HISTORICAL_PENDING_STATE|MEMORY_SNAPSHOT|BACKGROUND_CONTEXT|SKILLS_CATALOG|SKILL_ALLOWED_TOOLS|SKILL_RESOURCES|USER_QUERY|USER_ASSETS|RUNTIME_TOOL_PROMPT|SKILL_DETAIL|SKILL_RESOURCE)[^\]]*\]/gi, '')
+  output = output.replace(/\[(?:\/)?(?:CURRENT_TASK_SUMMARY|HISTORICAL_TASK_RESULT|HISTORICAL_PENDING_STATE|MEMORY_SNAPSHOT|BACKGROUND_CONTEXT|SKILLS_CATALOG|SKILL_ALLOWED_TOOLS|SKILL_RESOURCES|USER_QUERY|USER_ASSETS|RUNTIME_TOOL_PROMPT|SKILL_DETAIL|SKILL_RESOURCE)[^\]]*\]/gi, '')
 
   for (const rule of INTERNAL_CONTEXT_TAG_NAME_RULES) {
     output = output.replace(rule.pattern, rule.replacement)

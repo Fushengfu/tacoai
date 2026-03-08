@@ -313,7 +313,9 @@ async function summarizeCurrentTaskProgress(
 2. 必须明确写出：哪些步骤已完成、哪些步骤待继续、下一步该做什么。
 3. 这是“未完成任务的续跑摘要”，严禁写成任务已完成。
 4. 不要丢失文件路径、函数名、命令、报错、关键结论。
-5. 使用中文结构化输出。`,
+5. 用户原始问题会在上下文里单独保留，摘要不要重复改写用户问题本身，重点总结该问题之后的执行进度。
+6. 如果当前存在执行计划，必须明确保留计划已完成步骤、待继续步骤，以及后续继续执行时仍需更新计划状态。
+7. 使用中文结构化输出。`,
     },
     {
       role: 'user',
@@ -335,7 +337,8 @@ async function summarizeCurrentTaskProgress(
  *
  * 策略：
  * 1. 仅使用 usage.total_tokens 判断是否需要压缩
- * 2. 触发压缩时，保留 system prompt，其余全部历史做 AI 压缩替换
+ * 2. 触发压缩时，保留 system prompt、记忆回放消息和当前用户问题
+ * 3. 仅将“当前用户问题之后的本轮执行轨迹”压成一条续跑摘要
  *
  * @returns  被压缩替换的消息数（0 表示无需压缩）
  */
@@ -364,9 +367,10 @@ async function compressAgentContext(
   const total = usageTotalTokensHint
   if (total <= threshold) return { compressed: 0, nextCurrentTaskStartIndex: currentTaskStartIndex }
 
-  // 仅压缩“本轮非记忆回放消息”区间，不动前面的记忆回放消息。
-  const safeStartIndex = Math.max(1, Math.min(currentTaskStartIndex, msgs.length))
-  const toCompress = msgs.slice(safeStartIndex)
+  // 保留当前用户问题本身，只压缩“当前用户问题之后的执行轨迹”。
+  const safeTaskAnchorIndex = Math.max(1, Math.min(currentTaskStartIndex, Math.max(1, msgs.length - 1)))
+  const taskTrailStartIndex = Math.min(msgs.length, safeTaskAnchorIndex + 1)
+  const toCompress = msgs.slice(taskTrailStartIndex)
   const compressCount = toCompress.length
   if (compressCount <= 0) return { compressed: 0, nextCurrentTaskStartIndex: currentTaskStartIndex }
 
@@ -375,8 +379,10 @@ async function compressAgentContext(
     totalTokens: total,
     budget: tokenBudget,
     compressCount,
-    currentTaskStartIndex: safeStartIndex,
-    keepReplayPrefix: safeStartIndex > 1,
+    currentTaskStartIndex: safeTaskAnchorIndex,
+    taskTrailStartIndex,
+    keepReplayPrefix: safeTaskAnchorIndex > 1,
+    preserveCurrentUserQuery: true,
   }, logScope)
 
   // ── 第四步：仅对当前任务消息做续跑摘要 ──
@@ -385,11 +391,11 @@ async function compressAgentContext(
   // ── 第五步：用摘要替换旧消息 ──
   const summaryMsg: ChatMessage = {
     role: 'assistant',
-    content: `[当前任务压缩续跑摘要 — 以下是当前未完成任务的进度总结，不代表任务已完成]\n\n${summary}\n\n[摘要结束 — 请基于该任务进度继续执行当前任务]`,
+    content: `[CURRENT_TASK_SUMMARY]\n以下是“当前用户问题之后”的本轮任务进度总结，不代表任务已完成。\n当前用户问题仍以上一条 user 消息为准；请基于该问题与以下进度继续执行当前任务。\n若存在执行计划，继续执行时仍需按步骤调用 update_plan_progress 更新状态。\n\n${summary}\n[/CURRENT_TASK_SUMMARY]`,
   }
 
-  // 仅替换当前任务消息区间，前面的记忆回放段保持不变。
-  msgs.splice(safeStartIndex, compressCount, summaryMsg)
+  // 仅替换“当前用户问题之后”的执行轨迹，前面的记忆回放段和当前用户问题保持不变。
+  msgs.splice(taskTrailStartIndex, compressCount, summaryMsg)
 
   // 记录压缩快照，供后续记忆召回时重建关键上下文链路
   try {
@@ -426,7 +432,7 @@ async function compressAgentContext(
     budget: tokenBudget,
   }, logScope)
 
-  return { compressed: compressCount, nextCurrentTaskStartIndex: safeStartIndex }
+  return { compressed: compressCount, nextCurrentTaskStartIndex: safeTaskAnchorIndex }
 }
 
 /**

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import QRCode from 'qrcode'
 import type { ProviderId, ProviderForm, ProviderForms, GuiPlusForm, ThemeMode } from '../types'
-import type { SkillInfo, ProjectNote, ProjectTaskMemory, NoteCategory, McpServerInfo, MobileBridgeConfig } from '../../shared/ipc'
+import type { SkillInfo, ProjectNote, ProjectTaskMemory, NoteCategory, McpServerInfo, MobileBridgeConfig, MemoryScopeStats } from '../../shared/ipc'
 import { providers, providerPlaceholders } from '../constants'
 
 const NOTE_CATEGORIES: { value: NoteCategory; label: string }[] = [
@@ -67,6 +67,10 @@ export function SettingsPage({
   const [taskMemories, setTaskMemories] = useState<ProjectTaskMemory[]>([])
   const [taskMemoriesLoading, setTaskMemoriesLoading] = useState(false)
   const [expandedTaskMemoryIds, setExpandedTaskMemoryIds] = useState<Set<string>>(new Set())
+  const [memoryStats, setMemoryStats] = useState<MemoryScopeStats | null>(null)
+  const [memoryStatsLoading, setMemoryStatsLoading] = useState(false)
+  const [memoryExporting, setMemoryExporting] = useState(false)
+  const [memoryExportPath, setMemoryExportPath] = useState('')
 
   // 通用设置
   const [browserAutoTakeover, setBrowserAutoTakeover] = useState<boolean>(() =>
@@ -225,22 +229,28 @@ export function SettingsPage({
     if (!hasNotesScope) {
       setNotes([])
       setTaskMemories([])
+      setMemoryStats(null)
+      setMemoryExportPath('')
       return
     }
     setNotesLoading(true)
     setTaskMemoriesLoading(true)
+    setMemoryStatsLoading(true)
     try {
-      const [list, memories] = await Promise.all([
+      const [list, memories, stats] = await Promise.all([
         window.taco.notes.list(notesWorkspace, notesProjectId || undefined),
         window.taco.notes.listTaskMemories(notesWorkspace, notesProjectId || undefined),
+        window.taco.notes.stats(notesWorkspace, notesProjectId || undefined),
       ])
       setNotes(list)
       setTaskMemories(memories)
+      setMemoryStats(stats)
     } catch (err) {
       console.error('加载笔记失败:', err)
     } finally {
       setNotesLoading(false)
       setTaskMemoriesLoading(false)
+      setMemoryStatsLoading(false)
     }
   }, [hasNotesScope, notesWorkspace, notesProjectId])
 
@@ -328,6 +338,28 @@ export function SettingsPage({
     } catch (err) {
       console.error('删除任务记忆失败:', err)
     }
+  }
+
+  const handleExportMemoryScope = async () => {
+    if (!hasNotesScope || memoryExporting) return
+    setMemoryExporting(true)
+    try {
+      const exported = await window.taco.notes.exportScope(notesWorkspace, notesProjectId || undefined)
+      setMemoryExportPath(exported.filePath)
+      await loadNotes()
+    } catch (err) {
+      console.error('导出记忆失败:', err)
+    } finally {
+      setMemoryExporting(false)
+    }
+  }
+
+  const formatBytes = (value: number) => {
+    if (!Number.isFinite(value) || value <= 0) return '0 B'
+    if (value < 1024) return `${value} B`
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+    if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`
+    return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`
   }
 
   const outcomeLabel = (outcome: ProjectTaskMemory['outcome']) => {
@@ -1034,6 +1066,50 @@ export function SettingsPage({
                 <div className="notes-empty">请先创建会话或选择工作空间后再使用记忆</div>
               ) : (
                 <>
+                  <div className="note-card" style={{ marginBottom: 14 }}>
+                    <div className="note-card-header">
+                      <span className="note-card-category architecture">记忆库状态</span>
+                      <span className="note-card-title">SQLite / 当前作用域</span>
+                      <div className="note-card-actions">
+                        <button
+                          type="button"
+                          className="note-card-btn edit"
+                          onClick={() => void loadNotes()}
+                          disabled={memoryStatsLoading}
+                          title="刷新"
+                        >
+                          刷新
+                        </button>
+                        <button
+                          type="button"
+                          className="note-card-btn edit"
+                          onClick={handleExportMemoryScope}
+                          disabled={memoryExporting}
+                          title="导出当前作用域记忆"
+                        >
+                          {memoryExporting ? '导出中...' : '导出'}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="note-card-content expanded">
+                      {memoryStatsLoading || !memoryStats ? '加载中...' : [
+                        `作用域：${memoryStats.scope}`,
+                        `数据库：${memoryStats.dbPath}`,
+                        `库大小：${formatBytes(memoryStats.dbSizeBytes)}`,
+                        `手工记忆：${memoryStats.manualNotes}`,
+                        `自动记忆（活动）：${memoryStats.activeTaskMemories}`,
+                        `自动记忆（归档）：${memoryStats.archivedTaskMemories}`,
+                        `自动记忆（软删除）：${memoryStats.deletedTaskMemories}`,
+                        `上下文快照：${memoryStats.snapshots}`,
+                        `整理审计：${memoryStats.maintainRuns}`,
+                        memoryStats.latestNoteUpdatedAt ? `最近手工记忆：${new Date(memoryStats.latestNoteUpdatedAt).toLocaleString()}` : '',
+                        memoryStats.latestTaskMemoryUpdatedAt ? `最近自动记忆：${new Date(memoryStats.latestTaskMemoryUpdatedAt).toLocaleString()}` : '',
+                        memoryStats.latestSnapshotUpdatedAt ? `最近快照：${new Date(memoryStats.latestSnapshotUpdatedAt).toLocaleString()}` : '',
+                        memoryExportPath ? `最近导出：${memoryExportPath}` : '',
+                      ].filter(Boolean).join('\n')}
+                    </div>
+                  </div>
+
                   {/* 新增/编辑笔记表单 */}
                   {editingNote ? (
                     <div className="note-form">
