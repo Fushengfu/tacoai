@@ -41,6 +41,18 @@ function collectPendingPlanSteps(plan: ContextBuildState['currentPlan']): Array<
   return out
 }
 
+function collectResolvedPlanSteps(plan: ContextBuildState['currentPlan']): Array<{ index: number; step: PlanStep }> {
+  if (!plan) return []
+  const out: Array<{ index: number; step: PlanStep }> = []
+  for (let i = 0; i < plan.steps.length; i++) {
+    const step = plan.steps[i]
+    if (step.status === 'done' || step.status === 'failed') {
+      out.push({ index: i, step })
+    }
+  }
+  return out
+}
+
 const USER_ASSETS_BLOCK_REGEX = /\s*\[USER_ASSETS\][\s\S]*?\[\/USER_ASSETS\]\s*/gi
 
 function extractUserGoalText(goal: string): string {
@@ -122,6 +134,41 @@ function buildRuntimeStateCard(state: ContextBuildState): string {
     }
   }
   lines.push('- 约束: 若需要执行动作，必须先调用工具并基于工具结果回复；禁止仅凭历史总结宣称已完成。')
+  return lines.join('\n')
+}
+
+export function buildCurrentTaskCompressionStateCard(state: ContextBuildState): string {
+  const toolUsage = Array.from(state.toolUsageCount.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, count]) => `${name}x${count}`)
+  const files = state.changedFiles.size > 0 ? Array.from(state.changedFiles) : Array.from(state.touchedFiles)
+  const identifiers = Array.from(state.touchedIdentifiers)
+  const pendingSteps = collectPendingPlanSteps(state.currentPlan)
+  const resolvedSteps = collectResolvedPlanSteps(state.currentPlan)
+
+  const lines: string[] = []
+  lines.push('# 当前任务状态')
+  lines.push(`- 当前目标: ${extractUserGoalText(state.goal) || state.goal}`)
+  lines.push(`- 当前轮次: ${state.round}`)
+  lines.push(`- 当前意图类型: ${inferIntentType(state.goal)}`)
+  lines.push(`- 已有工具证据: ${toolUsage.length > 0 ? compactList(toolUsage, 12) : '无'}`)
+  lines.push(`- 当前影响文件: ${files.length > 0 ? compactList(files, 20) : '无'}`)
+  lines.push(`- 当前涉及标识符: ${identifiers.length > 0 ? compactList(identifiers, 24) : '无'}`)
+  lines.push(`- 当前失败记录: ${state.failures.length > 0 ? compactList(state.failures, 8) : '无'}`)
+  if (state.currentPlan) {
+    lines.push(`- 当前执行计划: ${state.currentPlan.summary || '（无）'}`)
+    lines.push(`- 已完成/已结束步骤: ${resolvedSteps.length}`)
+    for (const item of resolvedSteps.slice(-6)) {
+      lines.push(`  - [${item.index + 1}] ${item.step.text} (${item.step.status})${item.step.note ? ` | ${item.step.note}` : ''}`)
+    }
+    lines.push(`- 待继续步骤: ${pendingSteps.length}`)
+    for (const item of pendingSteps.slice(0, 8)) {
+      lines.push(`  - [${item.index + 1}] ${item.step.text} (${item.step.status})${item.step.note ? ` | ${item.step.note}` : ''}`)
+    }
+  } else {
+    lines.push('- 当前执行计划: 无显式计划')
+  }
+  lines.push('- 说明: 这是当前未完成任务的状态快照，供压缩续跑使用，不代表任务已完成。')
   return lines.join('\n')
 }
 

@@ -19,7 +19,8 @@ import { gitCommit, gitEnsureRepo } from './git'
 import { refreshSkills, buildActiveSkillsCatalogBlock, getActiveSkillEnv, applySkillEnvironment } from './skills'
 import { buildBackgroundContextConversationMessages, inferIntentFromBackground, maintainTaskMemoriesByAI, recordMemorySnapshot, recordTaskLog, stripInternalContextTags } from './notes'
 import type { RecallMeta } from './notes'
-import { buildAgentRequestMessages, validateCompletionClaim } from './context-builder'
+import { buildAgentRequestMessages, buildCurrentTaskCompressionStateCard, validateCompletionClaim } from './context-builder'
+import type { ContextBuildState } from './context-builder'
 import { applyRewardScore } from './reward-score'
 
 /* ------------------------------------------------------------------ */
@@ -164,6 +165,29 @@ function compactLine(text: string, max = 260): string {
   return line.length <= max ? line : `${line.slice(0, max)}...`
 }
 
+function maskSensitiveText(text: string): string {
+  let masked = String(text ?? '')
+  const keyValuePattern = /((?:token|access_token|api[_-]?key|authorization|bearer|password|passwd|pwd|secret)\s*[:=]\s*)([^\s'"]+)/ig
+  masked = masked.replace(keyValuePattern, (_m, prefix: string) => `${prefix}***`)
+  const bearerPattern = /(bearer\s+)([a-z0-9._\-]+)/ig
+  masked = masked.replace(bearerPattern, (_m, prefix: string) => `${prefix}***`)
+  return masked
+}
+
+function summarizeRunCommand(command: string): string {
+  const masked = maskSensitiveText(command.trim())
+  if (!masked) return ''
+
+  if (/npm\s+run\s+dev/i.test(masked)) return '启动前端开发服务'
+  if (/npm\s+(run\s+)?build/i.test(masked)) return '构建项目'
+  if (/go\s+test|npm\s+test|pnpm\s+test|yarn\s+test/i.test(masked)) return '执行测试'
+  if (/lint|eslint|golangci-lint|biome\s+check/i.test(masked)) return '执行 lint 检查'
+  if (/typecheck|tsc\b/i.test(masked)) return '执行类型检查'
+  if (/go\s+build|cargo\s+build|vite\s+build|pnpm\s+build|yarn\s+build/i.test(masked)) return '执行构建验证'
+
+  return masked.length > 80 ? `${masked.slice(0, 77)}...` : masked
+}
+
 function extractIdentifiers(text: string): string[] {
   const source = String(text ?? '')
   if (!source) return []
@@ -262,6 +286,50 @@ async function summarizeMessages(
   }
 }
 
+async function summarizeCurrentTaskProgress(
+  provider: ProviderKey,
+  overrides: ProviderOverrides | undefined,
+  messagesToSummarize: ChatMessage[],
+  state: ContextBuildState,
+  signal?: AbortSignal,
+  logScope?: string,
+): Promise<string> {
+  const lines: string[] = []
+  for (const m of messagesToSummarize) {
+    const role = m.role === 'assistant' ? 'AI助手'
+      : m.role === 'user' ? '用户'
+      : m.role === 'tool' ? '工具结果'
+      : '系统'
+    lines.push(`[${role}] ${m.content}`)
+  }
+
+  const prompt: ChatMessage[] = [
+    {
+      role: 'system',
+      content: `你是当前任务续跑压缩助手。你需要把“当前未完成任务”的消息序列压缩成一段可直接续跑的任务进度总结。
+
+要求：
+1. 必须完整保留当前目标、已完成动作、关键工具证据、文件变更、失败与重试、当前计划状态。
+2. 必须明确写出：哪些步骤已完成、哪些步骤待继续、下一步该做什么。
+3. 这是“未完成任务的续跑摘要”，严禁写成任务已完成。
+4. 不要丢失文件路径、函数名、命令、报错、关键结论。
+5. 使用中文结构化输出。`,
+    },
+    {
+      role: 'user',
+      content: `${buildCurrentTaskCompressionStateCard(state)}\n\n# 需要压缩的当前任务消息\n${lines.join('\n\n')}`,
+    },
+  ]
+
+  try {
+    return await requestChatCompletion(provider, prompt, overrides, signal, logScope)
+  } catch (err) {
+    if (isAbortError(err) || signal?.aborted) throw err
+    log('CURRENT_TASK_SUMMARIZE_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
+    return buildCurrentTaskCompressionStateCard(state)
+  }
+}
+
 /**
  * Agent 循环内的上下文 AI 摘要压缩。
  *
@@ -280,45 +348,48 @@ async function compressAgentContext(
   userQuery: string,
   projectId: string | undefined,
   recallDebug: boolean,
+  currentTaskStartIndex: number,
+  state: ContextBuildState,
   usageTotalTokensHint?: number,
   signal?: AbortSignal,
   logScope?: string,
   onRecallMeta?: (meta: RecallMeta) => void,
-): Promise<number> {
+): Promise<{ compressed: number; nextCurrentTaskStartIndex: number }> {
   const threshold = Math.floor(tokenBudget * 0.80) // 留 20% 给回复
 
   // 仅接受 usage.total_tokens 作为压缩触发依据
   if (!(typeof usageTotalTokensHint === 'number' && Number.isFinite(usageTotalTokensHint) && usageTotalTokensHint > 0)) {
-    return 0
+    return { compressed: 0, nextCurrentTaskStartIndex: currentTaskStartIndex }
   }
   const total = usageTotalTokensHint
-  if (total <= threshold) return 0
+  if (total <= threshold) return { compressed: 0, nextCurrentTaskStartIndex: currentTaskStartIndex }
 
-  // 保留 system 消息，压缩其余全部历史
-  if (msgs.length <= 1) return 0
-  const toCompress = msgs.slice(1)
+  // 仅压缩“本轮非记忆回放消息”区间，不动前面的记忆回放消息。
+  const safeStartIndex = Math.max(1, Math.min(currentTaskStartIndex, msgs.length))
+  const toCompress = msgs.slice(safeStartIndex)
   const compressCount = toCompress.length
-  if (compressCount <= 0) return 0
+  if (compressCount <= 0) return { compressed: 0, nextCurrentTaskStartIndex: currentTaskStartIndex }
 
   log('AGENT_CONTEXT_SUMMARIZE_START', {
     sourceTotalTokens: usageTotalTokensHint,
     totalTokens: total,
     budget: tokenBudget,
     compressCount,
-    keepSystemOnly: true,
+    currentTaskStartIndex: safeStartIndex,
+    keepReplayPrefix: safeStartIndex > 1,
   }, logScope)
 
-  // ── 第四步：调用 AI 生成摘要 ──
-  const summary = await summarizeMessages(provider, overrides, toCompress, signal, logScope)
+  // ── 第四步：仅对当前任务消息做续跑摘要 ──
+  const summary = await summarizeCurrentTaskProgress(provider, overrides, toCompress, state, signal, logScope)
 
   // ── 第五步：用摘要替换旧消息 ──
   const summaryMsg: ChatMessage = {
     role: 'assistant',
-    content: `[全量历史压缩记录 — 以下是之前 ${compressCount} 条消息的压缩上下文，不代表任务已完成]\n\n${summary}\n\n[压缩记录结束 — 请基于以上记录和后续最新消息继续执行任务]`,
+    content: `[当前任务压缩续跑摘要 — 以下是当前未完成任务的进度总结，不代表任务已完成]\n\n${summary}\n\n[摘要结束 — 请基于该任务进度继续执行当前任务]`,
   }
 
-  // 替换 system 之后的全部历史为摘要
-  msgs.splice(1, compressCount, summaryMsg)
+  // 仅替换当前任务消息区间，前面的记忆回放段保持不变。
+  msgs.splice(safeStartIndex, compressCount, summaryMsg)
 
   // 记录压缩快照，供后续记忆召回时重建关键上下文链路
   try {
@@ -336,56 +407,17 @@ async function compressAgentContext(
     log('AGENT_MEMORY_SNAPSHOT_SAVE_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
   }
 
-  // 上下文压力达到阈值时，触发一次“全量记忆交给 AI”的整理（merge/drop/keep by ID）
-  try {
-    await maintainTaskMemoriesByAI(workspace, projectId, {
-      provider,
-      overrides,
-      usageTotalTokens: usageTotalTokensHint,
-      maxTokens: tokenBudget,
-      signal,
-      logScope,
-    })
-  } catch (err) {
+  // 高压时触发记忆整理，但不阻塞当前任务续跑。
+  void maintainTaskMemoriesByAI(workspace, projectId, {
+    provider,
+    overrides,
+    usageTotalTokens: usageTotalTokensHint,
+    maxTokens: tokenBudget,
+    signal,
+    logScope,
+  }).catch((err) => {
     log('AGENT_TASK_MEMORY_MAINTAIN_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
-  }
-
-  // ── 第六步：压缩后按需召回项目上下文，并重新放入最新用户目标 ──
-  try {
-    const injected = await buildBackgroundContextConversationMessages(
-      workspace,
-      userQuery,
-      projectId,
-      {
-        usageTotalTokens: usageTotalTokensHint,
-        maxTokens: tokenBudget,
-        reason: 'post_compress',
-        replayMode: 'compact',
-        provider,
-        overrides,
-        signal,
-        logScope,
-      },
-    )
-    msgs.push(...injected.messages)
-    onRecallMeta?.(injected.recallMeta)
-    log('AGENT_BACKGROUND_CONTEXT_RECALLED_AFTER_COMPRESS', {
-      replayedSnapshots: injected.replayedSnapshots.length,
-      droppedSnapshotReplayCount: injected.droppedSnapshotReplayCount,
-      replayedTurns: injected.replayedTaskMemories.length,
-      droppedReplayCount: injected.droppedReplayCount,
-      recalledCount: injected.recalled.length,
-      recallMeta: injected.recallMeta,
-      recalled: injected.recalled,
-      ...(recallDebug ? { recallDebug: injected.recallDebug } : {}),
-    }, logScope)
-  } catch (err) {
-    log('AGENT_BACKGROUND_CONTEXT_RECALL_AFTER_COMPRESS_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
-    msgs.push({
-      role: 'user',
-      content: userQuery,
-    })
-  }
+  })
 
   log('AGENT_CONTEXT_SUMMARIZE_DONE', {
     compressed: compressCount,
@@ -394,7 +426,7 @@ async function compressAgentContext(
     budget: tokenBudget,
   }, logScope)
 
-  return compressCount
+  return { compressed: compressCount, nextCurrentTaskStartIndex: safeStartIndex }
 }
 
 /**
@@ -442,6 +474,7 @@ export async function runAgent(
   const lastUserGoal = [...messages].reverse().find((m) => m.role === 'user')?.content?.trim() || ''
   const plainUserQuery = extractUserQueryText(lastUserGoal)
   const userAssetsBlock = extractUserAssetsBlock(lastUserGoal)
+  let currentTaskStartIndex = Math.max(1, workingMessages.map((m) => m.role).lastIndexOf('user'))
   let latestRecallMeta: Pick<RecallMeta, 'intentSource' | 'intentType' | 'intentSummary' | 'intentGoal'> | null = null
   const TOOL_PROMPT_BLOCK_START = '[RUNTIME_TOOL_PROMPT]'
   const TOOL_PROMPT_BLOCK_END = '[/RUNTIME_TOOL_PROMPT]'
@@ -491,6 +524,7 @@ export async function runAgent(
         },
       )
       workingMessages.splice(lastUserIdx, 1, ...injected.messages)
+      currentTaskStartIndex = lastUserIdx + Math.max(0, injected.messages.length - 1)
       latestRecallMeta = {
         intentSource: injected.recallMeta.intentSource,
         intentType: injected.recallMeta.intentType,
@@ -555,6 +589,9 @@ export async function runAgent(
   const touchedFiles = new Set<string>()
   const touchedIdentifiers = new Set<string>()
   const failureLogs: string[] = []
+  let successfulRunCommandCount = 0
+  const runCommandSummaryByToolCallId = new Map<string, string>()
+  const successfulRunCommandSummaries: string[] = []
 
   function shouldPersistTaskCoreLog(): { persist: boolean; reason: string } {
     // 每轮用户提问都写入任务记忆（包括未调用工具的问答轮次）。
@@ -570,6 +607,11 @@ export async function runAgent(
 
       const args = safeParseObject(tc.function.arguments)
       if (!args) continue
+      if (name === 'run_command') {
+        const command = typeof args.command === 'string' ? args.command : ''
+        const summary = summarizeRunCommand(command)
+        if (summary) runCommandSummaryByToolCallId.set(tc.id, summary)
+      }
       const pathKeys = ['path', 'filePath', 'cwd']
       for (const key of pathKeys) {
         const value = args[key]
@@ -587,6 +629,14 @@ export async function runAgent(
   function trackToolResultsCore(results: ToolResult[]) {
     for (const result of results) {
       if (result.name === 'save_note' || result.name === 'delete_note') continue
+      if (result.name === 'run_command' && result.success) {
+        successfulRunCommandCount++
+        const summary = runCommandSummaryByToolCallId.get(result.tool_call_id) || ''
+        if (summary && !successfulRunCommandSummaries.includes(summary)) {
+          successfulRunCommandSummaries.push(summary)
+          if (successfulRunCommandSummaries.length > 3) successfulRunCommandSummaries.shift()
+        }
+      }
       if (result.fileChange?.filePath) changedFiles.add(result.fileChange.filePath)
       if (result.fileChange?.oldContent) {
         for (const id of extractIdentifiers(result.fileChange.oldContent)) touchedIdentifiers.add(id)
@@ -598,6 +648,12 @@ export async function runAgent(
         failureLogs.push(`${result.name}: ${compactLine(result.content, 320)}`)
       }
     }
+  }
+
+  function isVerificationPlanStep(text: string): boolean {
+    const lower = String(text ?? '').trim().toLowerCase()
+    if (!lower) return false
+    return /(验证|测试|构建|编译|lint|typecheck|校验|检查通过|编译通过|构建通过|test|build|compile|verify|validation)/i.test(lower)
   }
 
   async function persistTaskCoreLog(
@@ -784,7 +840,7 @@ export async function runAgent(
 
     // ── 每轮 LLM 请求前检查并压缩上下文（含首轮） ──
     try {
-      await compressAgentContext(
+      const compressed = await compressAgentContext(
         workingMessages,
         tokenBudget,
         provider,
@@ -793,11 +849,23 @@ export async function runAgent(
         lastUserGoal,
         projectId,
         recallDebug,
+        currentTaskStartIndex,
+        {
+          round,
+          goal: lastUserGoal,
+          toolUsageCount,
+          changedFiles,
+          touchedFiles,
+          touchedIdentifiers,
+          failures: failureLogs,
+          currentPlan,
+        },
         lastUsageTotalTokens,
         signal,
         logScope,
         (meta) => { latestRecallMeta = meta },
       )
+      currentTaskStartIndex = compressed.nextCurrentTaskStartIndex
     } catch (err) {
       if (isAbortError(err) || signal?.aborted) {
         log('AGENT_ABORTED', { round, reason: 'signal aborted during context compress' }, logScope)
@@ -895,12 +963,24 @@ export async function runAgent(
           lastUserGoal,
           projectId,
           recallDebug,
+          currentTaskStartIndex,
+          {
+            round,
+            goal: lastUserGoal,
+            toolUsageCount,
+            changedFiles,
+            touchedFiles,
+            touchedIdentifiers,
+            failures: failureLogs,
+            currentPlan,
+          },
           lastUsageTotalTokens,
           signal,
           logScope,
           (meta) => { latestRecallMeta = meta },
         )
-        if (dropped > 0) {
+        currentTaskStartIndex = dropped.nextCurrentTaskStartIndex
+        if (dropped.compressed > 0) {
           log('AGENT_CONTEXT_RETRY', { dropped, newMsgCount: workingMessages.length }, logScope)
           round-- // 不消耗轮次，重试当前步骤
           continue
@@ -914,6 +994,29 @@ export async function runAgent(
 
     // 如果没有 tool_calls → 纯文本回复，循环结束
     if (toolCalls.length === 0) {
+      const finalPlan = currentPlan
+      const unfinishedPlanSteps = finalPlan
+        ? finalPlan.steps
+            .map((step, index) => ({ step, index }))
+            .filter(({ step }) => step.status === 'pending' || step.status === 'in_progress')
+        : []
+      if (finalPlan && unfinishedPlanSteps.length > 0) {
+        // 先将遗留步骤落为 failed，避免完成校验因“仍有未完成步骤”进入死循环。
+        for (const { index, step } of unfinishedPlanSteps) {
+          const autoDone = isVerificationPlanStep(step.text) && successfulRunCommandCount > 0
+          const status: PlanStepStatus = autoDone ? 'done' : 'failed'
+          const evidenceText = successfulRunCommandSummaries.length > 0
+            ? `；证据命令: ${successfulRunCommandSummaries.join('、')}`
+            : ''
+          const note = autoDone
+            ? `本轮结束前未显式更新该步骤状态；检测到成功的 run_command 验证证据，系统自动补记为 done（原状态: ${step.status}）${evidenceText}`
+            : `本轮结束前未更新该步骤状态，系统自动标记为 failed（原状态: ${step.status}）`
+          finalPlan.steps[index].status = status
+          finalPlan.steps[index].note = note
+          onEvent?.({ type: 'plan_progress', stepIndex: index, status, note })
+        }
+      }
+
       const completionValidation = validateCompletionClaim(textContent, {
         round,
         goal: lastUserGoal,
@@ -947,23 +1050,6 @@ export async function runAgent(
         continue
       }
       completionRejectCount = 0
-
-      const finalPlan = currentPlan
-      const unfinishedPlanSteps = finalPlan
-        ? finalPlan.steps
-            .map((step, index) => ({ step, index }))
-            .filter(({ step }) => step.status === 'pending' || step.status === 'in_progress')
-        : []
-      if (finalPlan && unfinishedPlanSteps.length > 0) {
-        // 兜底：避免前端显示“计划未完成”但模型已经结束时完全无标识
-        for (const { index, step } of unfinishedPlanSteps) {
-          const status: PlanStepStatus = 'failed'
-          const note = `模型结束前未更新该步骤状态（原状态: ${step.status}）`
-          finalPlan.steps[index].status = status
-          finalPlan.steps[index].note = note
-          onEvent?.({ type: 'plan_progress', stepIndex: index, status, note })
-        }
-      }
 
       await finalizeAndDone(textContent)
       return
