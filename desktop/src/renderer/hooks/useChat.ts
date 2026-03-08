@@ -679,6 +679,18 @@ export function useChat() {
               // 清空累积文本，后续文本属于下一轮或最终回复
               accumulated = ''
               flushAgentMsg(undefined, runningTaskTiming)
+            } else if (event.type === 'system_notice') {
+              currentRound++
+              steps.push({
+                round: currentRound,
+                systemTitle: event.title,
+                systemDetail: event.message || '',
+                thinking: event.message || event.title,
+                toolCalls: [],
+                toolResults: [],
+                status: 'done',
+              })
+              flushAgentMsg(undefined, runningTaskTiming)
             } else if (event.type === 'confirm') {
               // 风险操作需要用户确认 → 更新当前步骤状态
               const lastStep = steps[steps.length - 1]
@@ -1004,6 +1016,18 @@ export function useChat() {
                 status: 'running',
               })
               accumulated = ''
+              flushAgentMsg(undefined, runningTaskTiming)
+            } else if (evt.type === 'system_notice') {
+              currentRound++
+              steps.push({
+                round: currentRound,
+                systemTitle: evt.title,
+                systemDetail: evt.message || '',
+                thinking: evt.message || evt.title,
+                toolCalls: [],
+                toolResults: [],
+                status: 'done',
+              })
               flushAgentMsg(undefined, runningTaskTiming)
             } else if (evt.type === 'confirm') {
               const lastStep = steps[steps.length - 1]

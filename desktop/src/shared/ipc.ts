@@ -289,6 +289,7 @@ export type AgentEventData = {
 } & (
   | { type: 'text'; content: string }
   | { type: 'tool_calls'; toolCalls: IpcToolCall[] }
+  | { type: 'system_notice'; title: string; message?: string }
   | { type: 'confirm'; confirmId: string; toolCalls: IpcToolCall[]; risks: IpcRiskInfo[] }
   | { type: 'tool_results'; results: IpcToolResult[] }
   | { type: 'git_commit'; hash: string; message: string }

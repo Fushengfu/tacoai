@@ -1,6 +1,7 @@
 import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs'
+import { createHash } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { app } from 'electron'
 import type { ProjectNote, ProjectTaskMemory } from '../shared/ipc'
@@ -23,6 +24,7 @@ type MemoryTier = 'active' | 'archive'
 type MemoryScope = {
   workspace: string
   projectId?: string
+  scopeKey?: string
 }
 
 function resolveHomeDir(): string {
@@ -45,11 +47,87 @@ const MEMORY_DB_PATH = path.join(STATE_DIR, 'memory.db')
 
 let db: DatabaseSync | null = null
 
-function normalizeScope(scope: MemoryScope): { workspace: string; projectId: string } {
+function workspaceHash(workspace: string): string {
+  return createHash('sha256').update(path.resolve(workspace)).digest('hex').slice(0, 16)
+}
+
+function projectScope(projectId: string): string {
+  return 'project-' + createHash('sha256').update(projectId).digest('hex').slice(0, 16)
+}
+
+function resolveScopeKey(workspace: string, projectId?: string): string {
+  if (projectId && projectId.trim()) return projectScope(projectId.trim())
+  if (workspace && workspace.trim()) return workspaceHash(workspace)
+  return 'global'
+}
+
+function normalizeScope(scope: MemoryScope): { workspace: string; projectId: string; scopeKey: string } {
+  const rawWorkspace = String(scope.workspace || '').trim()
+  const projectId = String(scope.projectId || '').trim()
+  const scopeKey = String(scope.scopeKey || '').trim() || resolveScopeKey(rawWorkspace, projectId)
   return {
-    workspace: path.resolve(String(scope.workspace || '').trim()),
-    projectId: String(scope.projectId || '').trim(),
+    workspace: rawWorkspace ? path.resolve(rawWorkspace) : '',
+    projectId,
+    scopeKey,
   }
+}
+
+function buildScopeWhere(scope: MemoryScope): {
+  sql: string
+  params: unknown[]
+  normalized: { workspace: string; projectId: string; scopeKey: string }
+} {
+  const normalized = normalizeScope(scope)
+  return {
+    sql: 'scope_key = ?',
+    params: [normalized.scopeKey],
+    normalized,
+  }
+}
+
+function tableColumns(database: DatabaseSync, tableName: string): Set<string> {
+  const rows = database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<Record<string, unknown>>
+  return new Set(rows.map((row) => String(row.name || '').trim()).filter(Boolean))
+}
+
+function ensureColumn(database: DatabaseSync, tableName: string, columnName: string, definition: string): void {
+  const columns = tableColumns(database, tableName)
+  if (columns.has(columnName)) return
+  database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`)
+}
+
+function runInTransaction<T>(database: DatabaseSync, fn: () => T): T {
+  database.exec('BEGIN')
+  try {
+    const result = fn()
+    database.exec('COMMIT')
+    return result
+  } catch (error) {
+    try {
+      database.exec('ROLLBACK')
+    } catch {
+      // ignore rollback failure
+    }
+    throw error
+  }
+}
+
+function backfillScopeKey(database: DatabaseSync, tableName: string): void {
+  const rows = database.prepare(`
+    SELECT rowid, workspace, project_id, scope_key
+    FROM ${tableName}
+    WHERE COALESCE(scope_key, '') = ''
+  `).all() as Array<Record<string, unknown>>
+  if (rows.length <= 0) return
+  const stmt = database.prepare(`UPDATE ${tableName} SET scope_key = ? WHERE rowid = ?`)
+  runInTransaction(database, () => {
+    for (const row of rows) {
+      const workspace = String(row.workspace || '').trim()
+      const projectId = String(row.project_id || '').trim()
+      const scopeKey = resolveScopeKey(workspace, projectId)
+      stmt.run(scopeKey, Number(row.rowid))
+    }
+  })
 }
 
 function ensureDb(): DatabaseSync {
@@ -66,6 +144,7 @@ function ensureDb(): DatabaseSync {
       id TEXT PRIMARY KEY,
       workspace TEXT NOT NULL,
       project_id TEXT NOT NULL DEFAULT '',
+      scope_key TEXT NOT NULL DEFAULT '',
       storage_tier TEXT NOT NULL DEFAULT 'active',
       user_query TEXT NOT NULL DEFAULT '',
       user_assets_block TEXT NOT NULL DEFAULT '',
@@ -93,10 +172,14 @@ function ensureDb(): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_task_memories_scope_deleted
     ON task_memories(workspace, project_id, deleted_at);
 
+    CREATE INDEX IF NOT EXISTS idx_task_memories_scope_key_tier_updated
+    ON task_memories(scope_key, storage_tier, updated_at DESC, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS project_notes (
       id TEXT PRIMARY KEY,
       workspace TEXT NOT NULL,
       project_id TEXT NOT NULL DEFAULT '',
+      scope_key TEXT NOT NULL DEFAULT '',
       title TEXT NOT NULL DEFAULT '',
       content TEXT NOT NULL DEFAULT '',
       category TEXT NOT NULL DEFAULT 'other',
@@ -107,10 +190,14 @@ function ensureDb(): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_project_notes_scope_updated
     ON project_notes(workspace, project_id, updated_at DESC, created_at DESC, id DESC);
 
+    CREATE INDEX IF NOT EXISTS idx_project_notes_scope_key_updated
+    ON project_notes(scope_key, updated_at DESC, created_at DESC, id DESC);
+
     CREATE TABLE IF NOT EXISTS memory_snapshots (
       id TEXT PRIMARY KEY,
       workspace TEXT NOT NULL,
       project_id TEXT NOT NULL DEFAULT '',
+      scope_key TEXT NOT NULL DEFAULT '',
       summary TEXT NOT NULL,
       source_message_count INTEGER NOT NULL DEFAULT 0,
       usage_total_tokens INTEGER,
@@ -122,10 +209,14 @@ function ensureDb(): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_memory_snapshots_scope_updated
     ON memory_snapshots(workspace, project_id, updated_at DESC, created_at DESC);
 
+    CREATE INDEX IF NOT EXISTS idx_memory_snapshots_scope_key_updated
+    ON memory_snapshots(scope_key, updated_at DESC, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS memory_maintain_runs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       workspace TEXT NOT NULL,
       project_id TEXT NOT NULL DEFAULT '',
+      scope_key TEXT NOT NULL DEFAULT '',
       usage_total_tokens INTEGER,
       max_tokens INTEGER,
       pressure_ratio REAL,
@@ -137,6 +228,14 @@ function ensureDb(): DatabaseSync {
       created_at TEXT NOT NULL
     );
   `)
+  ensureColumn(next, 'task_memories', 'scope_key', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(next, 'project_notes', 'scope_key', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(next, 'memory_snapshots', 'scope_key', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(next, 'memory_maintain_runs', 'scope_key', "TEXT NOT NULL DEFAULT ''")
+  backfillScopeKey(next, 'task_memories')
+  backfillScopeKey(next, 'project_notes')
+  backfillScopeKey(next, 'memory_snapshots')
+  backfillScopeKey(next, 'memory_maintain_runs')
   db = next
   return next
 }
@@ -206,7 +305,7 @@ function upsertTaskMemoryRows(scope: MemoryScope, items: TaskMemoryEntry[], tier
   const normalized = normalizeScope(scope)
   const stmt = database.prepare(`
     INSERT INTO task_memories (
-      id, workspace, project_id, storage_tier,
+      id, workspace, project_id, scope_key, storage_tier,
       user_query, user_assets_block, goal,
       intent_type, intent_summary, intent_goal,
       assistant_result, summary, outcome,
@@ -214,7 +313,7 @@ function upsertTaskMemoryRows(scope: MemoryScope, items: TaskMemoryEntry[], tier
       deleted_at, deleted_reason, merged_into_id,
       created_at, updated_at
     ) VALUES (
-      ?, ?, ?, ?,
+      ?, ?, ?, ?, ?,
       ?, ?, ?,
       ?, ?, ?,
       ?, ?, ?,
@@ -225,6 +324,7 @@ function upsertTaskMemoryRows(scope: MemoryScope, items: TaskMemoryEntry[], tier
     ON CONFLICT(id) DO UPDATE SET
       workspace=excluded.workspace,
       project_id=excluded.project_id,
+      scope_key=excluded.scope_key,
       storage_tier=excluded.storage_tier,
       user_query=excluded.user_query,
       user_assets_block=excluded.user_assets_block,
@@ -245,35 +345,33 @@ function upsertTaskMemoryRows(scope: MemoryScope, items: TaskMemoryEntry[], tier
       created_at=excluded.created_at,
       updated_at=excluded.updated_at
   `)
-  const tx = database.transaction((rows: TaskMemoryEntry[]) => {
-    for (const item of rows) {
-      stmt.run(
-        item.id,
-        normalized.workspace,
-        normalized.projectId,
-        tier,
-        String(item.userQuery || ''),
-        String(item.userAssetsBlock || ''),
-        String(item.goal || ''),
-        String(item.intentType || ''),
-        String(item.intentSummary || ''),
-        String(item.intentGoal || ''),
-        String(item.assistantResult || ''),
-        String(item.summary || ''),
-        String(item.outcome || 'success'),
-        stringifyStringArray(item.tools),
-        stringifyStringArray(item.changedFiles),
-        stringifyStringArray(item.identifiers),
-        stringifyStringArray(item.failures),
-        item.deletedAt ?? null,
-        String(item.deletedReason || ''),
-        String(item.mergedIntoId || ''),
-        String(item.createdAt || ''),
-        String(item.updatedAt || ''),
-      )
-    }
-  })
-  tx(items)
+  for (const item of items) {
+    stmt.run(
+      item.id,
+      normalized.workspace,
+      normalized.projectId,
+      normalized.scopeKey,
+      tier,
+      String(item.userQuery || ''),
+      String(item.userAssetsBlock || ''),
+      String(item.goal || ''),
+      String(item.intentType || ''),
+      String(item.intentSummary || ''),
+      String(item.intentGoal || ''),
+      String(item.assistantResult || ''),
+      String(item.summary || ''),
+      String(item.outcome || 'success'),
+      stringifyStringArray(item.tools),
+      stringifyStringArray(item.changedFiles),
+      stringifyStringArray(item.identifiers),
+      stringifyStringArray(item.failures),
+      item.deletedAt ?? null,
+      String(item.deletedReason || ''),
+      String(item.mergedIntoId || ''),
+      String(item.createdAt || ''),
+      String(item.updatedAt || ''),
+    )
+  }
 }
 
 function upsertProjectNoteRows(scope: MemoryScope, items: ProjectNoteEntry[]): void {
@@ -281,68 +379,66 @@ function upsertProjectNoteRows(scope: MemoryScope, items: ProjectNoteEntry[]): v
   const normalized = normalizeScope(scope)
   const stmt = database.prepare(`
     INSERT INTO project_notes (
-      id, workspace, project_id, title, content, category, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      id, workspace, project_id, scope_key, title, content, category, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       workspace=excluded.workspace,
       project_id=excluded.project_id,
+      scope_key=excluded.scope_key,
       title=excluded.title,
       content=excluded.content,
       category=excluded.category,
       created_at=excluded.created_at,
       updated_at=excluded.updated_at
   `)
-  const tx = database.transaction((rows: ProjectNoteEntry[]) => {
-    for (const item of rows) {
-      stmt.run(
-        item.id,
-        normalized.workspace,
-        normalized.projectId,
-        String(item.title || ''),
-        String(item.content || ''),
-        String(item.category || 'other'),
-        String(item.createdAt || ''),
-        String(item.updatedAt || ''),
-      )
-    }
-  })
-  tx(items)
+  for (const item of items) {
+    stmt.run(
+      item.id,
+      normalized.workspace,
+      normalized.projectId,
+      normalized.scopeKey,
+      String(item.title || ''),
+      String(item.content || ''),
+      String(item.category || 'other'),
+      String(item.createdAt || ''),
+      String(item.updatedAt || ''),
+    )
+  }
 }
 
 export function hasAnyProjectNotes(scope: MemoryScope): boolean {
   const database = ensureDb()
-  const normalized = normalizeScope(scope)
+  const selector = buildScopeWhere(scope)
   const row = database.prepare(`
     SELECT COUNT(1) AS count
     FROM project_notes
-    WHERE workspace = ? AND project_id = ?
-  `).get(normalized.workspace, normalized.projectId) as Record<string, unknown> | undefined
+    WHERE ${selector.sql}
+  `).get(...selector.params) as Record<string, unknown> | undefined
   return Number(row?.count || 0) > 0
 }
 
 export function listProjectNotesForScope(scope: MemoryScope): ProjectNoteEntry[] {
   const database = ensureDb()
-  const normalized = normalizeScope(scope)
+  const selector = buildScopeWhere(scope)
   const rows = database.prepare(`
     SELECT *
     FROM project_notes
-    WHERE workspace = ? AND project_id = ?
+    WHERE ${selector.sql}
     ORDER BY updated_at ASC, created_at ASC, id ASC
-  `).all(normalized.workspace, normalized.projectId) as Array<Record<string, unknown>>
+  `).all(...selector.params) as Array<Record<string, unknown>>
   return rows.map(rowToProjectNoteEntry)
 }
 
 export function replaceProjectNotes(scope: MemoryScope, items: ProjectNoteEntry[]): void {
   const database = ensureDb()
-  const normalized = normalizeScope(scope)
-  const tx = database.transaction((rows: ProjectNoteEntry[]) => {
+  const selector = buildScopeWhere(scope)
+  runInTransaction(database, () => {
     database.prepare(`
       DELETE FROM project_notes
-      WHERE workspace = ? AND project_id = ?
-    `).run(normalized.workspace, normalized.projectId)
-    upsertProjectNoteRows(scope, rows)
+      WHERE ${selector.sql}
+    `).run(...selector.params)
+    upsertProjectNoteRows(scope, items)
   })
-  tx(items)
 }
 
 export function importProjectNotes(scope: MemoryScope, items: ProjectNoteEntry[]): void {
@@ -352,38 +448,37 @@ export function importProjectNotes(scope: MemoryScope, items: ProjectNoteEntry[]
 
 export function hasAnyTaskMemories(scope: MemoryScope): boolean {
   const database = ensureDb()
-  const normalized = normalizeScope(scope)
+  const selector = buildScopeWhere(scope)
   const row = database.prepare(`
     SELECT COUNT(1) AS count
     FROM task_memories
-    WHERE workspace = ? AND project_id = ?
-  `).get(normalized.workspace, normalized.projectId) as Record<string, unknown> | undefined
+    WHERE ${selector.sql}
+  `).get(...selector.params) as Record<string, unknown> | undefined
   return Number(row?.count || 0) > 0
 }
 
 export function listTaskMemoriesByTier(scope: MemoryScope, tier: MemoryTier): TaskMemoryEntry[] {
   const database = ensureDb()
-  const normalized = normalizeScope(scope)
+  const selector = buildScopeWhere(scope)
   const rows = database.prepare(`
     SELECT *
     FROM task_memories
-    WHERE workspace = ? AND project_id = ? AND storage_tier = ?
+    WHERE ${selector.sql} AND storage_tier = ?
     ORDER BY updated_at ASC, created_at ASC, id ASC
-  `).all(normalized.workspace, normalized.projectId, tier) as Array<Record<string, unknown>>
+  `).all(...selector.params, tier) as Array<Record<string, unknown>>
   return rows.map(rowToTaskMemoryEntry)
 }
 
 export function replaceTaskMemoriesByTier(scope: MemoryScope, items: TaskMemoryEntry[], tier: MemoryTier): void {
   const database = ensureDb()
-  const normalized = normalizeScope(scope)
-  const tx = database.transaction((rows: TaskMemoryEntry[]) => {
+  const selector = buildScopeWhere(scope)
+  runInTransaction(database, () => {
     database.prepare(`
       DELETE FROM task_memories
-      WHERE workspace = ? AND project_id = ? AND storage_tier = ?
-    `).run(normalized.workspace, normalized.projectId, tier)
-    upsertTaskMemoryRows(scope, rows, tier)
+      WHERE ${selector.sql} AND storage_tier = ?
+    `).run(...selector.params, tier)
+    upsertTaskMemoryRows(scope, items, tier)
   })
-  tx(items)
 }
 
 export function importTaskMemoriesByTier(scope: MemoryScope, items: TaskMemoryEntry[], tier: MemoryTier): void {
@@ -396,13 +491,14 @@ function upsertSnapshotRows(scope: MemoryScope, items: MemorySnapshotEntry[]): v
   const normalized = normalizeScope(scope)
   const stmt = database.prepare(`
     INSERT INTO memory_snapshots (
-      id, workspace, project_id, summary,
+      id, workspace, project_id, scope_key, summary,
       source_message_count, usage_total_tokens, max_tokens,
       created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       workspace=excluded.workspace,
       project_id=excluded.project_id,
+      scope_key=excluded.scope_key,
       summary=excluded.summary,
       source_message_count=excluded.source_message_count,
       usage_total_tokens=excluded.usage_total_tokens,
@@ -410,58 +506,55 @@ function upsertSnapshotRows(scope: MemoryScope, items: MemorySnapshotEntry[]): v
       created_at=excluded.created_at,
       updated_at=excluded.updated_at
   `)
-  const tx = database.transaction((rows: MemorySnapshotEntry[]) => {
-    for (const item of rows) {
-      stmt.run(
-        item.id,
-        normalized.workspace,
-        normalized.projectId,
-        String(item.summary || ''),
-        Number(item.sourceMessageCount || 0),
-        Number.isFinite(Number(item.usageTotalTokens)) ? Number(item.usageTotalTokens) : null,
-        Number.isFinite(Number(item.maxTokens)) ? Number(item.maxTokens) : null,
-        String(item.createdAt || ''),
-        String(item.updatedAt || ''),
-      )
-    }
-  })
-  tx(items)
+  for (const item of items) {
+    stmt.run(
+      item.id,
+      normalized.workspace,
+      normalized.projectId,
+      normalized.scopeKey,
+      String(item.summary || ''),
+      Number(item.sourceMessageCount || 0),
+      Number.isFinite(Number(item.usageTotalTokens)) ? Number(item.usageTotalTokens) : null,
+      Number.isFinite(Number(item.maxTokens)) ? Number(item.maxTokens) : null,
+      String(item.createdAt || ''),
+      String(item.updatedAt || ''),
+    )
+  }
 }
 
 export function hasAnyMemorySnapshots(scope: MemoryScope): boolean {
   const database = ensureDb()
-  const normalized = normalizeScope(scope)
+  const selector = buildScopeWhere(scope)
   const row = database.prepare(`
     SELECT COUNT(1) AS count
     FROM memory_snapshots
-    WHERE workspace = ? AND project_id = ?
-  `).get(normalized.workspace, normalized.projectId) as Record<string, unknown> | undefined
+    WHERE ${selector.sql}
+  `).get(...selector.params) as Record<string, unknown> | undefined
   return Number(row?.count || 0) > 0
 }
 
 export function listMemorySnapshotsForScope(scope: MemoryScope): MemorySnapshotEntry[] {
   const database = ensureDb()
-  const normalized = normalizeScope(scope)
+  const selector = buildScopeWhere(scope)
   const rows = database.prepare(`
     SELECT *
     FROM memory_snapshots
-    WHERE workspace = ? AND project_id = ?
+    WHERE ${selector.sql}
     ORDER BY updated_at ASC, created_at ASC, id ASC
-  `).all(normalized.workspace, normalized.projectId) as Array<Record<string, unknown>>
+  `).all(...selector.params) as Array<Record<string, unknown>>
   return rows.map(rowToSnapshotEntry)
 }
 
 export function replaceMemorySnapshots(scope: MemoryScope, items: MemorySnapshotEntry[]): void {
   const database = ensureDb()
-  const normalized = normalizeScope(scope)
-  const tx = database.transaction((rows: MemorySnapshotEntry[]) => {
+  const selector = buildScopeWhere(scope)
+  runInTransaction(database, () => {
     database.prepare(`
       DELETE FROM memory_snapshots
-      WHERE workspace = ? AND project_id = ?
-    `).run(normalized.workspace, normalized.projectId)
-    upsertSnapshotRows(scope, rows)
+      WHERE ${selector.sql}
+    `).run(...selector.params)
+    upsertSnapshotRows(scope, items)
   })
-  tx(items)
 }
 
 export function importMemorySnapshots(scope: MemoryScope, items: MemorySnapshotEntry[]): void {
@@ -484,12 +577,13 @@ export function insertMemoryMaintainRun(scope: MemoryScope, input: {
   const normalized = normalizeScope(scope)
   database.prepare(`
     INSERT INTO memory_maintain_runs (
-      workspace, project_id, usage_total_tokens, max_tokens, pressure_ratio,
+      workspace, project_id, scope_key, usage_total_tokens, max_tokens, pressure_ratio,
       total_candidates, merged_count, dropped_count, reason, decision_json, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     normalized.workspace,
     normalized.projectId,
+    normalized.scopeKey,
     Number.isFinite(Number(input.usageTotalTokens)) ? Number(input.usageTotalTokens) : null,
     Number.isFinite(Number(input.maxTokens)) ? Number(input.maxTokens) : null,
     Number.isFinite(Number(input.pressureRatio)) ? Number(input.pressureRatio) : null,
@@ -504,12 +598,12 @@ export function insertMemoryMaintainRun(scope: MemoryScope, input: {
 
 export function countMemoryMaintainRuns(scope: MemoryScope): number {
   const database = ensureDb()
-  const normalized = normalizeScope(scope)
+  const selector = buildScopeWhere(scope)
   const row = database.prepare(`
     SELECT COUNT(1) AS count
     FROM memory_maintain_runs
-    WHERE workspace = ? AND project_id = ?
-  `).get(normalized.workspace, normalized.projectId) as Record<string, unknown> | undefined
+    WHERE ${selector.sql}
+  `).get(...selector.params) as Record<string, unknown> | undefined
   return Number(row?.count || 0)
 }
 
@@ -526,6 +620,16 @@ export function getMemoryDbInfo(): { dbPath: string; dbSizeBytes: number } {
 
 export function getMemoryDbPath(): string {
   return MEMORY_DB_PATH
+}
+
+export function isMemoryDbEmpty(): boolean {
+  const database = ensureDb()
+  const tables = ['task_memories', 'project_notes', 'memory_snapshots']
+  for (const tableName of tables) {
+    const row = database.prepare(`SELECT COUNT(1) AS count FROM ${tableName}`).get() as Record<string, unknown> | undefined
+    if (Number(row?.count || 0) > 0) return false
+  }
+  return true
 }
 
 export function initMemoryDb(): void {

@@ -17,7 +17,7 @@ import type { ToolCall, ToolResult, RiskInfo } from './tools'
 import { log } from './logger'
 import { gitCommit, gitEnsureRepo } from './git'
 import { refreshSkills, buildActiveSkillsCatalogBlock, getActiveSkillEnv, applySkillEnvironment } from './skills'
-import { buildBackgroundContextConversationMessages, inferIntentFromBackground, maintainTaskMemoriesByAI, recordMemorySnapshot, recordTaskLog, stripInternalContextTags } from './notes'
+import { buildBackgroundContextConversationMessages, inferIntentFromBackground, maintainTaskMemoriesByAI, recordMemorySnapshot, recordTaskLog, stripInternalContextTags, stripPseudoToolCallArtifacts } from './notes'
 import type { RecallMeta } from './notes'
 import { buildAgentRequestMessages, buildCurrentTaskCompressionStateCard, validateCompletionClaim } from './context-builder'
 import type { ContextBuildState } from './context-builder'
@@ -34,6 +34,8 @@ export type AgentEvent =
   | { type: 'text'; content: string }
   /** AI 决定调用工具 */
   | { type: 'tool_calls'; toolCalls: ToolCall[] }
+  /** 系统级提示（如上下文自动压缩） */
+  | { type: 'system_notice'; title: string; message?: string }
   /** 风险操作需要用户确认 */
   | { type: 'confirm'; confirmId: string; toolCalls: ToolCall[]; risks: RiskInfo[] }
   /** 工具执行结果 */
@@ -147,8 +149,20 @@ const USER_VISIBLE_SOURCE_PHRASE_RULES: Array<{ pattern: RegExp; replacement: st
   { pattern: /from (?:the )?background context/gi, replacement: 'from current context' },
 ]
 
+const PSEUDO_TOOL_CALL_TEXT_PATTERNS = [
+  /\[TOOL_CALL[^\]]*\]/i,
+  /<invoke\b/i,
+  /<minimax:tool_call\b/i,
+  /<parameter\b/i,
+]
+
+function containsPseudoToolCallSyntax(input: string): boolean {
+  const text = String(input ?? '')
+  return PSEUDO_TOOL_CALL_TEXT_PATTERNS.some((pattern) => pattern.test(text))
+}
+
 function sanitizeUserFacingText(input: string): string {
-  let output = stripInternalContextTags(String(input ?? ''))
+  let output = stripPseudoToolCallArtifacts(stripInternalContextTags(String(input ?? '')))
   for (const rule of USER_VISIBLE_SOURCE_PHRASE_RULES) {
     output = output.replace(rule.pattern, rule.replacement)
   }
@@ -356,6 +370,7 @@ async function compressAgentContext(
   usageTotalTokensHint?: number,
   signal?: AbortSignal,
   logScope?: string,
+  onEvent?: (event: AgentEvent) => void,
   onRecallMeta?: (meta: RecallMeta) => void,
 ): Promise<{ compressed: number; nextCurrentTaskStartIndex: number }> {
   const threshold = Math.floor(tokenBudget * 0.80) // 留 20% 给回复
@@ -431,6 +446,12 @@ async function compressAgentContext(
     afterTokens: undefined,
     budget: tokenBudget,
   }, logScope)
+
+  onEvent?.({
+    type: 'system_notice',
+    title: '背景信息已自动压缩',
+    message: `上下文已达到阈值，系统已保留系统消息、记忆回放和当前用户问题，并将本轮后续执行轨迹压缩为当前任务总结后继续执行。已压缩 ${compressCount} 条消息。`,
+  })
 
   return { compressed: compressCount, nextCurrentTaskStartIndex: safeTaskAnchorIndex }
 }
@@ -666,7 +687,7 @@ export async function runAgent(
     finalSummary: string,
     outcome: 'success' | 'aborted' | 'error' = 'success',
   ): Promise<void> {
-    if (!workspace || !workspace.trim()) return
+    if ((!workspace || !workspace.trim()) && (!projectId || !projectId.trim())) return
     const decision = shouldPersistTaskCoreLog()
     if (!decision.persist) {
       log('TASK_CORE_NOTE_SKIPPED', {
@@ -785,9 +806,13 @@ export async function runAgent(
   let contextRetries = 0
   let lastAssistantText = ''
   let completionRejectCount = 0
+  let pseudoToolCallRejectCount = 0
+  let enforceStandardToolCall = false
 
   function cleanupAssistantText(text: string): string {
-    return stripInternalContextTags(String(text ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '')).trim()
+    return stripPseudoToolCallArtifacts(
+      stripInternalContextTags(String(text ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '')),
+    ).trim()
   }
 
   async function persistTaskCoreLogWithOutcome(
@@ -869,6 +894,7 @@ export async function runAgent(
         lastUsageTotalTokens,
         signal,
         logScope,
+        onEvent,
         (meta) => { latestRecallMeta = meta },
       )
       currentTaskStartIndex = compressed.nextCurrentTaskStartIndex
@@ -895,6 +921,7 @@ export async function runAgent(
       touchedIdentifiers,
       failures: failureLogs,
       currentPlan,
+      enforceStandardToolCall,
     })
 
     log('AGENT', { round, messageCount: requestMessages.length }, logScope)
@@ -904,6 +931,7 @@ export async function runAgent(
     let rawTextContent = ''
     let emittedSanitizedText = ''
     let toolCalls: ToolCall[] = []
+    let invalidToolCallNames: string[] = []
 
     try {
       for await (const event of requestStreamWithTools(
@@ -935,6 +963,8 @@ export async function runAgent(
             lastUsageTotalTokens = event.usage.totalTokens
           }
           onEvent?.({ type: 'usage', usage: event.usage })
+        } else if (event.type === 'invalid_tool_calls') {
+          invalidToolCallNames = [...new Set([...invalidToolCallNames, ...event.names])]
         } else if (event.type === 'tool_calls') {
           toolCalls = event.toolCalls
         }
@@ -983,6 +1013,7 @@ export async function runAgent(
           lastUsageTotalTokens,
           signal,
           logScope,
+          onEvent,
           (meta) => { latestRecallMeta = meta },
         )
         currentTaskStartIndex = dropped.nextCurrentTaskStartIndex
@@ -1000,6 +1031,28 @@ export async function runAgent(
 
     // 如果没有 tool_calls → 纯文本回复，循环结束
     if (toolCalls.length === 0) {
+      if (invalidToolCallNames.length > 0 || containsPseudoToolCallSyntax(rawTextContent)) {
+        pseudoToolCallRejectCount++
+        enforceStandardToolCall = true
+        log('AGENT_STANDARD_TOOL_CALL_REJECTED', {
+          round,
+          rejectCount: pseudoToolCallRejectCount,
+          invalidToolCallNames,
+          rawPreview: rawTextContent.slice(0, 800),
+        }, logScope)
+        if (pseudoToolCallRejectCount >= 6) {
+          const reason = invalidToolCallNames.length > 0
+            ? `非标准工具调用连续出现已达上限(${pseudoToolCallRejectCount})，非法工具名: ${invalidToolCallNames.join(', ')}`
+            : `非标准工具调用连续出现已达上限(${pseudoToolCallRejectCount})`
+          await persistTaskCoreLogWithOutcome(textContent || lastAssistantText, 'error', reason)
+          onEvent?.({ type: 'error', message: reason })
+          return
+        }
+        continue
+      }
+      pseudoToolCallRejectCount = 0
+      enforceStandardToolCall = false
+
       const finalPlan = currentPlan
       const unfinishedPlanSteps = finalPlan
         ? finalPlan.steps
@@ -1062,6 +1115,8 @@ export async function runAgent(
     }
 
     // ── 有 tool_calls：检查 propose_plan / 风险评估 → 可能需要确认 → 执行工具 ──
+    pseudoToolCallRejectCount = 0
+    enforceStandardToolCall = false
 
     // 追加 assistant 消息（含 tool_calls）
     workingMessages.push({

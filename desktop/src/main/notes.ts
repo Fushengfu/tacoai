@@ -36,6 +36,7 @@ import {
   listMemorySnapshotsForScope,
   replaceMemorySnapshots,
   importMemorySnapshots,
+  isMemoryDbEmpty,
   insertMemoryMaintainRun,
   countMemoryMaintainRuns,
   getMemoryDbInfo,
@@ -305,6 +306,32 @@ function normalizeIso(input: unknown): string {
   return ''
 }
 
+const PSEUDO_TOOL_CALL_BLOCK_PATTERNS = [
+  /<minimax:tool_call\b[^>]*>[\s\S]*?<\/minimax:tool_call>/gi,
+  /<invoke\b[^>]*>[\s\S]*?<\/invoke>/gi,
+]
+
+const PSEUDO_TOOL_CALL_INLINE_PATTERNS = [
+  /\[(?:\/)?TOOL_CALL[^\]]*\]/gi,
+  /<\/?minimax:tool_call\b[^>]*>/gi,
+  /<\/?invoke\b[^>]*>/gi,
+  /<\/?parameter\b[^>]*>/gi,
+]
+
+export function stripPseudoToolCallArtifacts(input: string): string {
+  let output = String(input ?? '')
+  for (const pattern of PSEUDO_TOOL_CALL_BLOCK_PATTERNS) {
+    output = output.replace(pattern, '\n')
+  }
+  for (const pattern of PSEUDO_TOOL_CALL_INLINE_PATTERNS) {
+    output = output.replace(pattern, ' ')
+  }
+  return output
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 function stripMemoryMetaLines(text: string): string {
   const lines = String(text ?? '').replace(/\r/g, '').split('\n')
   const out: string[] = []
@@ -397,10 +424,114 @@ function isSoftDeletedMemory(item: TaskMemoryEntry): boolean {
 const noteScopeReadyByScope = new Set<string>()
 const taskMemoryScopeReadyByScope = new Set<string>()
 const snapshotScopeReadyByScope = new Set<string>()
+let legacyMemoryDbBootstrapDone = false
+let legacyMemoryDbBootstrapPromise: Promise<void> | null = null
+
+function legacyScopeKeyFromFilePath(filePath: string): string {
+  return path.basename(filePath, path.extname(filePath))
+}
+
+function legacyDbScope(scopeKey: string): { workspace: string; scopeKey: string } {
+  return {
+    workspace: '',
+    scopeKey,
+  }
+}
+
+async function listLegacyScopeKeys(dirPath: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(dirPath, { withFileTypes: true })
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      .map((entry) => path.join(dirPath, entry.name))
+      .map(legacyScopeKeyFromFilePath)
+  } catch {
+    return []
+  }
+}
+
+async function ensureLegacyMemoryDbBootstrap(): Promise<void> {
+  if (legacyMemoryDbBootstrapDone) return
+  if (legacyMemoryDbBootstrapPromise) {
+    await legacyMemoryDbBootstrapPromise
+    return
+  }
+
+  legacyMemoryDbBootstrapPromise = (async () => {
+    initMemoryDb()
+    if (!isMemoryDbEmpty()) {
+      legacyMemoryDbBootstrapDone = true
+      return
+    }
+
+    const scopeKeys = new Set<string>([
+      ...(await listLegacyScopeKeys(NOTES_DIR)),
+      ...(await listLegacyScopeKeys(MEMORY_DIR)),
+      ...(await listLegacyScopeKeys(MEMORY_ARCHIVE_DIR)),
+      ...(await listLegacyScopeKeys(SNAPSHOT_DIR)),
+    ])
+
+    if (scopeKeys.size <= 0) {
+      legacyMemoryDbBootstrapDone = true
+      return
+    }
+
+    let importedNoteCount = 0
+    let importedActiveCount = 0
+    let importedArchiveCount = 0
+    let importedSnapshotCount = 0
+
+    for (const scopeKey of Array.from(scopeKeys).sort()) {
+      const scopeRef = legacyDbScope(scopeKey)
+      const [legacyNotes, legacyActive, legacyArchive, legacySnapshots] = await Promise.all([
+        readJsonArray<ProjectNote>(path.join(NOTES_DIR, `${scopeKey}.json`)),
+        readJsonArray<TaskMemoryEntry>(path.join(MEMORY_DIR, `${scopeKey}.json`)),
+        readJsonArray<TaskMemoryEntry>(path.join(MEMORY_ARCHIVE_DIR, `${scopeKey}.json`)),
+        readJsonArray<MemorySnapshotEntry>(path.join(SNAPSHOT_DIR, `${scopeKey}.json`)),
+      ])
+
+      const normalizedNotes = legacyNotes.map((item, index) => normalizeProjectNoteEntry(item, index))
+      const normalizedActive = legacyActive.map((item, index) => normalizeTaskMemoryEntry(item, index))
+      const normalizedArchive = legacyArchive.map((item, index) => normalizeTaskMemoryEntry(item, index))
+      const normalizedSnapshots = legacySnapshots.map((item, index) => normalizeMemorySnapshotEntry(item, index))
+
+      if (normalizedNotes.length > 0) {
+        importProjectNotes(scopeRef, normalizedNotes)
+        importedNoteCount += normalizedNotes.length
+      }
+      if (normalizedActive.length > 0) {
+        importTaskMemoriesByTier(scopeRef, normalizedActive, 'active')
+        importedActiveCount += normalizedActive.length
+      }
+      if (normalizedArchive.length > 0) {
+        importTaskMemoriesByTier(scopeRef, normalizedArchive, 'archive')
+        importedArchiveCount += normalizedArchive.length
+      }
+      if (normalizedSnapshots.length > 0) {
+        importMemorySnapshots(scopeRef, normalizedSnapshots)
+        importedSnapshotCount += normalizedSnapshots.length
+      }
+    }
+
+    log('LEGACY_MEMORY_DB_BOOTSTRAP_DONE', {
+      scopeCount: scopeKeys.size,
+      importedNoteCount,
+      importedActiveCount,
+      importedArchiveCount,
+      importedSnapshotCount,
+    })
+    legacyMemoryDbBootstrapDone = true
+  })().finally(() => {
+    legacyMemoryDbBootstrapPromise = null
+  })
+
+  await legacyMemoryDbBootstrapPromise
+}
 
 async function ensureNoteScopeReady(workspace: string, projectId?: string): Promise<void> {
   const scope = resolveScope(workspace, projectId)
   if (noteScopeReadyByScope.has(scope)) return
+  await ensureLegacyMemoryDbBootstrap()
   initMemoryDb()
 
   const primaryFile = notesFilePath(workspace, projectId)
@@ -427,6 +558,7 @@ async function ensureNoteScopeReady(workspace: string, projectId?: string): Prom
 async function ensureTaskMemoryScopeReady(workspace: string, projectId?: string): Promise<void> {
   const scope = resolveScope(workspace, projectId)
   if (taskMemoryScopeReadyByScope.has(scope)) return
+  await ensureLegacyMemoryDbBootstrap()
   initMemoryDb()
 
   const primaryFile = memoryFilePath(workspace, projectId)
@@ -461,6 +593,7 @@ async function ensureTaskMemoryScopeReady(workspace: string, projectId?: string)
 async function ensureSnapshotScopeReady(workspace: string, projectId?: string): Promise<void> {
   const scope = resolveScope(workspace, projectId)
   if (snapshotScopeReadyByScope.has(scope)) return
+  await ensureLegacyMemoryDbBootstrap()
   initMemoryDb()
 
   const primaryFile = snapshotFilePath(workspace, projectId)
@@ -766,7 +899,9 @@ function compactJoin(items: string[], limit: number): string {
 }
 
 function extractCoreSummary(summary: string): string {
-  const raw = stripInternalContextTags(String(summary ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '')).trim()
+  const raw = stripPseudoToolCallArtifacts(
+    stripInternalContextTags(String(summary ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '')),
+  ).trim()
   if (!raw) return ''
 
   const marker = '处理总结:'
@@ -785,7 +920,7 @@ function extractCoreSummary(summary: string): string {
 }
 
 function buildAssistantResultBody(summary: string): string {
-  const cleaned = stripInternalContextTags(String(summary ?? ''))
+  const cleaned = stripPseudoToolCallArtifacts(stripInternalContextTags(String(summary ?? '')))
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
     .replace(/\r/g, '')
     .trim()
@@ -827,13 +962,18 @@ function buildCompactMemorySummary(input: TaskLogInput): string {
 
 function normalizeHistoricalField(input: string, max: number): string {
   return shortText(
-    stripControlChars(stripInternalContextTags(String(input ?? '')).replace(/\r/g, '').replace(/\n+/g, '；').trim()),
+    stripControlChars(
+      stripPseudoToolCallArtifacts(stripInternalContextTags(String(input ?? '')))
+        .replace(/\r/g, '')
+        .replace(/\n+/g, '；')
+        .trim(),
+    ),
     max,
   )
 }
 
 function extractHistoricalFollowUpHint(summary: string): string {
-  const cleaned = stripInternalContextTags(String(summary ?? ''))
+  const cleaned = stripPseudoToolCallArtifacts(stripInternalContextTags(String(summary ?? '')))
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
     .replace(/\r/g, '')
     .trim()

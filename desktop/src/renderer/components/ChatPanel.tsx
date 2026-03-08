@@ -640,6 +640,9 @@ export function ChatPanel({
 
   /** 步骤折叠标题（多个工具时合并显示） */
   function stepHeaderSummary(step: AgentStep): { label: string; detail: string; filePath?: string } {
+    if (step.systemTitle) {
+      return { label: step.systemTitle, detail: step.systemDetail || '' }
+    }
     if (step.toolCalls.length === 0) return { label: '思考中', detail: '...' }
     if (step.toolCalls.length === 1) {
       const tc = step.toolCalls[0]

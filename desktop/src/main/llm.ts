@@ -16,6 +16,7 @@ export type ChatMessage = {
 export type StreamEvent =
   | { type: 'text'; content: string }
   | { type: 'tool_calls'; toolCalls: ToolCall[] }
+  | { type: 'invalid_tool_calls'; names: string[] }
   | { type: 'usage'; usage: TokenUsage }
 
 export type TokenUsage = {
@@ -84,6 +85,47 @@ function getProviderConfig(
 export type RequestOptions = {
   tools?: ToolDefinition[]
   toolChoice?: 'auto' | 'required'
+}
+
+function normalizeToolName(name: string): string {
+  return String(name || '').trim().toLowerCase()
+}
+
+function buildAllowedToolNameSet(options?: RequestOptions): Set<string> {
+  const out = new Set<string>()
+  for (const tool of options?.tools ?? []) {
+    const name = normalizeToolName(tool?.function?.name || '')
+    if (name) out.add(name)
+  }
+  return out
+}
+
+function resolveToolCallsFromMap(
+  toolCallsMap: Map<number, { id: string; type: 'function'; function: { name: string; arguments: string } }>,
+  allowedToolNames: Set<string>,
+): { toolCalls: ToolCall[]; invalidNames: string[] } {
+  const invalidNames: string[] = []
+  const toolCalls: ToolCall[] = []
+  for (const raw of Array.from(toolCallsMap.values())) {
+    const normalizedName = normalizeToolName(raw.function?.name || '')
+    if (!normalizedName) continue
+    if (allowedToolNames.size > 0 && !allowedToolNames.has(normalizedName)) {
+      invalidNames.push(normalizedName)
+      continue
+    }
+    toolCalls.push({
+      id: String(raw.id || ''),
+      type: 'function',
+      function: {
+        name: normalizedName,
+        arguments: String(raw.function?.arguments || ''),
+      },
+    })
+  }
+  return {
+    toolCalls,
+    invalidNames: [...new Set(invalidNames)],
+  }
 }
 
 function normalizeMessages(messages: ChatMessage[]): ChatMessage[] {
@@ -583,6 +625,7 @@ export async function* requestStreamWithTools(
   let accumulated = ''
   let lastTextChunk = ''
   let repeatedTextChunkCount = 0
+  const allowedToolNames = buildAllowedToolNameSet(options)
   // 累积 tool_calls（流式 delta 中分片到达）
   const toolCallsMap = new Map<number, { id: string; type: 'function'; function: { name: string; arguments: string } }>()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -608,9 +651,15 @@ export async function* requestStreamWithTools(
           // 如果有累积的 tool_calls，yield 出去
           let mergedToolCalls: ToolCall[] | undefined
           if (toolCallsMap.size > 0) {
-            const toolCalls = Array.from(toolCallsMap.values()) as ToolCall[]
-            mergedToolCalls = toolCalls
-            yield { type: 'tool_calls', toolCalls }
+            const resolved = resolveToolCallsFromMap(toolCallsMap, allowedToolNames)
+            if (resolved.invalidNames.length > 0) {
+              log('STREAM_INVALID_TOOL_CALLS', { names: resolved.invalidNames }, logScope)
+              yield { type: 'invalid_tool_calls', names: resolved.invalidNames }
+            }
+            if (resolved.toolCalls.length > 0) {
+              mergedToolCalls = resolved.toolCalls
+              yield { type: 'tool_calls', toolCalls: resolved.toolCalls }
+            }
           }
           logMergedStreamResponse({
             url,
@@ -650,8 +699,14 @@ export async function* requestStreamWithTools(
                   sample: content.slice(0, 120),
                 }, logScope)
                 if (toolCallsMap.size > 0) {
-                  const toolCalls = Array.from(toolCallsMap.values()) as ToolCall[]
-                  yield { type: 'tool_calls', toolCalls }
+                  const resolved = resolveToolCallsFromMap(toolCallsMap, allowedToolNames)
+                  if (resolved.invalidNames.length > 0) {
+                    log('STREAM_INVALID_TOOL_CALLS', { names: resolved.invalidNames }, logScope)
+                    yield { type: 'invalid_tool_calls', names: resolved.invalidNames }
+                  }
+                  if (resolved.toolCalls.length > 0) {
+                    yield { type: 'tool_calls', toolCalls: resolved.toolCalls }
+                  }
                 }
                 logMergedStreamResponse({
                   url,
@@ -661,7 +716,7 @@ export async function* requestStreamWithTools(
                   lastChunk,
                   content: accumulated,
                   usage: mergedUsageRaw,
-                  toolCalls: Array.from(toolCallsMap.values()) as ToolCall[],
+                  toolCalls: resolveToolCallsFromMap(toolCallsMap, allowedToolNames).toolCalls,
                   logScope,
                 })
                 return
@@ -704,9 +759,15 @@ export async function* requestStreamWithTools(
     // 如果有累积的 tool_calls
     let mergedToolCalls: ToolCall[] | undefined
     if (toolCallsMap.size > 0) {
-      const toolCalls = Array.from(toolCallsMap.values()) as ToolCall[]
-      mergedToolCalls = toolCalls
-      yield { type: 'tool_calls', toolCalls }
+      const resolved = resolveToolCallsFromMap(toolCallsMap, allowedToolNames)
+      if (resolved.invalidNames.length > 0) {
+        log('STREAM_INVALID_TOOL_CALLS', { names: resolved.invalidNames }, logScope)
+        yield { type: 'invalid_tool_calls', names: resolved.invalidNames }
+      }
+      if (resolved.toolCalls.length > 0) {
+        mergedToolCalls = resolved.toolCalls
+        yield { type: 'tool_calls', toolCalls: resolved.toolCalls }
+      }
     }
     logMergedStreamResponse({
       url,
@@ -729,7 +790,7 @@ export async function* requestStreamWithTools(
         lastChunk,
         accumulated,
         mergedUsageRaw,
-        Array.from(toolCallsMap.values()) as ToolCall[],
+        resolveToolCallsFromMap(toolCallsMap, allowedToolNames).toolCalls,
       ),
       error: String(err),
     }, logScope)

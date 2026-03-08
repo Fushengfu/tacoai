@@ -32,7 +32,7 @@ import { requestChatCompletion, requestChatCompletionStream } from './llm'
 import { runAgent, resolveConfirm } from './agent'
 import { gitLog, gitCommit, gitRollback, gitCommitFiles, gitStatus, gitFileChange, gitStageFiles, gitStageAll } from './git'
 import { initSkills, listSkills, installSkill, uninstallSkill, toggleSkill, refreshSkills, buildActiveSkillsCatalogBlock, getActiveSkillEnv, applySkillEnvironment } from './skills'
-import { inferIntentFromBackground, listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, maintainTaskMemoriesByAI, recordTaskLog, stripInternalContextTags, getMemoryScopeStats, exportMemoryScope } from './notes'
+import { inferIntentFromBackground, listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, maintainTaskMemoriesByAI, recordTaskLog, stripInternalContextTags, stripPseudoToolCallArtifacts, getMemoryScopeStats, exportMemoryScope } from './notes'
 import { initMcp, listMcpServers, saveMcpServer, removeMcpServer, toggleMcpServer, saveScreenshot } from './mcp'
 import { getGuiPlusConfig, saveGuiPlusConfig } from './gui-plus'
 import { getPromptConfig, savePromptConfig } from './prompt-config'
@@ -54,7 +54,9 @@ function buildLogScope(projectId?: string, workspace?: string): string | undefin
 }
 
 function cleanupAssistantMemoryText(text: string): string {
-  return stripInternalContextTags(String(text ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '')).trim()
+  return stripPseudoToolCallArtifacts(
+    stripInternalContextTags(String(text ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '')),
+  ).trim()
 }
 
 const USER_ASSETS_BLOCK_REGEX = /\s*\[USER_ASSETS\][\s\S]*?\[\/USER_ASSETS\]\s*/gi
@@ -115,7 +117,7 @@ const USER_VISIBLE_SOURCE_PHRASE_RULES: Array<{ pattern: RegExp; replacement: st
 ]
 
 function sanitizeUserFacingText(input: string): string {
-  let output = stripInternalContextTags(String(input ?? ''))
+  let output = stripPseudoToolCallArtifacts(stripInternalContextTags(String(input ?? '')))
   for (const rule of USER_VISIBLE_SOURCE_PHRASE_RULES) {
     output = output.replace(rule.pattern, rule.replacement)
   }

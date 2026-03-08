@@ -77,6 +77,10 @@ export type RiskInfo = {
 export type AgentStep = {
   /** 步骤序号（从 1 开始） */
   round: number
+  /** 系统提示型步骤标题 */
+  systemTitle?: string
+  /** 系统提示型步骤简述 */
+  systemDetail?: string
   /** AI 在调用工具前的思考/推理文本（可为空） */
   thinking: string
   /** 该步骤的工具调用列表 */
