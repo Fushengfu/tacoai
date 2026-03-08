@@ -16,6 +16,7 @@ export type ContextBuildState = {
   touchedIdentifiers: Set<string>
   failures: string[]
   enforceStandardToolCall?: boolean
+  completionValidationHint?: string
   currentPlan?: {
     summary: string
     reasoning?: string
@@ -134,6 +135,9 @@ function buildRuntimeStateCard(state: ContextBuildState): string {
       lines.push(`  - [${item.index + 1}] ${item.step.text} (${item.step.status})${item.step.note ? ` | ${item.step.note}` : ''}`)
     }
     lines.push('- 计划续跑要求: 若继续执行当前计划，开始步骤前调用 update_plan_progress(stepIndex, "in_progress")，完成后调用 update_plan_progress(stepIndex, "done"|"failed")。')
+  }
+  if (state.completionValidationHint) {
+    lines.push(`- 完成校验提醒: 上一轮完成声明未通过（原因: ${state.completionValidationHint}）；如任务仍需执行，必须继续调用工具并给出可验证证据。`)
   }
   if (state.enforceStandardToolCall) {
     lines.push('- 标准工具调用要求: 上一轮出现了非标准工具调用迹象。若需要执行工具，必须通过标准 tool_calls 触发，禁止在普通文本中拼接伪调用。')

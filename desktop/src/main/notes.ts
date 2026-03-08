@@ -1590,6 +1590,10 @@ const INTERNAL_CONTEXT_TAG_NAME_RULES: Array<{ pattern: RegExp; replacement: str
 export function stripInternalContextTags(input: string): string {
   let output = String(input ?? '')
 
+  output = output.replace(/<!--TACO_RUNTIME_TOOL_PROMPT_START-->[\s\S]*?<!--TACO_RUNTIME_TOOL_PROMPT_END-->/gi, '')
+  output = output.replace(/<!--TACO_RUNTIME_TOOL_PROMPT_START-->[\s\S]*$/gi, '')
+  output = output.replace(/<!--TACO_RUNTIME_TOOL_PROMPT_END-->/gi, '')
+
   for (const tag of INTERNAL_CONTEXT_ATTR_BLOCK_TAGS) {
     output = output.replace(new RegExp(`\\[${tag}[^\\]]*\\][\\s\\S]*?\\[\\/${tag}\\]`, 'gi'), '')
   }

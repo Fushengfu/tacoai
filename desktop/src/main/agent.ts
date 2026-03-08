@@ -161,8 +161,25 @@ function containsPseudoToolCallSyntax(input: string): boolean {
   return PSEUDO_TOOL_CALL_TEXT_PATTERNS.some((pattern) => pattern.test(text))
 }
 
+function stripReasoningArtifacts(input: string): string {
+  return String(input ?? '')
+    .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '\n')
+    .replace(/<reflection\b[^>]*>[\s\S]*?<\/reflection>/gi, '\n')
+    .replace(/<tool_code\b[^>]*>[\s\S]*?<\/tool_code>/gi, '\n')
+    .replace(/<\/?(?:think|reflection|tool_code)\b[^>]*>/gi, ' ')
+}
+
+function sanitizeContextArtifacts(input: string): string {
+  let output = stripReasoningArtifacts(stripPseudoToolCallArtifacts(stripInternalContextTags(String(input ?? ''))))
+  output = output
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  return output
+}
+
 function sanitizeUserFacingText(input: string): string {
-  let output = stripPseudoToolCallArtifacts(stripInternalContextTags(String(input ?? '')))
+  let output = sanitizeContextArtifacts(input)
   for (const rule of USER_VISIBLE_SOURCE_PHRASE_RULES) {
     output = output.replace(rule.pattern, rule.replacement)
   }
@@ -310,11 +327,14 @@ async function summarizeCurrentTaskProgress(
 ): Promise<string> {
   const lines: string[] = []
   for (const m of messagesToSummarize) {
+    const sanitizedContent = sanitizeContextArtifacts(String(m.content ?? ''))
+    if (!sanitizedContent) continue
     const role = m.role === 'assistant' ? 'AI助手'
       : m.role === 'user' ? '用户'
       : m.role === 'tool' ? '工具结果'
       : '系统'
-    lines.push(`[${role}] ${m.content}`)
+    const compacted = m.role === 'system' ? compactLine(sanitizedContent, 360) : sanitizedContent
+    lines.push(`[${role}] ${compacted}`)
   }
 
   const prompt: ChatMessage[] = [
@@ -503,25 +523,27 @@ export async function runAgent(
   const userAssetsBlock = extractUserAssetsBlock(lastUserGoal)
   let currentTaskStartIndex = Math.max(1, workingMessages.map((m) => m.role).lastIndexOf('user'))
   let latestRecallMeta: Pick<RecallMeta, 'intentSource' | 'intentType' | 'intentSummary' | 'intentGoal'> | null = null
-  const TOOL_PROMPT_BLOCK_START = '[RUNTIME_TOOL_PROMPT]'
-  const TOOL_PROMPT_BLOCK_END = '[/RUNTIME_TOOL_PROMPT]'
+  const TOOL_PROMPT_SENTINEL_START = '<!--TACO_RUNTIME_TOOL_PROMPT_START-->'
+  const TOOL_PROMPT_SENTINEL_END = '<!--TACO_RUNTIME_TOOL_PROMPT_END-->'
+  const TOOL_PROMPT_LEGACY_BLOCK_REGEX = /\[RUNTIME_TOOL_PROMPT\][\s\S]*?\[\/RUNTIME_TOOL_PROMPT\]/g
+  const TOOL_PROMPT_SENTINEL_BLOCK_REGEX = /<!--TACO_RUNTIME_TOOL_PROMPT_START-->[\s\S]*?<!--TACO_RUNTIME_TOOL_PROMPT_END-->/g
 
   function buildRuntimeToolPrompt(allowedToolNames: Iterable<string>): string {
-    return `${TOOL_PROMPT_BLOCK_START}\n${getToolDesignPromptBlock(allowedToolNames)}\n${TOOL_PROMPT_BLOCK_END}`
+    return `${TOOL_PROMPT_SENTINEL_START}\n[RUNTIME_TOOL_PROMPT]\n${getToolDesignPromptBlock(allowedToolNames)}\n[/RUNTIME_TOOL_PROMPT]\n${TOOL_PROMPT_SENTINEL_END}`
   }
 
   function syncRuntimeToolPrompt(allowedToolNames: Iterable<string>) {
     if (!workingMessages.length || workingMessages[0].role !== 'system') return
     const nextBlock = buildRuntimeToolPrompt(allowedToolNames)
     const current = String(workingMessages[0].content ?? '')
-    const startIndex = current.indexOf(TOOL_PROMPT_BLOCK_START)
-    const endIndex = startIndex >= 0 ? current.indexOf(TOOL_PROMPT_BLOCK_END, startIndex) : -1
-    const replaced = startIndex >= 0 && endIndex >= 0
-      ? `${current.slice(0, startIndex)}${nextBlock}${current.slice(endIndex + TOOL_PROMPT_BLOCK_END.length)}`
-      : current
+    const cleanedBase = current
+      .replace(TOOL_PROMPT_SENTINEL_BLOCK_REGEX, '\n')
+      .replace(TOOL_PROMPT_LEGACY_BLOCK_REGEX, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trimEnd()
     workingMessages[0] = {
       ...workingMessages[0],
-      content: replaced === current ? `${current}\n\n${nextBlock}` : replaced,
+      content: cleanedBase ? `${cleanedBase}\n\n${nextBlock}` : nextBlock,
     }
   }
 
@@ -808,6 +830,7 @@ export async function runAgent(
   let completionRejectCount = 0
   let pseudoToolCallRejectCount = 0
   let enforceStandardToolCall = false
+  let completionValidationHint = ''
 
   function cleanupAssistantText(text: string): string {
     return stripPseudoToolCallArtifacts(
@@ -889,6 +912,7 @@ export async function runAgent(
           touchedFiles,
           touchedIdentifiers,
           failures: failureLogs,
+          completionValidationHint,
           currentPlan,
         },
         lastUsageTotalTokens,
@@ -920,6 +944,7 @@ export async function runAgent(
       touchedFiles,
       touchedIdentifiers,
       failures: failureLogs,
+      completionValidationHint,
       currentPlan,
       enforceStandardToolCall,
     })
@@ -1008,6 +1033,7 @@ export async function runAgent(
             touchedFiles,
             touchedIdentifiers,
             failures: failureLogs,
+            completionValidationHint,
             currentPlan,
           },
           lastUsageTotalTokens,
@@ -1031,23 +1057,44 @@ export async function runAgent(
 
     // 如果没有 tool_calls → 纯文本回复，循环结束
     if (toolCalls.length === 0) {
-      if (invalidToolCallNames.length > 0 || containsPseudoToolCallSyntax(rawTextContent)) {
+      const hasPseudoToolCallText = containsPseudoToolCallSyntax(rawTextContent)
+      if (hasPseudoToolCallText) {
         pseudoToolCallRejectCount++
         enforceStandardToolCall = true
         log('AGENT_STANDARD_TOOL_CALL_REJECTED', {
           round,
           rejectCount: pseudoToolCallRejectCount,
+          hasPseudoToolCallText,
           invalidToolCallNames,
           rawPreview: rawTextContent.slice(0, 800),
         }, logScope)
         if (pseudoToolCallRejectCount >= 6) {
-          const reason = invalidToolCallNames.length > 0
-            ? `非标准工具调用连续出现已达上限(${pseudoToolCallRejectCount})，非法工具名: ${invalidToolCallNames.join(', ')}`
-            : `非标准工具调用连续出现已达上限(${pseudoToolCallRejectCount})`
+          const reason = `检测到 [TOOL_CALL] 文本但没有标准 tool_calls，连续出现已达上限(${pseudoToolCallRejectCount})`
           await persistTaskCoreLogWithOutcome(textContent || lastAssistantText, 'error', reason)
           onEvent?.({ type: 'error', message: reason })
           return
         }
+        round-- // 按请求失败处理，不消耗本轮
+        continue
+      }
+
+      if (invalidToolCallNames.length > 0) {
+        pseudoToolCallRejectCount++
+        enforceStandardToolCall = true
+        log('AGENT_STANDARD_TOOL_CALL_REJECTED', {
+          round,
+          rejectCount: pseudoToolCallRejectCount,
+          hasPseudoToolCallText: false,
+          invalidToolCallNames,
+          rawPreview: rawTextContent.slice(0, 800),
+        }, logScope)
+        if (pseudoToolCallRejectCount >= 6) {
+          const reason = `非标准工具调用连续出现已达上限(${pseudoToolCallRejectCount})，非法工具名: ${invalidToolCallNames.join(', ')}`
+          await persistTaskCoreLogWithOutcome(textContent || lastAssistantText, 'error', reason)
+          onEvent?.({ type: 'error', message: reason })
+          return
+        }
+        round-- // 按请求失败处理，不消耗本轮
         continue
       }
       pseudoToolCallRejectCount = 0
@@ -1088,6 +1135,7 @@ export async function runAgent(
       })
       if (!completionValidation.pass) {
         completionRejectCount++
+        completionValidationHint = completionValidation.reason
         log('AGENT_COMPLETION_REJECTED', {
           round,
           rejectCount: completionRejectCount,
@@ -1097,10 +1145,6 @@ export async function runAgent(
           role: 'assistant',
           content: textContent || '',
         })
-        workingMessages.push({
-          role: 'system',
-          content: `完成校验未通过：${completionValidation.reason}。你必须继续执行并给出可验证证据（工具调用结果、文件变更、命令输出或页面状态），禁止直接输出“已完成”。`,
-        })
         if (completionRejectCount >= 10) {
           await persistTaskCoreLogWithOutcome(textContent || lastAssistantText, 'error', `完成校验连续未通过已达上限(${completionRejectCount})`)
           onEvent?.({ type: 'error', message: `完成校验连续未通过已达上限(${completionRejectCount})：${completionValidation.reason}` })
@@ -1109,6 +1153,7 @@ export async function runAgent(
         continue
       }
       completionRejectCount = 0
+      completionValidationHint = ''
 
       await finalizeAndDone(textContent)
       return
@@ -1117,6 +1162,7 @@ export async function runAgent(
     // ── 有 tool_calls：检查 propose_plan / 风险评估 → 可能需要确认 → 执行工具 ──
     pseudoToolCallRejectCount = 0
     enforceStandardToolCall = false
+    completionValidationHint = ''
 
     // 追加 assistant 消息（含 tool_calls）
     workingMessages.push({
