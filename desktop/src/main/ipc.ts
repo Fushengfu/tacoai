@@ -27,6 +27,7 @@ import type {
   PromptConfig,
   AgentEventData,
   AgentEventChunkData,
+  ChatStoreSessionPatch,
   ChatStoreSessionSnapshot,
 } from '../shared/ipc'
 import { setBrowserAutoApproved, setAutoApproveCategories } from './tools'
@@ -46,7 +47,7 @@ import { applyRewardScore } from './reward-score'
 import { handleTerminalSpawn, handleTerminalInput, handleTerminalResize, handleTerminalKill } from './terminal'
 import { openExternalBrowser, closeExternalBrowser, navigateExternalBrowser, focusExternalBrowser } from './browser'
 import { getMobileBridgeConfig, initMobileBridge, setMobileBridgeConfig, updateMobileBridgeContext } from './mobile-bridge'
-import { listChatStoreSessions, saveChatStoreSession, deleteChatStoreSession, initMemoryDb } from './memory-db'
+import { listChatStoreSessions, saveChatStoreSessionPatch, deleteChatStoreSession, initMemoryDb } from './memory-db'
 
 /* ------------------------------------------------------------------ */
 /*  Handlers                                                           */
@@ -539,14 +540,15 @@ async function handleChatStoreList(): Promise<ChatStoreSessionSnapshot[]> {
   }))
 }
 
-async function handleChatStoreSave(_event: IpcMainInvokeEvent, snapshot: ChatStoreSessionSnapshot): Promise<void> {
+async function handleChatStoreSave(_event: IpcMainInvokeEvent, patch: ChatStoreSessionPatch): Promise<void> {
   initMemoryDb()
-  saveChatStoreSession({
-    projectId: String(snapshot?.projectId || ''),
-    sessionId: String(snapshot?.sessionId || ''),
-    workspace: String(snapshot?.workspace || ''),
-    updatedAt: Number.isFinite(Number(snapshot?.updatedAt)) ? Number(snapshot.updatedAt) : Date.now(),
-    messages: Array.isArray(snapshot?.messages) ? snapshot.messages : [],
+  saveChatStoreSessionPatch({
+    projectId: String(patch?.projectId || ''),
+    sessionId: String(patch?.sessionId || ''),
+    workspace: String(patch?.workspace || ''),
+    updatedAt: Number.isFinite(Number(patch?.updatedAt)) ? Number(patch.updatedAt) : Date.now(),
+    fromSeq: Number.isFinite(Number(patch?.fromSeq)) ? Number(patch.fromSeq) : 0,
+    messages: Array.isArray(patch?.messages) ? patch.messages : [],
   })
 }
 

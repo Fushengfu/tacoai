@@ -185,7 +185,7 @@ export const toolDefinitions: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'run_command',
-      description: '在用户的系统上执行 shell 命令。用于运行构建工具、包管理器、git 操作、启动脚本等。',
+      description: '在用户的系统上执行 shell 命令。用于执行命令行、运行构建工具、包管理器、git 操作、启动脚本等。（例如：使用rg命令查找文件）',
       parameters: {
         type: 'object',
         properties: {

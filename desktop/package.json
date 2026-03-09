@@ -1,7 +1,7 @@
 {
   "name": "taco-ai-agent",
   "private": true,
-  "version": "0.0.19",
+  "version": "0.1.0",
   "description": "Taco AI - 智能编程助手",
   "author": "Shenzhen Zhongyun Technology Co., Limited",
   "type": "module",

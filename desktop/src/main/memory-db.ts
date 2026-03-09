@@ -16,6 +16,15 @@ export type ChatStoreSessionEntry = {
   messages: unknown[]
 }
 
+export type ChatStoreSessionPatchEntry = {
+  projectId: string
+  sessionId: string
+  workspace?: string
+  updatedAt: number
+  fromSeq: number
+  messages: unknown[]
+}
+
 export type MemorySnapshotEntry = {
   id: string
   summary: string
@@ -137,6 +146,74 @@ function backfillScopeKey(database: DatabaseSync, tableName: string): void {
   })
 }
 
+function normalizeChatStoreSeq(value: unknown): number {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 0) return 0
+  return Math.floor(n)
+}
+
+function migrateLegacyChatSessionSnapshots(database: DatabaseSync): void {
+  ensureColumn(database, 'chat_sessions', 'snapshot_migrated', 'INTEGER NOT NULL DEFAULT 0')
+
+  const rows = database.prepare(`
+    SELECT session_id, messages_json, updated_at, snapshot_migrated
+    FROM chat_sessions
+    WHERE COALESCE(snapshot_migrated, 0) = 0
+  `).all() as Array<Record<string, unknown>>
+  if (rows.length <= 0) return
+
+  const existingCountsStmt = database.prepare(`
+    SELECT COUNT(1) AS count
+    FROM chat_messages
+    WHERE session_id = ?
+  `)
+  const insertMessageStmt = database.prepare(`
+    INSERT INTO chat_messages (
+      session_id, seq, message_id, role, message_json, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(session_id, seq) DO UPDATE SET
+      message_id=excluded.message_id,
+      role=excluded.role,
+      message_json=excluded.message_json,
+      updated_at=excluded.updated_at
+  `)
+  const finalizeStmt = database.prepare(`
+    UPDATE chat_sessions
+    SET messages_json = '[]', snapshot_migrated = 1
+    WHERE session_id = ?
+  `)
+
+  runInTransaction(database, () => {
+    for (const row of rows) {
+      const sessionId = String(row.session_id || '').trim()
+      if (!sessionId) continue
+
+      const existingCountRow = existingCountsStmt.get(sessionId) as Record<string, unknown> | undefined
+      const hasNormalizedMessages = Number(existingCountRow?.count || 0) > 0
+      if (!hasNormalizedMessages) {
+        const legacyMessages = parseUnknownArray(row.messages_json)
+        const updatedAt = Number.isFinite(Number(row.updated_at)) ? Number(row.updated_at) : Date.now()
+        for (let index = 0; index < legacyMessages.length; index++) {
+          const message = legacyMessages[index]
+          const record = message && typeof message === 'object' ? message as Record<string, unknown> : {}
+          const messageId = String(record.id || `${sessionId}:legacy:${index}`).trim() || `${sessionId}:legacy:${index}`
+          const role = String(record.role || 'assistant').trim() || 'assistant'
+          insertMessageStmt.run(
+            sessionId,
+            index,
+            messageId,
+            role,
+            JSON.stringify(message ?? null),
+            updatedAt,
+          )
+        }
+      }
+
+      finalizeStmt.run(sessionId)
+    }
+  })
+}
+
 function ensureDb(): DatabaseSync {
   if (db) return db
   fs.mkdirSync(STATE_DIR, { recursive: true })
@@ -240,20 +317,37 @@ function ensureDb(): DatabaseSync {
       project_id TEXT NOT NULL DEFAULT '',
       workspace TEXT NOT NULL DEFAULT '',
       messages_json TEXT NOT NULL DEFAULT '[]',
-      updated_at INTEGER NOT NULL DEFAULT 0
+      updated_at INTEGER NOT NULL DEFAULT 0,
+      snapshot_migrated INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_project_updated
     ON chat_sessions(project_id, updated_at DESC, session_id ASC);
+
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      session_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      message_id TEXT NOT NULL DEFAULT '',
+      role TEXT NOT NULL DEFAULT 'assistant',
+      message_json TEXT NOT NULL DEFAULT '{}',
+      updated_at INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (session_id, seq),
+      FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_session_seq
+    ON chat_messages(session_id, seq ASC);
   `)
   ensureColumn(next, 'task_memories', 'scope_key', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(next, 'project_notes', 'scope_key', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(next, 'memory_snapshots', 'scope_key', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(next, 'memory_maintain_runs', 'scope_key', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(next, 'chat_sessions', 'snapshot_migrated', 'INTEGER NOT NULL DEFAULT 0')
   backfillScopeKey(next, 'task_memories')
   backfillScopeKey(next, 'project_notes')
   backfillScopeKey(next, 'memory_snapshots')
   backfillScopeKey(next, 'memory_maintain_runs')
+  migrateLegacyChatSessionSnapshots(next)
   db = next
   return next
 }
@@ -658,33 +752,87 @@ export function getMemoryDbInfo(): { dbPath: string; dbSizeBytes: number } {
 export function listChatStoreSessions(): ChatStoreSessionEntry[] {
   const database = ensureDb()
   const rows = database.prepare(`
-    SELECT session_id, project_id, workspace, messages_json, updated_at
+    SELECT session_id, project_id, workspace, updated_at
     FROM chat_sessions
     ORDER BY updated_at ASC, session_id ASC
   `).all() as Array<Record<string, unknown>>
-  return rows.map(rowToChatStoreSessionEntry)
+  const selectMessagesStmt = database.prepare(`
+    SELECT message_json
+    FROM chat_messages
+    WHERE session_id = ?
+    ORDER BY seq ASC
+  `)
+  return rows.map((row) => {
+    const entry = rowToChatStoreSessionEntry({ ...row, messages_json: '[]' })
+    const messageRows = selectMessagesStmt.all(String(row.session_id || '').trim()) as Array<Record<string, unknown>>
+    entry.messages = messageRows.map((messageRow) => {
+      try {
+        return JSON.parse(String(messageRow.message_json || '{}'))
+      } catch {
+        return null
+      }
+    }).filter((item) => item !== null)
+    return entry
+  })
 }
 
-export function saveChatStoreSession(entry: ChatStoreSessionEntry): void {
+export function saveChatStoreSessionPatch(entry: ChatStoreSessionPatchEntry): void {
   const database = ensureDb()
   const sessionId = String(entry.sessionId || '').trim()
   if (!sessionId) return
-  database.prepare(`
+  const updatedAt = Number.isFinite(Number(entry.updatedAt)) ? Number(entry.updatedAt) : Date.now()
+  const fromSeq = normalizeChatStoreSeq(entry.fromSeq)
+  const messages = Array.isArray(entry.messages) ? entry.messages : []
+  const upsertSessionStmt = database.prepare(`
     INSERT INTO chat_sessions (
-      session_id, project_id, workspace, messages_json, updated_at
-    ) VALUES (?, ?, ?, ?, ?)
+      session_id, project_id, workspace, messages_json, updated_at, snapshot_migrated
+    ) VALUES (?, ?, ?, '[]', ?, 1)
     ON CONFLICT(session_id) DO UPDATE SET
       project_id=excluded.project_id,
       workspace=excluded.workspace,
-      messages_json=excluded.messages_json,
+      messages_json='[]',
+      updated_at=excluded.updated_at,
+      snapshot_migrated=1
+  `)
+  const deleteTailStmt = database.prepare(`
+    DELETE FROM chat_messages
+    WHERE session_id = ? AND seq >= ?
+  `)
+  const insertMessageStmt = database.prepare(`
+    INSERT INTO chat_messages (
+      session_id, seq, message_id, role, message_json, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(session_id, seq) DO UPDATE SET
+      message_id=excluded.message_id,
+      role=excluded.role,
+      message_json=excluded.message_json,
       updated_at=excluded.updated_at
-  `).run(
-    sessionId,
-    String(entry.projectId || ''),
-    String(entry.workspace || ''),
-    JSON.stringify(Array.isArray(entry.messages) ? entry.messages : []),
-    Number.isFinite(Number(entry.updatedAt)) ? Number(entry.updatedAt) : Date.now(),
-  )
+  `)
+
+  runInTransaction(database, () => {
+    upsertSessionStmt.run(
+      sessionId,
+      String(entry.projectId || ''),
+      String(entry.workspace || ''),
+      updatedAt,
+    )
+    deleteTailStmt.run(sessionId, fromSeq)
+    for (let index = 0; index < messages.length; index++) {
+      const message = messages[index]
+      const record = message && typeof message === 'object' ? message as Record<string, unknown> : {}
+      const seq = fromSeq + index
+      const messageId = String(record.id || `${sessionId}:${seq}`).trim() || `${sessionId}:${seq}`
+      const role = String(record.role || 'assistant').trim() || 'assistant'
+      insertMessageStmt.run(
+        sessionId,
+        seq,
+        messageId,
+        role,
+        JSON.stringify(message ?? null),
+        updatedAt,
+      )
+    }
+  })
 }
 
 export function deleteChatStoreSession(sessionId: string): void {

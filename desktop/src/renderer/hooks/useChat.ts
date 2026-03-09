@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ActivePlan, AgentStep, AttachedImage, ChatMsg, ProviderId, ProviderForms, QueuedMessage, TaskTiming, ThreadMode, ToolCallInfo, ToolResultInfo } from '../types'
-import type { ChatStoreSessionSnapshot, PromptConfig } from '../../shared/ipc'
+import type { ChatStoreSessionPatch, ChatStoreSessionSnapshot, PromptConfig } from '../../shared/ipc'
 import { buildSystemPrompt } from '../constants'
 import { loadJson, saveJson, uid } from '../lib/storage'
 
@@ -13,6 +13,34 @@ const CHAT_STORE_FLUSH_DEBOUNCE_MS = 280
 
 function normalizeChatStoreMessages(messages: unknown[]): ChatMsg[] {
   return Array.isArray(messages) ? (messages as ChatMsg[]) : []
+}
+
+function serializeChatStoreMessage(message: ChatMsg): string {
+  try {
+    return JSON.stringify(message)
+  } catch {
+    return ''
+  }
+}
+
+function areChatStoreMessagesEqual(prev: ChatMsg | undefined, next: ChatMsg | undefined): boolean {
+  if (prev === next) return true
+  if (!prev || !next) return false
+  if (prev.id !== next.id) return false
+  if (prev.role !== next.role) return false
+  if (prev.content !== next.content) return false
+  if ((prev.gitCommitHash || '') !== (next.gitCommitHash || '')) return false
+  return serializeChatStoreMessage(prev) === serializeChatStoreMessage(next)
+}
+
+function findFirstChangedMessageIndex(prevMessages: ChatMsg[], nextMessages: ChatMsg[]): number {
+  const sharedLength = Math.min(prevMessages.length, nextMessages.length)
+  for (let index = 0; index < sharedLength; index++) {
+    if (!areChatStoreMessagesEqual(prevMessages[index], nextMessages[index])) {
+      return index
+    }
+  }
+  return sharedLength
 }
 
 function normalizePlanStatus(status: string): 'pending' | 'in_progress' | 'done' | 'failed' {
@@ -260,7 +288,7 @@ export function useChat() {
   threadMessagesRef.current = threadMessages
   const sessionStoreMetaRef = useRef<Map<string, SessionStoreMeta>>(new Map())
   const persistTimersRef = useRef<Map<string, number>>(new Map())
-  const pendingPersistRef = useRef<Map<string, ChatStoreSessionSnapshot>>(new Map())
+  const pendingPersistRef = useRef<Map<string, ChatStoreSessionPatch>>(new Map())
 
   // 每个 thread 的 stream cleanup
   const streamCleanupRefs = useRef<Map<string, () => void>>(new Map())
@@ -296,26 +324,30 @@ export function useChat() {
       window.clearTimeout(timer)
       persistTimersRef.current.delete(key)
     }
-    const snapshot = pendingPersistRef.current.get(key)
-    if (!snapshot) return
+    const patch = pendingPersistRef.current.get(key)
+    if (!patch) return
     pendingPersistRef.current.delete(key)
     try {
-      await window.taco.chatStore.save(snapshot)
+      await window.taco.chatStore.save(patch)
     } catch (err) {
       console.error('[chat-store] 持久化会话消息失败:', key, err)
     }
   }, [])
 
-  const schedulePersistedSession = useCallback((sessionId: string, messages: ChatMsg[]) => {
+  const schedulePersistedSession = useCallback((sessionId: string, prevMessages: ChatMsg[], nextMessages: ChatMsg[]) => {
     const key = String(sessionId || '').trim()
     if (!key) return
+    const fromSeq = findFirstChangedMessageIndex(prevMessages, nextMessages)
+    const pending = pendingPersistRef.current.get(key)
+    const mergedFromSeq = pending ? Math.min(pending.fromSeq, fromSeq) : fromSeq
     const meta = sessionStoreMetaRef.current.get(key) ?? {}
     pendingPersistRef.current.set(key, {
       projectId: String(meta.projectId || '').trim(),
       sessionId: key,
       workspace: String(meta.workspace || '').trim() || undefined,
       updatedAt: Date.now(),
-      messages: messages as unknown[],
+      fromSeq: mergedFromSeq,
+      messages: nextMessages.slice(mergedFromSeq) as unknown[],
     })
     const prevTimer = persistTimersRef.current.get(key)
     if (typeof prevTimer === 'number') {
@@ -396,6 +428,7 @@ export function useChat() {
                 projectId: '',
                 sessionId,
                 updatedAt: Date.now(),
+                fromSeq: 0,
                 messages: messages as unknown[],
               })
             } catch (err) {
@@ -550,7 +583,7 @@ export function useChat() {
         // 同步更新 ref，确保 resendFromExisting 等异步调用能立即读到最新消息
         threadMessagesRef.current = updated
         if (next.length > 0) {
-          schedulePersistedSession(threadId, next)
+          schedulePersistedSession(threadId, current, next)
         } else {
           void deletePersistedSession(threadId)
         }

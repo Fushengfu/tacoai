@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { IpcChannel } from '../shared/ipc'
 import type {
   ChatSendPayload,
+  ChatStoreSessionPatch,
   ChatStoreSessionSnapshot,
   ChatStreamPayload,
   ChatChunkData,
@@ -148,8 +149,8 @@ const tacoApi: TacoApi = {
   chatStore: {
     list: (): Promise<ChatStoreSessionSnapshot[]> =>
       ipcRenderer.invoke(IpcChannel.CHAT_STORE_LIST),
-    save: (snapshot: ChatStoreSessionSnapshot): Promise<void> =>
-      ipcRenderer.invoke(IpcChannel.CHAT_STORE_SAVE, snapshot),
+    save: (patch: ChatStoreSessionPatch): Promise<void> =>
+      ipcRenderer.invoke(IpcChannel.CHAT_STORE_SAVE, patch),
     deleteSession: (sessionId: string): Promise<void> =>
       ipcRenderer.invoke(IpcChannel.CHAT_STORE_DELETE_SESSION, sessionId),
   },

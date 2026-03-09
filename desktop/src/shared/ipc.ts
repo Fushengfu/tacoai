@@ -593,6 +593,15 @@ export type ChatStoreSessionSnapshot = {
   messages: unknown[]
 }
 
+export type ChatStoreSessionPatch = {
+  projectId: string
+  sessionId: string
+  workspace?: string
+  updatedAt: number
+  fromSeq: number
+  messages: unknown[]
+}
+
 export type MobileBridgeConfig = {
   enabled: boolean
   port: number
@@ -796,8 +805,8 @@ export type TacoApi = {
   chatStore: {
     /** 读取全部持久化会话消息快照 */
     list: () => Promise<ChatStoreSessionSnapshot[]>
-    /** 保存某个会话的完整消息快照 */
-    save: (snapshot: ChatStoreSessionSnapshot) => Promise<void>
+    /** 从指定序号开始同步某个会话的消息尾部 */
+    save: (patch: ChatStoreSessionPatch) => Promise<void>
     /** 删除某个会话的消息快照 */
     deleteSession: (sessionId: string) => Promise<void>
   }
