@@ -7,7 +7,7 @@ import { configureMonaco, getMonacoLanguage, MONACO_COMMON_OPTIONS } from '../li
 
 const MODEL_FILE_EXTS = new Set([
   'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'json', 'jsonc', 'md', 'mdx',
-  'py', 'go', 'rs', 'java', 'c', 'h', 'cpp', 'cc', 'cxx', 'hpp',
+  'py', 'go', 'rs', 'dart', 'java', 'c', 'h', 'cpp', 'cc', 'cxx', 'hpp',
   'php', 'rb', 'swift', 'kt', 'kts', 'sh', 'bash', 'zsh', 'yml', 'yaml',
   'toml', 'ini', 'env', 'xml', 'sql', 'graphql', 'gql', 'txt', 'log', 'vue', 'svelte',
 ])
@@ -20,7 +20,7 @@ function getLanguageLabel(filePath: string): string {
   const map: Record<string, string> = {
     ts: 'TypeScript', tsx: 'TypeScript React', js: 'JavaScript', jsx: 'JavaScript React',
     json: 'JSON', html: 'HTML', css: 'CSS', scss: 'SCSS', less: 'LESS',
-    md: 'Markdown', py: 'Python', rs: 'Rust', go: 'Go', java: 'Java',
+    md: 'Markdown', py: 'Python', rs: 'Rust', dart: 'Dart', go: 'Go', java: 'Java',
     c: 'C', cpp: 'C++', h: 'C Header', sh: 'Shell', bash: 'Bash',
     yml: 'YAML', yaml: 'YAML', toml: 'TOML', xml: 'XML', svg: 'SVG',
     sql: 'SQL', graphql: 'GraphQL', vue: 'Vue', svelte: 'Svelte',

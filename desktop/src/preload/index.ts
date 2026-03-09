@@ -2,10 +2,12 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { IpcChannel } from '../shared/ipc'
 import type {
   ChatSendPayload,
+  ChatStoreSessionSnapshot,
   ChatStreamPayload,
   ChatChunkData,
   AgentStreamPayload,
   AgentEventData,
+  AgentEventChunkData,
   EditorId,
   TacoApi,
   SystemInfo,
@@ -16,6 +18,7 @@ import type {
   ExternalBrowserStatus,
   GuiPlusConfig,
   AppNotifyPayload,
+  RendererErrorPayload,
   MobileBridgeConfig,
   MobileBridgeCommandData,
   MobileBridgeContextSnapshot,
@@ -71,6 +74,8 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.OPEN_LOG_DIR, scope),
     notify: (payload: AppNotifyPayload) =>
       ipcRenderer.invoke(IpcChannel.APP_NOTIFY, payload),
+    reportRendererError: (payload: RendererErrorPayload) =>
+      ipcRenderer.invoke(IpcChannel.APP_RENDERER_ERROR, payload),
   },
   mobileBridge: {
     getConfig: (): Promise<MobileBridgeConfig> =>
@@ -140,15 +145,86 @@ const tacoApi: TacoApi = {
       }
     }
   },
+  chatStore: {
+    list: (): Promise<ChatStoreSessionSnapshot[]> =>
+      ipcRenderer.invoke(IpcChannel.CHAT_STORE_LIST),
+    save: (snapshot: ChatStoreSessionSnapshot): Promise<void> =>
+      ipcRenderer.invoke(IpcChannel.CHAT_STORE_SAVE, snapshot),
+    deleteSession: (sessionId: string): Promise<void> =>
+      ipcRenderer.invoke(IpcChannel.CHAT_STORE_DELETE_SESSION, sessionId),
+  },
   agent: {
     stream: (payload: AgentStreamPayload) =>
       ipcRenderer.send(IpcChannel.AGENT_STREAM, payload),
 
     onEvent: (callback: (data: AgentEventData) => void) => {
+      const chunkState = new Map<string, {
+        requestId: string
+        total: number
+        chunks: string[]
+        received: number
+        updatedAt: number
+      }>()
+
+      const cleanupChunkState = (now = Date.now()) => {
+        for (const [key, state] of chunkState.entries()) {
+          if (now - state.updatedAt > 60_000) {
+            chunkState.delete(key)
+          }
+        }
+      }
+
+      const handleMergedChunk = (data: AgentEventChunkData) => {
+        if (!data || typeof data !== 'object') return
+        if (!data.chunkId || data.total <= 0 || data.index < 0 || data.index >= data.total) return
+
+        cleanupChunkState()
+        const key = `${data.requestId}:${data.chunkId}`
+        const existing = chunkState.get(key)
+        const state = existing && existing.total === data.total
+          ? existing
+          : {
+            requestId: data.requestId,
+            total: data.total,
+            chunks: Array.from({ length: data.total }, () => ''),
+            received: 0,
+            updatedAt: Date.now(),
+          }
+
+        if (!state.chunks[data.index]) {
+          state.received += 1
+        }
+        state.chunks[data.index] = data.payloadChunk ?? ''
+        state.updatedAt = Date.now()
+        chunkState.set(key, state)
+
+        if (state.received < state.total) return
+
+        chunkState.delete(key)
+        try {
+          const json = state.chunks.join('')
+          const merged = JSON.parse(json) as AgentEventData
+          callback(merged)
+        } catch (err) {
+          console.error('[AgentEventChunkParseFail]', err)
+          callback({
+            requestId: state.requestId,
+            type: 'error',
+            message: 'Agent 事件分块重组失败',
+          })
+        }
+      }
+
       const handler = (_event: Electron.IpcRendererEvent, data: AgentEventData) => callback(data)
+      const chunkHandler = (_event: Electron.IpcRendererEvent, data: AgentEventChunkData) => {
+        handleMergedChunk(data)
+      }
       ipcRenderer.on(IpcChannel.AGENT_EVENT, handler)
+      ipcRenderer.on(IpcChannel.AGENT_EVENT_CHUNK, chunkHandler)
       return () => {
         ipcRenderer.removeListener(IpcChannel.AGENT_EVENT, handler)
+        ipcRenderer.removeListener(IpcChannel.AGENT_EVENT_CHUNK, chunkHandler)
+        chunkState.clear()
       }
     },
 

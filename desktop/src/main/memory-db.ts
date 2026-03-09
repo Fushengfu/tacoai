@@ -8,6 +8,13 @@ import type { ProjectNote, ProjectTaskMemory } from '../shared/ipc'
 
 export type TaskMemoryEntry = ProjectTaskMemory
 export type ProjectNoteEntry = ProjectNote
+export type ChatStoreSessionEntry = {
+  projectId: string
+  sessionId: string
+  workspace?: string
+  updatedAt: number
+  messages: unknown[]
+}
 
 export type MemorySnapshotEntry = {
   id: string
@@ -227,6 +234,17 @@ function ensureDb(): DatabaseSync {
       decision_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS chat_sessions (
+      session_id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL DEFAULT '',
+      workspace TEXT NOT NULL DEFAULT '',
+      messages_json TEXT NOT NULL DEFAULT '[]',
+      updated_at INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_sessions_project_updated
+    ON chat_sessions(project_id, updated_at DESC, session_id ASC);
   `)
   ensureColumn(next, 'task_memories', 'scope_key', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(next, 'project_notes', 'scope_key', "TEXT NOT NULL DEFAULT ''")
@@ -248,6 +266,15 @@ function parseStringArray(raw: unknown): string[] {
   try {
     const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
     return Array.isArray(parsed) ? parsed.map((item) => String(item ?? '').trim()).filter(Boolean) : []
+  } catch {
+    return []
+  }
+}
+
+function parseUnknownArray(raw: unknown): unknown[] {
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
+    return Array.isArray(parsed) ? parsed : []
   } catch {
     return []
   }
@@ -297,6 +324,16 @@ function rowToProjectNoteEntry(row: Record<string, unknown>): ProjectNoteEntry {
     category: (String(row.category || 'other') as ProjectNoteEntry['category']),
     createdAt: String(row.created_at || ''),
     updatedAt: String(row.updated_at || ''),
+  }
+}
+
+function rowToChatStoreSessionEntry(row: Record<string, unknown>): ChatStoreSessionEntry {
+  return {
+    projectId: String(row.project_id || ''),
+    sessionId: String(row.session_id || ''),
+    ...(String(row.workspace || '').trim() ? { workspace: String(row.workspace || '') } : {}),
+    updatedAt: Number(row.updated_at || 0),
+    messages: parseUnknownArray(row.messages_json),
   }
 }
 
@@ -616,6 +653,48 @@ export function getMemoryDbInfo(): { dbPath: string; dbSizeBytes: number } {
     dbPath,
     dbSizeBytes: dbSize + walSize,
   }
+}
+
+export function listChatStoreSessions(): ChatStoreSessionEntry[] {
+  const database = ensureDb()
+  const rows = database.prepare(`
+    SELECT session_id, project_id, workspace, messages_json, updated_at
+    FROM chat_sessions
+    ORDER BY updated_at ASC, session_id ASC
+  `).all() as Array<Record<string, unknown>>
+  return rows.map(rowToChatStoreSessionEntry)
+}
+
+export function saveChatStoreSession(entry: ChatStoreSessionEntry): void {
+  const database = ensureDb()
+  const sessionId = String(entry.sessionId || '').trim()
+  if (!sessionId) return
+  database.prepare(`
+    INSERT INTO chat_sessions (
+      session_id, project_id, workspace, messages_json, updated_at
+    ) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(session_id) DO UPDATE SET
+      project_id=excluded.project_id,
+      workspace=excluded.workspace,
+      messages_json=excluded.messages_json,
+      updated_at=excluded.updated_at
+  `).run(
+    sessionId,
+    String(entry.projectId || ''),
+    String(entry.workspace || ''),
+    JSON.stringify(Array.isArray(entry.messages) ? entry.messages : []),
+    Number.isFinite(Number(entry.updatedAt)) ? Number(entry.updatedAt) : Date.now(),
+  )
+}
+
+export function deleteChatStoreSession(sessionId: string): void {
+  const database = ensureDb()
+  const normalized = String(sessionId || '').trim()
+  if (!normalized) return
+  database.prepare(`
+    DELETE FROM chat_sessions
+    WHERE session_id = ?
+  `).run(normalized)
 }
 
 export function getMemoryDbPath(): string {

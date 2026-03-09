@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, useTransition } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, useTransition, type ErrorInfo } from 'react'
 import type { ChatMsg, FileChangeInfo, FileChangeStatus, GitVersionCommit, ProviderId, ThemeMode, ThreadMode } from './types'
 import type { EditorId, FileTreeEntry, BrowserConsoleLevel, MobileBridgeContextSnapshot, GitWorkingTreeStatus } from '../shared/ipc'
 import { providers, estimateTokens, buildSystemPrompt, resolveProviderDisplayLabel, resolveProviderMaxTokens } from './constants'
@@ -11,6 +11,7 @@ import { Sidebar } from './components/Sidebar'
 import { ChatPanel } from './components/ChatPanel'
 import { DetailPanel } from './components/DetailPanel'
 import { SettingsPage } from './components/SettingsModal'
+import { PaneErrorBoundary } from './components/PaneErrorBoundary'
 import { useResize } from './hooks/useResize'
 
 const DEV_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1'])
@@ -23,6 +24,15 @@ const DETAIL_MAX_WIDTH = 700
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
+}
+
+function readStoredBoolean(key: string, fallback: boolean): boolean {
+  try {
+    const value = localStorage.getItem(key)
+    return value === null ? fallback : value === 'true'
+  } catch {
+    return fallback
+  }
 }
 
 function isPrivateIpv4(hostname: string): boolean {
@@ -166,6 +176,9 @@ export default function App() {
   const [viewingFile, setViewingFile] = useState<string | null>(null)
   /** 打开文件后需要定位到的行列（供编辑器跳转定义使用） */
   const [viewingSelection, setViewingSelection] = useState<{ line: number; column: number } | null>(null)
+  const [detailTreeExpanded, setDetailTreeExpanded] = useState<boolean>(() => readStoredBoolean('taco.panel.treeExpanded', false))
+  const [detailChangesExpanded, setDetailChangesExpanded] = useState<boolean>(() => readStoredBoolean('taco.panel.changesExpanded', true))
+  const [detailGitExpanded, setDetailGitExpanded] = useState<boolean>(() => readStoredBoolean('taco.panel.gitExpanded', true))
   const [showTerminal, setShowTerminal] = useState(false)
   /** 外部浏览器窗口状态 Map<appId, url> */
   const [browserWindows, setBrowserWindows] = useState<Map<string, string>>(new Map())
@@ -305,6 +318,18 @@ export default function App() {
     currentProvider,
     providerSettings.providerForms[currentProvider]
   )
+
+  useEffect(() => {
+    try { localStorage.setItem('taco.panel.treeExpanded', String(detailTreeExpanded)) } catch { /* ignore */ }
+  }, [detailTreeExpanded])
+
+  useEffect(() => {
+    try { localStorage.setItem('taco.panel.changesExpanded', String(detailChangesExpanded)) } catch { /* ignore */ }
+  }, [detailChangesExpanded])
+
+  useEffect(() => {
+    try { localStorage.setItem('taco.panel.gitExpanded', String(detailGitExpanded)) } catch { /* ignore */ }
+  }, [detailGitExpanded])
 
   useEffect(() => {
     threadStoreRef.current = threadStore
@@ -561,22 +586,61 @@ export default function App() {
   const [liveFileChangeOverrides, setLiveFileChangeOverrides] = useState<Record<string, FileChangeInfo | null>>({})
   const liveFileChangeSyncSeqRef = useRef(0)
   const liveDiffLastRunAtRef = useRef(0)
+  const liveDiffLastTargetKeyRef = useRef('')
+  const liveDiffPriorityPaths = useMemo(() => {
+    if (currentMode !== 'agent') return []
+    const ordered: string[] = []
+    const seen = new Set<string>()
+    const pushPath = (filePath: string | null) => {
+      if (!filePath || seen.has(filePath)) return
+      seen.add(filePath)
+      ordered.push(filePath)
+    }
+
+    pushPath(selectedFile)
+    pushPath(viewingFile)
+
+    if (detailChangesExpanded) {
+      for (let i = dedupedFileChanges.length - 1; i >= 0 && ordered.length < 18; i--) {
+        pushPath(dedupedFileChanges[i]?.filePath ?? null)
+      }
+    }
+
+    return ordered
+  }, [currentMode, selectedFile, viewingFile, detailChangesExpanded, dedupedFileChanges])
+  const liveDiffTargetKey = liveDiffPriorityPaths.join('|')
   const syncLiveNewContentByPath = useCallback(async () => {
     const now = Date.now()
     const minInterval = sessionSending ? 700 : 1500
-    if (now - liveDiffLastRunAtRef.current < minInterval) return
+    const targetChanged = liveDiffTargetKey !== liveDiffLastTargetKeyRef.current
+    if (targetChanged) {
+      liveDiffLastTargetKeyRef.current = liveDiffTargetKey
+    }
+    if (!targetChanged && (now - liveDiffLastRunAtRef.current) < minInterval) return
     liveDiffLastRunAtRef.current = now
 
     const seq = ++liveFileChangeSyncSeqRef.current
-    if (!currentWorkspace || currentMode !== 'agent') {
+    if (!currentWorkspace || currentMode !== 'agent' || liveDiffPriorityPaths.length === 0) {
+      liveDiffLastTargetKeyRef.current = liveDiffTargetKey
       startPanelStateTransition(() => setLiveFileChangeOverrides({}))
       return
     }
 
-    const maxTargets = sessionSending ? 16 : 48
-    const targetChanges = dedupedFileChanges
-      .filter((fc) => String(fc.filePath ?? '').trim().length > 0)
-      .slice(-maxTargets)
+    const maxTargets = detailChangesExpanded
+      ? (sessionSending ? 10 : 24)
+      : 2
+    const changeMap = new Map(
+      dedupedFileChanges
+        .filter((fc) => String(fc.filePath ?? '').trim().length > 0)
+        .map((fc) => [fc.filePath, fc] as const),
+    )
+    const targetChanges: FileChangeInfo[] = []
+    for (const filePath of liveDiffPriorityPaths) {
+      const change = changeMap.get(filePath)
+      if (!change) continue
+      targetChanges.push(change)
+      if (targetChanges.length >= maxTargets) break
+    }
 
     if (targetChanges.length === 0) {
       startPanelStateTransition(() => setLiveFileChangeOverrides({}))
@@ -614,6 +678,9 @@ export default function App() {
     currentWorkspace,
     currentMode,
     dedupedFileChanges,
+    detailChangesExpanded,
+    liveDiffPriorityPaths,
+    liveDiffTargetKey,
     sessionSending,
     resolveFilePath,
     startPanelStateTransition,
@@ -728,6 +795,20 @@ export default function App() {
     gitLog: boolean
     liveDiff: boolean
   }
+
+  const autoRefreshFlags = useMemo<ProjectRefreshFlags>(() => ({
+    tree: detailTreeExpanded,
+    gitStatus: currentMode === 'agent' && detailChangesExpanded,
+    gitLog: currentMode === 'agent' && detailGitExpanded,
+    liveDiff: currentMode === 'agent' && liveDiffPriorityPaths.length > 0,
+  }), [
+    currentMode,
+    detailTreeExpanded,
+    detailChangesExpanded,
+    detailGitExpanded,
+    liveDiffPriorityPaths.length,
+  ])
+  const shouldWatchWorkspace = autoRefreshFlags.tree || autoRefreshFlags.gitStatus || autoRefreshFlags.liveDiff
 
   const refreshQueueRef = useRef<{
     pending: ProjectRefreshFlags
@@ -873,67 +954,72 @@ export default function App() {
   // 切换工作区时：立即刷新目录树 + 启动文件监听
   useEffect(() => {
     setGitStatusLoaded(false)
-    queueProjectRefresh({
-      tree: true,
-      gitStatus: true,
-      gitLog: currentMode === 'agent',
-      liveDiff: currentMode === 'agent',
-    }, 0)
-    if (currentWorkspace) {
-      window.taco.workspace.watch(currentWorkspace)
+    const initialFlags: Partial<ProjectRefreshFlags> = {
+      tree: detailTreeExpanded,
+      gitStatus: currentMode === 'agent' && detailChangesExpanded,
+      gitLog: currentMode === 'agent' && detailGitExpanded,
     }
+    if (initialFlags.tree || initialFlags.gitStatus || initialFlags.gitLog) {
+      queueProjectRefresh(initialFlags, 0)
+    }
+  }, [currentWorkspace, currentMode, queueProjectRefresh])
+
+  useEffect(() => {
+    if (!currentWorkspace || !shouldWatchWorkspace) return
+    window.taco.workspace.watch(currentWorkspace)
     return () => {
       window.taco.workspace.unwatch()
     }
-  }, [currentWorkspace, currentMode, queueProjectRefresh])
+  }, [currentWorkspace, shouldWatchWorkspace])
 
   // 切换会话/项目时刷新一次状态（去掉消息长度驱动，避免频繁重刷）
   useEffect(() => {
     if (!currentWorkspace) return
-    queueProjectRefresh({
-      gitStatus: true,
-      gitLog: currentMode === 'agent',
-      liveDiff: currentMode === 'agent',
-    }, 120)
+    const sessionRefreshFlags: Partial<ProjectRefreshFlags> = {
+      gitStatus: currentMode === 'agent' && detailChangesExpanded,
+      gitLog: currentMode === 'agent' && detailGitExpanded,
+      liveDiff: currentMode === 'agent' && liveDiffPriorityPaths.length > 0,
+    }
+    if (sessionRefreshFlags.gitStatus || sessionRefreshFlags.gitLog || sessionRefreshFlags.liveDiff) {
+      queueProjectRefresh({
+        gitStatus: sessionRefreshFlags.gitStatus,
+        gitLog: sessionRefreshFlags.gitLog,
+        liveDiff: sessionRefreshFlags.liveDiff,
+      }, 120)
+    }
   }, [sessionId, currentWorkspace, currentMode, queueProjectRefresh])
 
   // 监听文件系统变化通知，自动刷新（合并到调度队列）
   useEffect(() => {
     const unsubscribe = window.taco.workspace.onChanged(() => {
-      queueProjectRefresh({
-        tree: true,
-        gitStatus: true,
-        gitLog: currentMode === 'agent',
-        liveDiff: currentMode === 'agent',
-      }, 260)
+      if (!autoRefreshFlags.tree && !autoRefreshFlags.gitStatus && !autoRefreshFlags.gitLog && !autoRefreshFlags.liveDiff) {
+        return
+      }
+      queueProjectRefresh(autoRefreshFlags, 260)
     })
     return unsubscribe
-  }, [currentMode, queueProjectRefresh])
+  }, [autoRefreshFlags, queueProjectRefresh])
 
   useEffect(() => {
     if (!currentWorkspace || currentMode !== 'agent' || !changeSyncSignal) return
+    if (!autoRefreshFlags.tree && !autoRefreshFlags.gitStatus && !autoRefreshFlags.liveDiff) return
     queueProjectRefresh({
-      tree: true,
-      gitStatus: true,
-      gitLog: true,
-      liveDiff: true,
+      tree: autoRefreshFlags.tree,
+      gitStatus: autoRefreshFlags.gitStatus,
+      liveDiff: autoRefreshFlags.liveDiff,
     }, 80)
-  }, [currentWorkspace, currentMode, changeSyncSignal, queueProjectRefresh])
+  }, [currentWorkspace, currentMode, changeSyncSignal, autoRefreshFlags, queueProjectRefresh])
 
   // 低频兜底轮询（监听漏事件时保持状态最终一致）
   useEffect(() => {
-    if (!currentWorkspace) return
-    const intervalMs = sessionSending ? 3000 : 10000
+    if (!currentWorkspace || sessionSending) return
+    if (!autoRefreshFlags.tree && !autoRefreshFlags.gitStatus && !autoRefreshFlags.gitLog && !autoRefreshFlags.liveDiff) return
+    const intervalMs = 15000
     const timer = window.setInterval(() => {
-      queueProjectRefresh({
-        tree: true,
-        gitStatus: true,
-        gitLog: currentMode === 'agent',
-        liveDiff: currentMode === 'agent',
-      }, 100)
+      queueProjectRefresh(autoRefreshFlags, 120)
     }, intervalMs)
     return () => window.clearInterval(timer)
-  }, [currentWorkspace, currentMode, sessionSending, queueProjectRefresh])
+  }, [currentWorkspace, sessionSending, autoRefreshFlags, queueProjectRefresh])
 
   // Agent 一轮任务结束后立即做一次全量刷新，避免目录/变更面板停留旧状态
   const prevSessionSendingRef = useRef(false)
@@ -942,24 +1028,17 @@ export default function App() {
     prevSessionSendingRef.current = sessionSending
     if (!currentWorkspace || currentMode !== 'agent') return
     if (prev && !sessionSending) {
-      queueProjectRefresh({
-        tree: true,
-        gitStatus: true,
-        gitLog: true,
-        liveDiff: true,
-      }, 0)
+      if (autoRefreshFlags.tree || autoRefreshFlags.gitStatus || autoRefreshFlags.gitLog || autoRefreshFlags.liveDiff) {
+        queueProjectRefresh(autoRefreshFlags, 0)
+      }
     }
-  }, [currentWorkspace, currentMode, sessionSending, queueProjectRefresh])
+  }, [currentWorkspace, currentMode, sessionSending, autoRefreshFlags, queueProjectRefresh])
 
   useEffect(() => {
     if (!currentWorkspace) return
+    if (!autoRefreshFlags.tree && !autoRefreshFlags.gitStatus && !autoRefreshFlags.gitLog && !autoRefreshFlags.liveDiff) return
     const handleFocusRefresh = () => {
-      queueProjectRefresh({
-        tree: true,
-        gitStatus: true,
-        gitLog: currentMode === 'agent',
-        liveDiff: currentMode === 'agent',
-      }, 0)
+      queueProjectRefresh(autoRefreshFlags, 0)
     }
     const handleVisibilityChange = () => {
       if (!document.hidden) handleFocusRefresh()
@@ -970,7 +1049,52 @@ export default function App() {
       window.removeEventListener('focus', handleFocusRefresh)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
-  }, [currentWorkspace, currentMode, queueProjectRefresh])
+  }, [currentWorkspace, autoRefreshFlags, queueProjectRefresh])
+
+  const panelVisibilityRef = useRef({
+    treeExpanded: detailTreeExpanded,
+    changesExpanded: detailChangesExpanded,
+    gitExpanded: detailGitExpanded,
+    liveDiffTargetKey,
+  })
+  useEffect(() => {
+    const prev = panelVisibilityRef.current
+    panelVisibilityRef.current = {
+      treeExpanded: detailTreeExpanded,
+      changesExpanded: detailChangesExpanded,
+      gitExpanded: detailGitExpanded,
+      liveDiffTargetKey,
+    }
+
+    if (!currentWorkspace) return
+
+    const nextFlags: Partial<ProjectRefreshFlags> = {}
+    if (detailTreeExpanded && !prev.treeExpanded) {
+      nextFlags.tree = true
+    }
+    if (currentMode === 'agent' && detailChangesExpanded && !prev.changesExpanded) {
+      nextFlags.gitStatus = true
+      if (liveDiffTargetKey) nextFlags.liveDiff = true
+    }
+    if (currentMode === 'agent' && detailGitExpanded && !prev.gitExpanded) {
+      nextFlags.gitLog = true
+    }
+    if (currentMode === 'agent' && liveDiffTargetKey && liveDiffTargetKey !== prev.liveDiffTargetKey) {
+      nextFlags.liveDiff = true
+    }
+
+    if (nextFlags.tree || nextFlags.gitStatus || nextFlags.gitLog || nextFlags.liveDiff) {
+      queueProjectRefresh(nextFlags, 0)
+    }
+  }, [
+    currentWorkspace,
+    currentMode,
+    detailTreeExpanded,
+    detailChangesExpanded,
+    detailGitExpanded,
+    liveDiffTargetKey,
+    queueProjectRefresh,
+  ])
 
   useEffect(() => {
     return () => {
@@ -2042,6 +2166,40 @@ export default function App() {
     }
   }, [viewingFile, effectiveFileChanges])
 
+  const reportPaneRenderError = useCallback((pane: string, error: Error, info: ErrorInfo) => {
+    void window.taco.shell.reportRendererError({
+      source: `pane:${pane}`,
+      message: error.message || String(error),
+      stack: error.stack,
+      componentStack: info.componentStack,
+      projectId: tid || undefined,
+      workspace: currentWorkspace || undefined,
+      metadata: {
+        pane,
+        threadId: tid || undefined,
+        sessionId: sessionId || undefined,
+        mode: currentMode,
+        middleView,
+        sidebarVisible,
+        detailTreeExpanded,
+        detailChangesExpanded,
+        detailGitExpanded,
+      },
+    }).catch(() => {
+      // ignore logging failures
+    })
+  }, [
+    tid,
+    currentWorkspace,
+    sessionId,
+    currentMode,
+    middleView,
+    sidebarVisible,
+    detailTreeExpanded,
+    detailChangesExpanded,
+    detailGitExpanded,
+  ])
+
   /* ---- render ---- */
   const isMac = globalThis.window.taco.system.platform === 'darwin'
   const clampedSidebarRatio = clampNumber(sidebarWidthRatio, sidebarMinRatio, sidebarMaxRatio)
@@ -2090,24 +2248,31 @@ export default function App() {
           pointerEvents: sidebarVisible ? 'auto' : 'none',
         }}
       >
-        <Sidebar
-          sortedThreads={threadStore.sortedThreads}
-          activeThreadId={tid}
-          editingThreadId={threadStore.editingThreadId}
-          editingTitle={threadStore.editingTitle}
-          onEditingTitleChange={threadStore.setEditingTitle}
-          onNewThread={handleNewThread}
-          onSwitchThread={handleSwitchThread}
-          onRenameStart={threadStore.startRename}
-          onRenameCommit={threadStore.commitRename}
-          onCancelRename={threadStore.cancelRename}
-          onDeleteThread={handleDeleteThread}
-          onReorderThread={threadStore.reorderThread}
-          onOpenSettings={() => { setShowSettings(true); setMiddleView('settings') }}
-          isSending={isThreadSending}
-          isCompleted={isThreadCompleted}
-          contextPercent={contextPercent}
-        />
+        <PaneErrorBoundary
+          pane="sidebar"
+          title="项目侧栏"
+          resetKey={`${tid}:${threadStore.sortedThreads.length}:${sidebarVisible ? '1' : '0'}`}
+          onError={reportPaneRenderError}
+        >
+          <Sidebar
+            sortedThreads={threadStore.sortedThreads}
+            activeThreadId={tid}
+            editingThreadId={threadStore.editingThreadId}
+            editingTitle={threadStore.editingTitle}
+            onEditingTitleChange={threadStore.setEditingTitle}
+            onNewThread={handleNewThread}
+            onSwitchThread={handleSwitchThread}
+            onRenameStart={threadStore.startRename}
+            onRenameCommit={threadStore.commitRename}
+            onCancelRename={threadStore.cancelRename}
+            onDeleteThread={handleDeleteThread}
+            onReorderThread={threadStore.reorderThread}
+            onOpenSettings={() => { setShowSettings(true); setMiddleView('settings') }}
+            isSending={isThreadSending}
+            isCompleted={isThreadCompleted}
+            contextPercent={contextPercent}
+          />
+        </PaneErrorBoundary>
       </div>
 
       <div
@@ -2164,89 +2329,103 @@ export default function App() {
         {/* 设置视图 */}
         {middleView === 'settings' && showSettings && (
           <div className="middle-view">
-            <SettingsPage
-              providerForms={providerSettings.providerForms}
-              onUpdateField={providerSettings.updateField}
-              guiPlusForm={guiPlusSettings.guiPlusForm}
-              onUpdateGuiPlusField={guiPlusSettings.updateGuiPlusField}
-              themeMode={themeMode}
-              onThemeModeChange={setThemeMode}
-              projectRules={currentProjectRules}
-              onProjectRulesChange={(rules) => {
-                if (!tid) return
-                threadStore.updateThread(tid, { projectRules: rules })
-              }}
-              onClose={() => { setShowSettings(false); setMiddleView('chat') }}
-              workspace={currentWorkspace}
-              projectId={tid}
-            />
+            <PaneErrorBoundary
+              pane="settings"
+              title="设置面板"
+              resetKey={`${showSettings ? '1' : '0'}:${tid}:${currentWorkspace}`}
+              onError={reportPaneRenderError}
+            >
+              <SettingsPage
+                providerForms={providerSettings.providerForms}
+                onUpdateField={providerSettings.updateField}
+                guiPlusForm={guiPlusSettings.guiPlusForm}
+                onUpdateGuiPlusField={guiPlusSettings.updateGuiPlusField}
+                themeMode={themeMode}
+                onThemeModeChange={setThemeMode}
+                projectRules={currentProjectRules}
+                onProjectRulesChange={(rules) => {
+                  if (!tid) return
+                  threadStore.updateThread(tid, { projectRules: rules })
+                }}
+                onClose={() => { setShowSettings(false); setMiddleView('chat') }}
+                workspace={currentWorkspace}
+                projectId={tid}
+              />
+            </PaneErrorBoundary>
           </div>
         )}
 
         {/* 聊天视图 */}
         <div className="middle-view" style={{ display: middleView === 'chat' || (middleView === 'settings' && !showSettings) ? 'flex' : 'none' }}>
-          <ChatPanel
-            title={sidebarVisible ? (threadStore.activeThread?.title ?? '新项目') : ''}
-            messages={messages}
-            showStreamBubble={showStreamBubble}
-            streamingContent={sessionStreamingContent}
-            draft={draft}
-            onDraftChange={setDraft}
-            sending={sessionSending}
-            onSend={handleSend}
-            onStop={() => sessionId && chat.stopSending(sessionId)}
-            onClearChat={handleClearChat}
-            onNewSession={handleNewSession}
-            onSwitchSession={handleSwitchSession}
-            onDeleteSession={handleDeleteSession}
-            sessions={sessions}
-            activeSessionId={sessionId}
-            onResend={handleResend}
-            onEditResend={handleEditResend}
-            mode={currentMode}
-            onModeChange={handleModeChange}
-            workspace={currentWorkspace}
-            onSelectWorkspace={handleSelectWorkspace}
-            provider={currentProvider}
-            onProviderChange={handleProviderChange}
-            configuredProviders={providerSettings.configuredProviders}
-            scrollRef={scrollRef}
-            queue={sessionQueue}
-            onRemoveFromQueue={(id) => chat.removeFromQueue(sessionId, id)}
-            editor={editor}
-            isSessionSending={(sid) => chat.isSending(sid)}
-            selectedFileChange={selectedFileChange}
-            onCloseDiff={() => setSelectedFile(null)}
-            selectedFileStatus={selectedFile
-              ? (stagedFileSet.has(selectedFile)
-                ? 'accepted'
-                : (unstagedFileSet.has(selectedFile)
-                  ? 'pending'
-                  : (fileStatuses[selectedFile] || 'pending')))
-              : undefined}
-            onAcceptFile={handleAcceptFile}
-            onRejectFile={handleRejectFile}
-            showTerminal={showTerminal}
-            onToggleTerminal={() => setShowTerminal((v) => !v)}
-            terminalCwd={currentWorkspace || undefined}
-            onRollbackBeforeMsg={handleRollbackBeforeMsg}
-            viewingFile={viewingFile}
-            viewingSelection={viewingSelection}
-            viewingWorkspace={currentWorkspace || undefined}
-            onCloseFileEditor={handleCloseFileEditor}
-            onFileSaved={() => {
-              queueProjectRefresh({
-                tree: true,
-                gitStatus: true,
-                gitLog: currentMode === 'agent',
-                liveDiff: currentMode === 'agent',
-              }, 0)
-            }}
-            onFileEdited={handleFileEdited}
-            onViewDiffFromEditor={handleViewDiffFromEditor}
-            onOpenFileView={handleOpenFileView}
-            activeTaskStartedAt={activeTaskStartedAt}
-          />
+          <PaneErrorBoundary
+            pane="chat"
+            title="聊天面板"
+            resetKey={`${sessionId}:${messages.length}:${selectedFile ?? ''}:${viewingFile ?? ''}`}
+            onError={reportPaneRenderError}
+          >
+            <ChatPanel
+              title={sidebarVisible ? (threadStore.activeThread?.title ?? '新项目') : ''}
+              messages={messages}
+              showStreamBubble={showStreamBubble}
+              streamingContent={sessionStreamingContent}
+              draft={draft}
+              onDraftChange={setDraft}
+              sending={sessionSending}
+              onSend={handleSend}
+              onStop={() => sessionId && chat.stopSending(sessionId)}
+              onClearChat={handleClearChat}
+              onNewSession={handleNewSession}
+              onSwitchSession={handleSwitchSession}
+              onDeleteSession={handleDeleteSession}
+              sessions={sessions}
+              activeSessionId={sessionId}
+              onResend={handleResend}
+              onEditResend={handleEditResend}
+              mode={currentMode}
+              onModeChange={handleModeChange}
+              workspace={currentWorkspace}
+              onSelectWorkspace={handleSelectWorkspace}
+              provider={currentProvider}
+              onProviderChange={handleProviderChange}
+              configuredProviders={providerSettings.configuredProviders}
+              scrollRef={scrollRef}
+              queue={sessionQueue}
+              onRemoveFromQueue={(id) => chat.removeFromQueue(sessionId, id)}
+              editor={editor}
+              isSessionSending={(sid) => chat.isSending(sid)}
+              selectedFileChange={selectedFileChange}
+              onCloseDiff={() => setSelectedFile(null)}
+              selectedFileStatus={selectedFile
+                ? (stagedFileSet.has(selectedFile)
+                  ? 'accepted'
+                  : (unstagedFileSet.has(selectedFile)
+                    ? 'pending'
+                    : (fileStatuses[selectedFile] || 'pending')))
+                : undefined}
+              onAcceptFile={handleAcceptFile}
+              onRejectFile={handleRejectFile}
+              showTerminal={showTerminal}
+              onToggleTerminal={() => setShowTerminal((v) => !v)}
+              terminalCwd={currentWorkspace || undefined}
+              onRollbackBeforeMsg={handleRollbackBeforeMsg}
+              viewingFile={viewingFile}
+              viewingSelection={viewingSelection}
+              viewingWorkspace={currentWorkspace || undefined}
+              onCloseFileEditor={handleCloseFileEditor}
+              onFileSaved={() => {
+                queueProjectRefresh({
+                  tree: true,
+                  gitStatus: true,
+                  gitLog: currentMode === 'agent',
+                  liveDiff: currentMode === 'agent',
+                }, 0)
+              }}
+              onFileEdited={handleFileEdited}
+              onViewDiffFromEditor={handleViewDiffFromEditor}
+              onOpenFileView={handleOpenFileView}
+              activeTaskStartedAt={activeTaskStartedAt}
+            />
+          </PaneErrorBoundary>
         </div>
       </div>
 
@@ -2264,45 +2443,58 @@ export default function App() {
       </div>
 
       <div style={{ gridColumn: '5 / 6', minWidth: 0, minHeight: 0, width: '100%', display: 'flex', overflow: 'hidden' }}>
-        <DetailPanel
-          title={threadStore.activeThread?.title ?? '未选择项目'}
-          messageCount={messages.length}
-          providerLabel={
-            providerSettings.configuredProviders.length > 0 ? activeProviderLabel : undefined
-          }
-          contextPercent={contextPercent}
-          usedTokens={usedTokens}
-          maxTokens={maxTokens}
-          projectTokenStats={projectTokenStats}
-          workspaceTree={deferredWorkspaceTree}
-          fileChanges={deferredFileChanges.length > 0 ? deferredFileChanges : undefined}
-          selectedFile={selectedFile}
-          onSelectFile={setSelectedFile}
-          fileStatuses={fileStatuses}
-          onAcceptFile={handleAcceptFile}
-          onRejectFile={handleRejectFile}
-          onAcceptAll={handleAcceptAll}
-          onRejectAll={handleRejectAll}
-          stagedFiles={deferredGitStagedFiles}
-          unstagedFiles={deferredGitUnstagedFiles}
-          gitStatusLoaded={gitStatusLoaded}
-          onStageFile={handleAcceptFile}
-          onStageAll={handleAcceptAll}
-          gitVersions={gitVersions}
-          onGitRollback={handleGitRollback}
-          onLoadCommitFiles={handleLoadCommitFiles}
-          workspace={currentWorkspace}
-          onRefreshTree={() => {
-            queueProjectRefresh({
-              tree: true,
-              gitStatus: true,
-              gitLog: currentMode === 'agent',
-              liveDiff: currentMode === 'agent',
-            }, 0)
-          }}
-          onOpenFileView={handleOpenFileView}
-          viewingFile={viewingFile}
-        />
+        <PaneErrorBoundary
+          pane="detail"
+          title="右侧详情面板"
+          resetKey={`${currentWorkspace}:${selectedFile ?? ''}:${detailTreeExpanded ? '1' : '0'}:${detailChangesExpanded ? '1' : '0'}:${detailGitExpanded ? '1' : '0'}`}
+          onError={reportPaneRenderError}
+        >
+          <DetailPanel
+            title={threadStore.activeThread?.title ?? '未选择项目'}
+            messageCount={messages.length}
+            providerLabel={
+              providerSettings.configuredProviders.length > 0 ? activeProviderLabel : undefined
+            }
+            contextPercent={contextPercent}
+            usedTokens={usedTokens}
+            maxTokens={maxTokens}
+            projectTokenStats={projectTokenStats}
+            workspaceTree={deferredWorkspaceTree}
+            fileChanges={deferredFileChanges.length > 0 ? deferredFileChanges : undefined}
+            selectedFile={selectedFile}
+            onSelectFile={setSelectedFile}
+            fileStatuses={fileStatuses}
+            onAcceptFile={handleAcceptFile}
+            onRejectFile={handleRejectFile}
+            onAcceptAll={handleAcceptAll}
+            onRejectAll={handleRejectAll}
+            stagedFiles={deferredGitStagedFiles}
+            unstagedFiles={deferredGitUnstagedFiles}
+            gitStatusLoaded={gitStatusLoaded}
+            onStageFile={handleAcceptFile}
+            onStageAll={handleAcceptAll}
+            gitVersions={gitVersions}
+            onGitRollback={handleGitRollback}
+            onLoadCommitFiles={handleLoadCommitFiles}
+            workspace={currentWorkspace}
+            treeExpanded={detailTreeExpanded}
+            onTreeExpandedChange={setDetailTreeExpanded}
+            changesExpanded={detailChangesExpanded}
+            onChangesExpandedChange={setDetailChangesExpanded}
+            gitExpanded={detailGitExpanded}
+            onGitExpandedChange={setDetailGitExpanded}
+            onRefreshTree={() => {
+              queueProjectRefresh({
+                tree: true,
+                gitStatus: true,
+                gitLog: currentMode === 'agent',
+                liveDiff: currentMode === 'agent',
+              }, 0)
+            }}
+            onOpenFileView={handleOpenFileView}
+            viewingFile={viewingFile}
+          />
+        </PaneErrorBoundary>
       </div>
 
     </div>

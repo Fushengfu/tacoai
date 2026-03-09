@@ -8,7 +8,7 @@ import { app, BrowserWindow, Menu, MenuItem, Tray, nativeImage } from 'electron'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
 import { registerIpcHandlers } from './ipc'
-import { logInfo, getLogDir } from './logger'
+import { logError, logInfo, getLogDir } from './logger'
 import { IpcChannel } from '../shared/ipc'
 import { shutdownAllMcp } from './mcp'
 import { shutdownMobileBridge } from './mobile-bridge'
@@ -21,6 +21,15 @@ const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let forceQuit = false
+const rendererRecoveryTimestamps: number[] = []
+const RENDERER_RECOVERY_WINDOW_MS = 30_000
+const MAX_RENDERER_RECOVERIES_PER_WINDOW = 3
+
+type MainWindowRestoreState = {
+  bounds?: Electron.Rectangle
+  maximized?: boolean
+  visible?: boolean
+}
 
 /** 判断是否为外部 URL（http/https） */
 function isExternalUrl(url: string): boolean {
@@ -185,12 +194,75 @@ function createTray() {
   updateTrayMenu()
 }
 
-function createWindow() {
+function canRecoverRenderer(): boolean {
+  const now = Date.now()
+  while (rendererRecoveryTimestamps.length > 0 && (now - rendererRecoveryTimestamps[0]) > RENDERER_RECOVERY_WINDOW_MS) {
+    rendererRecoveryTimestamps.shift()
+  }
+  if (rendererRecoveryTimestamps.length >= MAX_RENDERER_RECOVERIES_PER_WINDOW) {
+    return false
+  }
+  rendererRecoveryTimestamps.push(now)
+  return true
+}
+
+function recoverMainWindow(win: BrowserWindow, details: Electron.RenderProcessGoneDetails) {
+  const restoreState: MainWindowRestoreState = {
+    bounds: win.isDestroyed() ? undefined : win.getBounds(),
+    maximized: !win.isDestroyed() && win.isMaximized(),
+    visible: !win.isDestroyed() && win.isVisible(),
+  }
+
+  const allowRecovery = canRecoverRenderer()
+  logError('renderer-process-gone', '主渲染进程退出', {
+    reason: details.reason,
+    exitCode: details.exitCode,
+    allowRecovery,
+    restoreState,
+  })
+
+  if (!allowRecovery || forceQuit) {
+    return
+  }
+
+  if (mainWindow === win) {
+    mainWindow = null
+  }
+
+  try {
+    if (!win.isDestroyed()) win.destroy()
+  } catch (err) {
+    logError('renderer-process-gone', '销毁异常窗口失败', err)
+  }
+
+  setTimeout(() => {
+    if (forceQuit) return
+    const recovered = createWindow(restoreState)
+    mainWindow = recovered
+    if (restoreState.visible === false) {
+      recovered.hide()
+    } else {
+      recovered.show()
+      recovered.focus()
+    }
+    logInfo('renderer-process-gone', '主窗口已自动恢复', {
+      reason: details.reason,
+      exitCode: details.exitCode,
+    })
+    updateTrayMenu()
+  }, 350)
+}
+
+function createWindow(restoreState?: MainWindowRestoreState) {
+  const bounds = restoreState?.bounds
   const win = new BrowserWindow({
-    width: 1280,
-    height: 820,
+    width: bounds?.width ?? 1280,
+    height: bounds?.height ?? 820,
+    ...(typeof bounds?.x === 'number' ? { x: bounds.x } : {}),
+    ...(typeof bounds?.y === 'number' ? { y: bounds.y } : {}),
     minWidth: 1080,
     minHeight: 720,
+    show: restoreState?.visible ?? true,
     backgroundColor: '#0b0c0e',
     titleBarStyle: 'hidden',
     trafficLightPosition: { x: 20, y: 18 },
@@ -204,6 +276,10 @@ function createWindow() {
   })
 
   console.log(`Taco version: ${app.getVersion()}`)
+
+  if (restoreState?.maximized) {
+    win.maximize()
+  }
 
   /* ---- 拦截链接点击：通知渲染进程在内嵌浏览器中打开 ---- */
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -240,6 +316,18 @@ function createWindow() {
     }
 
     menu.popup()
+  })
+
+  win.webContents.on('render-process-gone', (_event, details) => {
+    recoverMainWindow(win, details)
+  })
+
+  win.webContents.on('unresponsive', () => {
+    logError('renderer-unresponsive', '主渲染进程无响应')
+  })
+
+  win.webContents.on('responsive', () => {
+    logInfo('renderer-responsive', '主渲染进程已恢复响应')
   })
 
   if (isDev) {

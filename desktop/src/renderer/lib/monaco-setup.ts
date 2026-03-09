@@ -8,8 +8,95 @@
 
 import type { Monaco } from '@monaco-editor/react'
 
+let dartFallbackRegistered = false
+
+function ensureDartLanguage(monaco: Monaco) {
+  if (dartFallbackRegistered) return
+  const hasDart = monaco.languages.getLanguages().some((lang) => lang.id === 'dart')
+  if (hasDart) {
+    dartFallbackRegistered = true
+    return
+  }
+
+  monaco.languages.register({
+    id: 'dart',
+    aliases: ['Dart', 'dart'],
+    extensions: ['.dart'],
+  })
+
+  monaco.languages.setMonarchTokensProvider('dart', {
+    keywords: [
+      'abstract', 'as', 'assert', 'async', 'await', 'break', 'case', 'catch', 'class', 'const',
+      'continue', 'default', 'deferred', 'do', 'dynamic', 'else', 'enum', 'export', 'extends',
+      'extension', 'external', 'factory', 'false', 'final', 'finally', 'for', 'Function', 'get',
+      'hide', 'if', 'implements', 'import', 'in', 'interface', 'is', 'late', 'library', 'mixin',
+      'new', 'null', 'on', 'operator', 'part', 'required', 'rethrow', 'return', 'set', 'show',
+      'static', 'super', 'switch', 'sync', 'this', 'throw', 'true', 'try', 'typedef', 'var',
+      'void', 'while', 'with', 'yield',
+    ],
+    typeKeywords: [
+      'bool', 'double', 'int', 'num', 'String', 'Object', 'Never', 'Map', 'List', 'Set',
+      'Future', 'Stream', 'Iterable', 'Record',
+    ],
+    tokenizer: {
+      root: [
+        [/\/\/.*$/, 'comment'],
+        [/\/\*/, 'comment', '@comment'],
+        [/\b[A-Z]\w*\b/, 'type.identifier'],
+        [/\b(?:@keywords)\b/, 'keyword'],
+        [/\b(?:@typeKeywords)\b/, 'type'],
+        [/\d+(\.\d+)?([eE][\-+]?\d+)?/, 'number'],
+        [/'/, { token: 'string.quote', bracket: '@open', next: '@sstring' }],
+        [/"/, { token: 'string.quote', bracket: '@open', next: '@dstring' }],
+        [/[{}()[\]]/, '@brackets'],
+        [/[;,.]/, 'delimiter'],
+        [/[+\-*/%=&|<>!?:^~]+/, 'operator'],
+        [/[a-zA-Z_$]\w*/, 'identifier'],
+      ],
+      comment: [
+        [/[^/*]+/, 'comment'],
+        [/\/\*/, 'comment', '@push'],
+        [/\*\//, 'comment', '@pop'],
+        [/[/*]/, 'comment'],
+      ],
+      sstring: [
+        [/[^\\']+/, 'string'],
+        [/\\./, 'string.escape'],
+        [/'/, { token: 'string.quote', bracket: '@close', next: '@pop' }],
+      ],
+      dstring: [
+        [/[^\\"]+/, 'string'],
+        [/\\./, 'string.escape'],
+        [/"/, { token: 'string.quote', bracket: '@close', next: '@pop' }],
+      ],
+    },
+  })
+
+  monaco.languages.setLanguageConfiguration('dart', {
+    comments: { lineComment: '//', blockComment: ['/*', '*/'] },
+    brackets: [['{', '}'], ['[', ']'], ['(', ')']],
+    autoClosingPairs: [
+      { open: '{', close: '}' },
+      { open: '[', close: ']' },
+      { open: '(', close: ')' },
+      { open: '"', close: '"' },
+      { open: "'", close: "'" },
+    ],
+    surroundingPairs: [
+      { open: '{', close: '}' },
+      { open: '[', close: ']' },
+      { open: '(', close: ')' },
+      { open: '"', close: '"' },
+      { open: "'", close: "'" },
+    ],
+  })
+
+  dartFallbackRegistered = true
+}
+
 /** 在 Editor 创建前调用，注册自定义主题等 */
 export function configureMonaco(monaco: Monaco) {
+  ensureDartLanguage(monaco)
   monaco.editor.defineTheme('taco-dark', {
     base: 'vs-dark',
     inherit: true,
@@ -95,6 +182,7 @@ export function getMonacoLanguage(filePath: string): string {
     yaml: 'yaml', yml: 'yaml',
     py: 'python', pyw: 'python',
     rs: 'rust',
+    dart: 'dart',
     go: 'go',
     java: 'java',
     c: 'c', h: 'c',

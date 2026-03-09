@@ -50,6 +50,18 @@ type DetailPanelProps = {
   onLoadCommitFiles?: (hash: string) => Promise<string[]>
   /** 工作空间路径 */
   workspace?: string
+  /** 文件树面板是否展开 */
+  treeExpanded: boolean
+  /** 设置文件树面板展开状态 */
+  onTreeExpandedChange: (expanded: boolean) => void
+  /** 变更面板是否展开 */
+  changesExpanded: boolean
+  /** 设置变更面板展开状态 */
+  onChangesExpandedChange: (expanded: boolean) => void
+  /** Git 历史面板是否展开 */
+  gitExpanded: boolean
+  /** 设置 Git 历史面板展开状态 */
+  onGitExpandedChange: (expanded: boolean) => void
   /** 手动刷新文件目录/变更文件等项目面板 */
   onRefreshTree?: () => void
   /** 在中间区域打开文件查看/编辑，forceDiff=true 时走 Diff 视图 */
@@ -697,6 +709,12 @@ export function DetailPanel({
   onGitRollback,
   onLoadCommitFiles,
   workspace,
+  treeExpanded,
+  onTreeExpandedChange,
+  changesExpanded,
+  onChangesExpandedChange,
+  gitExpanded,
+  onGitExpandedChange,
   onRefreshTree,
   onOpenFileView,
   viewingFile,
@@ -751,6 +769,12 @@ export function DetailPanel({
   const diffStatsJobSeqRef = useRef(0)
   const [asyncDiffStats, setAsyncDiffStats] = useState<Record<string, FileDiffStat>>({})
   useEffect(() => {
+    if (!treeExpanded && !changesExpanded) {
+      diffStatsJobSeqRef.current++
+      setAsyncDiffStats({})
+      return
+    }
+
     const seq = ++diffStatsJobSeqRef.current
     const base: Record<string, FileDiffStat> = {}
     const modifyTargets: FileChangeInfo[] = []
@@ -815,7 +839,7 @@ export function DetailPanel({
         diffStatsJobSeqRef.current++
       }
     }
-  }, [dedupedChanges])
+  }, [dedupedChanges, treeExpanded, changesExpanded])
 
   const diffStatsMap = useMemo(() => {
     const map = new Map<string, FileDiffStat>()
@@ -898,22 +922,6 @@ export function DetailPanel({
   const unstagedTree = useMemo(() => buildTreeFromFilePaths(effectiveUnstaged), [effectiveUnstaged])
   const stagedTree = useMemo(() => buildTreeFromFilePaths(normalizedStaged), [normalizedStaged])
 
-  // 目录树面板是否展开（默认折叠，持久化到 localStorage）
-  const [treeExpanded, setTreeExpanded] = useState(() => {
-    try { return localStorage.getItem('taco.panel.treeExpanded') === 'true' } catch { return false }
-  })
-  useEffect(() => {
-    try { localStorage.setItem('taco.panel.treeExpanded', String(treeExpanded)) } catch { /* ignore */ }
-  }, [treeExpanded])
-
-  // 变更面板是否展开（默认展开，持久化到 localStorage）
-  const [changesExpanded, setChangesExpanded] = useState(() => {
-    try { const v = localStorage.getItem('taco.panel.changesExpanded'); return v === null ? true : v === 'true' } catch { return true }
-  })
-  useEffect(() => {
-    try { localStorage.setItem('taco.panel.changesExpanded', String(changesExpanded)) } catch { /* ignore */ }
-  }, [changesExpanded])
-
   // 变更面板状态 Tab（未暂存/已暂存），默认未暂存，持久化到 localStorage
   const [changeTab, setChangeTab] = useState<'unstaged' | 'staged'>(() => {
     try { return localStorage.getItem('taco.panel.changeTab') === 'staged' ? 'staged' : 'unstaged' } catch { return 'unstaged' }
@@ -921,14 +929,6 @@ export function DetailPanel({
   useEffect(() => {
     try { localStorage.setItem('taco.panel.changeTab', changeTab) } catch { /* ignore */ }
   }, [changeTab])
-
-  // 版本历史面板是否展开（默认展开，持久化到 localStorage）
-  const [gitExpanded, setGitExpanded] = useState(() => {
-    try { const v = localStorage.getItem('taco.panel.gitExpanded'); return v === null ? true : v === 'true' } catch { return true }
-  })
-  useEffect(() => {
-    try { localStorage.setItem('taco.panel.gitExpanded', String(gitExpanded)) } catch { /* ignore */ }
-  }, [gitExpanded])
 
   // fallback: 没有工作区目录树时，从变更文件路径构建树
   const fallbackTree = useMemo(() => {
@@ -1056,10 +1056,10 @@ export function DetailPanel({
         <div className="change-group-panel" ref={treePanelRef}>
           <div
             className="change-group-header"
-            onClick={() => setTreeExpanded((p) => !p)}
+            onClick={() => onTreeExpandedChange(!treeExpanded)}
             role="button"
             tabIndex={0}
-            onKeyDown={(e) => { if (e.key === 'Enter') setTreeExpanded((p) => !p) }}
+            onKeyDown={(e) => { if (e.key === 'Enter') onTreeExpandedChange(!treeExpanded) }}
           >
             <span className={`ws-tree-arrow ${treeExpanded ? 'open' : ''}`}>›</span>
             <span className="change-group-title">文件</span>
@@ -1110,10 +1110,10 @@ export function DetailPanel({
         <div className="change-group-panel" ref={treePanelRef}>
           <div
             className="change-group-header"
-            onClick={() => setTreeExpanded((p) => !p)}
+            onClick={() => onTreeExpandedChange(!treeExpanded)}
             role="button"
             tabIndex={0}
-            onKeyDown={(e) => { if (e.key === 'Enter') setTreeExpanded((p) => !p) }}
+            onKeyDown={(e) => { if (e.key === 'Enter') onTreeExpandedChange(!treeExpanded) }}
           >
             <span className={`ws-tree-arrow ${treeExpanded ? 'open' : ''}`}>›</span>
             <span className="change-group-title">文件</span>
@@ -1170,10 +1170,10 @@ export function DetailPanel({
         <div className="change-group-panel" ref={changesPanelRef}>
           <div
             className="change-group-header"
-            onClick={() => setChangesExpanded((p) => !p)}
+            onClick={() => onChangesExpandedChange(!changesExpanded)}
             role="button"
             tabIndex={0}
-            onKeyDown={(e) => { if (e.key === 'Enter') setChangesExpanded((p) => !p) }}
+            onKeyDown={(e) => { if (e.key === 'Enter') onChangesExpandedChange(!changesExpanded) }}
           >
             <span className={`ws-tree-arrow ${changesExpanded ? 'open' : ''}`}>›</span>
             <span className="change-group-title">变更文件</span>
@@ -1297,10 +1297,10 @@ export function DetailPanel({
         <div className="version-history" ref={gitPanelRef}>
           <div
             className="change-group-header"
-            onClick={() => setGitExpanded((p) => !p)}
+            onClick={() => onGitExpandedChange(!gitExpanded)}
             role="button"
             tabIndex={0}
-            onKeyDown={(e) => { if (e.key === 'Enter') setGitExpanded((p) => !p) }}
+            onKeyDown={(e) => { if (e.key === 'Enter') onGitExpandedChange(!gitExpanded) }}
           >
             <span className={`ws-tree-arrow ${gitExpanded ? 'open' : ''}`}>›</span>
             <span className="change-group-title">版本历史 (Git)</span>

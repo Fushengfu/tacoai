@@ -18,11 +18,19 @@ export const IpcChannel = {
   CHAT_ABORT: 'chat:abort',
   /** main → renderer (send/on, 流式数据推送) */
   CHAT_CHUNK: 'chat:chunk',
+  /** renderer → main (invoke/handle, 列出持久化会话消息) */
+  CHAT_STORE_LIST: 'chat-store:list',
+  /** renderer → main (invoke/handle, 保存某会话完整消息快照) */
+  CHAT_STORE_SAVE: 'chat-store:save',
+  /** renderer → main (invoke/handle, 删除某会话消息快照) */
+  CHAT_STORE_DELETE_SESSION: 'chat-store:delete-session',
 
   /** renderer → main (send/on, 发起 agent 流式请求) */
   AGENT_STREAM: 'agent:stream',
   /** main → renderer (send/on, agent 事件推送) */
   AGENT_EVENT: 'agent:event',
+  /** main → renderer (send/on, agent 事件分块推送) */
+  AGENT_EVENT_CHUNK: 'agent:event-chunk',
   /** renderer → main (send/on, 用户对风险操作的确认响应) */
   AGENT_CONFIRM: 'agent:confirm',
   /** renderer → main (send/on, 终止当前 agent 执行) */
@@ -121,6 +129,8 @@ export const IpcChannel = {
   APP_GET_VERSION: 'app:get-version',
   /** renderer → main, 触发系统通知 */
   APP_NOTIFY: 'app:notify',
+  /** renderer → main, 上报渲染层异常诊断 */
+  APP_RENDERER_ERROR: 'app:renderer-error',
   /** renderer → main, 获取移动端桥接配置 */
   MOBILE_BRIDGE_GET: 'mobile-bridge:get',
   /** renderer → main, 保存移动端桥接配置 */
@@ -299,6 +309,15 @@ export type AgentEventData = {
   | { type: 'done' }
   | { type: 'error'; message: string }
 )
+
+/** agent:event-chunk 推送体（用于超大事件分块传输） */
+export type AgentEventChunkData = {
+  requestId: string
+  chunkId: string
+  index: number
+  total: number
+  payloadChunk: string
+}
 
 /** 计划步骤状态 */
 export type PlanStepStatus = 'pending' | 'in_progress' | 'done' | 'failed'
@@ -556,6 +575,24 @@ export type AppNotifyPayload = {
   silent?: boolean
 }
 
+export type RendererErrorPayload = {
+  source: string
+  message: string
+  stack?: string
+  componentStack?: string
+  projectId?: string
+  workspace?: string
+  metadata?: Record<string, unknown>
+}
+
+export type ChatStoreSessionSnapshot = {
+  projectId: string
+  sessionId: string
+  workspace?: string
+  updatedAt: number
+  messages: unknown[]
+}
+
 export type MobileBridgeConfig = {
   enabled: boolean
   port: number
@@ -723,6 +760,8 @@ export type TacoApi = {
     openLogDir: (scope?: { projectId?: string; workspace?: string }) => Promise<void>
     /** 触发操作系统通知 */
     notify: (payload: AppNotifyPayload) => Promise<boolean>
+    /** 上报渲染层异常到主进程日志 */
+    reportRendererError: (payload: RendererErrorPayload) => Promise<void>
   }
   mobileBridge: {
     /** 获取移动端桥接配置 */
@@ -753,6 +792,14 @@ export type TacoApi = {
     abort: (requestId: string) => void
     /** 监听流式数据块，返回取消订阅函数 */
     onChunk: (callback: (data: ChatChunkData) => void) => () => void
+  }
+  chatStore: {
+    /** 读取全部持久化会话消息快照 */
+    list: () => Promise<ChatStoreSessionSnapshot[]>
+    /** 保存某个会话的完整消息快照 */
+    save: (snapshot: ChatStoreSessionSnapshot) => Promise<void>
+    /** 删除某个会话的消息快照 */
+    deleteSession: (sessionId: string) => Promise<void>
   }
   agent: {
     /** 发起 agent 流式请求（带工具调用） */

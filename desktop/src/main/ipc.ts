@@ -13,6 +13,7 @@ import * as nodePath from 'node:path'
 import { IpcChannel, editorCommands } from '../shared/ipc'
 import type {
   AppNotifyPayload,
+  RendererErrorPayload,
   ChatSendPayload,
   ChatStreamPayload,
   AgentStreamPayload,
@@ -24,6 +25,9 @@ import type {
   MobileBridgeConfig,
   MobileBridgeContextSnapshot,
   PromptConfig,
+  AgentEventData,
+  AgentEventChunkData,
+  ChatStoreSessionSnapshot,
 } from '../shared/ipc'
 import { setBrowserAutoApproved, setAutoApproveCategories } from './tools'
 import type { RiskCategory } from './tools'
@@ -37,15 +41,72 @@ import { initMcp, listMcpServers, saveMcpServer, removeMcpServer, toggleMcpServe
 import { getGuiPlusConfig, saveGuiPlusConfig } from './gui-plus'
 import { getPromptConfig, savePromptConfig } from './prompt-config'
 import { getLogDir } from './logger'
-import { log } from './logger'
+import { log, logError } from './logger'
 import { applyRewardScore } from './reward-score'
 import { handleTerminalSpawn, handleTerminalInput, handleTerminalResize, handleTerminalKill } from './terminal'
 import { openExternalBrowser, closeExternalBrowser, navigateExternalBrowser, focusExternalBrowser } from './browser'
 import { getMobileBridgeConfig, initMobileBridge, setMobileBridgeConfig, updateMobileBridgeContext } from './mobile-bridge'
+import { listChatStoreSessions, saveChatStoreSession, deleteChatStoreSession, initMemoryDb } from './memory-db'
 
 /* ------------------------------------------------------------------ */
 /*  Handlers                                                           */
 /* ------------------------------------------------------------------ */
+
+const AGENT_EVENT_CHUNK_THRESHOLD_BYTES = 180 * 1024
+const AGENT_EVENT_CHUNK_SIZE_CHARS = 48 * 1024
+
+function sendAgentEventSafely(
+  sender: Electron.WebContents,
+  payload: AgentEventData,
+  logScope?: string,
+): void {
+  if (sender.isDestroyed()) return
+
+  let serialized = ''
+  try {
+    serialized = JSON.stringify(payload)
+  } catch (err) {
+    log('AGENT_EVENT_SERIALIZE_FAIL', {
+      error: err instanceof Error ? err.message : String(err),
+      requestId: payload.requestId,
+      type: (payload as { type?: string }).type ?? 'unknown',
+    }, logScope)
+    sender.send(IpcChannel.AGENT_EVENT, {
+      requestId: payload.requestId,
+      type: 'error',
+      message: 'Agent 事件序列化失败',
+    } satisfies AgentEventData)
+    return
+  }
+
+  const size = Buffer.byteLength(serialized, 'utf8')
+  if (size <= AGENT_EVENT_CHUNK_THRESHOLD_BYTES) {
+    sender.send(IpcChannel.AGENT_EVENT, payload)
+    return
+  }
+
+  const total = Math.max(1, Math.ceil(serialized.length / AGENT_EVENT_CHUNK_SIZE_CHARS))
+  const chunkId = `chunk-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  for (let index = 0; index < total; index++) {
+    const start = index * AGENT_EVENT_CHUNK_SIZE_CHARS
+    const payloadChunk = serialized.slice(start, start + AGENT_EVENT_CHUNK_SIZE_CHARS)
+    const chunk: AgentEventChunkData = {
+      requestId: payload.requestId,
+      chunkId,
+      index,
+      total,
+      payloadChunk,
+    }
+    sender.send(IpcChannel.AGENT_EVENT_CHUNK, chunk)
+  }
+
+  log('AGENT_EVENT_CHUNK_SENT', {
+    requestId: payload.requestId,
+    type: (payload as { type?: string }).type ?? 'unknown',
+    size,
+    total,
+  }, logScope)
+}
 
 function buildLogScope(projectId?: string, workspace?: string): string | undefined {
   if (projectId && projectId.trim()) return `project:${projectId.trim()}`
@@ -443,7 +504,7 @@ async function handleAgentStream(event: IpcMainEvent, payload: AgentStreamPayloa
       workspace,
       (agentEvent) => {
         if (event.sender.isDestroyed()) return
-        event.sender.send(IpcChannel.AGENT_EVENT, { requestId, ...agentEvent })
+        sendAgentEventSafely(event.sender, { requestId, ...agentEvent }, logScope)
       },
       maxTokens,
       abortController.signal,
@@ -454,6 +515,44 @@ async function handleAgentStream(event: IpcMainEvent, payload: AgentStreamPayloa
   } finally {
     agentAbortControllers.delete(requestId)
   }
+}
+
+async function handleRendererError(_event: IpcMainInvokeEvent, payload: RendererErrorPayload): Promise<void> {
+  const source = String(payload?.source ?? '').trim() || 'unknown'
+  const message = String(payload?.message ?? '').trim() || 'Renderer error'
+  const scope = buildLogScope(payload?.projectId, payload?.workspace)
+  logError('renderer-error', `[${source}] ${message}`, {
+    stack: payload?.stack,
+    componentStack: payload?.componentStack,
+    metadata: payload?.metadata,
+  }, scope)
+}
+
+async function handleChatStoreList(): Promise<ChatStoreSessionSnapshot[]> {
+  initMemoryDb()
+  return listChatStoreSessions().map((entry) => ({
+    projectId: entry.projectId,
+    sessionId: entry.sessionId,
+    workspace: entry.workspace,
+    updatedAt: entry.updatedAt,
+    messages: Array.isArray(entry.messages) ? entry.messages : [],
+  }))
+}
+
+async function handleChatStoreSave(_event: IpcMainInvokeEvent, snapshot: ChatStoreSessionSnapshot): Promise<void> {
+  initMemoryDb()
+  saveChatStoreSession({
+    projectId: String(snapshot?.projectId || ''),
+    sessionId: String(snapshot?.sessionId || ''),
+    workspace: String(snapshot?.workspace || ''),
+    updatedAt: Number.isFinite(Number(snapshot?.updatedAt)) ? Number(snapshot.updatedAt) : Date.now(),
+    messages: Array.isArray(snapshot?.messages) ? snapshot.messages : [],
+  })
+}
+
+async function handleChatStoreDeleteSession(_event: IpcMainInvokeEvent, sessionId: string): Promise<void> {
+  initMemoryDb()
+  deleteChatStoreSession(sessionId)
 }
 
 /** 终止正在运行的 agent */
@@ -866,6 +965,9 @@ function handleWindowClose(event: IpcMainEvent) {
 /** 注册全部 IPC handler，应在 app.whenReady() 之后调用一次 */
 export function registerIpcHandlers() {
   ipcMain.handle(IpcChannel.CHAT_SEND, handleChatSend)
+  ipcMain.handle(IpcChannel.CHAT_STORE_LIST, handleChatStoreList)
+  ipcMain.handle(IpcChannel.CHAT_STORE_SAVE, handleChatStoreSave)
+  ipcMain.handle(IpcChannel.CHAT_STORE_DELETE_SESSION, handleChatStoreDeleteSession)
   ipcMain.handle(IpcChannel.SELECT_DIRECTORY, handleSelectDirectory)
   ipcMain.handle(IpcChannel.OPEN_IN_EDITOR, handleOpenInEditor)
   ipcMain.handle(IpcChannel.OPEN_LOG_DIR, (_e, scope?: { projectId?: string; workspace?: string }) => {
@@ -874,6 +976,7 @@ export function registerIpcHandlers() {
   })
   ipcMain.handle(IpcChannel.APP_GET_VERSION, () => app.getVersion())
   ipcMain.handle(IpcChannel.APP_NOTIFY, handleAppNotify)
+  ipcMain.handle(IpcChannel.APP_RENDERER_ERROR, handleRendererError)
   ipcMain.handle(IpcChannel.MOBILE_BRIDGE_GET, handleMobileBridgeGet)
   ipcMain.handle(IpcChannel.MOBILE_BRIDGE_SET, handleMobileBridgeSet)
   ipcMain.on(IpcChannel.MOBILE_BRIDGE_SYNC_CONTEXT, handleMobileBridgeSyncContext)

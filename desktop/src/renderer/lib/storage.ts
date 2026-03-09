@@ -10,7 +10,13 @@ export function loadJson<T>(key: string, fallback: T): T {
 
 /** 将值序列化为 JSON 写入 localStorage */
 export function saveJson(key: string, value: unknown) {
-  localStorage.setItem(key, JSON.stringify(value))
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+    return true
+  } catch (err) {
+    console.warn(`[storage] saveJson failed for ${key}`, err)
+    return false
+  }
 }
 
 /** 生成唯一消息 ID */

@@ -1,8 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ActivePlan, AgentStep, AttachedImage, ChatMsg, ProviderId, ProviderForms, QueuedMessage, TaskTiming, ThreadMode, ToolCallInfo, ToolResultInfo } from '../types'
-import type { PromptConfig } from '../../shared/ipc'
+import type { ChatStoreSessionSnapshot, PromptConfig } from '../../shared/ipc'
 import { buildSystemPrompt } from '../constants'
 import { loadJson, saveJson, uid } from '../lib/storage'
+
+type SessionStoreMeta = {
+  projectId?: string
+  workspace?: string
+}
+
+const CHAT_STORE_FLUSH_DEBOUNCE_MS = 280
+
+function normalizeChatStoreMessages(messages: unknown[]): ChatMsg[] {
+  return Array.isArray(messages) ? (messages as ChatMsg[]) : []
+}
 
 function normalizePlanStatus(status: string): 'pending' | 'in_progress' | 'done' | 'failed' {
   const s = String(status ?? '').trim().toLowerCase()
@@ -225,9 +236,7 @@ export type SendMessageParams = {
  * 不同会话可并行；同一会话严格串行（绝不并发请求）。
  */
 export function useChat() {
-  const [threadMessages, setThreadMessages] = useState<Record<string, ChatMsg[]>>(() =>
-    loadJson('taco.messages', {})
-  )
+  const [threadMessages, setThreadMessages] = useState<Record<string, ChatMsg[]>>({})
 
   /** 每个 thread 是否正在发送 */
   const [sendingThreads, setSendingThreads] = useState<Record<string, boolean>>({})
@@ -249,6 +258,9 @@ export function useChat() {
   // Ref：始终指向最新 threadMessages，供异步回调读取
   const threadMessagesRef = useRef(threadMessages)
   threadMessagesRef.current = threadMessages
+  const sessionStoreMetaRef = useRef<Map<string, SessionStoreMeta>>(new Map())
+  const persistTimersRef = useRef<Map<string, number>>(new Map())
+  const pendingPersistRef = useRef<Map<string, ChatStoreSessionSnapshot>>(new Map())
 
   // 每个 thread 的 stream cleanup
   const streamCleanupRefs = useRef<Map<string, () => void>>(new Map())
@@ -266,10 +278,166 @@ export function useChat() {
   const promptConfigRef = useRef<PromptConfig | null>(null)
   const promptConfigLoadedRef = useRef(false)
 
-  // 持久化
+  const rememberSessionStoreMeta = useCallback((sessionId: string, meta?: SessionStoreMeta) => {
+    const key = String(sessionId || '').trim()
+    if (!key) return
+    const previous = sessionStoreMetaRef.current.get(key) ?? {}
+    sessionStoreMetaRef.current.set(key, {
+      projectId: String(meta?.projectId || previous.projectId || '').trim() || undefined,
+      workspace: String(meta?.workspace || previous.workspace || '').trim() || undefined,
+    })
+  }, [])
+
+  const flushPersistedSession = useCallback(async (sessionId: string) => {
+    const key = String(sessionId || '').trim()
+    if (!key) return
+    const timer = persistTimersRef.current.get(key)
+    if (typeof timer === 'number') {
+      window.clearTimeout(timer)
+      persistTimersRef.current.delete(key)
+    }
+    const snapshot = pendingPersistRef.current.get(key)
+    if (!snapshot) return
+    pendingPersistRef.current.delete(key)
+    try {
+      await window.taco.chatStore.save(snapshot)
+    } catch (err) {
+      console.error('[chat-store] 持久化会话消息失败:', key, err)
+    }
+  }, [])
+
+  const schedulePersistedSession = useCallback((sessionId: string, messages: ChatMsg[]) => {
+    const key = String(sessionId || '').trim()
+    if (!key) return
+    const meta = sessionStoreMetaRef.current.get(key) ?? {}
+    pendingPersistRef.current.set(key, {
+      projectId: String(meta.projectId || '').trim(),
+      sessionId: key,
+      workspace: String(meta.workspace || '').trim() || undefined,
+      updatedAt: Date.now(),
+      messages: messages as unknown[],
+    })
+    const prevTimer = persistTimersRef.current.get(key)
+    if (typeof prevTimer === 'number') {
+      window.clearTimeout(prevTimer)
+    }
+    const timer = window.setTimeout(() => {
+      void flushPersistedSession(key)
+    }, CHAT_STORE_FLUSH_DEBOUNCE_MS)
+    persistTimersRef.current.set(key, timer)
+  }, [flushPersistedSession])
+
+  const deletePersistedSession = useCallback(async (sessionId: string) => {
+    const key = String(sessionId || '').trim()
+    if (!key) return
+    const timer = persistTimersRef.current.get(key)
+    if (typeof timer === 'number') {
+      window.clearTimeout(timer)
+      persistTimersRef.current.delete(key)
+    }
+    pendingPersistRef.current.delete(key)
+    sessionStoreMetaRef.current.delete(key)
+    try {
+      await window.taco.chatStore.deleteSession(key)
+    } catch (err) {
+      console.error('[chat-store] 删除会话消息失败:', key, err)
+    }
+  }, [])
+
+  const flushAllPersistedSessions = useCallback(() => {
+    const sessionIds = Array.from(pendingPersistRef.current.keys())
+    if (sessionIds.length <= 0) return
+    for (const sessionId of sessionIds) {
+      void flushPersistedSession(sessionId)
+    }
+  }, [flushPersistedSession])
+
+  // 从 SQLite 恢复完整消息；如存在旧 localStorage 数据则导入一次后清理。
   useEffect(() => {
-    saveJson('taco.messages', threadMessages)
-  }, [threadMessages])
+    let cancelled = false
+
+    const hydrateMessages = async () => {
+      try {
+        const entries = await window.taco.chatStore.list()
+        if (cancelled) return
+
+        const loaded: Record<string, ChatMsg[]> = {}
+        for (const entry of entries) {
+          const sessionId = String(entry.sessionId || '').trim()
+          if (!sessionId) continue
+          loaded[sessionId] = normalizeChatStoreMessages(entry.messages)
+          rememberSessionStoreMeta(sessionId, {
+            projectId: entry.projectId,
+            workspace: entry.workspace,
+          })
+        }
+
+        const legacy = loadJson<Record<string, ChatMsg[]>>('taco.messages', {})
+        const legacyEntries = Object.entries(legacy ?? {}).filter(([sessionId, messages]) =>
+          sessionId.trim() && Array.isArray(messages) && messages.length > 0,
+        )
+
+        for (const [sessionId, messages] of legacyEntries) {
+          if (!loaded[sessionId]) {
+            loaded[sessionId] = messages
+          }
+        }
+
+        setThreadMessages((prev) => {
+          const merged = { ...loaded, ...prev }
+          threadMessagesRef.current = merged
+          return merged
+        })
+
+        if (legacyEntries.length > 0) {
+          const saveTasks = legacyEntries.map(async ([sessionId, messages]) => {
+            try {
+              await window.taco.chatStore.save({
+                projectId: '',
+                sessionId,
+                updatedAt: Date.now(),
+                messages: messages as unknown[],
+              })
+            } catch (err) {
+              console.error('[chat-store] 导入旧会话消息失败:', sessionId, err)
+              throw err
+            }
+          })
+          try {
+            await Promise.all(saveTasks)
+            localStorage.removeItem('taco.messages')
+          } catch {
+            // 保留旧缓存，避免导入失败后数据直接丢失
+          }
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error('[chat-store] 加载持久化消息失败:', err)
+        }
+      }
+    }
+
+    void hydrateMessages()
+
+    return () => {
+      cancelled = true
+      flushAllPersistedSessions()
+      for (const timer of persistTimersRef.current.values()) {
+        window.clearTimeout(timer)
+      }
+      persistTimersRef.current.clear()
+    }
+  }, [flushAllPersistedSessions, rememberSessionStoreMeta])
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      flushAllPersistedSessions()
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+    }
+  }, [flushAllPersistedSessions])
 
   useEffect(() => {
     saveJson('taco.projectTokenStatsByThread', projectTokenStatsByThread)
@@ -372,13 +540,24 @@ export function useChat() {
       setThreadMessages((prev) => {
         const current = prev[threadId] ?? []
         const next = typeof updater === 'function' ? updater(current) : updater
-        const updated = { ...prev, [threadId]: next }
+        const updated = next.length > 0
+          ? { ...prev, [threadId]: next }
+          : (() => {
+              const clone = { ...prev }
+              delete clone[threadId]
+              return clone
+            })()
         // 同步更新 ref，确保 resendFromExisting 等异步调用能立即读到最新消息
         threadMessagesRef.current = updated
+        if (next.length > 0) {
+          schedulePersistedSession(threadId, next)
+        } else {
+          void deletePersistedSession(threadId)
+        }
         return updated
       })
     },
-    []
+    [deletePersistedSession, schedulePersistedSession]
   )
 
   function clearMessages(threadId: string) {
@@ -399,6 +578,7 @@ export function useChat() {
     setThreadMessages((prev) => {
       const next = { ...prev }
       delete next[threadId]
+      threadMessagesRef.current = next
       return next
     })
     // 同时清理该 thread 的队列
@@ -427,6 +607,7 @@ export function useChat() {
     streamCleanupRefs.current.delete(threadId)
     abortRejectRefs.current.delete(threadId)
     requestIdRefs.current.delete(threadId)
+    void deletePersistedSession(threadId)
   }
 
   /* ------------------------------------------------------------------ */
@@ -503,6 +684,7 @@ export function useChat() {
 
   async function sendMessage(params: SendMessageParams) {
     const { threadId, projectId, projectRules, content, images, provider, providerForms, mode, workspace, maxTokens, onFirstMessage, onComplete } = params
+    rememberSessionStoreMeta(threadId, { projectId, workspace })
 
     // 保存参数供队列重发
     sendParamsRefs.current.set(threadId, {
@@ -886,6 +1068,7 @@ export function useChat() {
    */
   async function resendFromExisting(params: Omit<SendMessageParams, 'content'>) {
     const { threadId, projectId, projectRules, provider, providerForms, mode, workspace, maxTokens, onFirstMessage, onComplete } = params
+    rememberSessionStoreMeta(threadId, { projectId, workspace })
 
     const currentMsgs = threadMessagesRef.current[threadId] ?? []
     if (currentMsgs.length === 0) return

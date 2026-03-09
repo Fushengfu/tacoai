@@ -17,6 +17,7 @@ import json from 'highlight.js/lib/languages/json'
 import markdown from 'highlight.js/lib/languages/markdown'
 import python from 'highlight.js/lib/languages/python'
 import rust from 'highlight.js/lib/languages/rust'
+import dart from 'highlight.js/lib/languages/dart'
 import go from 'highlight.js/lib/languages/go'
 import java from 'highlight.js/lib/languages/java'
 import cpp from 'highlight.js/lib/languages/cpp'
@@ -44,6 +45,7 @@ hljs.registerLanguage('json', json)
 hljs.registerLanguage('markdown', markdown)
 hljs.registerLanguage('python', python)
 hljs.registerLanguage('rust', rust)
+hljs.registerLanguage('dart', dart)
 hljs.registerLanguage('go', go)
 hljs.registerLanguage('java', java)
 hljs.registerLanguage('cpp', cpp)
@@ -70,6 +72,7 @@ const EXT_MAP: Record<string, string> = {
   md: 'markdown', mdx: 'markdown',
   py: 'python', pyw: 'python',
   rs: 'rust',
+  dart: 'dart',
   go: 'go',
   java: 'java',
   c: 'c', h: 'c',
