@@ -13,7 +13,7 @@ import path from 'node:path'
 import type { ChatMessage, ProviderOverrides, TokenUsage } from './llm'
 import type { ProviderKey } from './llm'
 import { requestChatCompletion, requestStreamWithTools } from './llm'
-import { getFilteredToolDefinitions, buildAllowedToolNamesForRequest, executeToolCalls, assessToolCallsRisk, setBrowserAutoApproved, setDesktopAutoApproved, getWorkspaceTree, getToolDesignPromptBlock } from './tools'
+import { getFilteredToolDefinitions, buildAllowedToolNamesForRequest, executeToolCalls, assessToolCallsRisk, setBrowserAutoApproved, setDesktopAutoApproved, getWorkspaceTree, getToolDesignPromptBlock, getAutoApproveCategories } from './tools'
 import type { ToolCall, ToolResult, RiskInfo } from './tools'
 import { log } from './logger'
 import { gitCommit, gitEnsureRepo } from './git'
@@ -503,6 +503,7 @@ export async function runAgent(
   recallDebug = false,
 ): Promise<void> {
   const taskStartedAt = Date.now()
+  const isGitAutoOpsEnabled = () => getAutoApproveCategories().includes('git_ops')
   try {
     await refreshSkills(workspace)
   } catch (err) {
@@ -510,11 +511,15 @@ export async function runAgent(
   }
   const restoreSkillEnv = applySkillEnvironment(getActiveSkillEnv())
   try {
-  // 确保工作空间是 git 仓库
-  try {
-    await gitEnsureRepo(workspace)
-  } catch (err) {
-    log('GIT_INIT_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
+  // 仅在开启 git_ops 自动授权时，才允许自动初始化/自动提交
+  if (isGitAutoOpsEnabled()) {
+    try {
+      await gitEnsureRepo(workspace)
+    } catch (err) {
+      log('GIT_INIT_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
+    }
+  } else {
+    log('GIT_AUTO_OPS_DISABLED', { action: 'skip_git_ensure_repo' }, logScope)
   }
 
   // 将启用的 skills 目录注入 system prompt
@@ -949,6 +954,7 @@ export async function runAgent(
 
   /** 在 agent 结束前尝试自动 git commit */
   async function autoCommit() {
+    if (!isGitAutoOpsEnabled()) return
     if (!hasFileChanges) return
     try {
       // 从消息历史中提取最后一条用户消息作为提交摘要
