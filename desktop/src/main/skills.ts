@@ -50,7 +50,7 @@ const SKILL_TOOL_GROUPS: Record<string, string[]> = {
   ],
   desktop: ['desktop_screenshot', 'gui_plus_analyze', 'desktop_action'],
   mcp: ['mcp_list_tools', 'mcp_call'],
-  files: ['read_file', 'write_file', 'edit_file', 'delete_file', 'list_dir', 'find_file', 'codebase_search'],
+  files: ['read_file', 'write_file', 'edit_file', 'delete_file', 'list_dir', 'find_file'],
   command: ['run_command'],
   planning: ['propose_plan', 'update_plan_progress'],
   notes: ['save_note', 'delete_note'],
@@ -69,7 +69,7 @@ const BUILTIN_SKILLS: SkillInfo[] = [
     author: 'Taco',
     source: 'builtin',
     enabled: true,
-    tools: ['read_file', 'find_file', 'codebase_search'],
+    tools: ['read_file', 'find_file'],
     instructions: `# Skill: 代码审查
 当你修改了代码文件后，主动对改动进行简要的代码审查：
 - 检查是否有明显的 bug 或逻辑错误

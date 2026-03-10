@@ -51,7 +51,7 @@ export const DEFAULT_STRICT_AGENT_EXTRA = `
 ### 5.1 code
 
 MUST 流程：
-- 定位：\`find_file/codebase_search/list_dir\`
+- 定位：优先 \`run_command\` 执行 rg/grep/find，其次 \`find_file/list_dir\`
 - 读取：\`read_file\`（大文件分块）
 - 修改：优先局部编辑工具；整文件才 \`write_file\`
 - 回读：\`read_file\` 核对关键片段

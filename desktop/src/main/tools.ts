@@ -104,7 +104,6 @@ const ALWAYS_AVAILABLE_TOOL_NAMES = [
   'propose_plan',
   'update_plan_progress',
   'find_file',
-  'codebase_search',
   'read_skill',
   'read_skill_resource',
   'save_note',
@@ -275,7 +274,7 @@ export const toolDefinitions: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'codebase_search',
-      description: '在文件内容中搜索关键词或正则表达式，返回匹配行及上下文。优先使用 rg (ripgrep)，自动尊重 .gitignore。结果按文件分组，紧凑高效。用于在代码中定位函数、变量、配置等。',
+      description: '兼容旧版本的内容搜索工具。默认不作为首选代码检索方式；代码搜索优先使用 run_command 执行 rg/grep/find。仅在明确需要简单文本搜索且其他方式不适用时才可使用。',
       parameters: {
         type: 'object',
         properties: {
@@ -756,13 +755,14 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
     usage: [
       '用于快速理解目录结构，优先以较小 maxDepth 查看骨架。',
       '当只需目录骨架时将 includeFiles 设为 false，减少无关噪声。',
-      '定位目标后再配合 find_file/codebase_search/read_file 深入。',
+      '定位目标后再配合 find_file/read_file 深入；内容搜索统一优先 run_command + rg。',
     ],
   },
   run_command: {
     usage: [
       '用于构建、测试、运行和验证真实结果，优先执行最小必要命令。',
       '明确设置 cwd 到目标项目目录，避免在错误目录执行。',
+      '代码搜索默认优先使用 rg；定位文件名可配合 find 命令，搜索不到再拆分关键词继续 rg，不要先调用 codebase_search。',
       '命令失败时返回关键 stdout/stderr，并给出下一步处理动作。',
     ],
     cautions: ['未获用户明确授权时，禁止执行高风险破坏性命令。'],
@@ -798,11 +798,9 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
   },
   codebase_search: {
     usage: [
-      '用于在内容层面定位符号、变量、配置、报错文本。',
-      '优先使用精确关键词或正则，必要时加 glob 限定语言范围。',
-      '若需要同时排查多个相关标识符，优先合并为一次正则或多关键词搜索。',
-      '命中后必须 read_file 查看上下文，不可仅凭命中行下结论。',
-      '搜索范围尽量收敛到相关目录；大文件场景先搜索再按行范围 read_file。',
+      '该工具仅保留给旧会话兼容，默认代码检索不要使用它。',
+      '代码搜索统一优先 run_command 执行 rg；需要文件名定位时优先 find_file 或 run_command 执行 find。',
+      '只有在明确需要简单兜底文本搜索且 run_command 不适用时，才考虑使用此工具。',
     ],
   },
   read_skill: {

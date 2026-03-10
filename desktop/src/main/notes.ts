@@ -242,6 +242,7 @@ type TaskLogInput = {
   tools?: string[]
   changedFiles?: string[]
   identifiers?: string[]
+  evidenceFacts?: string[]
   failures?: string[]
 }
 
@@ -407,6 +408,7 @@ function normalizeTaskMemoryEntry(raw: Partial<TaskMemoryEntry>, index: number):
     tools: normalizeStringList(raw.tools, 120),
     changedFiles: normalizeStringList(raw.changedFiles, 160),
     identifiers: normalizeStringList(raw.identifiers, 160),
+    evidenceFacts: normalizeStringList((raw as Record<string, unknown>).evidenceFacts, 2000),
     failures: normalizeStringList(raw.failures, 32),
     ...(normalizeIso((raw as Record<string, unknown>).deletedAt) ? { deletedAt: normalizeIso((raw as Record<string, unknown>).deletedAt) } : {}),
     ...(shortText(String((raw as Record<string, unknown>).deletedReason || ''), 220) ? { deletedReason: shortText(String((raw as Record<string, unknown>).deletedReason || ''), 220) } : {}),
@@ -919,7 +921,57 @@ function extractCoreSummary(summary: string): string {
   return shortText(lines.slice(0, 8).join('；'), TASK_MEMORY_CORE_MAX_CHARS)
 }
 
-function buildAssistantResultBody(summary: string): string {
+function normalizeEvidenceFacts(items: string[] | undefined, limit = 12): string[] {
+  const cleaned = [...new Set((items ?? [])
+    .map((item) => stripControlChars(String(item ?? '').replace(/\r/g, '').trim()))
+    .filter(Boolean))]
+  return cleaned.slice(0, limit)
+}
+
+function extractStructuredFactLines(summary: string): string[] {
+  const cleaned = stripPseudoToolCallArtifacts(stripInternalContextTags(String(summary ?? '')))
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/\r/g, '')
+    .trim()
+  if (!cleaned) return []
+
+  const lines = cleaned.split('\n').map((line) => line.trim())
+  const facts: string[] = []
+  let inFacts = false
+
+  for (const line of lines) {
+    if (!line) {
+      if (inFacts) break
+      continue
+    }
+
+    if (/^关键事实[:：]\s*$/u.test(line)) {
+      inFacts = true
+      continue
+    }
+
+    if (/^关键事实[:：]/u.test(line)) {
+      inFacts = true
+      const inlineFact = line.replace(/^关键事实[:：]\s*/u, '').replace(/^[-*•]\s*/, '').trim()
+      if (inlineFact) facts.push(inlineFact)
+      continue
+    }
+
+    if (!inFacts) continue
+
+    if (/^(?:[-*•]\s+|\d+\.\s+)/.test(line)) {
+      facts.push(line.replace(/^(?:[-*•]\s+|\d+\.\s+)/, '').trim())
+      continue
+    }
+
+    if (/^[\u4e00-\u9fa5A-Za-z][^:：]{0,30}[:：]\s*/.test(line)) break
+    facts.push(line)
+  }
+
+  return normalizeEvidenceFacts(facts, 12)
+}
+
+function buildAssistantResultBody(summary: string, evidenceFacts?: string[]): string {
   const cleaned = stripPseudoToolCallArtifacts(stripInternalContextTags(String(summary ?? '')))
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
     .replace(/\r/g, '')
@@ -931,8 +983,13 @@ function buildAssistantResultBody(summary: string): string {
   const base = cleaned.includes(marker) ? cleaned.slice(cleaned.indexOf(marker) + marker.length).trim() : cleaned
 
   const compact = stripMemoryMetaLines(base)
+  const normalizedFacts = normalizeEvidenceFacts(evidenceFacts, 12)
+  const factLines = normalizedFacts.filter((fact) => !(compact || base).includes(fact))
+  const factBlock = factLines.length > 0
+    ? `\n\n关键事实:\n${factLines.map((fact) => `- ${fact}`).join('\n')}`
+    : ''
 
-  return shortText(compact || base, TASK_MEMORY_ASSISTANT_RESULT_MAX_CHARS)
+  return shortText(`${compact || base}${factBlock}`.trim(), TASK_MEMORY_ASSISTANT_RESULT_MAX_CHARS)
 }
 
 function buildCompactMemorySummary(input: TaskLogInput): string {
@@ -941,6 +998,7 @@ function buildCompactMemorySummary(input: TaskLogInput): string {
   const core = extractCoreSummary(input.summary)
   const toolText = compactJoin(input.tools ?? [], 4)
   const fileText = compactJoin(input.changedFiles ?? [], 4)
+  const factText = compactJoin(normalizeEvidenceFacts(input.evidenceFacts, 6), 3)
   const failureText = compactJoin((input.failures ?? []).slice(0, 3), 2)
   const outcomeText = input.outcome === 'success'
     ? '成功'
@@ -954,6 +1012,7 @@ function buildCompactMemorySummary(input: TaskLogInput): string {
     core ? `处理: ${core}` : '',
     toolText ? `动作: ${toolText}` : '',
     fileText ? `文件: ${fileText}` : '',
+    factText ? `关键事实: ${factText}` : '',
     failureText ? `异常: ${failureText}` : '',
   ].filter(Boolean)
 
@@ -1011,8 +1070,18 @@ function buildHistoricalTaskResultBlock(item: TaskMemoryEntry): string {
   const failures = compactJoin((item.failures ?? []).slice(0, 3), 3)
   if (failures) lines.push(`failures: ${failures}`)
 
+  const factLines = item.evidenceFacts.length > 0
+    ? item.evidenceFacts
+    : extractStructuredFactLines(String(item.assistantResult || ''))
+  if (factLines.length > 0) {
+    lines.push('key_facts:')
+    for (const fact of factLines) {
+      lines.push(`- ${normalizeHistoricalField(fact, TASK_MEMORY_REPLAY_RESULT_MAX_CHARS)}`)
+    }
+  }
+
   const summary = normalizeHistoricalField(
-    extractCoreSummary(String(item.assistantResult || item.summary || item.goal)) || String(item.summary || item.goal),
+    extractCoreSummary(String(item.summary || item.assistantResult || item.goal)) || String(item.summary || item.goal),
     TASK_MEMORY_REPLAY_RESULT_MAX_CHARS,
   )
   if (summary) lines.push(`summary: ${summary}`)
@@ -1029,7 +1098,8 @@ function buildHistoricalTaskResultBlock(item: TaskMemoryEntry): string {
  */
 export async function recordTaskLog(workspace: string, input: TaskLogInput, projectId?: string): Promise<TaskMemoryEntry> {
   const now = new Date().toISOString()
-  const assistantResult = buildAssistantResultBody(input.summary)
+  const evidenceFacts = normalizeEvidenceFacts(input.evidenceFacts, 2000)
+  const assistantResult = buildAssistantResultBody(input.summary, evidenceFacts)
   const compactSummary = buildCompactMemorySummary(input)
   const normalizedUserQuery = extractUserQueryText(input.userQuery || input.goal)
   const normalizedUserAssetsBlock = shortText(
@@ -1050,6 +1120,7 @@ export async function recordTaskLog(workspace: string, input: TaskLogInput, proj
     tools: [...new Set((input.tools ?? []).map((x) => String(x).trim()).filter(Boolean))],
     changedFiles: [...new Set((input.changedFiles ?? []).map((x) => String(x).trim()).filter(Boolean))],
     identifiers: [...new Set((input.identifiers ?? []).map((x) => String(x).trim()).filter(Boolean))],
+    evidenceFacts,
     failures: [...new Set((input.failures ?? []).map((x) => String(x).trim()).filter(Boolean))].slice(0, 24),
     createdAt: now,
     updatedAt: now,

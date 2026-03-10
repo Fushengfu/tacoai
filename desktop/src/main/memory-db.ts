@@ -242,6 +242,7 @@ function ensureDb(): DatabaseSync {
       tools_json TEXT NOT NULL DEFAULT '[]',
       changed_files_json TEXT NOT NULL DEFAULT '[]',
       identifiers_json TEXT NOT NULL DEFAULT '[]',
+      evidence_facts_json TEXT NOT NULL DEFAULT '[]',
       failures_json TEXT NOT NULL DEFAULT '[]',
       deleted_at TEXT,
       deleted_reason TEXT NOT NULL DEFAULT '',
@@ -339,6 +340,7 @@ function ensureDb(): DatabaseSync {
     ON chat_messages(session_id, seq ASC);
   `)
   ensureColumn(next, 'task_memories', 'scope_key', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(next, 'task_memories', 'evidence_facts_json', "TEXT NOT NULL DEFAULT '[]'")
   ensureColumn(next, 'project_notes', 'scope_key', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(next, 'memory_snapshots', 'scope_key', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(next, 'memory_maintain_runs', 'scope_key', "TEXT NOT NULL DEFAULT ''")
@@ -389,6 +391,7 @@ function rowToTaskMemoryEntry(row: Record<string, unknown>): TaskMemoryEntry {
     tools: parseStringArray(row.tools_json),
     changedFiles: parseStringArray(row.changed_files_json),
     identifiers: parseStringArray(row.identifiers_json),
+    evidenceFacts: parseStringArray(row.evidence_facts_json),
     failures: parseStringArray(row.failures_json),
     ...(String(row.deleted_at || '').trim() ? { deletedAt: String(row.deleted_at || '') } : {}),
     ...(String(row.deleted_reason || '').trim() ? { deletedReason: String(row.deleted_reason || '') } : {}),
@@ -440,7 +443,7 @@ function upsertTaskMemoryRows(scope: MemoryScope, items: TaskMemoryEntry[], tier
       user_query, user_assets_block, goal,
       intent_type, intent_summary, intent_goal,
       assistant_result, summary, outcome,
-      tools_json, changed_files_json, identifiers_json, failures_json,
+      tools_json, changed_files_json, identifiers_json, evidence_facts_json, failures_json,
       deleted_at, deleted_reason, merged_into_id,
       created_at, updated_at
     ) VALUES (
@@ -448,7 +451,7 @@ function upsertTaskMemoryRows(scope: MemoryScope, items: TaskMemoryEntry[], tier
       ?, ?, ?,
       ?, ?, ?,
       ?, ?, ?,
-      ?, ?, ?, ?,
+      ?, ?, ?, ?, ?,
       ?, ?, ?,
       ?, ?
     )
@@ -469,6 +472,7 @@ function upsertTaskMemoryRows(scope: MemoryScope, items: TaskMemoryEntry[], tier
       tools_json=excluded.tools_json,
       changed_files_json=excluded.changed_files_json,
       identifiers_json=excluded.identifiers_json,
+      evidence_facts_json=excluded.evidence_facts_json,
       failures_json=excluded.failures_json,
       deleted_at=excluded.deleted_at,
       deleted_reason=excluded.deleted_reason,
@@ -495,6 +499,7 @@ function upsertTaskMemoryRows(scope: MemoryScope, items: TaskMemoryEntry[], tier
       stringifyStringArray(item.tools),
       stringifyStringArray(item.changedFiles),
       stringifyStringArray(item.identifiers),
+      stringifyStringArray(item.evidenceFacts),
       stringifyStringArray(item.failures),
       item.deletedAt ?? null,
       String(item.deletedReason || ''),

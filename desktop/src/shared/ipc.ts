@@ -477,6 +477,8 @@ export type ProjectTaskMemory = {
   tools: string[]
   changedFiles: string[]
   identifiers: string[]
+  /** 本轮过程中的关键事实证据（例如命中的文件/行号/修改动作/验证动作） */
+  evidenceFacts: string[]
   failures: string[]
   /** 软删除时间（存在即表示已删除） */
   deletedAt?: string

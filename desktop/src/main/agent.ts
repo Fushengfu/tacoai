@@ -9,6 +9,7 @@
  * 通过 callback 向调用方推送事件（文本流、工具调用、工具结果、确认请求）。
  */
 
+import path from 'node:path'
 import type { ChatMessage, ProviderOverrides, TokenUsage } from './llm'
 import type { ProviderKey } from './llm'
 import { requestChatCompletion, requestStreamWithTools } from './llm'
@@ -642,7 +643,96 @@ export async function runAgent(
   const failureLogs: string[] = []
   let successfulRunCommandCount = 0
   const runCommandSummaryByToolCallId = new Map<string, string>()
+  const toolInputContextByToolCallId = new Map<string, { path?: string; query?: string; pattern?: string; type?: string }>()
   const successfulRunCommandSummaries: string[] = []
+  const memoryEvidenceFacts: string[] = []
+
+  function toWorkspaceRelativeFactPath(value: string): string {
+    const raw = String(value ?? '').trim()
+    if (!raw) return ''
+    const normalized = raw.replace(/\\/g, '/')
+    if (!workspace || !workspace.trim()) return normalized
+    try {
+      const ws = path.normalize(workspace)
+      const target = path.normalize(raw)
+      if (path.isAbsolute(target) && (target === ws || target.startsWith(`${ws}${path.sep}`))) {
+        const rel = path.relative(ws, target).replace(/\\/g, '/')
+        return rel || '.'
+      }
+    } catch {
+      return normalized
+    }
+    return normalized
+  }
+
+  function shortMemoryFactText(value: string): string {
+    const text = String(value ?? '').replace(/\r/g, '').replace(/\s+/g, ' ').trim()
+    return text
+  }
+
+  function pushMemoryEvidenceFact(value: string) {
+    const fact = shortMemoryFactText(value)
+    if (!fact) return
+    if (memoryEvidenceFacts.includes(fact)) return
+    memoryEvidenceFacts.push(fact)
+  }
+
+  function collectSearchMatchRefs(content: string, limit = 3): string[] {
+    const refs: string[] = []
+    for (const rawLine of String(content ?? '').split('\n')) {
+      const line = rawLine.trim()
+      const match = line.match(/^([^:\n]+):(\d+)(?::|-)/)
+      if (!match) continue
+      const ref = `${toWorkspaceRelativeFactPath(match[1])}:${match[2]}`
+      if (!ref || refs.includes(ref)) continue
+      refs.push(ref)
+      if (refs.length >= limit) break
+    }
+    return refs
+  }
+
+  function collectFindResultPaths(content: string, limit = 3): string[] {
+    const refs: string[] = []
+    for (const rawLine of String(content ?? '').split('\n')) {
+      const line = rawLine.trim()
+      const match = line.match(/^\[(?:F|D)\]\s+(.+?)(?:\/)?$/)
+      if (!match) continue
+      const ref = toWorkspaceRelativeFactPath(match[1])
+      if (!ref || refs.includes(ref)) continue
+      refs.push(ref)
+      if (refs.length >= limit) break
+    }
+    return refs
+  }
+
+  function buildReadFileFact(content: string, requestedPath?: string): string {
+    const metaPathMatch = String(content ?? '').match(/\[read_file\]\s+path:\s*(.+)/)
+    const resolvedPath = toWorkspaceRelativeFactPath(metaPathMatch?.[1] || requestedPath || '')
+    if (!resolvedPath) return ''
+    const withoutMeta = String(content ?? '').replace(/^\[read_file\][^\n]*\n?/gm, '')
+    const hintMarker = '\n[提示]'
+    const hintIndex = withoutMeta.indexOf(hintMarker)
+    const body = (hintIndex >= 0 ? withoutMeta.slice(0, hintIndex) : withoutMeta).trim()
+    const identifiers = extractIdentifiers(body).slice(0, 3)
+    return identifiers.length > 0
+      ? `查看 ${resolvedPath}（涉及 ${identifiers.join('、')}）`
+      : `查看 ${resolvedPath}`
+  }
+
+  function buildFileChangeFact(fileChange: ToolResult['fileChange']): string {
+    if (!fileChange?.filePath) return ''
+    const relPath = toWorkspaceRelativeFactPath(fileChange.filePath)
+    if (!relPath) return ''
+    const action = fileChange.oldContent === null
+      ? '新增'
+      : fileChange.newContent === null
+        ? '删除'
+        : '修改'
+    const identifiers = extractIdentifiers(`${fileChange.oldContent || ''}\n${fileChange.newContent || ''}`).slice(0, 3)
+    return identifiers.length > 0
+      ? `${action} ${relPath}（涉及 ${identifiers.join('、')}）`
+      : `${action} ${relPath}`
+  }
 
   function shouldPersistTaskCoreLog(): { persist: boolean; reason: string } {
     // 每轮用户提问都写入任务记忆（包括未调用工具的问答轮次）。
@@ -662,6 +752,30 @@ export async function runAgent(
         const command = typeof args.command === 'string' ? args.command : ''
         const summary = summarizeRunCommand(command)
         if (summary) runCommandSummaryByToolCallId.set(tc.id, summary)
+      }
+      if (name === 'read_file') {
+        const requestedPath = typeof args.path === 'string' ? args.path.trim() : ''
+        if (requestedPath) toolInputContextByToolCallId.set(tc.id, { path: requestedPath })
+      } else if (name === 'codebase_search') {
+        const query = typeof args.query === 'string'
+          ? args.query.trim()
+          : typeof args.pattern === 'string'
+            ? args.pattern.trim()
+            : ''
+        const requestedPath = typeof args.path === 'string'
+          ? args.path.trim()
+          : typeof args.directory === 'string'
+            ? args.directory.trim()
+            : ''
+        toolInputContextByToolCallId.set(tc.id, { query, path: requestedPath })
+      } else if (name === 'find_file') {
+        const pattern = typeof args.pattern === 'string' ? args.pattern.trim() : ''
+        const requestedPath = typeof args.directory === 'string' ? args.directory.trim() : ''
+        const type = typeof args.type === 'string' ? args.type.trim() : ''
+        toolInputContextByToolCallId.set(tc.id, { pattern, path: requestedPath, type })
+      } else if (name === 'list_dir') {
+        const requestedPath = typeof args.path === 'string' ? args.path.trim() : ''
+        if (requestedPath) toolInputContextByToolCallId.set(tc.id, { path: requestedPath })
       }
       const pathKeys = ['path', 'filePath', 'cwd']
       for (const key of pathKeys) {
@@ -687,13 +801,40 @@ export async function runAgent(
           successfulRunCommandSummaries.push(summary)
           if (successfulRunCommandSummaries.length > 3) successfulRunCommandSummaries.shift()
         }
+        if (summary) pushMemoryEvidenceFact(`执行验证：${summary}`)
       }
-      if (result.fileChange?.filePath) changedFiles.add(result.fileChange.filePath)
+      if (result.fileChange?.filePath) {
+        changedFiles.add(result.fileChange.filePath)
+        const fileChangeFact = buildFileChangeFact(result.fileChange)
+        if (fileChangeFact) pushMemoryEvidenceFact(fileChangeFact)
+      }
       if (result.fileChange?.oldContent) {
         for (const id of extractIdentifiers(result.fileChange.oldContent)) touchedIdentifiers.add(id)
       }
       if (result.fileChange?.newContent) {
         for (const id of extractIdentifiers(result.fileChange.newContent)) touchedIdentifiers.add(id)
+      }
+      if (result.success) {
+        const toolInput = toolInputContextByToolCallId.get(result.tool_call_id)
+        if (result.name === 'read_file') {
+          const fact = buildReadFileFact(result.content, toolInput?.path)
+          if (fact) pushMemoryEvidenceFact(fact)
+        } else if (result.name === 'codebase_search') {
+          const refs = collectSearchMatchRefs(result.content, 4)
+          if (refs.length > 0) {
+            const query = shortMemoryFactText(toolInput?.query || '代码搜索')
+            pushMemoryEvidenceFact(`搜索 ${query} 命中 ${refs.join('、')}`)
+          }
+        } else if (result.name === 'find_file') {
+          const refs = collectFindResultPaths(result.content, 4)
+          if (refs.length > 0) {
+            const label = toolInput?.type === 'directory' ? '定位目录' : '定位文件'
+            const pattern = shortMemoryFactText(toolInput?.pattern || '目标路径')
+            pushMemoryEvidenceFact(`${label} ${pattern}：${refs.join('、')}`)
+          }
+        } else if (result.name === 'list_dir' && toolInput?.path) {
+          pushMemoryEvidenceFact(`查看目录 ${toWorkspaceRelativeFactPath(toolInput.path)}`)
+        }
       }
       if (!result.success && failureLogs.length < 12) {
         failureLogs.push(`${result.name}: ${compactLine(result.content, 320)}`)
@@ -769,6 +910,7 @@ export async function runAgent(
           tools,
           changedFiles: modifiedFiles.slice(0, 80),
           identifiers: [...touchedIdentifiers].slice(0, 80),
+          evidenceFacts: [...memoryEvidenceFacts],
           failures: failureLogs.slice(0, 12),
         },
         projectId,
