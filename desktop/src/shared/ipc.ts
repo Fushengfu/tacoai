@@ -298,6 +298,7 @@ export type AgentEventData = {
   requestId: string
 } & (
   | { type: 'text'; content: string }
+  | { type: 'reasoning'; content: string }
   | { type: 'tool_calls'; toolCalls: IpcToolCall[] }
   | { type: 'system_notice'; title: string; message?: string }
   | { type: 'confirm'; confirmId: string; toolCalls: IpcToolCall[]; risks: IpcRiskInfo[] }

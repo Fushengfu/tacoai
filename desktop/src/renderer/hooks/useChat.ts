@@ -839,6 +839,7 @@ export function useChat() {
           let currentRound = 0
           let commitHash: string | undefined
           let activePlan: ActivePlan | undefined
+          let reasoningAccumulated = ''
 
           // 辅助：更新 agent 消息（追加或更新）
           const flushAgentMsg = (finalContent?: string, taskTiming?: TaskTiming) => {
@@ -874,6 +875,8 @@ export function useChat() {
               accumulated += event.content
               // Agent 模式下直接更新消息内容，不使用独立的 streamingContent
               flushAgentMsg(undefined, runningTaskTiming)
+            } else if (event.type === 'reasoning') {
+              reasoningAccumulated += event.content
             } else if (event.type === 'usage') {
               trackRequestUsage(event.usage)
             } else if (event.type === 'tool_calls') {
@@ -886,13 +889,14 @@ export function useChat() {
               }))
               steps.push({
                 round: currentRound,
-                thinking: accumulated,
+                thinking: reasoningAccumulated.trim() || accumulated,
                 toolCalls,
                 toolResults: [],
                 status: 'running',
               })
               // 清空累积文本，后续文本属于下一轮或最终回复
               accumulated = ''
+              reasoningAccumulated = ''
               flushAgentMsg(undefined, runningTaskTiming)
             } else if (event.type === 'system_notice') {
               currentRound++
@@ -1184,6 +1188,7 @@ export function useChat() {
           let currentRound = 0
           let commitHash: string | undefined
           let activePlan: ActivePlan | undefined
+          let reasoningAccumulated = ''
 
           const flushAgentMsg = (finalContent?: string, taskTiming?: TaskTiming) => {
             const nextContent = finalContent ?? accumulated
@@ -1215,6 +1220,8 @@ export function useChat() {
             if (evt.type === 'text') {
               accumulated += evt.content
               flushAgentMsg(undefined, runningTaskTiming)
+            } else if (evt.type === 'reasoning') {
+              reasoningAccumulated += evt.content
             } else if (evt.type === 'usage') {
               trackRequestUsage(evt.usage)
             } else if (evt.type === 'tool_calls') {
@@ -1226,12 +1233,13 @@ export function useChat() {
               }))
               steps.push({
                 round: currentRound,
-                thinking: accumulated,
+                thinking: reasoningAccumulated.trim() || accumulated,
                 toolCalls,
                 toolResults: [],
                 status: 'running',
               })
               accumulated = ''
+              reasoningAccumulated = ''
               flushAgentMsg(undefined, runningTaskTiming)
             } else if (evt.type === 'system_notice') {
               currentRound++

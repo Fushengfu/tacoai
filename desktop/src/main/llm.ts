@@ -15,6 +15,7 @@ export type ChatMessage = {
 /** 流式事件：文本片段 or 工具调用 */
 export type StreamEvent =
   | { type: 'text'; content: string }
+  | { type: 'reasoning'; content: string }
   | { type: 'tool_calls'; toolCalls: ToolCall[] }
   | { type: 'invalid_tool_calls'; names: string[] }
   | { type: 'usage'; usage: TokenUsage }
@@ -98,6 +99,55 @@ function buildAllowedToolNameSet(options?: RequestOptions): Set<string> {
     if (name) out.add(name)
   }
   return out
+}
+
+function extractDeltaString(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (!value) return ''
+  if (Array.isArray(value)) {
+    return value.map((item) => extractDeltaString(item)).filter(Boolean).join('')
+  }
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    const prioritizedKeys = [
+      'text',
+      'content',
+      'value',
+      'output_text',
+      'reasoning_content',
+      'reasoning',
+      'thinking',
+      'analysis',
+    ]
+    for (const key of prioritizedKeys) {
+      const nested = extractDeltaString(record[key])
+      if (nested) return nested
+    }
+  }
+  return ''
+}
+
+function extractReasoningDelta(delta: unknown): string {
+  if (!delta || typeof delta !== 'object') return ''
+  const record = delta as Record<string, unknown>
+  const reasoningCandidates = [
+    record.reasoning_content,
+    record.reasoning,
+    record.thinking,
+    record.analysis,
+  ]
+  for (const candidate of reasoningCandidates) {
+    const text = extractDeltaString(candidate)
+    if (text) return text
+  }
+  return ''
+}
+
+function extractTextDelta(delta: unknown): string {
+  if (!delta || typeof delta !== 'object') return ''
+  const record = delta as Record<string, unknown>
+  return extractDeltaString(record.content)
 }
 
 function resolveToolCallsFromMap(
@@ -496,14 +546,18 @@ function buildMergedResponse(
   content: string,
   usageOverride?: unknown,
   toolCalls?: ToolCall[],
+  reasoningContent?: string,
 ) {
   const usage = usageOverride !== undefined ? usageOverride : (lastChunk?.usage ?? null)
-  const message: { role: 'assistant'; content: string; tool_calls?: ToolCall[] } = {
+  const message: { role: 'assistant'; content: string; tool_calls?: ToolCall[]; reasoning_content?: string } = {
     role: 'assistant',
     content,
   }
   if (toolCalls && toolCalls.length > 0) {
     message.tool_calls = toolCalls
+  }
+  if (reasoningContent && reasoningContent.trim()) {
+    message.reasoning_content = reasoningContent
   }
 
   if (!firstChunk) {
@@ -546,16 +600,17 @@ function logMergedStreamResponse(params: {
   content: string
   usage?: unknown
   toolCalls?: ToolCall[]
+  reasoningContent?: string
   logScope?: string
 }) {
-  const { url, response, durationMs, firstChunk, lastChunk, content, usage, toolCalls, logScope } = params
+  const { url, response, durationMs, firstChunk, lastChunk, content, usage, toolCalls, reasoningContent, logScope } = params
   log('RESPONSE', {
     url,
     status: response.status,
     statusText: response.statusText,
     headers: Object.fromEntries(response.headers.entries()),
     durationMs,
-    body: buildMergedResponse(firstChunk, lastChunk, content, usage, toolCalls),
+    body: buildMergedResponse(firstChunk, lastChunk, content, usage, toolCalls, reasoningContent),
   }, logScope)
 }
 
@@ -623,6 +678,7 @@ export async function* requestStreamWithTools(
   const decoder = new TextDecoder()
   let buffer = ''
   let accumulated = ''
+  let accumulatedReasoning = ''
   let lastTextChunk = ''
   let repeatedTextChunkCount = 0
   const allowedToolNames = buildAllowedToolNameSet(options)
@@ -670,6 +726,7 @@ export async function* requestStreamWithTools(
             content: accumulated,
             usage: mergedUsageRaw,
             toolCalls: mergedToolCalls,
+            reasoningContent: accumulatedReasoning,
             logScope,
           })
           return
@@ -686,9 +743,16 @@ export async function* requestStreamWithTools(
 
           const delta = parsed.choices?.[0]?.delta
 
+          const reasoning = extractReasoningDelta(delta)
+          if (reasoning) {
+            accumulatedReasoning += reasoning
+            yield { type: 'reasoning', content: reasoning }
+          }
+
           // 文本内容
-          if (delta?.content) {
-            const content = String(delta.content)
+          const textDelta = extractTextDelta(delta)
+          if (textDelta) {
+            const content = textDelta
             if (content === lastTextChunk && content.trim().length > 0) {
               repeatedTextChunkCount++
               // 某些 provider 在异常情况下会持续重复发送同一文本块，触发保护提前结束本轮流式
@@ -717,6 +781,7 @@ export async function* requestStreamWithTools(
                   content: accumulated,
                   usage: mergedUsageRaw,
                   toolCalls: resolveToolCallsFromMap(toolCallsMap, allowedToolNames).toolCalls,
+                  reasoningContent: accumulatedReasoning,
                   logScope,
                 })
                 return
@@ -778,6 +843,7 @@ export async function* requestStreamWithTools(
       content: accumulated,
       usage: mergedUsageRaw,
       toolCalls: mergedToolCalls,
+      reasoningContent: accumulatedReasoning,
       logScope,
     })
   } catch (err) {
@@ -791,6 +857,7 @@ export async function* requestStreamWithTools(
         accumulated,
         mergedUsageRaw,
         resolveToolCallsFromMap(toolCallsMap, allowedToolNames).toolCalls,
+        accumulatedReasoning,
       ),
       error: String(err),
     }, logScope)

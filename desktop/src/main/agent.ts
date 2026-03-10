@@ -32,6 +32,8 @@ import type { PlanStepStatus } from '../shared/ipc'
 export type AgentEvent =
   /** 文本流片段 */
   | { type: 'text'; content: string }
+  /** 思考/推理片段（用于步骤展示，不进入最终回复正文） */
+  | { type: 'reasoning'; content: string }
   /** AI 决定调用工具 */
   | { type: 'tool_calls'; toolCalls: ToolCall[] }
   /** 系统级提示（如上下文自动压缩） */
@@ -955,6 +957,8 @@ export async function runAgent(
     let textContent = ''
     let rawTextContent = ''
     let emittedSanitizedText = ''
+    let rawReasoningContent = ''
+    let emittedSanitizedReasoning = ''
     let toolCalls: ToolCall[] = []
     let invalidToolCallNames: string[] = []
 
@@ -983,6 +987,12 @@ export async function runAgent(
           textContent = visibleText
           lastAssistantText = textContent
           if (delta) onEvent?.({ type: 'text', content: delta })
+        } else if (event.type === 'reasoning') {
+          rawReasoningContent += event.content
+          const sanitizedReasoning = sanitizeContextArtifacts(rawReasoningContent)
+          const reasoningDelta = sanitizedReasoning.slice(emittedSanitizedReasoning.length)
+          emittedSanitizedReasoning = sanitizedReasoning
+          if (reasoningDelta) onEvent?.({ type: 'reasoning', content: reasoningDelta })
         } else if (event.type === 'usage') {
           if (typeof event.usage.totalTokens === 'number' && Number.isFinite(event.usage.totalTokens)) {
             lastUsageTotalTokens = event.usage.totalTokens
@@ -998,6 +1008,9 @@ export async function runAgent(
       const finalSanitizedText = sanitizeUserFacingText(rawTextContent)
       const tailDelta = finalSanitizedText.slice(emittedSanitizedText.length)
       if (tailDelta) onEvent?.({ type: 'text', content: tailDelta })
+      const finalSanitizedReasoning = sanitizeContextArtifacts(rawReasoningContent)
+      const reasoningTailDelta = finalSanitizedReasoning.slice(emittedSanitizedReasoning.length)
+      if (reasoningTailDelta) onEvent?.({ type: 'reasoning', content: reasoningTailDelta })
       textContent = finalSanitizedText
       lastAssistantText = textContent
     } catch (err) {

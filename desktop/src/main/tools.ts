@@ -109,6 +109,8 @@ const ALWAYS_AVAILABLE_TOOL_NAMES = [
   'read_skill_resource',
   'save_note',
   'delete_note',
+  'mcp_list_tools',
+  'mcp_call',
 ]
 
 export const toolDefinitions: ToolDefinition[] = [
