@@ -189,6 +189,29 @@ function sanitizeUserFacingText(input: string): string {
   return output
 }
 
+function sanitizeReplayRawText(input: string): string {
+  return stripPseudoToolCallArtifacts(stripInternalContextTags(String(input ?? '')))
+    .replace(/\r/g, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function buildAssistantContextContent(rawText: string, sanitizedText: string, rawReasoning: string): string {
+  const replayRawText = sanitizeReplayRawText(rawText)
+  const visibleText = sanitizeUserFacingText(sanitizedText).trim()
+  const reasoning = sanitizeContextArtifacts(rawReasoning).trim()
+  const primaryText = replayRawText || visibleText
+
+  if (primaryText && reasoning) {
+    if (/<think\b/i.test(primaryText)) return primaryText
+    return `<think>\n${reasoning}\n</think>\n\n${primaryText}`.trim()
+  }
+  if (primaryText) return primaryText
+  if (reasoning) return `思考：${reasoning}`
+  return ''
+}
+
 function compactLine(text: string, max = 260): string {
   const line = String(text ?? '')
     .replace(/\r/g, '')
@@ -1107,6 +1130,7 @@ export async function runAgent(
     let emittedSanitizedText = ''
     let rawReasoningContent = ''
     let emittedSanitizedReasoning = ''
+    let assistantContextContent = ''
     let toolCalls: ToolCall[] = []
     let invalidToolCallNames: string[] = []
 
@@ -1160,7 +1184,8 @@ export async function runAgent(
       const reasoningTailDelta = finalSanitizedReasoning.slice(emittedSanitizedReasoning.length)
       if (reasoningTailDelta) onEvent?.({ type: 'reasoning', content: reasoningTailDelta })
       textContent = finalSanitizedText
-      lastAssistantText = textContent
+      assistantContextContent = buildAssistantContextContent(rawTextContent, finalSanitizedText, rawReasoningContent)
+      lastAssistantText = assistantContextContent || textContent || lastAssistantText
     } catch (err) {
       if (isAbortError(err) || signal?.aborted) {
         log('AGENT_ABORTED', { round, reason: 'signal aborted during stream request' }, logScope)
@@ -1304,7 +1329,7 @@ export async function runAgent(
         }, logScope)
         workingMessages.push({
           role: 'assistant',
-          content: textContent || '',
+          content: assistantContextContent || textContent || '',
         })
         if (completionRejectCount >= 10) {
           await persistTaskCoreLogWithOutcome(textContent || lastAssistantText, 'error', `完成校验连续未通过已达上限(${completionRejectCount})`)
@@ -1316,7 +1341,7 @@ export async function runAgent(
       completionRejectCount = 0
       completionValidationHint = ''
 
-      await finalizeAndDone(textContent)
+      await finalizeAndDone(assistantContextContent || textContent)
       return
     }
 
@@ -1328,7 +1353,7 @@ export async function runAgent(
     // 追加 assistant 消息（含 tool_calls）
     workingMessages.push({
       role: 'assistant',
-      content: textContent || '',
+      content: assistantContextContent || textContent || '',
       tool_calls: toolCalls,
     })
 
