@@ -333,7 +333,7 @@ export function buildSystemPrompt(options?: {
   projectRules?: string
   promptConfig?: PromptConfig | null
 }): string {
-  const mode = options?.mode ?? 'chat'
+  const mode = options?.mode ?? 'agent'
   const workspace = options?.workspace ?? ''
   const provider = options?.provider
   const model = cleanText(options?.model)

@@ -13,6 +13,7 @@ import { IpcChannel } from '../shared/ipc'
 import { shutdownAllMcp } from './mcp'
 import { shutdownMobileBridge } from './mobile-bridge'
 import { ensurePromptConfigInitialized } from './prompt-config'
+import { scheduleStartupUpdateCheck } from './app-updater'
 
 // esbuild 构建后 __dirname 由 CJS 运行时提供，指向 dist-main/
 // 源码开发时 tsx 也支持 __dirname
@@ -374,6 +375,7 @@ app.whenReady().then(async () => {
   mainWindow = createWindow()
   createTray()
   registerIpcHandlers()
+  scheduleStartupUpdateCheck(mainWindow)
 
   app.on('activate', () => {
     showMainWindow()

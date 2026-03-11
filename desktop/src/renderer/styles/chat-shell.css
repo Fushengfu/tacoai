@@ -211,6 +211,22 @@ body.is-dragging * {
   border-color: rgba(59, 130, 246, 0.5);
 }
 
+.update-pill {
+  background: rgba(250, 204, 21, 0.16);
+  color: #fde68a;
+  border-color: rgba(250, 204, 21, 0.38);
+}
+
+.update-pill:hover:not(:disabled) {
+  background: rgba(250, 204, 21, 0.24);
+  border-color: rgba(250, 204, 21, 0.54);
+}
+
+.update-pill:disabled {
+  opacity: 0.72;
+  cursor: default;
+}
+
 /* ── 会话标签页 ── */
 .session-tabs {
   display: flex;

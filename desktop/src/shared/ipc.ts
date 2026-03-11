@@ -127,6 +127,10 @@ export const IpcChannel = {
   OPEN_LOG_DIR: 'app:open-log-dir',
   /** renderer → main, 获取应用版本号（来自 app.getVersion()） */
   APP_GET_VERSION: 'app:get-version',
+  /** renderer → main, 检查版本更新（内部会先登录获取 token） */
+  APP_CHECK_UPDATE: 'app:check-update',
+  /** renderer → main, 获取最近一次版本检查结果（启动自动检查/手动检查） */
+  APP_GET_UPDATE_STATUS: 'app:get-update-status',
   /** renderer → main, 触发系统通知 */
   APP_NOTIFY: 'app:notify',
   /** renderer → main, 上报渲染层异常诊断 */
@@ -311,7 +315,7 @@ export type AgentEventData = {
 } & (
   | { type: 'text'; content: string }
   | { type: 'reasoning'; content: string }
-  | { type: 'tool_calls'; toolCalls: IpcToolCall[] }
+  | { type: 'tool_calls'; toolCalls: IpcToolCall[]; thinking?: string }
   | { type: 'system_notice'; title: string; message?: string }
   | { type: 'confirm'; confirmId: string; toolCalls: IpcToolCall[]; risks: IpcRiskInfo[] }
   | { type: 'tool_results'; results: IpcToolResult[] }
@@ -602,6 +606,22 @@ export type AppNotifyPayload = {
   silent?: boolean
 }
 
+export type AppUpdateCheckResult = {
+  success: boolean
+  checkedAt: number
+  currentVersion: string
+  hasUpdate: boolean
+  latestVersion?: string
+  latestVersionCode?: string
+  releaseNotes?: string
+  downloadUrl?: string
+  forceUpdate?: boolean
+  /** 用户是否点击了下载 */
+  downloadTriggered?: boolean
+  /** 提示信息（错误或状态） */
+  message?: string
+}
+
 export type RendererErrorPayload = {
   source: string
   message: string
@@ -798,6 +818,12 @@ export type TacoApi = {
     notify: (payload: AppNotifyPayload) => Promise<boolean>
     /** 上报渲染层异常到主进程日志 */
     reportRendererError: (payload: RendererErrorPayload) => Promise<void>
+  }
+  updater: {
+    /** 检查版本更新；manual=true 时发现新版本会弹窗确认下载 */
+    check: (manual?: boolean) => Promise<AppUpdateCheckResult>
+    /** 读取最近一次版本检查结果（可能为 null） */
+    getStatus: () => Promise<AppUpdateCheckResult | null>
   }
   mobileBridge: {
     /** 获取移动端桥接配置 */

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ActivePlan, AgentStep, AttachedImage, ChatMsg, FileChangeInfo, FileChangeStatus, ProviderId, QueuedMessage, Session, ThreadMode } from '../types'
-import type { EditorId } from '../../shared/ipc'
+import type { ActivePlan, AgentStep, AttachedImage, ChatMsg, FileChangeInfo, FileChangeStatus, ProviderId, QueuedMessage, Session } from '../types'
+import type { AppUpdateCheckResult, EditorId } from '../../shared/ipc'
 import { MarkdownBubble } from './MarkdownBubble'
 import { DiffView } from './DiffView'
 import { FileEditor } from './FileEditor'
@@ -169,13 +169,14 @@ type ChatPanelProps = {
   activeSessionId: string
   onResend: (msgId: string) => void
   onEditResend: (msgId: string, newContent: string) => void
-  mode: ThreadMode
-  onModeChange: (mode: ThreadMode) => void
   workspace: string
   onSelectWorkspace: () => void
   provider: ProviderId
   onProviderChange: (id: ProviderId) => void
   configuredProviders: readonly { id: ProviderId; label: string }[]
+  updateStatus?: AppUpdateCheckResult | null
+  updateChecking?: boolean
+  onOpenUpdateDialog?: () => void
   scrollRef: React.RefObject<HTMLDivElement>
   queue: QueuedMessage[]
   onRemoveFromQueue: (id: string) => void
@@ -237,13 +238,14 @@ export function ChatPanel({
   activeSessionId,
   onResend,
   onEditResend,
-  mode,
-  onModeChange,
   workspace,
   onSelectWorkspace,
   provider,
   onProviderChange,
   configuredProviders,
+  updateStatus,
+  updateChecking,
+  onOpenUpdateDialog,
   scrollRef,
   queue,
   onRemoveFromQueue,
@@ -927,6 +929,17 @@ export function ChatPanel({
         <div className="topbar-title">{title}</div>
         <div className={`topbar-actions no-drag ${showWindowControls ? 'has-window-controls' : ''}`}>
           <div className="topbar-main-actions">
+            {updateStatus?.success && updateStatus.hasUpdate && (
+              <button
+                className="pill update-pill"
+                type="button"
+                onClick={() => onOpenUpdateDialog?.()}
+                disabled={updateChecking}
+                title="点击查看并升级新版本"
+              >
+                {updateChecking ? '检查更新中...' : `新版本 v${updateStatus.latestVersion || ''}`}
+              </button>
+            )}
             <button
               className={`pill terminal-toggle ${showTerminal ? 'active' : ''}`}
               type="button"
@@ -1071,11 +1084,11 @@ export function ChatPanel({
             <div className="empty-sub">
               {!hasProviders
                 ? '请先在 Settings 中配置至少一个模型的 API Key'
-                : mode === 'agent' && !workspace
+                : !workspace
                   ? '请先选择一个工作空间目录，作为 Agent 可操作的安全空间'
                   : '发送一条消息开始对话'}
             </div>
-            {mode === 'agent' && !workspace && hasProviders && (
+            {!workspace && hasProviders && (
               <button
                 type="button"
                 className="workspace-select-btn"
@@ -1443,7 +1456,7 @@ export function ChatPanel({
             placeholder={
               !hasProviders
                 ? '请先在 Settings 中配置模型...'
-                : mode === 'agent' && !workspace
+                : !workspace
                   ? '请先选择工作空间...'
                   : sending
                     ? '输入消息, Enter 加入队列等待发送'
@@ -1453,7 +1466,7 @@ export function ChatPanel({
             onChange={(e) => onDraftChange(e.target.value)}
             onPaste={handlePaste}
             rows={1}
-            disabled={!hasProviders || (mode === 'agent' && !workspace)}
+            disabled={!hasProviders || !workspace}
             onKeyDown={(e) => {
               // 输入法组合中（如拼音选字）按 Enter 不发送
               if (e.nativeEvent.isComposing || e.keyCode === 229) return
@@ -1479,7 +1492,7 @@ export function ChatPanel({
                 className="composer-attach-btn"
                 onClick={() => fileInputRef.current?.click()}
                 title="添加图片（支持粘贴）"
-                disabled={!hasProviders || (mode === 'agent' && !workspace)}
+                disabled={!hasProviders || !workspace}
               >
                 <svg className="composer-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
                   <rect x="3.5" y="5" width="17" height="14" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.7" />
@@ -1489,25 +1502,15 @@ export function ChatPanel({
               </button>
               <button
                 type="button"
-                className={`mode-toggle ${mode}`}
-                onClick={() => onModeChange(mode === 'chat' ? 'agent' : 'chat')}
-                title={mode === 'chat' ? '切换到 Agent 模式（可调用工具）' : '切换到 Chat 模式（纯对话）'}
+                className={`workspace-btn ${workspace ? 'active' : ''}`}
+                onClick={onSelectWorkspace}
+                title={workspace ? `工作空间: ${workspace}` : '选择工作空间'}
               >
-                {mode === 'agent' ? '⚙ Agent' : '💬 Chat'}
+                <svg className="workspace-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3.5 8.5A2.5 2.5 0 0 1 6 6h4l2 2h6A2.5 2.5 0 0 1 20.5 10.5v7A2.5 2.5 0 0 1 18 20H6a2.5 2.5 0 0 1-2.5-2.5z" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+                </svg>
+                <span>{workspace ? workspace.split('/').pop() || workspace : '选择工作空间'}</span>
               </button>
-              {mode === 'agent' && (
-                <button
-                  type="button"
-                  className={`workspace-btn ${workspace ? 'active' : ''}`}
-                  onClick={onSelectWorkspace}
-                  title={workspace ? `工作空间: ${workspace}` : '选择工作空间'}
-                >
-                  <svg className="workspace-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M3.5 8.5A2.5 2.5 0 0 1 6 6h4l2 2h6A2.5 2.5 0 0 1 20.5 10.5v7A2.5 2.5 0 0 1 18 20H6a2.5 2.5 0 0 1-2.5-2.5z" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
-                  </svg>
-                  <span>{workspace ? workspace.split('/').pop() || workspace : '选择工作空间'}</span>
-                </button>
-              )}
               <select
                 className="provider-select"
                 value={provider}
@@ -1541,7 +1544,7 @@ export function ChatPanel({
                   className="send-btn"
                   type="button"
                   onClick={handleSend}
-                  disabled={!hasProviders || (mode === 'agent' && !workspace)}
+                  disabled={!hasProviders || !workspace}
                 >
                   <svg className="send-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M12 19V5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />

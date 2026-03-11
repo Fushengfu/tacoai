@@ -19,6 +19,7 @@ import type {
   ExternalBrowserStatus,
   GuiPlusConfig,
   AppNotifyPayload,
+  AppUpdateCheckResult,
   RendererErrorPayload,
   MobileBridgeConfig,
   MobileBridgeCommandData,
@@ -77,6 +78,12 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.APP_NOTIFY, payload),
     reportRendererError: (payload: RendererErrorPayload) =>
       ipcRenderer.invoke(IpcChannel.APP_RENDERER_ERROR, payload),
+  },
+  updater: {
+    check: (manual = false): Promise<AppUpdateCheckResult> =>
+      ipcRenderer.invoke(IpcChannel.APP_CHECK_UPDATE, Boolean(manual)),
+    getStatus: (): Promise<AppUpdateCheckResult | null> =>
+      ipcRenderer.invoke(IpcChannel.APP_GET_UPDATE_STATUS),
   },
   mobileBridge: {
     getConfig: (): Promise<MobileBridgeConfig> =>

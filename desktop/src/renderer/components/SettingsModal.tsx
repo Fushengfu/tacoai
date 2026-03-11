@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import QRCode from 'qrcode'
 import type { ProviderId, ProviderForm, ProviderForms, GuiPlusForm, ThemeMode } from '../types'
-import type { SkillInfo, ProjectNote, ProjectTaskMemory, NoteCategory, McpServerInfo, MobileBridgeConfig, MemoryScopeStats } from '../../shared/ipc'
+import type { SkillInfo, ProjectNote, ProjectTaskMemory, NoteCategory, McpServerInfo, MobileBridgeConfig, MemoryScopeStats, AppUpdateCheckResult } from '../../shared/ipc'
 import { providers, providerPlaceholders } from '../constants'
 
 const NOTE_CATEGORIES: { value: NoteCategory; label: string }[] = [
@@ -86,6 +86,9 @@ export function SettingsPage({
   const [recallDebugEnabled, setRecallDebugEnabled] = useState<boolean>(() =>
     localStorage.getItem('taco.recallDebugEnabled') === 'true'
   )
+  const [updateChecking, setUpdateChecking] = useState(false)
+  const [updateCheckSummary, setUpdateCheckSummary] = useState('')
+  const [cachedUpdateStatus, setCachedUpdateStatus] = useState<AppUpdateCheckResult | null>(null)
 
   // 自动授权分类
   const [autoApproveCategories, setAutoApproveCategoriesState] = useState<Set<string>>(() => {
@@ -223,6 +226,58 @@ export function SettingsPage({
       console.error('卸载 Skill 失败:', err)
     }
   }
+
+  const handleCheckUpdate = async () => {
+    setUpdateChecking(true)
+    try {
+      const result: AppUpdateCheckResult = await window.taco.updater.check(true)
+      setCachedUpdateStatus(result)
+      if (!result.success) {
+        setUpdateCheckSummary(`检查失败：${result.message || '未知错误'}`)
+        return
+      }
+      if (result.hasUpdate) {
+        const downloadText = result.downloadTriggered ? '，已开始下载' : ''
+        setUpdateCheckSummary(`发现新版本 v${result.latestVersion || ''}${downloadText}`)
+      } else {
+        setUpdateCheckSummary('当前已是最新版本')
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setUpdateCheckSummary(`检查失败：${message}`)
+    } finally {
+      setUpdateChecking(false)
+    }
+  }
+
+  useEffect(() => {
+    if (tab !== 'general') return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let retries = 0
+
+    const pullStatus = async () => {
+      try {
+        const status = await window.taco.updater.getStatus()
+        if (cancelled) return
+        setCachedUpdateStatus(status)
+
+        // 启动检查是异步触发，首次可能还没结果，短暂重试拉取
+        if (!status && retries < 20) {
+          retries += 1
+          timer = setTimeout(() => { void pullStatus() }, 800)
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    void pullStatus()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [tab])
 
   // ── Notes 逻辑 ──
   const loadNotes = useCallback(async () => {
@@ -751,6 +806,37 @@ export function SettingsPage({
             {/* 系统维护 */}
             <div className="settings-card" style={{ marginTop: 16 }}>
               <div className="settings-card-title">系统维护</div>
+              {cachedUpdateStatus?.success && cachedUpdateStatus.hasUpdate && (
+                <div className="settings-update-notice">
+                  <span>
+                    检测到新版本 v{cachedUpdateStatus.latestVersion || ''}，
+                    可点击查看并确认是否升级。
+                  </span>
+                  <button
+                    type="button"
+                    className="settings-update-notice-btn"
+                    onClick={() => { void handleCheckUpdate() }}
+                    disabled={updateChecking}
+                  >
+                    查看更新
+                  </button>
+                </div>
+              )}
+              <div className="settings-action-row">
+                <div className="settings-action-info">
+                  <strong>版本检查与升级</strong>
+                  <small>检查前会先调用登录接口获取 token，再请求版本检查接口；发现新版本后可点击下载更新包。</small>
+                  {updateCheckSummary && <small>{updateCheckSummary}</small>}
+                </div>
+                <button
+                  type="button"
+                  className="settings-action-btn"
+                  onClick={() => { void handleCheckUpdate() }}
+                  disabled={updateChecking}
+                >
+                  {updateChecking ? '检查中...' : '检查更新'}
+                </button>
+              </div>
               <div className="settings-action-row">
                 <div className="settings-action-info">
                   <strong>日志目录</strong>

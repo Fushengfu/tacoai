@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { ProviderId, Session, Thread } from '../types'
+import type { ProviderId, Session, Thread, ThreadMode } from '../types'
 import { loadJson, saveJson } from '../lib/storage'
 import { providers } from '../constants'
 
@@ -10,6 +10,7 @@ function migrateThreads(saved: Thread[]): Thread[] {
     const provider = t.provider && validProviders.has(t.provider) ? t.provider : undefined
     const titleLocked = Boolean(t.titleLocked)
     const projectRules = typeof t.projectRules === 'string' ? t.projectRules : undefined
+    const mode: ThreadMode = 'agent'
     if (!t.sessions || t.sessions.length === 0) {
       // 使用 threadId 作为首个 sessionId，这样旧的消息存储键无需迁移
       return {
@@ -17,12 +18,18 @@ function migrateThreads(saved: Thread[]): Thread[] {
         provider,
         titleLocked,
         projectRules,
+        mode,
         sessions: [{ id: t.id, title: '会话 1', createdAt: t.updatedAt }],
         activeSessionId: t.id,
       }
     }
-    if (provider === t.provider && titleLocked === Boolean(t.titleLocked) && projectRules === t.projectRules) return t
-    return { ...t, provider, titleLocked, projectRules }
+    if (
+      provider === t.provider &&
+      titleLocked === Boolean(t.titleLocked) &&
+      projectRules === t.projectRules &&
+      t.mode === mode
+    ) return t
+    return { ...t, provider, titleLocked, projectRules, mode }
   })
 }
 
@@ -76,6 +83,7 @@ export function useThreads() {
       titleLocked: false,
       updatedAt: Date.now(),
       provider,
+      mode: 'agent',
       sessions: [session],
       activeSessionId: sessionId,
     }

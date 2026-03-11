@@ -1,6 +1,6 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, useTransition, type ErrorInfo } from 'react'
 import type { ChatMsg, FileChangeInfo, FileChangeStatus, GitVersionCommit, ProviderId, ThemeMode, ThreadMode } from './types'
-import type { EditorId, FileTreeEntry, BrowserConsoleLevel, MobileBridgeContextSnapshot, GitWorkingTreeStatus } from '../shared/ipc'
+import type { AppUpdateCheckResult, EditorId, FileTreeEntry, BrowserConsoleLevel, MobileBridgeContextSnapshot, GitWorkingTreeStatus } from '../shared/ipc'
 import { providers, estimateTokens, buildSystemPrompt, resolveProviderDisplayLabel, resolveProviderMaxTokens } from './constants'
 import { loadJson, saveJson } from './lib/storage'
 import { useThreads } from './hooks/useThreads'
@@ -199,7 +199,7 @@ export default function App() {
   type BrowserErrorCandidate = BrowserConsoleEntry & { weight: number; fingerprint: string }
   const browserErrorCandidatesRef = useRef<BrowserErrorCandidate[]>([])
   /** doSend 的 ref，避免 useEffect 闭包捕获旧引用 */
-  type MobileTarget = { threadId?: string; sessionId?: string; provider?: ProviderId; mode?: ThreadMode }
+  type MobileTarget = { threadId?: string; sessionId?: string; provider?: ProviderId }
   const doSendRef = useRef<(content: string, images?: import('./types').AttachedImage[], target?: MobileTarget) => void>(() => {})
   const mobileSyncTimerRef = useRef<number | null>(null)
   const lastMobileSnapshotDigestRef = useRef('')
@@ -211,6 +211,8 @@ export default function App() {
     if (saved === 'ocean' || saved === 'graphite' || saved === 'dark') return saved
     return 'dark'
   })
+  const [updateStatus, setUpdateStatus] = useState<AppUpdateCheckResult | null>(null)
+  const [updateChecking, setUpdateChecking] = useState(false)
   const [editor, setEditor] = useState<EditorId>(() =>
     (localStorage.getItem('taco.editor') as EditorId) || 'cursor'
   )
@@ -287,7 +289,7 @@ export default function App() {
   const activeTaskStartedAt = chat.getActiveTaskStartedAt(sessionId)
 
   // 当前项目的模式和工作空间
-  const currentMode: ThreadMode = threadStore.activeThread?.mode ?? 'chat'
+  const currentMode: ThreadMode = 'agent'
   const currentProjectRules = threadStore.activeThread?.projectRules ?? ''
 
   // Agent 模式下文本已在消息内实时更新，不需要独立的流式气泡
@@ -360,6 +362,60 @@ export default function App() {
     localStorage.setItem('taco.themeMode', themeMode)
     document.documentElement.setAttribute('data-theme', themeMode)
   }, [themeMode])
+
+  const refreshUpdateStatus = useCallback(async () => {
+    try {
+      const status = await window.taco.updater.getStatus()
+      setUpdateStatus(status)
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const handleOpenUpdateDialog = useCallback(async () => {
+    if (updateChecking) return
+    setUpdateChecking(true)
+    try {
+      const result = await window.taco.updater.check(true)
+      setUpdateStatus(result)
+    } catch {
+      // ignore
+    } finally {
+      setUpdateChecking(false)
+    }
+  }, [updateChecking])
+
+  useEffect(() => {
+    let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    let retries = 0
+
+    const pull = async () => {
+      if (cancelled) return
+      try {
+        const status = await window.taco.updater.getStatus()
+        if (cancelled) return
+        setUpdateStatus(status)
+        if (!status && retries < 20) {
+          retries += 1
+          retryTimer = setTimeout(() => { void pull() }, 800)
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    void pull()
+    const interval = window.setInterval(() => {
+      void refreshUpdateStatus()
+    }, 30_000)
+
+    return () => {
+      cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
+      window.clearInterval(interval)
+    }
+  }, [refreshUpdateStatus])
 
   useEffect(() => {
     localStorage.setItem('taco.sidebarVisible', String(sidebarVisible))
@@ -1717,13 +1773,6 @@ export default function App() {
     }
   }
 
-  /** 切换当前项目的模式 */
-  function handleModeChange(mode: ThreadMode) {
-    if (tid) {
-      threadStore.updateThread(tid, { mode })
-    }
-  }
-
   /** 选择工作空间目录 */
   async function handleSelectWorkspace() {
     const dir = await globalThis.window.taco.dialog.selectDirectory()
@@ -1791,13 +1840,6 @@ export default function App() {
         next.provider = provider
       }
     }
-    if (target.mode === 'chat' || target.mode === 'agent') {
-      const threadId = next.threadId ?? currentThreadId
-      if (threadId) {
-        store.updateThread(threadId, { mode: target.mode })
-        next.mode = target.mode
-      }
-    }
     return next
   }, [])
 
@@ -1808,7 +1850,7 @@ export default function App() {
     const sid = target?.sessionId ?? thread?.activeSessionId ?? ''
     if (!sid) return
     const provider = target?.provider ?? thread?.provider ?? providerSettings.activeProvider
-    const mode: ThreadMode = thread?.mode ?? 'chat'
+    const mode: ThreadMode = 'agent'
     const workspace = thread?.workspace ?? ''
     const targetMaxTokens = resolveProviderMaxTokens(provider, providerSettings.providerForms[provider])
 
@@ -1849,7 +1891,6 @@ export default function App() {
         threadId: cmd.threadId,
         sessionId: cmd.sessionId,
         provider: cmd.provider as ProviderId | undefined,
-        mode: cmd.mode as ThreadMode | undefined,
       })
       doSendRef.current(text, undefined, selected)
     })
@@ -1863,7 +1904,6 @@ export default function App() {
         threadId: sel.threadId,
         sessionId: sel.sessionId,
         provider: sel.provider as ProviderId | undefined,
-        mode: sel.mode as ThreadMode | undefined,
       })
     })
     return unsubscribe
@@ -2018,7 +2058,7 @@ export default function App() {
           title: thread.title,
           updatedAt: thread.updatedAt,
           provider: thread.provider,
-          mode: thread.mode,
+          mode: thread.mode ?? 'agent',
           workspace: thread.workspace,
           activeSessionId: thread.activeSessionId,
           sessions: sessionContexts,
@@ -2381,13 +2421,14 @@ export default function App() {
               activeSessionId={sessionId}
               onResend={handleResend}
               onEditResend={handleEditResend}
-              mode={currentMode}
-              onModeChange={handleModeChange}
               workspace={currentWorkspace}
               onSelectWorkspace={handleSelectWorkspace}
               provider={currentProvider}
               onProviderChange={handleProviderChange}
               configuredProviders={providerSettings.configuredProviders}
+              updateStatus={updateStatus}
+              updateChecking={updateChecking}
+              onOpenUpdateDialog={handleOpenUpdateDialog}
               scrollRef={scrollRef}
               queue={sessionQueue}
               onRemoveFromQueue={(id) => chat.removeFromQueue(sessionId, id)}

@@ -36,7 +36,7 @@ export type AgentEvent =
   /** 思考/推理片段（用于步骤展示，不进入最终回复正文） */
   | { type: 'reasoning'; content: string }
   /** AI 决定调用工具 */
-  | { type: 'tool_calls'; toolCalls: ToolCall[] }
+  | { type: 'tool_calls'; toolCalls: ToolCall[]; thinking?: string }
   /** 系统级提示（如上下文自动压缩） */
   | { type: 'system_notice'; title: string; message?: string }
   /** 风险操作需要用户确认 */
@@ -195,6 +195,24 @@ function sanitizeReplayRawText(input: string): string {
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
+}
+
+function extractThinkingFromAssistantRawText(rawText: string): string {
+  const text = String(rawText ?? '')
+  if (!text.trim()) return ''
+  const matches = [...text.matchAll(/<think\b[^>]*>([\s\S]*?)<\/think>/gi)]
+  if (matches.length > 0) {
+    const merged = matches.map((m) => String(m[1] || '').trim()).filter(Boolean).join('\n\n')
+    return sanitizeContextArtifacts(merged).trim()
+  }
+  const openTag = text.search(/<think\b[^>]*>/i)
+  if (openTag >= 0) {
+    const tagEnd = text.indexOf('>', openTag)
+    if (tagEnd >= 0) {
+      return sanitizeContextArtifacts(text.slice(tagEnd + 1)).trim()
+    }
+  }
+  return ''
 }
 
 function buildAssistantContextContent(rawText: string, sanitizedText: string, rawReasoning: string): string {
@@ -1142,6 +1160,7 @@ export async function runAgent(
     let rawReasoningContent = ''
     let emittedSanitizedReasoning = ''
     let assistantContextContent = ''
+    let toolCallThinking = ''
     let toolCalls: ToolCall[] = []
     let invalidToolCallNames: string[] = []
 
@@ -1196,6 +1215,10 @@ export async function runAgent(
       if (reasoningTailDelta) onEvent?.({ type: 'reasoning', content: reasoningTailDelta })
       textContent = finalSanitizedText
       assistantContextContent = buildAssistantContextContent(rawTextContent, finalSanitizedText, rawReasoningContent)
+      toolCallThinking =
+        sanitizeContextArtifacts(rawReasoningContent).trim() ||
+        extractThinkingFromAssistantRawText(rawTextContent) ||
+        sanitizeReplayRawText(rawTextContent)
       lastAssistantText = assistantContextContent || textContent || lastAssistantText
     } catch (err) {
       if (isAbortError(err) || signal?.aborted) {
@@ -1369,7 +1392,7 @@ export async function runAgent(
     })
 
     // 通知前端：AI 要调用工具了
-    onEvent?.({ type: 'tool_calls', toolCalls })
+    onEvent?.({ type: 'tool_calls', toolCalls, ...(toolCallThinking ? { thinking: toolCallThinking } : {}) })
 
     // ── 笔记工具优先执行（不经过任何确认流程）──
     const NOTE_TOOLS = new Set(['save_note', 'delete_note'])

@@ -48,6 +48,7 @@ import { handleTerminalSpawn, handleTerminalInput, handleTerminalResize, handleT
 import { openExternalBrowser, closeExternalBrowser, navigateExternalBrowser, focusExternalBrowser } from './browser'
 import { getMobileBridgeConfig, initMobileBridge, setMobileBridgeConfig, updateMobileBridgeContext } from './mobile-bridge'
 import { listChatStoreSessions, saveChatStoreSessionPatch, deleteChatStoreSession, initMemoryDb } from './memory-db'
+import { checkAndPromptForUpdate, getLastUpdateCheckResult } from './app-updater'
 
 /* ------------------------------------------------------------------ */
 /*  Handlers                                                           */
@@ -1008,6 +1009,13 @@ export function registerIpcHandlers() {
     return shell.openPath(getLogDir(logScope))
   })
   ipcMain.handle(IpcChannel.APP_GET_VERSION, () => app.getVersion())
+  ipcMain.handle(IpcChannel.APP_CHECK_UPDATE, (event, manual?: boolean) =>
+    checkAndPromptForUpdate({
+      manual: Boolean(manual),
+      parentWindow: BrowserWindow.fromWebContents(event.sender),
+    })
+  )
+  ipcMain.handle(IpcChannel.APP_GET_UPDATE_STATUS, () => getLastUpdateCheckResult())
   ipcMain.handle(IpcChannel.APP_NOTIFY, handleAppNotify)
   ipcMain.handle(IpcChannel.APP_RENDERER_ERROR, handleRendererError)
   ipcMain.handle(IpcChannel.MOBILE_BRIDGE_GET, handleMobileBridgeGet)

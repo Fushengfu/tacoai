@@ -221,6 +221,36 @@
   border-color: var(--accent, #7c6cf0);
 }
 
+.settings-update-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(76, 123, 255, 0.35);
+  background: rgba(76, 123, 255, 0.08);
+  font-size: 12px;
+  color: rgba(220, 232, 255, 0.92);
+}
+
+.settings-update-notice-btn {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(76, 123, 255, 0.55);
+  background: rgba(76, 123, 255, 0.16);
+  color: #d8e6ff;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.settings-update-notice-btn:hover {
+  background: rgba(76, 123, 255, 0.24);
+  border-color: rgba(76, 123, 255, 0.72);
+}
+
 .mobile-bridge-qr-wrap {
   margin-top: 6px;
   padding: 10px 12px;

@@ -884,6 +884,7 @@ export function useChat() {
             } else if (event.type === 'tool_calls') {
               // AI 决定调用工具 → 当前文本作为该步骤的 thinking
               currentRound++
+              const toolThinking = String(event.thinking ?? '').trim()
               const toolCalls: ToolCallInfo[] = event.toolCalls.map((tc) => ({
                 id: tc.id,
                 name: tc.function.name,
@@ -891,7 +892,7 @@ export function useChat() {
               }))
               steps.push({
                 round: currentRound,
-                thinking: reasoningAccumulated.trim() || accumulated,
+                thinking: toolThinking || reasoningAccumulated.trim() || accumulated,
                 toolCalls,
                 toolResults: [],
                 status: 'running',
@@ -1244,6 +1245,7 @@ export function useChat() {
               trackRequestUsage(evt.usage)
             } else if (evt.type === 'tool_calls') {
               currentRound++
+              const toolThinking = String(evt.thinking ?? '').trim()
               const toolCalls: ToolCallInfo[] = evt.toolCalls.map((tc) => ({
                 id: tc.id,
                 name: tc.function.name,
@@ -1251,7 +1253,7 @@ export function useChat() {
               }))
               steps.push({
                 round: currentRound,
-                thinking: reasoningAccumulated.trim() || accumulated,
+                thinking: toolThinking || reasoningAccumulated.trim() || accumulated,
                 toolCalls,
                 toolResults: [],
                 status: 'running',

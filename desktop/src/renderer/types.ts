@@ -17,7 +17,7 @@ export type Thread = {
   updatedAt: number
   /** 该项目使用的模型 */
   provider?: ProviderId
-  /** 会话模式：chat（纯聊天）或 agent（带工具调用） */
+  /** 会话模式：统一固定为 agent（带工具调用） */
   mode?: ThreadMode
   /** Agent 模式的工作空间目录 */
   workspace?: string
