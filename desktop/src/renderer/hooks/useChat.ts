@@ -744,6 +744,8 @@ export function useChat() {
     // 用 ref 读取最新消息，避免闭包过期
     const currentMsgs = threadMessagesRef.current[threadId] ?? []
     const userMsg: ChatMsg = { id: uid(), role: 'user', content, ...(images && images.length > 0 ? { images } : {}) }
+    const sourceUserMessageId = userMsg.id
+    const streamAssistantMessageId = uid()
     const updatedMsgs = [...currentMsgs, userMsg]
 
     setMessages(threadId, updatedMsgs)
@@ -833,8 +835,8 @@ export function useChat() {
         await new Promise<void>((resolve, reject) => {
           abortRejectRefs.current.set(threadId, reject)
 
-          // Agent 唯一的 assistant 消息 ID
-          const agentMsgId = uid()
+          // Agent 唯一的 assistant 消息 ID（与主进程记忆来源指针保持一致）
+          const agentMsgId = streamAssistantMessageId
           const steps: AgentStep[] = []
           let currentRound = 0
           let commitHash: string | undefined
@@ -991,6 +993,9 @@ export function useChat() {
             workspace: params.workspace ?? '',
             maxTokens,
             recallDebug: isRecallDebugEnabled(),
+            sessionId: threadId,
+            sourceUserMessageId,
+            sourceAssistantMessageId: streamAssistantMessageId,
             ...(lastUserImages && lastUserImages.length > 0 ? { images: lastUserImages } : {}),
           })
         })
@@ -1012,7 +1017,18 @@ export function useChat() {
             setStreamingContents((prev) => ({ ...prev, [threadId]: accumulated }))
           })
           streamCleanupRefs.current.set(threadId, cleanup)
-          globalThis.window.taco.chat.stream({ requestId, provider, messages: apiMessages, overrides, projectId, workspace, maxTokens })
+          globalThis.window.taco.chat.stream({
+            requestId,
+            provider,
+            messages: apiMessages,
+            overrides,
+            projectId,
+            workspace,
+            maxTokens,
+            sessionId: threadId,
+            sourceUserMessageId,
+            sourceAssistantMessageId: streamAssistantMessageId,
+          })
         })
       }
 
@@ -1022,7 +1038,7 @@ export function useChat() {
         // Chat 模式才在此追加消息，Agent 模式已在事件回调中维护
         if (accumulated) {
           const assistantMsg: ChatMsg = {
-            id: uid(),
+            id: streamAssistantMessageId,
             role: 'assistant',
             content: accumulated,
             taskTiming: buildTaskTiming(taskStartedAt),
@@ -1051,11 +1067,11 @@ export function useChat() {
               return updated
             }
             if (!accumulated) return prev
-            return [...prev, { id: uid(), role: 'assistant', content: accumulated + '\n\n*[已停止]*', taskTiming: timing }]
+            return [...prev, { id: streamAssistantMessageId, role: 'assistant', content: accumulated + '\n\n*[已停止]*', taskTiming: timing }]
           })
         } else if (accumulated) {
           const stoppedMsg: ChatMsg = {
-            id: uid(),
+            id: streamAssistantMessageId,
             role: 'assistant',
             content: accumulated + '\n\n*[已停止]*',
             taskTiming: buildTaskTiming(taskStartedAt),
@@ -1064,7 +1080,7 @@ export function useChat() {
         }
       } else {
         const errChatMsg: ChatMsg = {
-          id: uid(),
+          id: streamAssistantMessageId,
           role: 'assistant',
           content: `[Error] ${errMsg}`,
           taskTiming: buildTaskTiming(taskStartedAt),
@@ -1109,6 +1125,8 @@ export function useChat() {
 
     const currentMsgs = threadMessagesRef.current[threadId] ?? []
     if (currentMsgs.length === 0) return
+    const sourceUserMessageId = [...currentMsgs].reverse().find((msg) => msg.role === 'user')?.id || ''
+    const streamAssistantMessageId = uid()
 
     if (inFlightThreadsRef.current.has(threadId)) return
     inFlightThreadsRef.current.add(threadId)
@@ -1183,7 +1201,7 @@ export function useChat() {
         await new Promise<void>((resolve, reject) => {
           abortRejectRefs.current.set(threadId, reject)
 
-          const agentMsgId = uid()
+          const agentMsgId = streamAssistantMessageId
           const steps: AgentStep[] = []
           let currentRound = 0
           let commitHash: string | undefined
@@ -1326,6 +1344,9 @@ export function useChat() {
             workspace: workspace ?? '',
             maxTokens,
             recallDebug: isRecallDebugEnabled(),
+            sessionId: threadId,
+            sourceUserMessageId,
+            sourceAssistantMessageId: streamAssistantMessageId,
           })
         })
       } else {
@@ -1345,7 +1366,18 @@ export function useChat() {
             setStreamingContents((prev) => ({ ...prev, [threadId]: accumulated }))
           })
           streamCleanupRefs.current.set(threadId, cleanup)
-          window.taco.chat.stream({ requestId, provider, messages: apiMessages, overrides, projectId, workspace, maxTokens })
+          window.taco.chat.stream({
+            requestId,
+            provider,
+            messages: apiMessages,
+            overrides,
+            projectId,
+            workspace,
+            maxTokens,
+            sessionId: threadId,
+            sourceUserMessageId,
+            sourceAssistantMessageId: streamAssistantMessageId,
+          })
         })
       }
 
@@ -1353,7 +1385,7 @@ export function useChat() {
       requestIdRefs.current.delete(threadId)
       if (!isAgent && accumulated) {
         const assistantMsg: ChatMsg = {
-          id: uid(),
+          id: streamAssistantMessageId,
           role: 'assistant',
           content: accumulated,
           taskTiming: buildTaskTiming(taskStartedAt),
@@ -1380,11 +1412,11 @@ export function useChat() {
               return updated
             }
             if (!accumulated) return prev
-            return [...prev, { id: uid(), role: 'assistant', content: accumulated + '\n\n*[已停止]*', taskTiming: timing }]
+            return [...prev, { id: streamAssistantMessageId, role: 'assistant', content: accumulated + '\n\n*[已停止]*', taskTiming: timing }]
           })
         } else if (accumulated) {
           const stoppedMsg: ChatMsg = {
-            id: uid(),
+            id: streamAssistantMessageId,
             role: 'assistant',
             content: accumulated + '\n\n*[已停止]*',
             taskTiming: buildTaskTiming(taskStartedAt),
@@ -1393,7 +1425,7 @@ export function useChat() {
         }
       } else {
         const errChatMsg: ChatMsg = {
-          id: uid(),
+          id: streamAssistantMessageId,
           role: 'assistant',
           content: `[Error] ${errMsg}`,
           taskTiming: buildTaskTiming(taskStartedAt),

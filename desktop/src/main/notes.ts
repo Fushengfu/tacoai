@@ -40,6 +40,7 @@ import {
   insertMemoryMaintainRun,
   countMemoryMaintainRuns,
   getMemoryDbInfo,
+  resolveChatStoreMessageSeqRange,
 } from './memory-db'
 
 /* ------------------------------------------------------------------ */
@@ -230,6 +231,13 @@ export async function deleteNote(workspace: string, noteId: string, projectId?: 
 
 export type TaskMemoryEntry = ProjectTaskMemory
 
+type TaskLogSourceRefInput = {
+  sessionId?: string
+  userMessageId?: string
+  assistantMessageId?: string
+  messageIds?: string[]
+}
+
 type TaskLogInput = {
   goal: string
   userQuery?: string
@@ -244,6 +252,7 @@ type TaskLogInput = {
   identifiers?: string[]
   evidenceFacts?: string[]
   failures?: string[]
+  sourceRef?: TaskLogSourceRefInput
 }
 
 export type MemoryMaintainOptions = {
@@ -292,6 +301,21 @@ const memoryMaintainInFlightByScope = new Set<string>()
 function normalizeStringList(value: unknown, max = 120): string[] {
   if (!Array.isArray(value)) return []
   return [...new Set(value.map((x) => String(x ?? '').trim()).filter(Boolean))].slice(0, max)
+}
+
+function normalizeTaskLogSourceRef(value: TaskLogSourceRefInput | undefined): TaskLogSourceRefInput {
+  if (!value || typeof value !== 'object') return {}
+  const sessionId = shortText(String(value.sessionId || '').trim(), 120)
+  const userMessageId = shortText(String(value.userMessageId || '').trim(), 180)
+  const assistantMessageId = shortText(String(value.assistantMessageId || '').trim(), 180)
+  const messageIds = normalizeStringList(value.messageIds, 200)
+  const mergedMessageIds = [...new Set([userMessageId, assistantMessageId, ...messageIds].filter(Boolean))]
+  return {
+    ...(sessionId ? { sessionId } : {}),
+    ...(userMessageId ? { userMessageId } : {}),
+    ...(assistantMessageId ? { assistantMessageId } : {}),
+    ...(mergedMessageIds.length > 0 ? { messageIds: mergedMessageIds } : {}),
+  }
 }
 
 function normalizeOutcome(value: unknown): TaskMemoryEntry['outcome'] {
@@ -385,6 +409,14 @@ function normalizeTaskMemoryEntry(raw: Partial<TaskMemoryEntry>, index: number):
     String(raw.summary || '').trim() || `处理: ${extractCoreSummary(assistantResult || goal)}`,
     TASK_MEMORY_SUMMARY_MAX_CHARS,
   )
+  const sourceSessionId = shortText(String((raw as Record<string, unknown>).sourceSessionId || ''), 120)
+  const sourceUserMessageId = shortText(String((raw as Record<string, unknown>).sourceUserMessageId || ''), 180)
+  const sourceAssistantMessageId = shortText(String((raw as Record<string, unknown>).sourceAssistantMessageId || ''), 180)
+  const sourceMessageIds = normalizeStringList((raw as Record<string, unknown>).sourceMessageIds, 200)
+  const sourceStartSeqNum = Number((raw as Record<string, unknown>).sourceStartSeq)
+  const sourceEndSeqNum = Number((raw as Record<string, unknown>).sourceEndSeq)
+  const sourceStartSeq = Number.isFinite(sourceStartSeqNum) ? Math.floor(sourceStartSeqNum) : undefined
+  const sourceEndSeq = Number.isFinite(sourceEndSeqNum) ? Math.floor(sourceEndSeqNum) : undefined
 
   const createdAtRaw = normalizeIso(raw.createdAt)
   const updatedAtRaw = normalizeIso(raw.updatedAt)
@@ -409,6 +441,12 @@ function normalizeTaskMemoryEntry(raw: Partial<TaskMemoryEntry>, index: number):
     changedFiles: normalizeStringList(raw.changedFiles, 160),
     identifiers: normalizeStringList(raw.identifiers, 160),
     evidenceFacts: normalizeStringList((raw as Record<string, unknown>).evidenceFacts, 2000),
+    ...(sourceSessionId ? { sourceSessionId } : {}),
+    ...(sourceUserMessageId ? { sourceUserMessageId } : {}),
+    ...(sourceAssistantMessageId ? { sourceAssistantMessageId } : {}),
+    ...(sourceMessageIds.length > 0 ? { sourceMessageIds } : {}),
+    ...(typeof sourceStartSeq === 'number' ? { sourceStartSeq } : {}),
+    ...(typeof sourceEndSeq === 'number' ? { sourceEndSeq } : {}),
     failures: normalizeStringList(raw.failures, 32),
     ...(normalizeIso((raw as Record<string, unknown>).deletedAt) ? { deletedAt: normalizeIso((raw as Record<string, unknown>).deletedAt) } : {}),
     ...(shortText(String((raw as Record<string, unknown>).deletedReason || ''), 220) ? { deletedReason: shortText(String((raw as Record<string, unknown>).deletedReason || ''), 220) } : {}),
@@ -1067,6 +1105,14 @@ function buildHistoricalTaskResultBlock(item: TaskMemoryEntry): string {
   const identifiers = compactJoin(item.identifiers ?? [], 6)
   if (identifiers) lines.push(`identifiers: ${identifiers}`)
 
+  const sourceSessionId = normalizeHistoricalField(String(item.sourceSessionId || ''), 120)
+  if (sourceSessionId) lines.push(`source_session_id: ${sourceSessionId}`)
+  const sourceStartSeq = Number.isFinite(Number(item.sourceStartSeq)) ? Math.floor(Number(item.sourceStartSeq)) : undefined
+  const sourceEndSeq = Number.isFinite(Number(item.sourceEndSeq)) ? Math.floor(Number(item.sourceEndSeq)) : undefined
+  if (typeof sourceStartSeq === 'number' || typeof sourceEndSeq === 'number') {
+    lines.push(`source_seq_range: ${typeof sourceStartSeq === 'number' ? sourceStartSeq : '?'}-${typeof sourceEndSeq === 'number' ? sourceEndSeq : '?'}`)
+  }
+
   const failures = compactJoin((item.failures ?? []).slice(0, 3), 3)
   if (failures) lines.push(`failures: ${failures}`)
 
@@ -1106,6 +1152,18 @@ export async function recordTaskLog(workspace: string, input: TaskLogInput, proj
     stripControlChars(String(input.userAssetsBlock || extractUserAssetsBlock(input.userQuery || input.goal || ''))),
     TASK_MEMORY_USER_ASSETS_MAX_CHARS,
   )
+  const normalizedSourceRef = normalizeTaskLogSourceRef(input.sourceRef)
+  let sourceMessageIds = normalizedSourceRef.messageIds ?? []
+  let sourceStartSeq: number | undefined
+  let sourceEndSeq: number | undefined
+  if (normalizedSourceRef.sessionId && sourceMessageIds.length > 0) {
+    const resolved = resolveChatStoreMessageSeqRange(normalizedSourceRef.sessionId, sourceMessageIds)
+    if (resolved.resolvedMessageIds.length > 0) {
+      sourceMessageIds = [...new Set([...sourceMessageIds, ...resolved.resolvedMessageIds])]
+    }
+    if (typeof resolved.startSeq === 'number') sourceStartSeq = resolved.startSeq
+    if (typeof resolved.endSeq === 'number') sourceEndSeq = resolved.endSeq
+  }
   const item: TaskMemoryEntry = {
     id: `task-${Date.now()}-${randomUUID().slice(0, 8)}`,
     userQuery: shortText(normalizedUserQuery || input.goal, 800),
@@ -1121,6 +1179,12 @@ export async function recordTaskLog(workspace: string, input: TaskLogInput, proj
     changedFiles: [...new Set((input.changedFiles ?? []).map((x) => String(x).trim()).filter(Boolean))],
     identifiers: [...new Set((input.identifiers ?? []).map((x) => String(x).trim()).filter(Boolean))],
     evidenceFacts,
+    ...(normalizedSourceRef.sessionId ? { sourceSessionId: normalizedSourceRef.sessionId } : {}),
+    ...(normalizedSourceRef.userMessageId ? { sourceUserMessageId: normalizedSourceRef.userMessageId } : {}),
+    ...(normalizedSourceRef.assistantMessageId ? { sourceAssistantMessageId: normalizedSourceRef.assistantMessageId } : {}),
+    ...(sourceMessageIds.length > 0 ? { sourceMessageIds } : {}),
+    ...(typeof sourceStartSeq === 'number' ? { sourceStartSeq } : {}),
+    ...(typeof sourceEndSeq === 'number' ? { sourceEndSeq } : {}),
     failures: [...new Set((input.failures ?? []).map((x) => String(x).trim()).filter(Boolean))].slice(0, 24),
     createdAt: now,
     updatedAt: now,
@@ -1141,7 +1205,23 @@ export async function recordTaskLog(workspace: string, input: TaskLogInput, proj
   )
 
   if (duplicateIdx >= 0) {
-    current[duplicateIdx] = { ...current[duplicateIdx], ...item, id: current[duplicateIdx].id, createdAt: current[duplicateIdx].createdAt, updatedAt: now }
+    const duplicate = current[duplicateIdx]
+    const mergedSourceMessageIds = [...new Set([...(duplicate.sourceMessageIds ?? []), ...(item.sourceMessageIds ?? [])].filter(Boolean))]
+    const mergedSourceStartSeq = [duplicate.sourceStartSeq, item.sourceStartSeq].filter((x) => typeof x === 'number').sort((a, b) => Number(a) - Number(b))[0]
+    const mergedSourceEndSeq = [duplicate.sourceEndSeq, item.sourceEndSeq].filter((x) => typeof x === 'number').sort((a, b) => Number(b) - Number(a))[0]
+    current[duplicateIdx] = {
+      ...duplicate,
+      ...item,
+      id: duplicate.id,
+      createdAt: duplicate.createdAt,
+      updatedAt: now,
+      ...(mergedSourceMessageIds.length > 0 ? { sourceMessageIds: mergedSourceMessageIds } : {}),
+      ...(typeof mergedSourceStartSeq === 'number' ? { sourceStartSeq: mergedSourceStartSeq } : {}),
+      ...(typeof mergedSourceEndSeq === 'number' ? { sourceEndSeq: mergedSourceEndSeq } : {}),
+      ...(!item.sourceSessionId && duplicate.sourceSessionId ? { sourceSessionId: duplicate.sourceSessionId } : {}),
+      ...(!item.sourceUserMessageId && duplicate.sourceUserMessageId ? { sourceUserMessageId: duplicate.sourceUserMessageId } : {}),
+      ...(!item.sourceAssistantMessageId && duplicate.sourceAssistantMessageId ? { sourceAssistantMessageId: duplicate.sourceAssistantMessageId } : {}),
+    }
     await saveTaskMemories(workspace, current, projectId)
     return current[duplicateIdx]
   }

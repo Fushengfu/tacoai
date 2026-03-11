@@ -522,6 +522,9 @@ export async function runAgent(
   maxTokens?: number,
   signal?: AbortSignal,
   projectId?: string,
+  sessionId?: string,
+  sourceUserMessageId?: string,
+  sourceAssistantMessageId?: string,
   logScope?: string,
   recallDebug = false,
 ): Promise<void> {
@@ -552,6 +555,9 @@ export async function runAgent(
   const lastUserGoal = [...messages].reverse().find((m) => m.role === 'user')?.content?.trim() || ''
   const plainUserQuery = extractUserQueryText(lastUserGoal)
   const userAssetsBlock = extractUserAssetsBlock(lastUserGoal)
+  const normalizedMemorySessionId = String(sessionId || projectId || '').trim()
+  const normalizedSourceUserMessageId = String(sourceUserMessageId || '').trim()
+  const normalizedSourceAssistantMessageId = String(sourceAssistantMessageId || '').trim()
   let currentTaskStartIndex = Math.max(1, workingMessages.map((m) => m.role).lastIndexOf('user'))
   let latestRecallMeta: Pick<RecallMeta, 'intentSource' | 'intentType' | 'intentSummary' | 'intentGoal'> | null = null
   const TOOL_PROMPT_SENTINEL_START = '<!--TACO_RUNTIME_TOOL_PROMPT_START-->'
@@ -940,6 +946,11 @@ export async function runAgent(
           identifiers: [...touchedIdentifiers].slice(0, 80),
           evidenceFacts: [...memoryEvidenceFacts],
           failures: failureLogs.slice(0, 12),
+          sourceRef: {
+            ...(normalizedMemorySessionId ? { sessionId: normalizedMemorySessionId } : {}),
+            ...(normalizedSourceUserMessageId ? { userMessageId: normalizedSourceUserMessageId } : {}),
+            ...(normalizedSourceAssistantMessageId ? { assistantMessageId: normalizedSourceAssistantMessageId } : {}),
+          },
         },
         projectId,
       )

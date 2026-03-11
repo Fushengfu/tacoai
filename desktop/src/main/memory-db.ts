@@ -243,6 +243,12 @@ function ensureDb(): DatabaseSync {
       changed_files_json TEXT NOT NULL DEFAULT '[]',
       identifiers_json TEXT NOT NULL DEFAULT '[]',
       evidence_facts_json TEXT NOT NULL DEFAULT '[]',
+      source_session_id TEXT NOT NULL DEFAULT '',
+      source_user_message_id TEXT NOT NULL DEFAULT '',
+      source_assistant_message_id TEXT NOT NULL DEFAULT '',
+      source_message_ids_json TEXT NOT NULL DEFAULT '[]',
+      source_start_seq INTEGER,
+      source_end_seq INTEGER,
       failures_json TEXT NOT NULL DEFAULT '[]',
       deleted_at TEXT,
       deleted_reason TEXT NOT NULL DEFAULT '',
@@ -341,6 +347,12 @@ function ensureDb(): DatabaseSync {
   `)
   ensureColumn(next, 'task_memories', 'scope_key', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(next, 'task_memories', 'evidence_facts_json', "TEXT NOT NULL DEFAULT '[]'")
+  ensureColumn(next, 'task_memories', 'source_session_id', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(next, 'task_memories', 'source_user_message_id', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(next, 'task_memories', 'source_assistant_message_id', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(next, 'task_memories', 'source_message_ids_json', "TEXT NOT NULL DEFAULT '[]'")
+  ensureColumn(next, 'task_memories', 'source_start_seq', 'INTEGER')
+  ensureColumn(next, 'task_memories', 'source_end_seq', 'INTEGER')
   ensureColumn(next, 'project_notes', 'scope_key', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(next, 'memory_snapshots', 'scope_key', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(next, 'memory_maintain_runs', 'scope_key', "TEXT NOT NULL DEFAULT ''")
@@ -349,6 +361,11 @@ function ensureDb(): DatabaseSync {
   backfillScopeKey(next, 'project_notes')
   backfillScopeKey(next, 'memory_snapshots')
   backfillScopeKey(next, 'memory_maintain_runs')
+  // 兼容旧库：必须先 ensureColumn，再建立依赖新列的索引。
+  next.exec(`
+    CREATE INDEX IF NOT EXISTS idx_task_memories_source_session_updated
+    ON task_memories(source_session_id, updated_at DESC, created_at DESC);
+  `)
   migrateLegacyChatSessionSnapshots(next)
   db = next
   return next
@@ -367,6 +384,12 @@ function parseStringArray(raw: unknown): string[] {
   }
 }
 
+function parseOptionalInteger(raw: unknown): number | undefined {
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return undefined
+  return Math.floor(value)
+}
+
 function parseUnknownArray(raw: unknown): unknown[] {
   try {
     const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
@@ -377,6 +400,9 @@ function parseUnknownArray(raw: unknown): unknown[] {
 }
 
 function rowToTaskMemoryEntry(row: Record<string, unknown>): TaskMemoryEntry {
+  const sourceMessageIds = parseStringArray(row.source_message_ids_json)
+  const sourceStartSeq = parseOptionalInteger(row.source_start_seq)
+  const sourceEndSeq = parseOptionalInteger(row.source_end_seq)
   return {
     id: String(row.id || ''),
     ...(String(row.user_query || '').trim() ? { userQuery: String(row.user_query || '') } : {}),
@@ -392,6 +418,12 @@ function rowToTaskMemoryEntry(row: Record<string, unknown>): TaskMemoryEntry {
     changedFiles: parseStringArray(row.changed_files_json),
     identifiers: parseStringArray(row.identifiers_json),
     evidenceFacts: parseStringArray(row.evidence_facts_json),
+    ...(String(row.source_session_id || '').trim() ? { sourceSessionId: String(row.source_session_id || '').trim() } : {}),
+    ...(String(row.source_user_message_id || '').trim() ? { sourceUserMessageId: String(row.source_user_message_id || '').trim() } : {}),
+    ...(String(row.source_assistant_message_id || '').trim() ? { sourceAssistantMessageId: String(row.source_assistant_message_id || '').trim() } : {}),
+    ...(sourceMessageIds.length > 0 ? { sourceMessageIds } : {}),
+    ...(typeof sourceStartSeq === 'number' ? { sourceStartSeq } : {}),
+    ...(typeof sourceEndSeq === 'number' ? { sourceEndSeq } : {}),
     failures: parseStringArray(row.failures_json),
     ...(String(row.deleted_at || '').trim() ? { deletedAt: String(row.deleted_at || '') } : {}),
     ...(String(row.deleted_reason || '').trim() ? { deletedReason: String(row.deleted_reason || '') } : {}),
@@ -443,7 +475,9 @@ function upsertTaskMemoryRows(scope: MemoryScope, items: TaskMemoryEntry[], tier
       user_query, user_assets_block, goal,
       intent_type, intent_summary, intent_goal,
       assistant_result, summary, outcome,
-      tools_json, changed_files_json, identifiers_json, evidence_facts_json, failures_json,
+      tools_json, changed_files_json, identifiers_json, evidence_facts_json,
+      source_session_id, source_user_message_id, source_assistant_message_id, source_message_ids_json, source_start_seq, source_end_seq,
+      failures_json,
       deleted_at, deleted_reason, merged_into_id,
       created_at, updated_at
     ) VALUES (
@@ -451,7 +485,9 @@ function upsertTaskMemoryRows(scope: MemoryScope, items: TaskMemoryEntry[], tier
       ?, ?, ?,
       ?, ?, ?,
       ?, ?, ?,
-      ?, ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?, ?, ?, ?,
+      ?,
       ?, ?, ?,
       ?, ?
     )
@@ -473,6 +509,12 @@ function upsertTaskMemoryRows(scope: MemoryScope, items: TaskMemoryEntry[], tier
       changed_files_json=excluded.changed_files_json,
       identifiers_json=excluded.identifiers_json,
       evidence_facts_json=excluded.evidence_facts_json,
+      source_session_id=excluded.source_session_id,
+      source_user_message_id=excluded.source_user_message_id,
+      source_assistant_message_id=excluded.source_assistant_message_id,
+      source_message_ids_json=excluded.source_message_ids_json,
+      source_start_seq=excluded.source_start_seq,
+      source_end_seq=excluded.source_end_seq,
       failures_json=excluded.failures_json,
       deleted_at=excluded.deleted_at,
       deleted_reason=excluded.deleted_reason,
@@ -500,6 +542,12 @@ function upsertTaskMemoryRows(scope: MemoryScope, items: TaskMemoryEntry[], tier
       stringifyStringArray(item.changedFiles),
       stringifyStringArray(item.identifiers),
       stringifyStringArray(item.evidenceFacts),
+      String(item.sourceSessionId || ''),
+      String(item.sourceUserMessageId || ''),
+      String(item.sourceAssistantMessageId || ''),
+      stringifyStringArray(item.sourceMessageIds),
+      Number.isFinite(Number(item.sourceStartSeq)) ? Number(item.sourceStartSeq) : null,
+      Number.isFinite(Number(item.sourceEndSeq)) ? Number(item.sourceEndSeq) : null,
       stringifyStringArray(item.failures),
       item.deletedAt ?? null,
       String(item.deletedReason || ''),
@@ -751,6 +799,36 @@ export function getMemoryDbInfo(): { dbPath: string; dbSizeBytes: number } {
   return {
     dbPath,
     dbSizeBytes: dbSize + walSize,
+  }
+}
+
+export type ChatStoreMessageSeqRange = {
+  resolvedMessageIds: string[]
+  startSeq?: number
+  endSeq?: number
+}
+
+export function resolveChatStoreMessageSeqRange(sessionId: string, messageIds: string[]): ChatStoreMessageSeqRange {
+  const database = ensureDb()
+  const normalizedSessionId = String(sessionId || '').trim()
+  if (!normalizedSessionId) return { resolvedMessageIds: [] }
+  const normalizedMessageIds = [...new Set((messageIds ?? []).map((item) => String(item || '').trim()).filter(Boolean))]
+  if (normalizedMessageIds.length <= 0) return { resolvedMessageIds: [] }
+  const placeholders = normalizedMessageIds.map(() => '?').join(', ')
+  const rows = database.prepare(`
+    SELECT message_id, seq
+    FROM chat_messages
+    WHERE session_id = ? AND message_id IN (${placeholders})
+    ORDER BY seq ASC
+  `).all(normalizedSessionId, ...normalizedMessageIds) as Array<Record<string, unknown>>
+  if (rows.length <= 0) return { resolvedMessageIds: [] }
+  const resolvedMessageIds = rows.map((row) => String(row.message_id || '').trim()).filter(Boolean)
+  const startSeq = parseOptionalInteger(rows[0]?.seq)
+  const endSeq = parseOptionalInteger(rows[rows.length - 1]?.seq)
+  return {
+    resolvedMessageIds,
+    ...(typeof startSeq === 'number' ? { startSeq } : {}),
+    ...(typeof endSeq === 'number' ? { endSeq } : {}),
   }
 }
 

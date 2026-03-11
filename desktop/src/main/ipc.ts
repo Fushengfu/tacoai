@@ -227,7 +227,17 @@ async function handleChatSend(_event: IpcMainInvokeEvent, payload: ChatSendPaylo
 
 /** 流式：renderer send → main on → 逐块 send 回 renderer */
 async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload) {
-  const { requestId, provider, overrides, projectId, workspace, maxTokens } = payload
+  const {
+    requestId,
+    provider,
+    overrides,
+    projectId,
+    workspace,
+    maxTokens,
+    sessionId,
+    sourceUserMessageId,
+    sourceAssistantMessageId,
+  } = payload
   const logScope = buildLogScope(projectId, workspace)
   try {
     await refreshSkills(workspace)
@@ -298,6 +308,11 @@ async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload)
           changedFiles: [],
           identifiers: [],
           failures: errorMessage ? [errorMessage] : [],
+          sourceRef: {
+            ...(String(sessionId || projectId || '').trim() ? { sessionId: String(sessionId || projectId || '').trim() } : {}),
+            ...(String(sourceUserMessageId || '').trim() ? { userMessageId: String(sourceUserMessageId || '').trim() } : {}),
+            ...(String(sourceAssistantMessageId || '').trim() ? { assistantMessageId: String(sourceAssistantMessageId || '').trim() } : {}),
+          },
         },
         projectId,
       )
@@ -463,7 +478,20 @@ const agentAbortControllers = new Map<string, AbortController>()
 
 /** Agent 流式：renderer send → main on → 多轮工具调用循环 → 逐事件推送 */
 async function handleAgentStream(event: IpcMainEvent, payload: AgentStreamPayload) {
-  const { requestId, provider, messages, overrides, workspace, maxTokens, images, projectId, recallDebug } = payload
+  const {
+    requestId,
+    provider,
+    messages,
+    overrides,
+    workspace,
+    maxTokens,
+    images,
+    projectId,
+    recallDebug,
+    sessionId,
+    sourceUserMessageId,
+    sourceAssistantMessageId,
+  } = payload
   const logScope = buildLogScope(projectId, workspace)
 
   // ── 图片预处理：保存到本地文件，将路径告知 AI，由 AI 决定如何分析 ──
@@ -510,6 +538,9 @@ async function handleAgentStream(event: IpcMainEvent, payload: AgentStreamPayloa
       maxTokens,
       abortController.signal,
       projectId,
+      sessionId,
+      sourceUserMessageId,
+      sourceAssistantMessageId,
       logScope,
       Boolean(recallDebug),
     )

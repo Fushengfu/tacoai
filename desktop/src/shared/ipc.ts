@@ -217,6 +217,12 @@ export type ChatStreamPayload = {
   workspace?: string
   /** 模型上下文窗口大小（token 数），用于记忆整理阈值判定 */
   maxTokens?: number
+  /** 会话 ID（通常等于 threadId），用于任务记忆指向原始会话 */
+  sessionId?: string
+  /** 本轮用户消息 ID（用于任务记忆定位原始提问） */
+  sourceUserMessageId?: string
+  /** 本轮助手消息 ID（用于任务记忆定位处理结果） */
+  sourceAssistantMessageId?: string
 }
 
 /* ------------------------------------------------------------------ */
@@ -256,6 +262,12 @@ export type AgentStreamPayload = {
   recallDebug?: boolean
   /** 用户附带的图片（base64 data URL），需要通过 MCP 理解后注入消息 */
   images?: string[]
+  /** 会话 ID（通常等于 threadId），用于任务记忆指向原始会话 */
+  sessionId?: string
+  /** 本轮用户消息 ID（用于任务记忆定位原始提问） */
+  sourceUserMessageId?: string
+  /** 本轮助手消息 ID（用于任务记忆定位处理结果） */
+  sourceAssistantMessageId?: string
 }
 
 /** 工具调用信息 */
@@ -479,6 +491,18 @@ export type ProjectTaskMemory = {
   identifiers: string[]
   /** 本轮过程中的关键事实证据（例如命中的文件/行号/修改动作/验证动作） */
   evidenceFacts: string[]
+  /** 原始会话来源：sessionId（用于从 chat_messages 追溯原文） */
+  sourceSessionId?: string
+  /** 原始会话来源：本轮用户消息 ID */
+  sourceUserMessageId?: string
+  /** 原始会话来源：本轮助手消息 ID */
+  sourceAssistantMessageId?: string
+  /** 原始会话来源：本轮关联消息 ID 列表（通常含 user+assistant） */
+  sourceMessageIds?: string[]
+  /** 原始会话来源：在 chat_messages 中的起始 seq（可选） */
+  sourceStartSeq?: number
+  /** 原始会话来源：在 chat_messages 中的结束 seq（可选） */
+  sourceEndSeq?: number
   failures: string[]
   /** 软删除时间（存在即表示已删除） */
   deletedAt?: string
