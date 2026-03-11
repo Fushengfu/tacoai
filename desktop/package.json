@@ -1,7 +1,7 @@
 {
   "name": "taco-ai-agent",
   "private": true,
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Taco AI - 智能编程助手",
   "author": "Shenzhen Zhongyun Technology Co., Limited",
   "type": "module",
@@ -53,7 +53,7 @@
       "gatekeeperAssess": false
     },
     "win": {
-      "icon": "build/icon.png",
+      "icon": "build/icon.ico",
       "target": [
         {
           "target": "nsis",

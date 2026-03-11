@@ -1,8 +1,10 @@
 import { app, BrowserWindow, dialog, shell } from 'electron'
 import type { MessageBoxOptions, MessageBoxReturnValue } from 'electron'
+import { spawn } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { log, logError, logInfo } from './logger'
 import type { AppUpdateCheckResult } from '../shared/ipc'
 
@@ -472,6 +474,92 @@ async function downloadUpdatePackage(
   })
 }
 
+async function openInstallerPackage(filePath: string): Promise<void> {
+  const target = String(filePath ?? '').trim()
+  if (!target) throw new Error('安装包路径为空')
+
+  await fs.access(target).catch(() => {
+    throw new Error(`安装包不存在: ${target}`)
+  })
+
+  console.log('[app-update] [install] openPath:', { filePath: target })
+  const openPathErr = await shell.openPath(target)
+  if (!openPathErr) {
+    console.log('[app-update] [install] openPath success')
+    return
+  }
+
+  console.warn('[app-update] [install] openPath failed, fallback openExternal(file://):', openPathErr)
+  const fileUrl = pathToFileURL(target).toString()
+  try {
+    await shell.openExternal(fileUrl)
+    console.log('[app-update] [install] fallback openExternal success:', { fileUrl })
+    return
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    throw new Error(`打开安装包失败: ${openPathErr || detail}`)
+  }
+}
+
+function shellQuote(text: string): string {
+  return `'${String(text ?? '').replace(/'/g, `'\\''`)}'`
+}
+
+function psSingleQuote(text: string): string {
+  return `'${String(text ?? '').replace(/'/g, "''")}'`
+}
+
+function scheduleInstallerLaunchAfterQuit(filePath: string): boolean {
+  if (process.platform !== 'darwin') return false
+  const target = String(filePath ?? '').trim()
+  if (!target) return false
+  try {
+    const appName = shellQuote(app.getName())
+    const cmd = `for i in $(seq 1 120); do if ! pgrep -x ${appName} >/dev/null 2>&1; then break; fi; sleep 0.2; done; open ${shellQuote(target)}`
+    const child = spawn('/bin/sh', ['-c', cmd], {
+      detached: true,
+      stdio: 'ignore',
+    })
+    child.unref()
+    console.log('[app-update] [install] scheduled launch after quit:', { filePath: target })
+    return true
+  } catch (err) {
+    console.error('[app-update] [install] failed to schedule launch after quit:', err)
+    return false
+  }
+}
+
+function scheduleWindowsInstallerLaunchAfterQuit(filePath: string): boolean {
+  if (process.platform !== 'win32') return false
+  const target = String(filePath ?? '').trim()
+  if (!target) return false
+  try {
+    const procName = path.basename(process.execPath).replace(/\.exe$/i, '') || 'Taco AI'
+    const script =
+      `$target = ${psSingleQuote(target)}; ` +
+      `$proc = ${psSingleQuote(procName)}; ` +
+      `for ($i=0; $i -lt 120; $i++) { ` +
+      `if (-not (Get-Process -Name $proc -ErrorAction SilentlyContinue)) { break }; ` +
+      `Start-Sleep -Milliseconds 200 }; ` +
+      `Start-Process -FilePath $target`
+    const child = spawn('powershell.exe', [
+      '-NoProfile',
+      '-ExecutionPolicy', 'Bypass',
+      '-WindowStyle', 'Hidden',
+      '-Command', script,
+    ], {
+      detached: true,
+      stdio: 'ignore',
+    })
+    child.unref()
+    console.log('[app-update] [install] scheduled launch after quit (windows):', { filePath: target, procName })
+    return true
+  } catch (err) {
+    console.error('[app-update] [install] failed to schedule launch after quit (windows):', err)
+    return false
+  }
+}
+
 export async function checkAndPromptForUpdate(options: CheckUpdateOptions = {}): Promise<AppUpdateCheckResult> {
   const manual = Boolean(options.manual)
   const currentVersion = app.getVersion()
@@ -531,20 +619,59 @@ export async function checkAndPromptForUpdate(options: CheckUpdateOptions = {}):
       if (result.response === 1 && downloadUrl) {
         downloadTriggered = true
         const downloadedFile = await downloadUpdatePackage(downloadUrl, options.parentWindow)
-        const install = await showDialog(options.parentWindow, {
-          type: 'question',
-          title: '更新包下载完成',
-          message: '新版本已下载完成，是否立即安装？',
-          detail: `文件位置：${downloadedFile}`,
-          buttons: ['稍后安装', '立即安装'],
-          cancelId: 0,
-          defaultId: 1,
-          noLink: true,
-        })
-        if (install.response === 1) {
-          const openErr = await shell.openPath(downloadedFile)
-          if (openErr) {
-            throw new Error(`打开安装包失败: ${openErr}`)
+        if (process.platform === 'darwin') {
+          const install = await showDialog(options.parentWindow, {
+            type: 'question',
+            title: '更新包下载完成',
+            message: '安装更新需要先退出 Taco AI。是否现在退出并开始安装？',
+            detail: downloadedFile,
+            buttons: ['稍后安装', '立即安装（退出应用）'],
+            cancelId: 0,
+            defaultId: 1,
+            noLink: true,
+          })
+          if (install.response === 1) {
+            const scheduled = scheduleInstallerLaunchAfterQuit(downloadedFile)
+            if (!scheduled) {
+              throw new Error('安装启动失败：无法安排退出后自动打开安装包')
+            }
+            setTimeout(() => {
+              app.quit()
+            }, 120)
+          }
+        } else if (process.platform === 'win32') {
+          const install = await showDialog(options.parentWindow, {
+            type: 'question',
+            title: '更新包下载完成',
+            message: '安装更新需要先退出 Taco AI。是否现在退出并开始安装？',
+            detail: downloadedFile,
+            buttons: ['稍后安装', '立即安装（退出应用）'],
+            cancelId: 0,
+            defaultId: 1,
+            noLink: true,
+          })
+          if (install.response === 1) {
+            const scheduled = scheduleWindowsInstallerLaunchAfterQuit(downloadedFile)
+            if (!scheduled) {
+              throw new Error('安装启动失败：无法安排退出后自动打开安装包')
+            }
+            setTimeout(() => {
+              app.quit()
+            }, 120)
+          }
+        } else {
+          const install = await showDialog(options.parentWindow, {
+            type: 'question',
+            title: '更新包下载完成',
+            message: '新版本已下载完成，是否立即安装？',
+            detail: `文件位置：${downloadedFile}`,
+            buttons: ['稍后安装', '立即安装'],
+            cancelId: 0,
+            defaultId: 1,
+            noLink: true,
+          })
+          if (install.response === 1) {
+            await openInstallerPackage(downloadedFile)
           }
         }
       }
