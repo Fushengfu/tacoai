@@ -505,10 +505,6 @@ function shellQuote(text: string): string {
   return `'${String(text ?? '').replace(/'/g, `'\\''`)}'`
 }
 
-function psSingleQuote(text: string): string {
-  return `'${String(text ?? '').replace(/'/g, "''")}'`
-}
-
 function scheduleInstallerLaunchAfterQuit(filePath: string): boolean {
   if (process.platform !== 'darwin') return false
   const target = String(filePath ?? '').trim()
@@ -525,37 +521,6 @@ function scheduleInstallerLaunchAfterQuit(filePath: string): boolean {
     return true
   } catch (err) {
     console.error('[app-update] [install] failed to schedule launch after quit:', err)
-    return false
-  }
-}
-
-function scheduleWindowsInstallerLaunchAfterQuit(filePath: string): boolean {
-  if (process.platform !== 'win32') return false
-  const target = String(filePath ?? '').trim()
-  if (!target) return false
-  try {
-    const procName = path.basename(process.execPath).replace(/\.exe$/i, '') || 'Taco AI'
-    const script =
-      `$target = ${psSingleQuote(target)}; ` +
-      `$proc = ${psSingleQuote(procName)}; ` +
-      `for ($i=0; $i -lt 120; $i++) { ` +
-      `if (-not (Get-Process -Name $proc -ErrorAction SilentlyContinue)) { break }; ` +
-      `Start-Sleep -Milliseconds 200 }; ` +
-      `Start-Process -FilePath $target`
-    const child = spawn('powershell.exe', [
-      '-NoProfile',
-      '-ExecutionPolicy', 'Bypass',
-      '-WindowStyle', 'Hidden',
-      '-Command', script,
-    ], {
-      detached: true,
-      stdio: 'ignore',
-    })
-    child.unref()
-    console.log('[app-update] [install] scheduled launch after quit (windows):', { filePath: target, procName })
-    return true
-  } catch (err) {
-    console.error('[app-update] [install] failed to schedule launch after quit (windows):', err)
     return false
   }
 }
@@ -651,13 +616,10 @@ export async function checkAndPromptForUpdate(options: CheckUpdateOptions = {}):
             noLink: true,
           })
           if (install.response === 1) {
-            const scheduled = scheduleWindowsInstallerLaunchAfterQuit(downloadedFile)
-            if (!scheduled) {
-              throw new Error('安装启动失败：无法安排退出后自动打开安装包')
-            }
+            await openInstallerPackage(downloadedFile)
             setTimeout(() => {
               app.quit()
-            }, 120)
+            }, 200)
           }
         } else {
           const install = await showDialog(options.parentWindow, {
@@ -709,19 +671,6 @@ export async function checkAndPromptForUpdate(options: CheckUpdateOptions = {}):
     const message = err instanceof Error ? err.message : String(err)
     logError('app-update', '检查更新失败', err)
     console.error('[app-update] check failed:', message)
-
-    if (manual) {
-      await showDialog(options.parentWindow, {
-        type: 'error',
-        title: '检查更新失败',
-        message: '检查版本更新失败',
-        detail: message,
-        buttons: ['知道了'],
-        defaultId: 0,
-        cancelId: 0,
-        noLink: true,
-      })
-    }
 
     const failed: AppUpdateCheckResult = {
       success: false,
