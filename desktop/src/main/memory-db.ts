@@ -928,10 +928,6 @@ export function deleteChatStoreSession(sessionId: string): void {
   `).run(normalized)
 }
 
-export function getMemoryDbPath(): string {
-  return MEMORY_DB_PATH
-}
-
 export function isMemoryDbEmpty(): boolean {
   const database = ensureDb()
   const tables = ['task_memories', 'project_notes', 'memory_snapshots']
