@@ -247,6 +247,7 @@ const tacoApi: TacoApi = {
   },
   dialog: {
     selectDirectory: () => ipcRenderer.invoke(IpcChannel.SELECT_DIRECTORY),
+    selectAttachments: () => ipcRenderer.invoke(IpcChannel.SELECT_ATTACHMENTS),
   },
   workspace: {
     tree: (cwd: string) =>

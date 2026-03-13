@@ -857,6 +857,47 @@ body.is-dragging * {
 .composer-image-item:hover .composer-image-remove {
   opacity: 1;
 }
+
+.composer-assets {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 0 2px;
+}
+
+.composer-asset-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 280px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.composer-asset-name {
+  max-width: 220px;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.composer-asset-remove {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
+  cursor: pointer;
+  padding: 0;
+}
 /* ── 图片按钮 ── */
 .composer-attach-btn {
   background: none;
@@ -903,6 +944,31 @@ body.is-dragging * {
 }
 .msg-image-thumb:hover {
   transform: scale(1.02);
+}
+
+.msg-assets {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.msg-asset-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 260px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(87, 209, 255, 0.35);
+  background: rgba(87, 209, 255, 0.12);
+}
+
+.msg-asset-name {
+  font-size: 12px;
+  color: #b8f0ff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .automation-shots {

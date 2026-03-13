@@ -1560,7 +1560,7 @@ export async function runAgent(
     }
 
     // ── 风险评估（非 propose_plan 的普通工具调用）──
-    const risks = assessToolCallsRisk(toolCalls)
+    const risks = assessToolCallsRisk(toolCalls, workspace)
 
     if (risks.length > 0) {
       const confirmId = `confirm-${Date.now()}-${++confirmCounter}`

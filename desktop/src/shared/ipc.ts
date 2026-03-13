@@ -38,6 +38,8 @@ export const IpcChannel = {
 
   /** renderer → main (invoke/handle, 选择目录对话框) */
   SELECT_DIRECTORY: 'dialog:select-directory',
+  /** renderer → main (invoke/handle, 选择附件文件) */
+  SELECT_ATTACHMENTS: 'dialog:select-attachments',
   /** renderer → main (invoke/handle, 用编辑器打开文件) */
   OPEN_IN_EDITOR: 'shell:open-in-editor',
 
@@ -878,6 +880,8 @@ export type TacoApi = {
   dialog: {
     /** 打开目录选择对话框，返回选中的路径或 null */
     selectDirectory: () => Promise<string | null>
+    /** 打开附件选择对话框，返回选中的文件绝对路径列表 */
+    selectAttachments: () => Promise<string[]>
   }
   workspace: {
     /** 读取工作空间目录树 */

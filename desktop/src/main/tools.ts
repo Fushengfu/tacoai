@@ -728,11 +728,13 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
       '每次读取后必须判断已获取信息是否足够完成当前任务，并记录尚未覆盖的区段。',
       '如果文件过大，则分多次读取，每次读取后必须判断已获取信息是否足够完成当前任务，并记录尚未覆盖的区段。',
       '注意：此调用最多查看 250 行，最少 200 行。如果读取行范围不够，可以选择读取整个文件。读取整个文件通常低效且缓慢，尤其对于大文件（数百行以上），请谨慎使用。大多数情况下不允许读取整个文件，只有文件被编辑过或由用户手动附加到对话时才可读取全文。',
+      '当用户提供的文件路径在工作空间之外但任务确需读取时，必须直接调用 read_file；系统会在执行前触发授权确认，禁止先口头拒绝访问。',
       '信息不足时继续读取相邻区段，直到可执行，不允许凭猜测修改代码。',
     ],
     cautions: [
       '除非确实需要，不要直接读取整文件，尤其是大文件。',
       '对于用户手动附加文件或刚编辑文件，才可考虑全文读取。',
+      '工作空间外文件读取属于高风险动作，必须等待用户授权确认后才能继续。',
     ],
   },
   write_file: {
@@ -929,6 +931,7 @@ export function buildToolDesignPromptBlock(allowedToolNames: Iterable<string>): 
     '12. 声称“已完成/已修复”前，必须已有对应工具执行证据。',
     '13. 禁止输出 [TOOL_CALL]、<invoke> 等伪调用文本，工具调用只能通过标准 tool_calls。',
     '14. 参数必须严格匹配工具 schema，不允许猜字段名。',
+    '15. 当用户提供了明确文件路径且请求读取时，必须优先调用 read_file；若路径在工作空间外，系统会触发授权确认，禁止直接口头拒绝。',
     '',
     '## 工具清单（每个工具都要遵守对应规范）',
   ]
@@ -1026,14 +1029,27 @@ function isAbortError(err: unknown): boolean {
   return err.name === 'AbortError' || err.message === 'Aborted'
 }
 
+function isPathWithinWorkspace(workspace: string, targetPath: string): boolean {
+  const normalizedWs = path.normalize(workspace)
+  const normalizedTarget = path.normalize(targetPath)
+  return normalizedTarget === normalizedWs || normalizedTarget.startsWith(`${normalizedWs}${path.sep}`)
+}
+
 /** 解析路径：相对于 workspace，并检查是否在 workspace 内 */
-function resolveSafe(workspace: string, filePath: string): { resolved: string } | { error: string } {
+function resolveSafe(
+  workspace: string,
+  filePath: string,
+  options?: { allowOutsideWorkspaceRead?: boolean },
+): { resolved: string } | { error: string } {
   const normalizedWs = path.normalize(workspace)
 
   // ── 0) 如果是绝对路径且在 workspace 内，直接使用 ──
   if (path.isAbsolute(filePath)) {
     const normalizedFp = path.normalize(filePath)
-    if (normalizedFp.startsWith(normalizedWs + path.sep) || normalizedFp === normalizedWs) {
+    if (isPathWithinWorkspace(workspace, normalizedFp)) {
+      return { resolved: normalizedFp }
+    }
+    if (options?.allowOutsideWorkspaceRead) {
       return { resolved: normalizedFp }
     }
     // 绝对路径但在 workspace 外 → 尝试提取相对部分
@@ -1066,6 +1082,9 @@ function resolveSafe(workspace: string, filePath: string): { resolved: string } 
   const resolved = path.resolve(workspace, cleaned)
   const normalized = path.normalize(resolved)
   if (!normalized.startsWith(normalizedWs)) {
+    if (options?.allowOutsideWorkspaceRead) {
+      return { resolved: normalized }
+    }
     return { error: `安全限制：路径 "${filePath}" 超出工作空间 "${workspace}"（解析为 ${normalized}）` }
   }
   return { resolved: normalized }
@@ -1081,9 +1100,30 @@ async function resolveSmartPath(
   workspace: string,
   filePath: string,
   kind: 'directory' | 'file' | 'any' = 'any',
+  options?: { allowOutsideWorkspaceRead?: boolean },
 ): Promise<{ resolved: string; corrected?: string } | { error: string }> {
+  const rawPath = String(filePath ?? '').trim()
+  if (path.isAbsolute(rawPath) && options?.allowOutsideWorkspaceRead && !isPathWithinWorkspace(workspace, rawPath)) {
+    const normalizedAbs = path.normalize(rawPath)
+    try {
+      const stat = await fs.stat(normalizedAbs)
+      if (kind === 'directory' && !stat.isDirectory()) {
+        return { error: `Error: Not a directory: ${normalizedAbs}` }
+      }
+      if (kind === 'file' && !stat.isFile()) {
+        return { error: `Error: Not a file: ${normalizedAbs}` }
+      }
+      return { resolved: normalizedAbs }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return { error: `Error: File not found: ${normalizedAbs}` }
+      }
+      throw err
+    }
+  }
+
   // 1) 直接解析
-  const check = resolveSafe(workspace, filePath)
+  const check = resolveSafe(workspace, filePath, options)
   if ('error' in check) return check
 
   // 2) 直接路径存在 → 直接返回
@@ -1454,7 +1494,7 @@ async function execReadFile(args: Record<string, unknown>, workspace: string): P
   const rawEndLine = Number(args.endLine)
   const rawMaxChars = Number(args.maxChars)
 
-  const check = await resolveSmartPath(workspace, filePath, 'file')
+  const check = await resolveSmartPath(workspace, filePath, 'file', { allowOutsideWorkspaceRead: true })
   if ('error' in check) return { content: check.error, success: false }
   const resolved = check.resolved
   const correctedNote = check.corrected ? `[自动纠正路径: "${filePath}" → "${check.corrected.split('\n')[0]}"]\n` : ''
@@ -3559,7 +3599,7 @@ export function getAutoApproveCategories(): RiskCategory[] {
 }
 
 /** 评估一批工具调用的风险等级 */
-export function assessToolCallsRisk(toolCalls: ToolCall[]): RiskInfo[] {
+export function assessToolCallsRisk(toolCalls: ToolCall[], workspace?: string): RiskInfo[] {
   const risks: RiskInfo[] = []
 
   for (const tc of toolCalls) {
@@ -3591,6 +3631,37 @@ export function assessToolCallsRisk(toolCalls: ToolCall[]): RiskInfo[] {
         detail: info || '(无参数)',
       })
       continue
+    }
+
+    if (toolName === 'read_file') {
+      const targetPath = String(args.path ?? '').trim()
+      const ws = String(workspace ?? '').trim()
+      if (targetPath && ws) {
+        const cleaned = targetPath.replace(/^\/+/, '').replace(/\/+$/, '') || '.'
+        const candidate = path.isAbsolute(targetPath)
+          ? path.normalize(targetPath)
+          : path.normalize(path.resolve(ws, cleaned))
+        if (!isPathWithinWorkspace(ws, candidate)) {
+          risks.push({
+            toolCallId: tc.id,
+            toolName,
+            level: 'danger',
+            reason: '读取工作空间外文件',
+            detail: candidate,
+          })
+          continue
+        }
+      }
+      if (targetPath && !ws) {
+        risks.push({
+          toolCallId: tc.id,
+          toolName,
+          level: 'danger',
+          reason: '读取工作空间外文件',
+          detail: targetPath,
+        })
+        continue
+      }
     }
 
     if (toolName === 'run_command') {

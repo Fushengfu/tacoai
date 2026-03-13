@@ -1,5 +1,5 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, useTransition, type ErrorInfo } from 'react'
-import type { ChatMsg, FileChangeInfo, FileChangeStatus, GitVersionCommit, ProviderId, ThemeMode, ThreadMode } from './types'
+import type { AttachedAsset, AttachedImage, ChatMsg, FileChangeInfo, FileChangeStatus, GitVersionCommit, ProviderId, ThemeMode, ThreadMode } from './types'
 import type { AppUpdateCheckResult, EditorId, FileTreeEntry, BrowserConsoleLevel, MobileBridgeContextSnapshot, GitWorkingTreeStatus } from '../shared/ipc'
 import { providers, estimateTokens, buildSystemPrompt, resolveProviderDisplayLabel, resolveProviderMaxTokens } from './constants'
 import { loadJson, saveJson } from './lib/storage'
@@ -200,7 +200,7 @@ export default function App() {
   const browserErrorCandidatesRef = useRef<BrowserErrorCandidate[]>([])
   /** doSend 的 ref，避免 useEffect 闭包捕获旧引用 */
   type MobileTarget = { threadId?: string; sessionId?: string; provider?: ProviderId }
-  const doSendRef = useRef<(content: string, images?: import('./types').AttachedImage[], target?: MobileTarget) => void>(() => {})
+  const doSendRef = useRef<(content: string, images?: AttachedImage[], attachments?: AttachedAsset[], target?: MobileTarget) => void>(() => {})
   const mobileSyncTimerRef = useRef<number | null>(null)
   const lastMobileSnapshotDigestRef = useRef('')
   /** 中间区域当前视图：chat / settings */
@@ -1844,7 +1844,7 @@ export default function App() {
   }, [])
 
   /** 实际执行发送（使用 sessionId 作为消息存储 key） */
-  function doSend(content: string, images?: import('./types').AttachedImage[], target?: MobileTarget) {
+  function doSend(content: string, images?: AttachedImage[], attachments?: AttachedAsset[], target?: MobileTarget) {
     const threadId = target?.threadId ?? threadStore.ensureActiveThread()
     const thread = threadStore.threads.find((t) => t.id === threadId)
     const sid = target?.sessionId ?? thread?.activeSessionId ?? ''
@@ -1860,6 +1860,7 @@ export default function App() {
       projectRules: thread?.projectRules ?? '',
       content,
       images,
+      attachments,
       provider,
       providerForms: providerSettings.providerForms,
       mode,
@@ -1892,7 +1893,7 @@ export default function App() {
         sessionId: cmd.sessionId,
         provider: cmd.provider as ProviderId | undefined,
       })
-      doSendRef.current(text, undefined, selected)
+      doSendRef.current(text, undefined, undefined, selected)
     })
     return unsubscribe
   }, [applyMobileSelection])
@@ -2147,17 +2148,21 @@ export default function App() {
     })
   }
 
-  function handleSend(images?: import('./types').AttachedImage[]) {
+  function handleSend(images?: AttachedImage[], attachments?: AttachedAsset[]) {
     const content = draft.trim()
-    if ((!content && (!images || images.length === 0)) || providerSettings.configuredProviders.length === 0) return
+    if (
+      (!content && (!images || images.length === 0) && (!attachments || attachments.length === 0))
+      || providerSettings.configuredProviders.length === 0
+    ) return
     setDraft('')
 
     if (sessionSending) {
       // 当前会话正在请求 → 加入该会话的队列（队列不支持图片，仅文本）
-      chat.addToQueue(sessionId, content || '(图片消息)')
+      chat.addToQueue(sessionId, content || (images && images.length > 0 ? '(图片消息)' : '(附件消息)'))
     } else {
       // 空闲 → 直接发送
-      doSend(content || '请分析这张图片', images)
+      const fallback = images && images.length > 0 ? '请分析这张图片' : '请查看这些附件'
+      doSend(content || fallback, images, attachments)
     }
   }
 

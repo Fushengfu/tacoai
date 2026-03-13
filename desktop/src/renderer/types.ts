@@ -130,12 +130,24 @@ export type AttachedImage = {
   name: string
 }
 
+/** 用户附带的文件附件（绝对路径） */
+export type AttachedAsset = {
+  /** 唯一 ID */
+  id: string
+  /** 文件名（展示用） */
+  name: string
+  /** 文件绝对路径（发送给 AI） */
+  path: string
+}
+
 export type ChatMsg = {
   id: string
   role: 'system' | 'user' | 'assistant'
   content: string
   /** 用户消息附带的图片 */
   images?: AttachedImage[]
+  /** 用户消息附带的文件附件 */
+  attachments?: AttachedAsset[]
   /** Agent 模式：执行步骤（思考 + 工具调用 + 结果），只在最终 assistant 消息上 */
   agentSteps?: AgentStep[]
   /** Agent 完成后自动提交的 Git commit hash（用于版本回退） */

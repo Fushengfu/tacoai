@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ActivePlan, AgentStep, AttachedImage, ChatMsg, FileChangeInfo, FileChangeStatus, ProviderId, QueuedMessage, Session } from '../types'
+import type { ActivePlan, AgentStep, AttachedAsset, AttachedImage, ChatMsg, FileChangeInfo, FileChangeStatus, ProviderId, QueuedMessage, Session } from '../types'
 import type { AppUpdateCheckResult, EditorId } from '../../shared/ipc'
 import { MarkdownBubble } from './MarkdownBubble'
 import { DiffView } from './DiffView'
@@ -158,7 +158,7 @@ type ChatPanelProps = {
   draft: string
   onDraftChange: (value: string) => void
   sending: boolean
-  onSend: (images?: AttachedImage[]) => void
+  onSend: (images?: AttachedImage[], attachments?: AttachedAsset[]) => void
   onStop: () => void
   onClearChat: () => void
   /** 会话管理 */
@@ -275,6 +275,7 @@ export function ChatPanel({
 
   // ── 图片附件状态 ──
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([])
+  const [attachedAssets, setAttachedAssets] = useState<AttachedAsset[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   /** 读取文件为 base64 data URL */
@@ -311,6 +312,40 @@ export function ChatPanel({
     setAttachedImages((prev) => prev.filter((img) => img.id !== id))
   }
 
+  function removeAsset(id: string) {
+    setAttachedAssets((prev) => prev.filter((item) => item.id !== id))
+  }
+
+  function toAssetName(filePath: string): string {
+    const normalized = String(filePath ?? '').replace(/\\/g, '/')
+    const parts = normalized.split('/').filter(Boolean)
+    return parts[parts.length - 1] || normalized
+  }
+
+  async function handleSelectAttachments() {
+    const paths = await globalThis.window.taco.dialog.selectAttachments()
+    if (!Array.isArray(paths) || paths.length <= 0) return
+    setAttachedAssets((prev) => {
+      const MAX_ATTACHMENTS = 20
+      const dedup = new Set(prev.map((item) => item.path.toLowerCase()))
+      const next = [...prev]
+      for (const rawPath of paths) {
+        const filePath = String(rawPath ?? '').trim()
+        if (!filePath) continue
+        const key = filePath.toLowerCase()
+        if (dedup.has(key)) continue
+        dedup.add(key)
+        next.push({
+          id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          name: toAssetName(filePath),
+          path: filePath,
+        })
+        if (next.length >= MAX_ATTACHMENTS) break
+      }
+      return next
+    })
+  }
+
   /** 粘贴事件处理：提取图片 */
   function handlePaste(e: React.ClipboardEvent) {
     const items = e.clipboardData?.items
@@ -342,8 +377,10 @@ export function ChatPanel({
   /** 发送消息（携带图片后清空） */
   function handleSend() {
     const imgs = attachedImages.length > 0 ? [...attachedImages] : undefined
+    const assets = attachedAssets.length > 0 ? [...attachedAssets] : undefined
     setAttachedImages([])
-    onSend(imgs)
+    setAttachedAssets([])
+    onSend(imgs, assets)
   }
 
   // 编辑中的用户消息
@@ -1284,6 +1321,15 @@ export function ChatPanel({
                           ))}
                         </div>
                       )}
+                      {msg.attachments && msg.attachments.length > 0 && (
+                        <div className="msg-assets">
+                          {msg.attachments.map((asset) => (
+                            <div key={asset.id} className="msg-asset-chip" title={asset.path}>
+                              <span className="msg-asset-name">{asset.name}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       {msg.content
                         .split('\n')
                         .map((line, i) => <p key={`${msg.id}-${i}`}>{line}</p>)}
@@ -1451,6 +1497,21 @@ export function ChatPanel({
               ))}
             </div>
           )}
+          {attachedAssets.length > 0 && (
+            <div className="composer-assets">
+              {attachedAssets.map((asset) => (
+                <div key={asset.id} className="composer-asset-item" title={asset.path}>
+                  <span className="composer-asset-name">{asset.name}</span>
+                  <button
+                    type="button"
+                    className="composer-asset-remove"
+                    onClick={() => removeAsset(asset.id)}
+                    title="移除附件"
+                  >×</button>
+                </div>
+              ))}
+            </div>
+          )}
           <textarea
             className="composer-input"
             placeholder={
@@ -1460,7 +1521,7 @@ export function ChatPanel({
                   ? '请先选择工作空间...'
                   : sending
                     ? '输入消息, Enter 加入队列等待发送'
-                    : '输入消息, Enter 发送, Shift+Enter 换行, 可粘贴图片'
+                    : '输入消息, Enter 发送, Shift+Enter 换行, 可粘贴图片/添加附件'
             }
             value={draft}
             onChange={(e) => onDraftChange(e.target.value)}
@@ -1498,6 +1559,17 @@ export function ChatPanel({
                   <rect x="3.5" y="5" width="17" height="14" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.7" />
                   <circle cx="9" cy="10" r="1.6" fill="currentColor" />
                   <path d="M5.5 16l4.2-4 2.6 2.4 2.7-2.7 3.5 4.3" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="composer-attach-btn"
+                onClick={() => { void handleSelectAttachments() }}
+                title="添加附件"
+                disabled={!hasProviders || !workspace}
+              >
+                <svg className="composer-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M8.8 12.7l5.7-5.8a3.2 3.2 0 014.6 4.6l-7.2 7.2a5.1 5.1 0 01-7.2-7.2L12 4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
               </button>
               <button

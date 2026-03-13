@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ActivePlan, AgentStep, AttachedImage, ChatMsg, ProviderId, ProviderForms, QueuedMessage, TaskTiming, ThreadMode, ToolCallInfo, ToolResultInfo } from '../types'
+import type { ActivePlan, AgentStep, AttachedAsset, AttachedImage, ChatMsg, ProviderId, ProviderForms, QueuedMessage, TaskTiming, ThreadMode, ToolCallInfo, ToolResultInfo } from '../types'
 import type { ChatStoreSessionPatch, ChatStoreSessionSnapshot, PromptConfig } from '../../shared/ipc'
 import { buildSystemPrompt } from '../constants'
 import { loadJson, saveJson, uid } from '../lib/storage'
@@ -63,15 +63,51 @@ function buildTaskTiming(startedAt: number, endedAt = Date.now()): TaskTiming {
   }
 }
 
+const USER_ASSETS_BLOCK_STRIP_REGEX = /\s*\[USER_ASSETS\][\s\S]*?\[\/USER_ASSETS\]\s*/gi
+
+function stripUserAssetsBlock(content: string): string {
+  return String(content ?? '')
+    .replace(USER_ASSETS_BLOCK_STRIP_REGEX, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function buildUserAssetsBlock(attachments?: AttachedAsset[]): string {
+  if (!attachments || attachments.length <= 0) return ''
+  const dedup = new Set<string>()
+  const lines: string[] = ['[USER_ASSETS]']
+  for (const asset of attachments) {
+    const path = String(asset?.path ?? '').trim()
+    if (!path) continue
+    const key = path.toLowerCase()
+    if (dedup.has(key)) continue
+    dedup.add(key)
+    lines.push('- type: file')
+    lines.push(`  path: ${path}`)
+  }
+  if (lines.length === 1) return ''
+  lines.push('[/USER_ASSETS]')
+  return lines.join('\n')
+}
+
 function mapMessageForApi(msg: ChatMsg): { role: ChatMsg['role']; content: string } {
   if (msg.role !== 'user') return { role: msg.role, content: msg.content }
-  const raw = String(msg.content ?? '')
+  const raw = stripUserAssetsBlock(String(msg.content ?? ''))
   const wrapped = raw.match(/\[USER_QUERY\]([\s\S]*?)\[\/USER_QUERY\]/i)
+  const userQueryBlock = wrapped && wrapped[1] !== undefined
+    ? raw.trim()
+    : `[USER_QUERY]\n${raw.trim()}\n[/USER_QUERY]`
+  const assetsBlock = buildUserAssetsBlock(msg.attachments)
+  if (assetsBlock) {
+    return {
+      role: msg.role,
+      content: `${userQueryBlock}\n\n${assetsBlock}`,
+    }
+  }
   if (wrapped && wrapped[1] !== undefined) {
     return { role: msg.role, content: raw.trim() }
   }
-  const body = raw.trim()
-  return { role: msg.role, content: `[USER_QUERY]\n${body}\n[/USER_QUERY]` }
+  return { role: msg.role, content: userQueryBlock }
 }
 
 function buildMessagesForApi(messages: ChatMsg[], mode?: ThreadMode): Array<{ role: ChatMsg['role']; content: string }> {
@@ -245,6 +281,8 @@ export type SendMessageParams = {
   content: string
   /** 用户附带的图片 */
   images?: AttachedImage[]
+  /** 用户附带的文件附件（绝对路径） */
+  attachments?: AttachedAsset[]
   provider: ProviderId
   providerForms: ProviderForms
   /** 会话模式 */
@@ -716,7 +754,7 @@ export function useChat() {
   /* ------------------------------------------------------------------ */
 
   async function sendMessage(params: SendMessageParams) {
-    const { threadId, projectId, projectRules, content, images, provider, providerForms, mode, workspace, maxTokens, onFirstMessage, onComplete } = params
+    const { threadId, projectId, projectRules, content, images, attachments, provider, providerForms, mode, workspace, maxTokens, onFirstMessage, onComplete } = params
     rememberSessionStoreMeta(threadId, { projectId, workspace })
 
     // 保存参数供队列重发
@@ -734,7 +772,9 @@ export function useChat() {
 
     // 同一会话绝对串行：若已有在途请求，本次直接入队
     if (inFlightThreadsRef.current.has(threadId)) {
-      const queueText = content.trim() || (images && images.length > 0 ? '(图片消息)' : '')
+      const queueText = content.trim()
+        || (images && images.length > 0 ? '(图片消息)' : '')
+        || (attachments && attachments.length > 0 ? '(附件消息)' : '')
       if (queueText) addToQueue(threadId, queueText)
       return
     }
@@ -743,7 +783,13 @@ export function useChat() {
 
     // 用 ref 读取最新消息，避免闭包过期
     const currentMsgs = threadMessagesRef.current[threadId] ?? []
-    const userMsg: ChatMsg = { id: uid(), role: 'user', content, ...(images && images.length > 0 ? { images } : {}) }
+    const userMsg: ChatMsg = {
+      id: uid(),
+      role: 'user',
+      content,
+      ...(images && images.length > 0 ? { images } : {}),
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
+    }
     const sourceUserMessageId = userMsg.id
     const streamAssistantMessageId = uid()
     const updatedMsgs = [...currentMsgs, userMsg]

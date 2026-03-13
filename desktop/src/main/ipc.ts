@@ -124,6 +124,7 @@ function cleanupAssistantMemoryText(text: string): string {
 
 const USER_ASSETS_BLOCK_REGEX = /\s*\[USER_ASSETS\][\s\S]*?\[\/USER_ASSETS\]\s*/gi
 const USER_ASSETS_BLOCK_CAPTURE_REGEX = /\[USER_ASSETS\]([\s\S]*?)\[\/USER_ASSETS\]/i
+type UserAssetEntry = { type: string; path: string }
 
 function stripUserAssetsBlock(content: string): string {
   return String(content ?? '')
@@ -132,11 +133,23 @@ function stripUserAssetsBlock(content: string): string {
     .trim()
 }
 
-function buildUserAssetsBlock(imagePaths: string[]): string {
+function buildUserAssetsBlock(entries: UserAssetEntry[]): string {
+  const dedup = new Set<string>()
+  const normalized: UserAssetEntry[] = []
+  for (const entry of entries) {
+    const type = String(entry?.type || '').trim() || 'file'
+    const path = String(entry?.path || '').trim()
+    if (!path) continue
+    const key = `${type}:${path}`
+    if (dedup.has(key)) continue
+    dedup.add(key)
+    normalized.push({ type, path })
+  }
+  if (normalized.length <= 0) return ''
   const lines: string[] = ['[USER_ASSETS]']
-  for (const imagePath of imagePaths) {
-    lines.push('- type: image')
-    lines.push(`  path: ${imagePath}`)
+  for (const entry of normalized) {
+    lines.push(`- type: ${entry.type}`)
+    lines.push(`  path: ${entry.path}`)
   }
   lines.push('[/USER_ASSETS]')
   return lines.join('\n')
@@ -147,6 +160,30 @@ function extractUserAssetsBlock(content: string): string {
   const wrapped = raw.match(USER_ASSETS_BLOCK_CAPTURE_REGEX)
   if (!wrapped || !wrapped[1]) return ''
   return wrapped[1].trim()
+}
+
+function parseUserAssetEntries(content: string): UserAssetEntry[] {
+  const body = extractUserAssetsBlock(content)
+  if (!body) return []
+  const entries: UserAssetEntry[] = []
+  let currentType = ''
+  for (const rawLine of body.split('\n')) {
+    const line = rawLine.trim()
+    if (!line) continue
+    const typeMatch = line.match(/^-+\s*type:\s*(.+)$/i)
+    if (typeMatch && typeMatch[1]) {
+      currentType = typeMatch[1].trim() || 'file'
+      continue
+    }
+    const pathMatch = line.match(/^(?:-+\s*)?path:\s*(.+)$/i)
+    if (pathMatch && pathMatch[1]) {
+      entries.push({
+        type: currentType || 'file',
+        path: pathMatch[1].trim(),
+      })
+    }
+  }
+  return entries
 }
 
 function extractUserQueryText(content: string): string {
@@ -509,9 +546,15 @@ async function handleAgentStream(event: IpcMainEvent, payload: AgentStreamPayloa
       const lastUserIdx = messages.length - 1
       if (lastUserIdx >= 0 && messages[lastUserIdx].role === 'user') {
         const originalContent = String(messages[lastUserIdx].content ?? '')
+        const existingEntries = parseUserAssetEntries(originalContent)
         const baseContent = stripUserAssetsBlock(originalContent)
-        const assetsBlock = buildUserAssetsBlock(savedPaths)
-        const mergedContent = baseContent ? `${baseContent}\n\n${assetsBlock}` : assetsBlock
+        const assetsBlock = buildUserAssetsBlock([
+          ...existingEntries,
+          ...savedPaths.map((filePath) => ({ type: 'image', path: filePath })),
+        ])
+        const mergedContent = assetsBlock
+          ? (baseContent ? `${baseContent}\n\n${assetsBlock}` : assetsBlock)
+          : baseContent
         messages[lastUserIdx] = {
           ...messages[lastUserIdx],
           content: mergedContent,
@@ -621,6 +664,17 @@ async function handleSelectDirectory(event: IpcMainInvokeEvent): Promise<string 
   })
   if (result.canceled || result.filePaths.length === 0) return null
   return result.filePaths[0]
+}
+
+/** 附件选择对话框 */
+async function handleSelectAttachments(event: IpcMainInvokeEvent): Promise<string[]> {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  const result = await dialog.showOpenDialog(win!, {
+    title: '选择附件',
+    properties: ['openFile', 'multiSelections'],
+  })
+  if (result.canceled || result.filePaths.length === 0) return []
+  return result.filePaths
 }
 
 /** 用编辑器打开文件 */
@@ -1003,6 +1057,7 @@ export function registerIpcHandlers() {
   ipcMain.handle(IpcChannel.CHAT_STORE_SAVE, handleChatStoreSave)
   ipcMain.handle(IpcChannel.CHAT_STORE_DELETE_SESSION, handleChatStoreDeleteSession)
   ipcMain.handle(IpcChannel.SELECT_DIRECTORY, handleSelectDirectory)
+  ipcMain.handle(IpcChannel.SELECT_ATTACHMENTS, handleSelectAttachments)
   ipcMain.handle(IpcChannel.OPEN_IN_EDITOR, handleOpenInEditor)
   ipcMain.handle(IpcChannel.OPEN_LOG_DIR, (_e, scope?: { projectId?: string; workspace?: string }) => {
     const logScope = buildLogScope(scope?.projectId, scope?.workspace)
