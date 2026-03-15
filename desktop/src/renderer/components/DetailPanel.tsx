@@ -68,6 +68,10 @@ type DetailPanelProps = {
   onOpenFileView?: (filePath: string, forceDiff?: boolean) => void
   /** 当前在编辑器中查看的文件 */
   viewingFile?: string | null
+  /** 删除文件回调 */
+  onDeleteFile?: (filePath: string) => void
+  /** 删除目录回调 */
+  onDeleteDirectory?: (dirPath: string) => void
 }
 
 function formatTokens(n: number): string {
@@ -537,6 +541,7 @@ function WsTreeNode({
   fileStatuses,
   onAcceptFile,
   onRejectFile,
+  onContextMenu,
 }: {
   entry: FileTreeEntry
   depth?: number
@@ -554,6 +559,8 @@ function WsTreeNode({
   fileStatuses: Record<string, FileChangeStatus>
   onAcceptFile: (filePath: string) => void
   onRejectFile: (filePath: string) => void
+  /** 右键菜单回调 */
+  onContextMenu?: (e: React.MouseEvent, path: string, isDirectory: boolean) => void
 }) {
   const [expanded, setExpanded] = useState(false)
 
@@ -564,6 +571,7 @@ function WsTreeNode({
           className="ws-tree-dir-header"
           style={{ paddingLeft: depth * 18 + 24 }}
           onClick={() => setExpanded((p) => !p)}
+          onContextMenu={(e) => onContextMenu?.(e, entry.path, true)}
         >
           <span className={`ws-tree-arrow ${expanded ? 'open' : ''}`}>›</span>
           <span className={`ws-folder-icon ${expanded ? 'open' : ''}`}>
@@ -587,6 +595,7 @@ function WsTreeNode({
             fileStatuses={fileStatuses}
             onAcceptFile={onAcceptFile}
             onRejectFile={onRejectFile}
+            onContextMenu={onContextMenu}
           />
         ))}
       </div>
@@ -636,6 +645,7 @@ function WsTreeNode({
       ].filter(Boolean).join(' ')}
       style={{ paddingLeft: depth * 18 + 24 }}
       onClick={() => onFileClick(entry.path)}
+      onContextMenu={(e) => onContextMenu?.(e, entry.path, false)}
     >
       <span className="ws-file-icon" style={{ background: icon.color }}>{icon.label}</span>
       <span className="ws-file-name">{entry.name}</span>
@@ -718,10 +728,38 @@ export function DetailPanel({
   onRefreshTree,
   onOpenFileView,
   viewingFile,
+  onDeleteFile,
+  onDeleteDirectory,
 }: Readonly<DetailPanelProps>) {
   const [expandedHashes, setExpandedHashes] = useState<Set<string>>(new Set())
   const [commitFilesCache, setCommitFilesCache] = useState<Record<string, string[]>>({})
   const [rollingBack, setRollingBack] = useState<string | null>(null)
+  // 右键菜单状态
+  const [contextMenu, setContextMenu] = useState<{
+    x: number
+    y: number
+    path: string
+    isDirectory: boolean
+  } | null>(null)
+
+  // 右键菜单处理
+  const handleContextMenu = useCallback((e: React.MouseEvent, path: string, isDirectory: boolean) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setContextMenu({ x: e.clientX, y: e.clientY, path, isDirectory })
+  }, [])
+
+  const closeContextMenu = useCallback(() => {
+    setContextMenu(null)
+  }, [])
+
+  // 点击其他地方关闭菜单
+  useEffect(() => {
+    if (!contextMenu) return
+    const handleClick = () => closeContextMenu()
+    document.addEventListener('click', handleClick)
+    return () => document.removeEventListener('click', handleClick)
+  }, [contextMenu, closeContextMenu])
 
   async function toggleVersionExpand(hash: string) {
     setExpandedHashes((prev) => {
@@ -1100,6 +1138,7 @@ export function DetailPanel({
                   fileStatuses={fileStatuses}
                   onAcceptFile={onAcceptFile}
                   onRejectFile={onRejectFile}
+                  onContextMenu={handleContextMenu}
                 />
               ))}
             </div>
@@ -1149,6 +1188,7 @@ export function DetailPanel({
                   fileStatuses={fileStatuses}
                   onAcceptFile={onAcceptFile}
                   onRejectFile={onRejectFile}
+                  onContextMenu={handleContextMenu}
                 />
               ))}
             </div>
@@ -1370,6 +1410,35 @@ export function DetailPanel({
       )}
 
       <div className="detail-footer">Taco v{globalThis.window.taco?.version ?? '0.1.0'}</div>
+
+      {/* 右键菜单 */}
+      {contextMenu && (
+        <div
+          className="tree-context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {contextMenu.isDirectory ? (
+            <>
+              <div
+                className="context-menu-item danger"
+                onClick={() => { onDeleteDirectory?.(contextMenu.path); closeContextMenu() }}
+              >
+                删除目录
+              </div>
+            </>
+          ) : (
+            <>
+              <div
+                className="context-menu-item danger"
+                onClick={() => { onDeleteFile?.(contextMenu.path); closeContextMenu() }}
+              >
+                删除文件
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </aside>
   )
 }

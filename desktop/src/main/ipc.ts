@@ -865,12 +865,23 @@ async function handleFileRevert(_event: IpcMainInvokeEvent, filePath: string, ol
   }
 }
 
-/** 删除文件（撤销新建） */
+/** 删除文件（移到回收站） */
 async function handleFileDelete(_event: IpcMainInvokeEvent, filePath: string): Promise<void> {
   try {
-    await fs.unlink(filePath)
+    await shell.trashItem(filePath)
   } catch (err: unknown) {
     // 文件不存在时忽略（可能已被手动删除）
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw err
+  }
+}
+
+/** 删除目录（移到回收站） */
+async function handleDirectoryDelete(_event: IpcMainInvokeEvent, dirPath: string): Promise<void> {
+  try {
+    await shell.trashItem(dirPath)
+  } catch (err: unknown) {
+    // 目录不存在时忽略（可能已被手动删除）
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
     throw err
   }
@@ -1082,6 +1093,7 @@ export function registerIpcHandlers() {
   ipcMain.handle(IpcChannel.PROMPT_CONFIG_SAVE, handlePromptConfigSave)
   ipcMain.handle(IpcChannel.FILE_REVERT, handleFileRevert)
   ipcMain.handle(IpcChannel.FILE_DELETE, handleFileDelete)
+  ipcMain.handle(IpcChannel.DIRECTORY_DELETE, handleDirectoryDelete)
   ipcMain.handle(IpcChannel.FILE_READ, handleFileRead)
   ipcMain.handle(IpcChannel.FILE_WRITE, handleFileWrite)
   ipcMain.on(IpcChannel.CHAT_STREAM, handleChatStream)

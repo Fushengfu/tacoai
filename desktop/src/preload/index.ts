@@ -269,6 +269,8 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.FILE_REVERT, filePath, oldContent),
     delete: (filePath: string) =>
       ipcRenderer.invoke(IpcChannel.FILE_DELETE, filePath),
+    deleteDirectory: (dirPath: string) =>
+      ipcRenderer.invoke(IpcChannel.DIRECTORY_DELETE, dirPath),
     read: (filePath: string) =>
       ipcRenderer.invoke(IpcChannel.FILE_READ, filePath),
     write: (filePath: string, content: string) =>

@@ -1011,7 +1011,7 @@ export default function App() {
   useEffect(() => {
     setGitStatusLoaded(false)
     const initialFlags: Partial<ProjectRefreshFlags> = {
-      tree: detailTreeExpanded,
+      tree: true, // 始终加载目录树，不管面板是否展开
       gitStatus: currentMode === 'agent' && detailChangesExpanded,
       gitLog: currentMode === 'agent' && detailGitExpanded,
     }
@@ -1462,6 +1462,40 @@ export default function App() {
       console.error('撤销文件变更失败:', filePath, err)
     }
   }, [currentMode, effectiveFileChanges, resolveFilePath, removeManualChanges, queueProjectRefresh])
+
+  /** 从文件树中删除文件 */
+  const handleDeleteFile = useCallback(async (filePath: string) => {
+    if (!currentWorkspace) return
+    try {
+      const absPath = resolveFilePath(filePath)
+      await window.taco.file.delete(absPath)
+      queueProjectRefresh({
+        tree: true,
+        gitStatus: true,
+        gitLog: currentMode === 'agent',
+        liveDiff: currentMode === 'agent',
+      }, 0)
+    } catch (err) {
+      console.error('删除文件失败:', filePath, err)
+    }
+  }, [currentWorkspace, currentMode, resolveFilePath, queueProjectRefresh])
+
+  /** 从文件树中删除目录 */
+  const handleDeleteDirectory = useCallback(async (dirPath: string) => {
+    if (!currentWorkspace) return
+    try {
+      const absPath = resolveFilePath(dirPath)
+      await window.taco.file.deleteDirectory(absPath)
+      queueProjectRefresh({
+        tree: true,
+        gitStatus: true,
+        gitLog: currentMode === 'agent',
+        liveDiff: currentMode === 'agent',
+      }, 0)
+    } catch (err) {
+      console.error('删除目录失败:', dirPath, err)
+    }
+  }, [currentWorkspace, currentMode, resolveFilePath, queueProjectRefresh])
 
   /** 保存所有 pending 变更 */
   const handleAcceptAll = useCallback(async () => {
@@ -2539,6 +2573,8 @@ export default function App() {
             }}
             onOpenFileView={handleOpenFileView}
             viewingFile={viewingFile}
+            onDeleteFile={handleDeleteFile}
+            onDeleteDirectory={handleDeleteDirectory}
           />
         </PaneErrorBoundary>
       </div>

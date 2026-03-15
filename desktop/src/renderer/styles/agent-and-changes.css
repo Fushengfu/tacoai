@@ -2274,3 +2274,35 @@
   line-height: 18px;
 }
 
+
+/* 右键菜单样式 */
+.tree-context-menu {
+  position: fixed;
+  z-index: 10000;
+  background: #1e1e1e;
+  border: 1px solid #333;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  padding: 4px 0;
+  min-width: 120px;
+}
+
+.context-menu-item {
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #e0e0e0;
+  transition: background 0.15s;
+}
+
+.context-menu-item:hover {
+  background: #333;
+}
+
+.context-menu-item.danger {
+  color: #f56565;
+}
+
+.context-menu-item.danger:hover {
+  background: rgba(245, 101, 101, 0.15);
+}
