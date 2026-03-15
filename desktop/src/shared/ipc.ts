@@ -47,6 +47,8 @@ export const IpcChannel = {
   FILE_REVERT: 'file:revert',
   /** renderer → main (invoke/handle, 删除新建的文件) */
   FILE_DELETE: 'file:delete',
+  /** renderer → main (invoke/handle, 删除目录) */
+  DIRECTORY_DELETE: 'directory:delete',
   /** renderer → main (invoke/handle, 读取文件内容) */
   FILE_READ: 'file:read',
   /** renderer → main (invoke/handle, 写入文件内容) */
@@ -898,6 +900,8 @@ export type TacoApi = {
     revert: (filePath: string, oldContent: string) => Promise<void>
     /** 删除文件（用于撤销 Agent 新建的文件） */
     delete: (filePath: string) => Promise<void>
+    /** 删除目录 */
+    deleteDirectory: (dirPath: string) => Promise<void>
     /** 读取文件内容（文本文件返回内容字符串，二进制文件返回 null；图片可返回 dataUrl 预览） */
     read: (filePath: string) => Promise<{ content: string | null; size: number; isBinary: boolean; dataUrl?: string; truncated?: boolean }>
     /** 写入文件内容 */
