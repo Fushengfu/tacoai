@@ -13,6 +13,7 @@ import { DetailPanel } from './components/DetailPanel'
 import { SettingsPage } from './components/SettingsModal'
 import { PaneErrorBoundary } from './components/PaneErrorBoundary'
 import { useResize } from './hooks/useResize'
+import { useDrag } from './hooks/useDrag'
 
 const DEV_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1'])
 const SIDEBAR_MIN_WIDTH = 220
@@ -2292,43 +2293,125 @@ export default function App() {
   ])
 
   /* ---- render ---- */
-  const isMac = globalThis.window.taco.system.platform === 'darwin'
+  const drag = useDrag()
+  const showWindowControls = globalThis.window.taco.system.platform === 'win32'
+  const activeThreadTitle = threadStore.activeThread?.title ?? '新项目'
   const clampedSidebarRatio = clampNumber(sidebarWidthRatio, sidebarMinRatio, sidebarMaxRatio)
   const clampedSidebarWidth = sidebarAreaWidth > 0 ? clampedSidebarRatio * sidebarAreaWidth : 0
   const effectiveSidebarWidth = sidebarVisible ? clampedSidebarWidth : 0
   const gridStyle = {
+    gridTemplateRows: '48px minmax(0, 1fr)',
     gridTemplateColumns: `${effectiveSidebarWidth}px 0px minmax(0, 1fr) 0px minmax(${DETAIL_MIN_WIDTH}px, ${effectiveDetailWidth}px)`,
   }
 
   return (
     <div ref={appShellRef} className="app-shell" style={gridStyle}>
-      <div className={`sidebar-fixed-anchor ${isMac ? 'mac' : ''}`}>
-        <button
-          type="button"
-          className="sidebar-fixed-toggle"
-          onClick={() => setSidebarVisible((v) => !v)}
-          title={sidebarVisible ? '隐藏左侧项目栏' : '显示左侧项目栏'}
-          aria-label={sidebarVisible ? '隐藏左侧项目栏' : '显示左侧项目栏'}
-        >
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-            <rect x="2.25" y="2.25" width="11.5" height="11.5" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
-            <path d="M6 3.2v9.6" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-            {sidebarVisible ? (
-              <path d="M8 6.4 6.6 8 8 9.6" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-            ) : (
-              <path d="M7.2 6.4 8.6 8 7.2 9.6" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-            )}
-          </svg>
-        </button>
-        {!sidebarVisible && (
-          <div className="sidebar-fixed-title" title={threadStore.activeThread?.title ?? '新项目'}>
-            {threadStore.activeThread?.title ?? '新项目'}
+      <header
+        className="topbar app-topbar draggable"
+        style={{ gridColumn: '1 / 6', gridRow: '1 / 2' }}
+        {...drag}
+        onDoubleClick={() => globalThis.window.taco.window.toggleMaximize()}
+      >
+        <div className="app-topbar-left no-drag">
+          <button
+            type="button"
+            className="sidebar-fixed-toggle"
+            onClick={() => setSidebarVisible((v) => !v)}
+            title={sidebarVisible ? '隐藏左侧项目栏' : '显示左侧项目栏'}
+            aria-label={sidebarVisible ? '隐藏左侧项目栏' : '显示左侧项目栏'}
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <rect x="2.25" y="2.25" width="11.5" height="11.5" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+              <path d="M6 3.2v9.6" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+              {sidebarVisible ? (
+                <path d="M8 6.4 6.6 8 8 9.6" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+              ) : (
+                <path d="M7.2 6.4 8.6 8 7.2 9.6" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+              )}
+            </svg>
+          </button>
+        </div>
+
+        <div className="app-topbar-center">
+          <div className="topbar-title app-topbar-title" title={activeThreadTitle}>
+            {activeThreadTitle}
           </div>
-        )}
-      </div>
+        </div>
+
+        <div className={`topbar-actions no-drag app-topbar-right ${showWindowControls ? 'has-window-controls' : ''}`}>
+          <div className="topbar-main-actions">
+            {updateStatus?.success && updateStatus.hasUpdate && (
+              <button
+                className="pill update-pill"
+                type="button"
+                onClick={() => handleOpenUpdateDialog()}
+                disabled={updateChecking}
+                title="点击查看并升级新版本"
+              >
+                {updateChecking ? '检查更新中...' : `新版本 v${updateStatus.latestVersion || ''}`}
+              </button>
+            )}
+            <button
+              className={`pill terminal-toggle ${showTerminal ? 'active' : ''}`}
+              type="button"
+              onClick={() => setShowTerminal((v) => !v)}
+              title={showTerminal ? '关闭终端' : '打开终端'}
+            >
+              {'>'}_
+            </button>
+            {messages.length > 0 && (
+              <button className="pill" type="button" onClick={handleClearChat}>
+                清空
+              </button>
+            )}
+            <button className="pill new-session-btn" type="button" onClick={handleNewSession} title="在当前项目中新建会话">
+              + 新建会话
+            </button>
+          </div>
+          {showWindowControls && (
+            <div className="window-controls">
+              <button
+                type="button"
+                className="window-control-btn"
+                onClick={() => globalThis.window.taco.window.minimize()}
+                title="最小化"
+                aria-label="最小化"
+              >
+                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                  <path d="M3 8.5h10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="window-control-btn"
+                onClick={() => globalThis.window.taco.window.toggleMaximize()}
+                title="最大化/还原"
+                aria-label="最大化"
+              >
+                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                  <rect x="3.25" y="3.25" width="9.5" height="9.5" fill="none" stroke="currentColor" strokeWidth="1.5" rx="1" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="window-control-btn close"
+                onClick={() => globalThis.window.taco.window.close()}
+                title="关闭"
+                aria-label="关闭"
+              >
+                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                  <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+              </button>
+            </div>
+          )}
+        </div>
+      </header>
+
       <div
         style={{
           gridColumn: '1 / 2',
+          gridRow: '2 / 3',
           display: 'block',
           height: '100%',
           width: '100%',
@@ -2375,6 +2458,7 @@ export default function App() {
         onMouseDown={handleSidebarResizeMouseDown}
         style={{
           gridColumn: '2 / 3',
+          gridRow: '2 / 3',
           visibility: sidebarVisible ? 'visible' : 'hidden',
           pointerEvents: sidebarVisible ? 'auto' : 'none',
         }}
@@ -2383,7 +2467,7 @@ export default function App() {
       </div>
 
       {/* 中间区域：多视图叠加，用 CSS 控制显隐（保持浏览器状态） */}
-      <div className="middle-area" style={{ gridColumn: '3 / 4', width: '100%', minWidth: 0 }}>
+      <div className="middle-area" style={{ gridColumn: '3 / 4', gridRow: '2 / 3', width: '100%', minWidth: 0 }}>
         {/* 外部浏览器打开时显示切换标签（支持多窗口） */}
         {browserWindows.size > 0 && (
           <div className="middle-tabs">
@@ -2455,7 +2539,6 @@ export default function App() {
             onError={reportPaneRenderError}
           >
             <ChatPanel
-              title={sidebarVisible ? (threadStore.activeThread?.title ?? '新项目') : ''}
               messages={messages}
               showStreamBubble={showStreamBubble}
               streamingContent={sessionStreamingContent}
@@ -2464,8 +2547,6 @@ export default function App() {
               sending={sessionSending}
               onSend={handleSend}
               onStop={() => sessionId && chat.stopSending(sessionId)}
-              onClearChat={handleClearChat}
-              onNewSession={handleNewSession}
               onSwitchSession={handleSwitchSession}
               onDeleteSession={handleDeleteSession}
               sessions={sessions}
@@ -2477,9 +2558,6 @@ export default function App() {
               provider={currentProvider}
               onProviderChange={handleProviderChange}
               configuredProviders={providerSettings.configuredProviders}
-              updateStatus={updateStatus}
-              updateChecking={updateChecking}
-              onOpenUpdateDialog={handleOpenUpdateDialog}
               scrollRef={scrollRef}
               totalMessageCount={totalSessionMessageCount}
               hasOlderStoredMessages={chat.hasOlderMessages(sessionId)}
@@ -2533,12 +2611,12 @@ export default function App() {
         aria-label="调整面板大小"
         tabIndex={0}
         onMouseDown={handleResizeMouseDown}
-        style={{ gridColumn: '4 / 5' }}
+        style={{ gridColumn: '4 / 5', gridRow: '2 / 3' }}
       >
         <div className="resize-handle-line" />
       </div>
 
-      <div style={{ gridColumn: '5 / 6', minWidth: 0, minHeight: 0, width: '100%', display: 'flex', overflow: 'hidden' }}>
+      <div style={{ gridColumn: '5 / 6', gridRow: '2 / 3', minWidth: 0, minHeight: 0, width: '100%', display: 'flex', overflow: 'hidden' }}>
         <PaneErrorBoundary
           pane="detail"
           title="右侧详情面板"

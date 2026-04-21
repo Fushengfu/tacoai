@@ -99,31 +99,51 @@ body {
   display: grid;
   /* 5 列: sidebar | left-resize | main | right-resize | detail */
   grid-template-columns: 280px 0px minmax(0, 1fr) 0px 300px;
+  grid-template-rows: 48px minmax(0, 1fr);
   height: 100%;
   background: linear-gradient(180deg, var(--app-bg-start) 0%, var(--app-bg-end) 100%);
   position: relative;
 }
 
-.sidebar-fixed-anchor {
-  position: absolute;
-  top: 10px;
-  left: 10px;
-  z-index: 130;
-  display: flex;
+.app-topbar {
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) minmax(0, 2fr) minmax(320px, 1fr);
   align-items: center;
-  gap: 8px;
-  height: 24px;
+  gap: 12px;
+  padding: 8px 12px;
+  min-height: 48px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(12, 16, 24, 0.9), rgba(8, 10, 14, 0.86));
+  z-index: 90;
 }
 
-.sidebar-fixed-anchor.mac {
-  left: 84px;
+.app-topbar-left {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.app-topbar-center {
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+
+.app-topbar-title {
+  text-align: center;
+  width: 100%;
+  max-width: 100%;
+}
+
+.app-topbar-right {
+  justify-content: flex-end;
 }
 
 .sidebar-fixed-toggle {
   height: 24px;
   width: 34px;
   padding: 0;
-  border-radius: 0;
+  border-radius: 6px;
   border: none;
   background: rgba(16, 18, 24, 0.88);
   color: var(--text);
@@ -143,21 +163,6 @@ body {
 .sidebar-fixed-toggle:hover {
   background: rgba(76, 123, 255, 0.16);
   color: var(--accent-2);
-  border-radius: 4px;
-}
-
-.sidebar-fixed-title {
-  max-width: 280px;
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text);
-  font-size: 15px;
-  font-weight: 600;
-  line-height: 24px;
 }
 
 /* ---- Middle area (中间区域容器) ---- */
@@ -297,9 +302,8 @@ body.is-resizing iframe {
   height: 100%;
   min-height: 0;
   min-width: 0;
-  padding: 0 20px 12px;
-  /* sidebar-group 与拖拽条之间由 gap: 20px 提供间距 */
-  gap: 20px;
+  padding: 12px 20px 12px;
+  gap: 12px;
   overflow: hidden;
 }
 

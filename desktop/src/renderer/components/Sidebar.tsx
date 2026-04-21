@@ -1,6 +1,5 @@
 import type { Thread } from '../types'
 import { formatTime } from '../lib/storage'
-import { DragBar } from './DragBar'
 import { useState } from 'react'
 
 type SidebarProps = {
@@ -48,8 +47,6 @@ export function Sidebar({
 
   return (
     <aside className="sidebar">
-      <DragBar />
-
       <div className="sidebar-group">
         <button className="ghost-btn" type="button" onClick={onNewThread}>
           <span className="icon">+</span>

@@ -1,5 +1,4 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import { DragBar } from './DragBar'
 import type { FileChangeInfo, FileChangeStatus, GitVersionCommit } from '../types'
 import type { FileTreeEntry } from '../../shared/ipc'
 import type { ProjectTokenStats } from '../hooks/useChat'
@@ -1051,8 +1050,6 @@ export function DetailPanel({
 
   return (
     <aside className="detail-panel">
-      <DragBar />
-
       {/* 会话信息卡片 */}
       <div className="detail-card">
         <div className="detail-title">{title}</div>

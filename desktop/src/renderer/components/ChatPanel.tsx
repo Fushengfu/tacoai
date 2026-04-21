@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ActivePlan, AgentStep, AttachedAsset, AttachedImage, ChatMsg, FileChangeInfo, FileChangeStatus, ProviderId, QueuedMessage, Session } from '../types'
-import type { AppUpdateCheckResult, EditorId } from '../../shared/ipc'
+import type { EditorId } from '../../shared/ipc'
 import { MarkdownBubble } from './MarkdownBubble'
 import { DiffView } from './DiffView'
 import { FileEditor } from './FileEditor'
 import { ToolResultContent } from './ToolResultContent'
 import { TerminalPanel } from './TerminalPanel'
-import { useDrag } from '../hooks/useDrag'
 
 /* ------------------------------------------------------------------ */
 /*  PlanTracker — 实时计划进度追踪器                                      */
@@ -153,7 +152,6 @@ function sanitizeAssistantContentForDisplay(content: string, toolNames: string[]
 }
 
 type ChatPanelProps = {
-  title: string
   messages: ChatMsg[]
   showStreamBubble: boolean
   streamingContent: string
@@ -164,9 +162,7 @@ type ChatPanelProps = {
   sending: boolean
   onSend: (images?: AttachedImage[], attachments?: AttachedAsset[]) => void
   onStop: () => void
-  onClearChat: () => void
   /** 会话管理 */
-  onNewSession: () => void
   onSwitchSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
   sessions: Session[]
@@ -178,9 +174,6 @@ type ChatPanelProps = {
   provider: ProviderId
   onProviderChange: (id: ProviderId) => void
   configuredProviders: readonly { id: ProviderId; label: string }[]
-  updateStatus?: AppUpdateCheckResult | null
-  updateChecking?: boolean
-  onOpenUpdateDialog?: () => void
   scrollRef: React.RefObject<HTMLDivElement>
   totalMessageCount?: number
   hasOlderStoredMessages?: boolean
@@ -228,7 +221,6 @@ type ChatPanelProps = {
 }
 
 export function ChatPanel({
-  title,
   messages,
   showStreamBubble,
   streamingContent,
@@ -238,8 +230,6 @@ export function ChatPanel({
   sending,
   onSend,
   onStop,
-  onClearChat,
-  onNewSession,
   onSwitchSession,
   onDeleteSession,
   sessions,
@@ -251,9 +241,6 @@ export function ChatPanel({
   provider,
   onProviderChange,
   configuredProviders,
-  updateStatus,
-  updateChecking,
-  onOpenUpdateDialog,
   scrollRef,
   totalMessageCount,
   hasOlderStoredMessages,
@@ -282,8 +269,6 @@ export function ChatPanel({
   onOpenFileView,
 }: Readonly<ChatPanelProps>) {
   const hasProviders = configuredProviders.length > 0
-  const drag = useDrag()
-  const showWindowControls = globalThis.window.taco.system.platform === 'win32'
   const [visibleMessageCount, setVisibleMessageCount] = useState(() => Math.min(messages.length, INITIAL_VISIBLE_MESSAGE_COUNT))
   const prependAnchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
 
@@ -1040,83 +1025,6 @@ export function ChatPanel({
 
   return (
     <main className="main-panel" style={{ width: '100%', minWidth: 0, alignSelf: 'stretch' }}>
-      {/* Topbar */}
-      <header
-        className={`topbar draggable ${showWindowControls ? 'has-window-controls' : ''}`}
-        {...drag}
-        onDoubleClick={() => globalThis.window.taco.window.toggleMaximize()}
-      >
-        <div className="topbar-title">{title}</div>
-        <div className={`topbar-actions no-drag ${showWindowControls ? 'has-window-controls' : ''}`}>
-          <div className="topbar-main-actions">
-            {updateStatus?.success && updateStatus.hasUpdate && (
-              <button
-                className="pill update-pill"
-                type="button"
-                onClick={() => onOpenUpdateDialog?.()}
-                disabled={updateChecking}
-                title="点击查看并升级新版本"
-              >
-                {updateChecking ? '检查更新中...' : `新版本 v${updateStatus.latestVersion || ''}`}
-              </button>
-            )}
-            <button
-              className={`pill terminal-toggle ${showTerminal ? 'active' : ''}`}
-              type="button"
-              onClick={onToggleTerminal}
-              title={showTerminal ? '关闭终端' : '打开终端'}
-            >
-              {'>'}_
-            </button>
-            {messages.length > 0 && (
-              <button className="pill" type="button" onClick={onClearChat}>
-                清空
-              </button>
-            )}
-            <button className="pill new-session-btn" type="button" onClick={onNewSession} title="在当前项目中新建会话">
-              + 新建会话
-            </button>
-          </div>
-          {showWindowControls && (
-            <div className="window-controls">
-              <button
-                type="button"
-                className="window-control-btn"
-                onClick={() => globalThis.window.taco.window.minimize()}
-                title="最小化"
-                aria-label="最小化"
-              >
-                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-                  <path d="M3 8.5h10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className="window-control-btn"
-                onClick={() => globalThis.window.taco.window.toggleMaximize()}
-                title="最大化/还原"
-                aria-label="最大化"
-              >
-                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-                  <rect x="3.25" y="3.25" width="9.5" height="9.5" fill="none" stroke="currentColor" strokeWidth="1.5" rx="1" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className="window-control-btn close"
-                onClick={() => globalThis.window.taco.window.close()}
-                title="关闭"
-                aria-label="关闭"
-              >
-                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-                  <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                </svg>
-              </button>
-            </div>
-          )}
-        </div>
-      </header>
-
       {/* 会话标签页 */}
       {sessions.length > 1 && (
         <div className="session-tabs">
