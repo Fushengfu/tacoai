@@ -1,9 +1,9 @@
 {
-  "name": "taco-ai-agent",
+  "name": "Taco",
   "private": true,
   "version": "0.2.2",
   "description": "Taco AI - 智能编程助手",
-  "author": "Shenzhen Zhongyun Technology Co., Limited",
+  "author": "Amulet",
   "type": "module",
   "main": "dist-main/main.cjs",
   "scripts": {
