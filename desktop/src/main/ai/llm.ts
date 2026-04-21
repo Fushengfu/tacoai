@@ -251,7 +251,7 @@ function buildRequest(config: ProviderConfig, messages: ChatMessage[], stream: b
   }
   if (options?.tools && options.tools.length > 0) {
     body.tools = options.tools
-    body.tool_choice = options.toolChoice ?? 'auto'
+    body.tool_choice = 'auto'
   }
   if (stream) {
     // 请求 provider 在流式响应中返回 usage（尤其 total_tokens）
