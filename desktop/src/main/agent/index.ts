@@ -56,9 +56,6 @@ export type AgentEvent =
   /** 错误 */
   | { type: 'error'; message: string }
 
-const FINAL_REPLY_TOOL_NAME = 'reply_user'
-const REQUIRED_TOOL_CALL_REJECT_LIMIT = 6
-
 /* ------------------------------------------------------------------ */
 /*  确认等待机制                                                        */
 /* ------------------------------------------------------------------ */
@@ -190,19 +187,6 @@ function sanitizeUserFacingText(input: string): string {
     output = output.replace(rule.pattern, rule.replacement)
   }
   return output
-}
-
-function extractFinalReplyText(toolCall: ToolCall): string {
-  const args = safeParseObject(toolCall.function.arguments)
-  if (!args) return ''
-  const raw = typeof args.message === 'string'
-    ? args.message
-    : typeof args.text === 'string'
-      ? args.text
-      : typeof args.content === 'string'
-        ? args.content
-        : ''
-  return sanitizeUserFacingText(raw).trim()
 }
 
 function sanitizeReplayRawText(input: string): string {
@@ -810,7 +794,7 @@ export async function runAgent(
   function trackToolCallsInputs(calls: ToolCall[]) {
     for (const tc of calls) {
       const name = tc.function.name
-      if (!name || name === 'save_note' || name === 'delete_note' || name === FINAL_REPLY_TOOL_NAME) continue
+      if (!name || name === 'save_note' || name === 'delete_note') continue
       const current = toolUsageCount.get(name) ?? 0
       toolUsageCount.set(name, current + 1)
 
@@ -1129,6 +1113,32 @@ export async function runAgent(
     }
   }
 
+  function pushAssistantMessageIfNew(content: string): boolean {
+    const normalized = String(content ?? '').trim()
+    if (!normalized) return false
+    const lastMessage = workingMessages[workingMessages.length - 1]
+    if (lastMessage?.role === 'assistant' && String(lastMessage.content ?? '').trim() === normalized) {
+      return false
+    }
+    workingMessages.push({
+      role: 'assistant',
+      content: normalized,
+    })
+    return true
+  }
+
+  function getExecutionEvidenceCount(): number {
+    return (
+      Array.from(toolUsageCount.values()).reduce((sum, count) => sum + count, 0) +
+      changedFiles.size +
+      failureLogs.length
+    )
+  }
+
+  function shouldTryFinalizeDirectTextReply(finalText: string): boolean {
+    return Boolean(String(finalText ?? '').trim())
+  }
+
   async function tryFinalizeReply(finalText: string): Promise<boolean> {
     finalizePendingPlanStepsIfNeeded()
 
@@ -1150,10 +1160,7 @@ export async function runAgent(
         rejectCount: completionRejectCount,
         reason: completionValidation.reason,
       }, logScope)
-      workingMessages.push({
-        role: 'assistant',
-        content: finalText,
-      })
+      pushAssistantMessageIfNew(finalText)
       if (completionRejectCount >= 10) {
         await persistTaskCoreLogWithOutcome(finalText || lastAssistantText, 'error', `完成校验连续未通过已达上限(${completionRejectCount})`)
         onEvent?.({ type: 'error', message: `完成校验连续未通过已达上限(${completionRejectCount})：${completionValidation.reason}` })
@@ -1360,8 +1367,22 @@ export async function runAgent(
       return
     }
 
-    // 如果没有 tool_calls → 直接判定为不合规，必须重试到工具调用
+    // 没有 tool_calls 时，优先把普通文本当作正常答复处理
     if (toolCalls.length === 0) {
+      const directReplyText = textContent.trim()
+      if (shouldTryFinalizeDirectTextReply(directReplyText)) {
+        pseudoToolCallRejectCount = 0
+        log('AGENT_DIRECT_TEXT_REPLY_ATTEMPT', {
+          round,
+          intentType: inferIntentTypeFromQuery(lastUserGoal),
+          evidenceCount: getExecutionEvidenceCount(),
+          rawPreview: rawTextContent.slice(0, 800),
+        }, logScope)
+        if (await tryFinalizeReply(directReplyText)) return
+        round--
+        continue
+      }
+
       const hasPseudoToolCallText = containsPseudoToolCallSyntax(rawTextContent)
       if (hasPseudoToolCallText) {
         pseudoToolCallRejectCount++
@@ -1403,76 +1424,10 @@ export async function runAgent(
         continue
       }
 
-      pseudoToolCallRejectCount++
-      completionValidationHint = ''
-      enforceStandardToolCall = true
-      log('AGENT_REQUIRED_TOOL_CALL_REJECTED', {
-        round,
-        rejectCount: pseudoToolCallRejectCount,
-        rawPreview: rawTextContent.slice(0, 800),
-      }, logScope)
-      if (assistantContextContent || textContent) {
-        workingMessages.push({
-          role: 'assistant',
-          content: assistantContextContent || textContent || '',
-        })
-      }
-      if (pseudoToolCallRejectCount >= REQUIRED_TOOL_CALL_REJECT_LIMIT) {
-        const reason = `模型连续未按要求发起工具调用已达上限(${pseudoToolCallRejectCount})；必须使用 ${FINAL_REPLY_TOOL_NAME}(message) 结束回复，或调用其他工具继续执行。`
-        await persistTaskCoreLogWithOutcome(textContent || lastAssistantText, 'error', reason)
-        onEvent?.({ type: 'error', message: reason })
-        return
-      }
-      round--
-      continue
-    }
-
-    const finalReplyCalls = toolCalls.filter((tc) => tc.function.name === FINAL_REPLY_TOOL_NAME)
-    if (finalReplyCalls.length > 0) {
-      if (finalReplyCalls.length !== 1 || toolCalls.length !== 1) {
-        pseudoToolCallRejectCount++
-        completionValidationHint = ''
-        enforceStandardToolCall = true
-        const reason = `${FINAL_REPLY_TOOL_NAME} 必须单独调用，不能与其他工具混用。`
-        log('AGENT_FINAL_REPLY_TOOL_REJECTED', {
-          round,
-          rejectCount: pseudoToolCallRejectCount,
-          reason,
-          toolNames: toolCalls.map((tc) => tc.function.name),
-        }, logScope)
-        if (pseudoToolCallRejectCount >= REQUIRED_TOOL_CALL_REJECT_LIMIT) {
-          await persistTaskCoreLogWithOutcome(textContent || lastAssistantText, 'error', reason)
-          onEvent?.({ type: 'error', message: reason })
-          return
-        }
-        round--
-        continue
-      }
-
-      const finalReplyText = extractFinalReplyText(finalReplyCalls[0])
-      if (!finalReplyText) {
-        pseudoToolCallRejectCount++
-        completionValidationHint = ''
-        enforceStandardToolCall = true
-        const reason = `${FINAL_REPLY_TOOL_NAME} 的 message 不能为空。`
-        log('AGENT_FINAL_REPLY_TOOL_REJECTED', {
-          round,
-          rejectCount: pseudoToolCallRejectCount,
-          reason,
-        }, logScope)
-        if (pseudoToolCallRejectCount >= REQUIRED_TOOL_CALL_REJECT_LIMIT) {
-          await persistTaskCoreLogWithOutcome(textContent || lastAssistantText, 'error', reason)
-          onEvent?.({ type: 'error', message: reason })
-          return
-        }
-        round--
-        continue
-      }
-
-      pseudoToolCallRejectCount = 0
-      enforceStandardToolCall = false
-      if (await tryFinalizeReply(finalReplyText)) return
-      continue
+      const reason = '模型未返回可用文本或标准工具调用。'
+      await persistTaskCoreLogWithOutcome(textContent || lastAssistantText, 'error', reason)
+      onEvent?.({ type: 'error', message: reason })
+      return
     }
 
     // ── 有 tool_calls：检查 propose_plan / 风险评估 → 可能需要确认 → 执行工具 ──

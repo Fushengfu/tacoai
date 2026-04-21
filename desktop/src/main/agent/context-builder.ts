@@ -137,12 +137,12 @@ function buildRuntimeStateCard(state: ContextBuildState): string {
     lines.push('- 计划续跑要求: 若继续执行当前计划，开始步骤前调用 update_plan_progress(stepIndex, "in_progress")，完成后调用 update_plan_progress(stepIndex, "done"|"failed")。')
   }
   if (state.completionValidationHint) {
-    lines.push(`- 完成校验提醒: 上一轮完成声明未通过（原因: ${state.completionValidationHint}）；如任务仍需执行，必须继续调用工具并给出可验证证据。`)
+    lines.push(`- 完成校验提醒: 上一轮完成声明未通过（原因: ${state.completionValidationHint}）；如任务仍需执行，应继续调用工具并给出可验证证据。`)
   }
   if (state.enforceStandardToolCall) {
     lines.push('- 标准工具调用要求: 上一轮出现了非标准工具调用迹象。若需要执行工具，必须通过标准 tool_calls 触发，禁止在普通文本中拼接伪调用。')
   }
-  lines.push('- 约束: 每一轮都必须通过工具完成；若要向用户输出最终答复，必须单独调用 reply_user(message)，禁止直接输出普通文本结束。')
+  lines.push('- 约束: 能直接回答时可直接给出最终答复；只有确实需要外部操作、读取或验证时再调用工具。')
   lines.push('- 约束: 若需要执行动作，必须先调用工具并基于工具结果回复；禁止仅凭历史总结宣称已完成。')
   return lines.join('\n')
 }

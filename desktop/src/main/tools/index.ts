@@ -101,7 +101,6 @@ const ALWAYS_AVAILABLE_TOOL_NAMES = [
   'list_dir',
   'run_command',
   'delete_file',
-  'reply_user',
   'propose_plan',
   'update_plan_progress',
   'find_file',
@@ -209,20 +208,6 @@ export const toolDefinitions: ToolDefinition[] = [
           path: { type: 'string', description: '要删除的文件的绝对路径或相对路径' },
         },
         required: ['path'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'reply_user',
-      description: '向用户输出最终可见回复，并立即结束当前任务轮次。仅当已经完成所需分析/执行，准备好把结果直接展示给用户时调用。此工具必须单独调用，message 中只放最终要展示给用户的文本。',
-      parameters: {
-        type: 'object',
-        properties: {
-          message: { type: 'string', description: '最终展示给用户的回复文本，支持 Markdown。' },
-        },
-        required: ['message'],
       },
     },
   },
@@ -792,14 +777,6 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
     ],
     cautions: ['禁止批量删除与任务无关文件。'],
   },
-  reply_user: {
-    usage: [
-      '当你已经准备好把最终结果直接展示给用户时，必须调用此工具结束当前轮次。',
-      'message 里只写最终展示文本，不要再夹带伪工具调用、解释“我将调用工具”、或额外的内部控制信息。',
-      '此工具必须单独调用，不要和其他工具放在同一轮 tool_calls 里。',
-    ],
-    cautions: ['不要把中间思考、工具结果回执、JSON 包装或多余元信息塞进 message。'],
-  },
   propose_plan: {
     usage: [
       '多步骤或高不确定任务先提出计划，摘要必须清晰可执行。',
@@ -955,8 +932,8 @@ export function buildToolDesignPromptBlock(allowedToolNames: Iterable<string>): 
     '13. 禁止输出 [TOOL_CALL]、<invoke> 等伪调用文本，工具调用只能通过标准 tool_calls。',
     '14. 参数必须严格匹配工具 schema，不允许猜字段名。',
     '15. 当用户提供了明确文件路径且请求读取时，必须优先调用 read_file；若路径在工作空间外，系统会触发授权确认，禁止直接口头拒绝。',
-    '16. 每一轮都必须调用工具；如果准备向用户输出最终答复，必须调用 reply_user(message)，禁止直接输出普通文本结束。',
-    '17. reply_user 必须单独调用，不得与其他工具混用。',
+    '16. 能直接回答时可以直接输出最终答复；只有确实需要外部操作、读取或验证时再调用工具。',
+    '17. 若本轮无需工具，直接输出完整最终答复，不要再包一层伪工具调用、JSON 包装或控制指令。',
     '',
     '## 工具清单（每个工具都要遵守对应规范）',
   ]
@@ -1440,8 +1417,6 @@ async function executeTool(
     switch (normalizedName) {
       case 'read_file':
         return await execReadFile(args, workspace)
-      case 'reply_user':
-        return execReplyUser(args)
       case 'read_skill':
         return await execReadSkill(args, runtimeContext)
       case 'read_skill_resource':
@@ -1512,12 +1487,6 @@ async function executeTool(
     const msg = err instanceof Error ? err.message : String(err)
     return { content: `Error: ${msg}`, success: false }
   }
-}
-
-function execReplyUser(args: Record<string, unknown>): ExecResult {
-  const message = String(args.message ?? '').trim()
-  if (!message) return { content: 'Error: message is required', success: false }
-  return { content: 'Final reply prepared.', success: true }
 }
 
 async function execReadFile(args: Record<string, unknown>, workspace: string): Promise<ExecResult> {
