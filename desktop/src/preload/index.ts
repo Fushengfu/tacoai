@@ -1,9 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IpcChannel } from '../shared/ipc'
 import type {
+  AppStateProvidersPayload,
+  AppStateSnapshot,
+  AppStateThreadsPayload,
   ChatSendPayload,
   ChatStoreSessionPatch,
-  ChatStoreSessionSnapshot,
+  ChatStoreSessionPage,
+  ChatStoreSessionSummary,
   ChatStreamPayload,
   ChatChunkData,
   AgentStreamPayload,
@@ -154,8 +158,10 @@ const tacoApi: TacoApi = {
     }
   },
   chatStore: {
-    list: (): Promise<ChatStoreSessionSnapshot[]> =>
+    list: (): Promise<ChatStoreSessionSummary[]> =>
       ipcRenderer.invoke(IpcChannel.CHAT_STORE_LIST),
+    loadPage: (sessionId: string, options?: { beforeSeq?: number; limit?: number }): Promise<ChatStoreSessionPage | null> =>
+      ipcRenderer.invoke(IpcChannel.CHAT_STORE_LOAD_PAGE, sessionId, options),
     save: (patch: ChatStoreSessionPatch): Promise<void> =>
       ipcRenderer.invoke(IpcChannel.CHAT_STORE_SAVE, patch),
     deleteSession: (sessionId: string): Promise<void> =>
@@ -418,6 +424,14 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.GUI_PLUS_GET),
     saveConfig: (config: GuiPlusConfig): Promise<void> =>
       ipcRenderer.invoke(IpcChannel.GUI_PLUS_SAVE, config),
+  },
+  appState: {
+    get: (): Promise<AppStateSnapshot> =>
+      ipcRenderer.invoke(IpcChannel.APP_STATE_GET),
+    saveThreads: (payload: AppStateThreadsPayload): Promise<AppStateThreadsPayload> =>
+      ipcRenderer.invoke(IpcChannel.APP_STATE_SAVE_THREADS, payload),
+    saveProviders: (payload: AppStateProvidersPayload): Promise<AppStateProvidersPayload> =>
+      ipcRenderer.invoke(IpcChannel.APP_STATE_SAVE_PROVIDERS, payload),
   },
   prompt: {
     getConfig: (): Promise<PromptConfig> =>

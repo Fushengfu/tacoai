@@ -18,8 +18,10 @@ export const IpcChannel = {
   CHAT_ABORT: 'chat:abort',
   /** main → renderer (send/on, 流式数据推送) */
   CHAT_CHUNK: 'chat:chunk',
-  /** renderer → main (invoke/handle, 列出持久化会话消息) */
+  /** renderer → main (invoke/handle, 列出持久化会话摘要) */
   CHAT_STORE_LIST: 'chat-store:list',
+  /** renderer → main (invoke/handle, 按页读取某个会话的持久化消息) */
+  CHAT_STORE_LOAD_PAGE: 'chat-store:load-page',
   /** renderer → main (invoke/handle, 保存某会话完整消息快照) */
   CHAT_STORE_SAVE: 'chat-store:save',
   /** renderer → main (invoke/handle, 删除某会话消息快照) */
@@ -161,6 +163,10 @@ export const IpcChannel = {
   /** GUI-Plus 配置 */
   GUI_PLUS_GET: 'gui-plus:get',
   GUI_PLUS_SAVE: 'gui-plus:save',
+  /** 渲染层核心状态（文件持久化） */
+  APP_STATE_GET: 'app-state:get',
+  APP_STATE_SAVE_THREADS: 'app-state:save-threads',
+  APP_STATE_SAVE_PROVIDERS: 'app-state:save-providers',
   /** Prompt 配置（可选文件覆盖） */
   PROMPT_CONFIG_GET: 'prompt-config:get',
   PROMPT_CONFIG_SAVE: 'prompt-config:save',
@@ -327,7 +333,7 @@ export type AgentEventData = {
   | { type: 'usage'; usage: IpcTokenUsage }
   | { type: 'plan_init'; summary: string; steps: string[]; reasoning?: string }
   | { type: 'plan_progress'; stepIndex: number; status: PlanStepStatus; note?: string }
-  | { type: 'done' }
+  | { type: 'done'; finalText?: string }
   | { type: 'error'; message: string }
 )
 
@@ -644,6 +650,25 @@ export type ChatStoreSessionSnapshot = {
   messages: unknown[]
 }
 
+export type ChatStoreSessionSummary = {
+  projectId: string
+  sessionId: string
+  workspace?: string
+  updatedAt: number
+  messageCount: number
+}
+
+export type ChatStoreSessionPage = {
+  projectId: string
+  sessionId: string
+  workspace?: string
+  updatedAt: number
+  totalCount: number
+  startSeq?: number
+  endSeq?: number
+  messages: unknown[]
+}
+
 export type ChatStoreSessionPatch = {
   projectId: string
   sessionId: string
@@ -810,6 +835,53 @@ export type MobileBridgeContextSnapshot = {
   threads: MobileBridgeThreadContext[]
 }
 
+export type AppStateProviderId = 'deepseek' | 'kimi' | 'minimax' | 'glm'
+
+export type AppStateProviderForm = {
+  baseUrl: string
+  apiKey: string
+  model: string
+  maxTokens: string
+}
+
+export type AppStateProviderForms = Record<AppStateProviderId, AppStateProviderForm>
+
+export type AppStateSession = {
+  id: string
+  title: string
+  createdAt: number
+}
+
+export type AppStateThread = {
+  id: string
+  title: string
+  titleLocked?: boolean
+  updatedAt: number
+  provider?: AppStateProviderId
+  mode?: 'chat' | 'agent'
+  workspace?: string
+  projectRules?: string
+  sessions: AppStateSession[]
+  activeSessionId: string
+}
+
+export type AppStateThreadsPayload = {
+  threads: AppStateThread[]
+  activeThreadId: string
+}
+
+export type AppStateProvidersPayload = {
+  providerForms: AppStateProviderForms
+  activeProvider: AppStateProviderId
+}
+
+export type AppStateSnapshot = {
+  version: number
+  updatedAt?: string
+  threadsState: AppStateThreadsPayload
+  providersState: AppStateProvidersPayload
+}
+
 export type TacoApi = {
   version: string
   system: SystemInfo
@@ -860,8 +932,10 @@ export type TacoApi = {
     onChunk: (callback: (data: ChatChunkData) => void) => () => void
   }
   chatStore: {
-    /** 读取全部持久化会话消息快照 */
-    list: () => Promise<ChatStoreSessionSnapshot[]>
+    /** 读取全部持久化会话摘要 */
+    list: () => Promise<ChatStoreSessionSummary[]>
+    /** 按页读取某个会话的消息尾部或更早历史 */
+    loadPage: (sessionId: string, options?: { beforeSeq?: number; limit?: number }) => Promise<ChatStoreSessionPage | null>
     /** 从指定序号开始同步某个会话的消息尾部 */
     save: (patch: ChatStoreSessionPatch) => Promise<void>
     /** 删除某个会话的消息快照 */
@@ -1012,6 +1086,11 @@ export type TacoApi = {
   guiPlus: {
     getConfig: () => Promise<GuiPlusConfig>
     saveConfig: (config: GuiPlusConfig) => Promise<void>
+  }
+  appState: {
+    get: () => Promise<AppStateSnapshot>
+    saveThreads: (payload: AppStateThreadsPayload) => Promise<AppStateThreadsPayload>
+    saveProviders: (payload: AppStateProvidersPayload) => Promise<AppStateProvidersPayload>
   }
   prompt: {
     /** 读取 prompt 配置（文件缺失时返回默认空配置） */

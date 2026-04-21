@@ -283,6 +283,7 @@ export default function App() {
 
   // 消息、发送状态等全部以 sessionId 为 key
   const messages = chat.getMessages(sessionId)
+  const totalSessionMessageCount = chat.getSessionMessageCount(sessionId)
   const sessionSending = chat.isSending(sessionId)
   const sessionStreamingContent = chat.getStreamingContent(sessionId)
   const sessionQueue = chat.getQueue(sessionId)
@@ -295,6 +296,11 @@ export default function App() {
   // Agent 模式下文本已在消息内实时更新，不需要独立的流式气泡
   const showStreamBubble = sessionSending && currentMode !== 'agent'
   const currentWorkspace: string = threadStore.activeThread?.workspace ?? ''
+
+  useEffect(() => {
+    if (!sessionId) return
+    void chat.ensureSessionLoaded(sessionId)
+  }, [chat, sessionId])
 
   /** 将相对路径解析为绝对路径 */
   const resolveFilePath = useCallback((filePath: string) => {
@@ -2076,11 +2082,12 @@ export default function App() {
         const sessionContexts = thread.sessions.map((session) => {
           const sid = session.id
           const sessionMessages = chat.threadMessages[sid] ?? []
+          const sessionMessageCount = chat.getSessionMessageCount(sid)
           const syncFull = isActiveThread && sid === threadActiveSessionId
           return {
             sessionId: sid,
             title: session.title,
-            messageCount: sessionMessages.length,
+            messageCount: sessionMessageCount,
             detailLevel: syncFull ? 'full' as const : 'meta' as const,
             messages: syncFull ? sessionMessages.map(toMobileMessage) : [],
             sending: Boolean(chat.sendingThreads[sid]),
@@ -2107,6 +2114,7 @@ export default function App() {
     providerSettings.configuredProviders,
     threadStore.threads,
     chat.threadMessages,
+    chat.sessionLoadMetaById,
     chat.sendingThreads,
     chat.queues,
     chat.streamingContents,
@@ -2139,11 +2147,13 @@ export default function App() {
   }, [])
 
   /** 重新发送：保留该消息，删掉之后的回复，重新请求 */
-  function handleResend(msgId: string) {
+  async function handleResend(msgId: string) {
     if (sessionSending || !sessionId) return
-    const idx = messages.findIndex((m) => m.id === msgId)
+    await chat.ensureSessionFullyLoaded(sessionId)
+    const latestMessages = chat.getMessages(sessionId)
+    const idx = latestMessages.findIndex((m) => m.id === msgId)
     if (idx === -1) return
-    chat.setMessages(sessionId, messages.slice(0, idx + 1))
+    chat.setMessages(sessionId, latestMessages.slice(0, idx + 1))
     chat.resendFromExisting({
       threadId: sessionId,
       projectId: tid,
@@ -2160,11 +2170,13 @@ export default function App() {
   }
 
   /** 编辑后重新发送：更新原消息内容，删掉之后的回复，重新请求 */
-  function handleEditResend(msgId: string, newContent: string) {
+  async function handleEditResend(msgId: string, newContent: string) {
     if (sessionSending || !sessionId) return
-    const idx = messages.findIndex((m) => m.id === msgId)
+    await chat.ensureSessionFullyLoaded(sessionId)
+    const latestMessages = chat.getMessages(sessionId)
+    const idx = latestMessages.findIndex((m) => m.id === msgId)
     if (idx === -1) return
-    const updated = messages.slice(0, idx + 1)
+    const updated = latestMessages.slice(0, idx + 1)
     updated[idx] = { ...updated[idx], content: newContent }
     chat.setMessages(sessionId, updated)
     chat.resendFromExisting({
@@ -2469,6 +2481,10 @@ export default function App() {
               updateChecking={updateChecking}
               onOpenUpdateDialog={handleOpenUpdateDialog}
               scrollRef={scrollRef}
+              totalMessageCount={totalSessionMessageCount}
+              hasOlderStoredMessages={chat.hasOlderMessages(sessionId)}
+              loadingOlderMessages={chat.isLoadingOlderMessages(sessionId)}
+              onLoadOlderMessages={() => chat.loadOlderMessages(sessionId)}
               queue={sessionQueue}
               onRemoveFromQueue={(id) => chat.removeFromQueue(sessionId, id)}
               editor={editor}

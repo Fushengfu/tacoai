@@ -1,6 +1,6 @@
 import type { IncomingHttpHeaders } from 'node:http'
-import { log } from './logger'
-import type { ToolDefinition, ToolCall } from './tools'
+import { log } from '../system/logger'
+import type { ToolDefinition, ToolCall } from '../tools'
 
 /** 标准聊天消息 */
 export type ChatMessage = {

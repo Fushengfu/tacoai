@@ -14,8 +14,8 @@ import * as path from 'node:path'
 import { app } from 'electron'
 import { execFile as execFileCb } from 'node:child_process'
 import { promisify } from 'node:util'
-import type { SkillInfo } from '../shared/ipc'
-import { log } from './logger'
+import type { SkillInfo } from '../../shared/ipc'
+import { log } from '../system/logger'
 
 const execFile = promisify(execFileCb)
 

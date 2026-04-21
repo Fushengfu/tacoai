@@ -10,8 +10,11 @@ import { exec } from 'node:child_process'
 import * as fs from 'node:fs/promises'
 import { watch as fsWatch, type Dirent, type FSWatcher } from 'node:fs'
 import * as nodePath from 'node:path'
-import { IpcChannel, editorCommands } from '../shared/ipc'
+import { IpcChannel, editorCommands } from '../../shared/ipc'
 import type {
+  AppStateProvidersPayload,
+  AppStateSnapshot,
+  AppStateThreadsPayload,
   AppNotifyPayload,
   RendererErrorPayload,
   ChatSendPayload,
@@ -28,27 +31,29 @@ import type {
   AgentEventData,
   AgentEventChunkData,
   ChatStoreSessionPatch,
-  ChatStoreSessionSnapshot,
-} from '../shared/ipc'
-import { setBrowserAutoApproved, setAutoApproveCategories } from './tools'
-import type { RiskCategory } from './tools'
-import type { ProviderKey, ProviderOverrides, TokenUsage } from './llm'
-import { requestChatCompletion, requestChatCompletionStream } from './llm'
-import { runAgent, resolveConfirm } from './agent'
-import { gitLog, gitCommit, gitRollback, gitCommitFiles, gitStatus, gitFileChange, gitStageFiles, gitStageAll } from './git'
-import { initSkills, listSkills, installSkill, uninstallSkill, toggleSkill, refreshSkills, buildActiveSkillsCatalogBlock, getActiveSkillEnv, applySkillEnvironment } from './skills'
-import { inferIntentFromBackground, listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, maintainTaskMemoriesByAI, recordTaskLog, stripInternalContextTags, stripPseudoToolCallArtifacts, getMemoryScopeStats, exportMemoryScope } from './notes'
-import { initMcp, listMcpServers, saveMcpServer, removeMcpServer, toggleMcpServer, saveScreenshot } from './mcp'
-import { getGuiPlusConfig, saveGuiPlusConfig } from './gui-plus'
-import { getPromptConfig, savePromptConfig } from './prompt-config'
-import { getLogDir } from './logger'
-import { log, logError } from './logger'
-import { applyRewardScore } from './reward-score'
-import { handleTerminalSpawn, handleTerminalInput, handleTerminalResize, handleTerminalKill } from './terminal'
-import { openExternalBrowser, closeExternalBrowser, navigateExternalBrowser, focusExternalBrowser } from './browser'
-import { getMobileBridgeConfig, initMobileBridge, setMobileBridgeConfig, updateMobileBridgeContext } from './mobile-bridge'
-import { listChatStoreSessions, saveChatStoreSessionPatch, deleteChatStoreSession, initMemoryDb } from './memory-db'
-import { checkAndPromptForUpdate, getLastUpdateCheckResult } from './app-updater'
+  ChatStoreSessionPage,
+  ChatStoreSessionSummary,
+} from '../../shared/ipc'
+import { setBrowserAutoApproved, setAutoApproveCategories } from '../tools'
+import type { RiskCategory } from '../tools'
+import type { ProviderKey, ProviderOverrides, TokenUsage } from '../ai/llm'
+import { requestChatCompletion, requestChatCompletionStream } from '../ai/llm'
+import { runAgent, resolveConfirm } from '../agent'
+import { gitLog, gitCommit, gitRollback, gitCommitFiles, gitStatus, gitFileChange, gitStageFiles, gitStageAll } from '../project/git'
+import { initSkills, listSkills, installSkill, uninstallSkill, toggleSkill, refreshSkills, buildActiveSkillsCatalogBlock, getActiveSkillEnv, applySkillEnvironment } from '../project/skills'
+import { inferIntentFromBackground, listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, maintainTaskMemoriesByAI, recordTaskLog, stripInternalContextTags, stripPseudoToolCallArtifacts, getMemoryScopeStats, exportMemoryScope } from '../data/notes'
+import { initMcp, listMcpServers, saveMcpServer, removeMcpServer, toggleMcpServer, saveScreenshot } from '../automation/mcp'
+import { getGuiPlusConfig, saveGuiPlusConfig } from '../automation/gui-plus'
+import { getPromptConfig, savePromptConfig } from '../project/prompt-config'
+import { getAppState, saveAppProvidersState, saveAppThreadsState } from '../system/app-state'
+import { getLogDir } from '../system/logger'
+import { log, logError } from '../system/logger'
+import { applyRewardScore } from '../agent/reward-score'
+import { handleTerminalSpawn, handleTerminalInput, handleTerminalResize, handleTerminalKill } from '../system/terminal'
+import { openExternalBrowser, closeExternalBrowser, navigateExternalBrowser, focusExternalBrowser } from '../automation/browser'
+import { getMobileBridgeConfig, initMobileBridge, setMobileBridgeConfig, updateMobileBridgeContext } from '../system/mobile-bridge'
+import { listChatStoreSessions, loadChatStoreSessionPage, saveChatStoreSessionPatch, deleteChatStoreSession, initMemoryDb } from '../data/memory-db'
+import { checkAndPromptForUpdate, getLastUpdateCheckResult } from '../system/app-updater'
 
 /* ------------------------------------------------------------------ */
 /*  Handlers                                                           */
@@ -473,6 +478,24 @@ async function handleGuiPlusSave(_event: IpcMainInvokeEvent, config: GuiPlusConf
   await saveGuiPlusConfig(config)
 }
 
+async function handleAppStateGet(): Promise<AppStateSnapshot> {
+  return await getAppState()
+}
+
+async function handleAppStateSaveThreads(
+  _event: IpcMainInvokeEvent,
+  payload: AppStateThreadsPayload,
+): Promise<AppStateThreadsPayload> {
+  return await saveAppThreadsState(payload)
+}
+
+async function handleAppStateSaveProviders(
+  _event: IpcMainInvokeEvent,
+  payload: AppStateProvidersPayload,
+): Promise<AppStateProvidersPayload> {
+  return await saveAppProvidersState(payload)
+}
+
 async function handlePromptConfigGet(): Promise<PromptConfig> {
   return await getPromptConfig()
 }
@@ -604,15 +627,35 @@ async function handleRendererError(_event: IpcMainInvokeEvent, payload: Renderer
   }, scope)
 }
 
-async function handleChatStoreList(): Promise<ChatStoreSessionSnapshot[]> {
+async function handleChatStoreList(): Promise<ChatStoreSessionSummary[]> {
   initMemoryDb()
   return listChatStoreSessions().map((entry) => ({
     projectId: entry.projectId,
     sessionId: entry.sessionId,
     workspace: entry.workspace,
     updatedAt: entry.updatedAt,
-    messages: Array.isArray(entry.messages) ? entry.messages : [],
+    messageCount: Number.isFinite(Number(entry.messageCount)) ? Number(entry.messageCount) : 0,
   }))
+}
+
+async function handleChatStoreLoadPage(
+  _event: IpcMainInvokeEvent,
+  sessionId: string,
+  options?: { beforeSeq?: number; limit?: number },
+): Promise<ChatStoreSessionPage | null> {
+  initMemoryDb()
+  const page = loadChatStoreSessionPage(sessionId, options)
+  if (!page) return null
+  return {
+    projectId: page.projectId,
+    sessionId: page.sessionId,
+    workspace: page.workspace,
+    updatedAt: page.updatedAt,
+    totalCount: page.totalCount,
+    startSeq: page.startSeq,
+    endSeq: page.endSeq,
+    messages: Array.isArray(page.messages) ? page.messages : [],
+  }
 }
 
 async function handleChatStoreSave(_event: IpcMainInvokeEvent, patch: ChatStoreSessionPatch): Promise<void> {
@@ -718,7 +761,7 @@ const EXCLUDED_DIRS = new Set([
   'dist', 'build', 'out', 'target', '.gradle', 'Pods', 'DerivedData',
 ])
 
-import type { FileTreeEntry } from '../shared/ipc'
+import type { FileTreeEntry } from '../../shared/ipc'
 
 const WORKSPACE_TREE_MAX_DEPTH = 8
 const WORKSPACE_TREE_MAX_ENTRIES = 12_000
@@ -1065,6 +1108,7 @@ function handleWindowClose(event: IpcMainEvent) {
 export function registerIpcHandlers() {
   ipcMain.handle(IpcChannel.CHAT_SEND, handleChatSend)
   ipcMain.handle(IpcChannel.CHAT_STORE_LIST, handleChatStoreList)
+  ipcMain.handle(IpcChannel.CHAT_STORE_LOAD_PAGE, handleChatStoreLoadPage)
   ipcMain.handle(IpcChannel.CHAT_STORE_SAVE, handleChatStoreSave)
   ipcMain.handle(IpcChannel.CHAT_STORE_DELETE_SESSION, handleChatStoreDeleteSession)
   ipcMain.handle(IpcChannel.SELECT_DIRECTORY, handleSelectDirectory)
@@ -1089,6 +1133,9 @@ export function registerIpcHandlers() {
   ipcMain.on(IpcChannel.MOBILE_BRIDGE_SYNC_CONTEXT, handleMobileBridgeSyncContext)
   ipcMain.handle(IpcChannel.GUI_PLUS_GET, handleGuiPlusGet)
   ipcMain.handle(IpcChannel.GUI_PLUS_SAVE, handleGuiPlusSave)
+  ipcMain.handle(IpcChannel.APP_STATE_GET, handleAppStateGet)
+  ipcMain.handle(IpcChannel.APP_STATE_SAVE_THREADS, handleAppStateSaveThreads)
+  ipcMain.handle(IpcChannel.APP_STATE_SAVE_PROVIDERS, handleAppStateSaveProviders)
   ipcMain.handle(IpcChannel.PROMPT_CONFIG_GET, handlePromptConfigGet)
   ipcMain.handle(IpcChannel.PROMPT_CONFIG_SAVE, handlePromptConfigSave)
   ipcMain.handle(IpcChannel.FILE_REVERT, handleFileRevert)

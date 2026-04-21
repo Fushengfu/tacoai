@@ -16,12 +16,12 @@ import path from 'node:path'
 import os from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
 import { app } from 'electron'
-import type { ProjectNote, ProjectTaskMemory, MemoryScopeStats, MemoryScopeExportResult } from '../shared/ipc'
-import type { ChatMessage } from './llm'
-import { requestChatCompletion, requestStreamWithTools } from './llm'
-import type { ProviderKey, ProviderOverrides } from './llm'
-import type { ToolDefinition } from './tools'
-import { log } from './logger'
+import type { ProjectNote, ProjectTaskMemory, MemoryScopeStats, MemoryScopeExportResult } from '../../shared/ipc'
+import type { ChatMessage } from '../ai/llm'
+import { requestChatCompletion, requestStreamWithTools } from '../ai/llm'
+import type { ProviderKey, ProviderOverrides } from '../ai/llm'
+import type { ToolDefinition } from '../tools'
+import { log } from '../system/logger'
 import {
   initMemoryDb,
   hasAnyProjectNotes,

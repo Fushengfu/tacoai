@@ -5,7 +5,7 @@
 import type { IpcMainEvent } from 'electron'
 import * as pty from 'node-pty'
 import type { IPty } from 'node-pty'
-import { IpcChannel } from '../shared/ipc'
+import { IpcChannel } from '../../shared/ipc'
 
 /** 每个 webContents 对应一个 PTY 进程 */
 const terminalProcesses = new Map<number, IPty>()

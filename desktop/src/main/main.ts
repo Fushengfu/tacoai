@@ -1,5 +1,5 @@
 import 'dotenv/config'
-import { fixPath } from './fix-path'
+import { fixPath } from './system/fix-path'
 
 // 尽早修复 PATH，确保后续所有子进程都能找到 npm、node、git 等命令
 fixPath()
@@ -8,12 +8,12 @@ import { app, BrowserWindow, Menu, MenuItem, Tray, nativeImage } from 'electron'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
 import { registerIpcHandlers } from './ipc'
-import { logError, logInfo, getLogDir } from './logger'
+import { logError, logInfo, getLogDir } from './system/logger'
 import { IpcChannel } from '../shared/ipc'
-import { shutdownAllMcp } from './mcp'
-import { shutdownMobileBridge } from './mobile-bridge'
-import { ensurePromptConfigInitialized } from './prompt-config'
-import { scheduleStartupUpdateCheck } from './app-updater'
+import { shutdownAllMcp } from './automation/mcp'
+import { shutdownMobileBridge } from './system/mobile-bridge'
+import { ensurePromptConfigInitialized } from './project/prompt-config'
+import { scheduleStartupUpdateCheck } from './system/app-updater'
 
 // esbuild 构建后 __dirname 由 CJS 运行时提供，指向 dist-main/
 // 源码开发时 tsx 也支持 __dirname

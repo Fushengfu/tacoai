@@ -13,7 +13,7 @@ import type { ChildProcess } from 'node:child_process'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { app } from 'electron'
-import { log } from './logger'
+import { log } from '../system/logger'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */

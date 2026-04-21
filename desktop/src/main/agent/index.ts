@@ -10,16 +10,16 @@
  */
 
 import path from 'node:path'
-import type { ChatMessage, ProviderOverrides, TokenUsage } from './llm'
-import type { ProviderKey } from './llm'
-import { requestChatCompletion, requestStreamWithTools } from './llm'
-import { getFilteredToolDefinitions, buildAllowedToolNamesForRequest, executeToolCalls, assessToolCallsRisk, setBrowserAutoApproved, setDesktopAutoApproved, getWorkspaceTree, getToolDesignPromptBlock, getAutoApproveCategories } from './tools'
-import type { ToolCall, ToolResult, RiskInfo } from './tools'
-import { log } from './logger'
-import { gitCommit, gitEnsureRepo } from './git'
-import { refreshSkills, buildActiveSkillsCatalogBlock, getActiveSkillEnv, applySkillEnvironment } from './skills'
-import { buildBackgroundContextConversationMessages, inferIntentFromBackground, maintainTaskMemoriesByAI, recordMemorySnapshot, recordTaskLog, stripInternalContextTags, stripPseudoToolCallArtifacts } from './notes'
-import type { RecallMeta } from './notes'
+import type { ChatMessage, ProviderOverrides, TokenUsage } from '../ai/llm'
+import type { ProviderKey } from '../ai/llm'
+import { requestChatCompletion, requestStreamWithTools } from '../ai/llm'
+import { getFilteredToolDefinitions, buildAllowedToolNamesForRequest, executeToolCalls, assessToolCallsRisk, setBrowserAutoApproved, setDesktopAutoApproved, getWorkspaceTree, getToolDesignPromptBlock, getAutoApproveCategories } from '../tools'
+import type { ToolCall, ToolResult, RiskInfo } from '../tools'
+import { log } from '../system/logger'
+import { gitCommit, gitEnsureRepo } from '../project/git'
+import { refreshSkills, buildActiveSkillsCatalogBlock, getActiveSkillEnv, applySkillEnvironment } from '../project/skills'
+import { buildBackgroundContextConversationMessages, inferIntentFromBackground, maintainTaskMemoriesByAI, recordMemorySnapshot, recordTaskLog, stripInternalContextTags, stripPseudoToolCallArtifacts } from '../data/notes'
+import type { RecallMeta } from '../data/notes'
 import { buildAgentRequestMessages, buildCurrentTaskCompressionStateCard, validateCompletionClaim } from './context-builder'
 import type { ContextBuildState } from './context-builder'
 import { applyRewardScore } from './reward-score'
@@ -28,7 +28,7 @@ import { applyRewardScore } from './reward-score'
 /*  Agent 事件                                                         */
 /* ------------------------------------------------------------------ */
 
-import type { PlanStepStatus } from '../shared/ipc'
+import type { PlanStepStatus } from '../../shared/ipc'
 
 export type AgentEvent =
   /** 文本流片段 */
@@ -52,9 +52,12 @@ export type AgentEvent =
   /** 计划步骤进度更新 */
   | { type: 'plan_progress'; stepIndex: number; status: PlanStepStatus; note?: string }
   /** Agent 循环完成 */
-  | { type: 'done' }
+  | { type: 'done'; finalText?: string }
   /** 错误 */
   | { type: 'error'; message: string }
+
+const FINAL_REPLY_TOOL_NAME = 'reply_user'
+const REQUIRED_TOOL_CALL_REJECT_LIMIT = 6
 
 /* ------------------------------------------------------------------ */
 /*  确认等待机制                                                        */
@@ -187,6 +190,19 @@ function sanitizeUserFacingText(input: string): string {
     output = output.replace(rule.pattern, rule.replacement)
   }
   return output
+}
+
+function extractFinalReplyText(toolCall: ToolCall): string {
+  const args = safeParseObject(toolCall.function.arguments)
+  if (!args) return ''
+  const raw = typeof args.message === 'string'
+    ? args.message
+    : typeof args.text === 'string'
+      ? args.text
+      : typeof args.content === 'string'
+        ? args.content
+        : ''
+  return sanitizeUserFacingText(raw).trim()
 }
 
 function sanitizeReplayRawText(input: string): string {
@@ -794,7 +810,7 @@ export async function runAgent(
   function trackToolCallsInputs(calls: ToolCall[]) {
     for (const tc of calls) {
       const name = tc.function.name
-      if (!name || name === 'save_note' || name === 'delete_note') continue
+      if (!name || name === 'save_note' || name === 'delete_note' || name === FINAL_REPLY_TOOL_NAME) continue
       const current = toolUsageCount.get(name) ?? 0
       toolUsageCount.set(name, current + 1)
 
@@ -1079,9 +1095,78 @@ export async function runAgent(
     }
   }
 
-  async function finalizeAndDone(summaryText: string, outcome: 'success' | 'aborted' = 'success'): Promise<void> {
+  async function finalizeAndDone(
+    summaryText: string,
+    outcome: 'success' | 'aborted' = 'success',
+    finalText?: string,
+  ): Promise<void> {
     await persistTaskCoreLogWithOutcome(summaryText, outcome)
-    onEvent?.({ type: 'done' })
+    onEvent?.({ type: 'done', finalText: outcome === 'success' ? finalText : undefined })
+  }
+
+  function finalizePendingPlanStepsIfNeeded() {
+    const finalPlan = currentPlan
+    const unfinishedPlanSteps = finalPlan
+      ? finalPlan.steps
+          .map((step, index) => ({ step, index }))
+          .filter(({ step }) => step.status === 'pending' || step.status === 'in_progress')
+      : []
+    if (!finalPlan || unfinishedPlanSteps.length === 0) return
+
+    // 先将遗留步骤落为 failed，避免完成校验因“仍有未完成步骤”进入死循环。
+    for (const { index, step } of unfinishedPlanSteps) {
+      const autoDone = isVerificationPlanStep(step.text) && successfulRunCommandCount > 0
+      const status: PlanStepStatus = autoDone ? 'done' : 'failed'
+      const evidenceText = successfulRunCommandSummaries.length > 0
+        ? `；证据命令: ${successfulRunCommandSummaries.join('、')}`
+        : ''
+      const note = autoDone
+        ? `本轮结束前未显式更新该步骤状态；检测到成功的 run_command 验证证据，系统自动补记为 done（原状态: ${step.status}）${evidenceText}`
+        : `本轮结束前未更新该步骤状态，系统自动标记为 failed（原状态: ${step.status}）`
+      finalPlan.steps[index].status = status
+      finalPlan.steps[index].note = note
+      onEvent?.({ type: 'plan_progress', stepIndex: index, status, note })
+    }
+  }
+
+  async function tryFinalizeReply(finalText: string): Promise<boolean> {
+    finalizePendingPlanStepsIfNeeded()
+
+    const completionValidation = validateCompletionClaim(finalText, {
+      round,
+      goal: lastUserGoal,
+      toolUsageCount,
+      changedFiles,
+      touchedFiles,
+      touchedIdentifiers,
+      failures: failureLogs,
+      currentPlan,
+    })
+    if (!completionValidation.pass) {
+      completionRejectCount++
+      completionValidationHint = completionValidation.reason
+      log('AGENT_COMPLETION_REJECTED', {
+        round,
+        rejectCount: completionRejectCount,
+        reason: completionValidation.reason,
+      }, logScope)
+      workingMessages.push({
+        role: 'assistant',
+        content: finalText,
+      })
+      if (completionRejectCount >= 10) {
+        await persistTaskCoreLogWithOutcome(finalText || lastAssistantText, 'error', `完成校验连续未通过已达上限(${completionRejectCount})`)
+        onEvent?.({ type: 'error', message: `完成校验连续未通过已达上限(${completionRejectCount})：${completionValidation.reason}` })
+        return true
+      }
+      return false
+    }
+
+    completionRejectCount = 0
+    completionValidationHint = ''
+    lastAssistantText = finalText
+    await finalizeAndDone(finalText, 'success', finalText)
+    return true
   }
 
   while (round < MAX_TOOL_ROUNDS) {
@@ -1169,7 +1254,7 @@ export async function runAgent(
         provider,
         requestMessages,
         overrides,
-        { tools: getFilteredToolDefinitions(allowedToolNames), toolChoice: 'auto' },
+        { tools: getFilteredToolDefinitions(allowedToolNames), toolChoice: 'required' },
         signal,
         logScope,
       )) {
@@ -1275,7 +1360,7 @@ export async function runAgent(
       return
     }
 
-    // 如果没有 tool_calls → 纯文本回复，循环结束
+    // 如果没有 tool_calls → 直接判定为不合规，必须重试到工具调用
     if (toolCalls.length === 0) {
       const hasPseudoToolCallText = containsPseudoToolCallSyntax(rawTextContent)
       if (hasPseudoToolCallText) {
@@ -1317,66 +1402,77 @@ export async function runAgent(
         round-- // 按请求失败处理，不消耗本轮
         continue
       }
-      pseudoToolCallRejectCount = 0
-      enforceStandardToolCall = false
 
-      const finalPlan = currentPlan
-      const unfinishedPlanSteps = finalPlan
-        ? finalPlan.steps
-            .map((step, index) => ({ step, index }))
-            .filter(({ step }) => step.status === 'pending' || step.status === 'in_progress')
-        : []
-      if (finalPlan && unfinishedPlanSteps.length > 0) {
-        // 先将遗留步骤落为 failed，避免完成校验因“仍有未完成步骤”进入死循环。
-        for (const { index, step } of unfinishedPlanSteps) {
-          const autoDone = isVerificationPlanStep(step.text) && successfulRunCommandCount > 0
-          const status: PlanStepStatus = autoDone ? 'done' : 'failed'
-          const evidenceText = successfulRunCommandSummaries.length > 0
-            ? `；证据命令: ${successfulRunCommandSummaries.join('、')}`
-            : ''
-          const note = autoDone
-            ? `本轮结束前未显式更新该步骤状态；检测到成功的 run_command 验证证据，系统自动补记为 done（原状态: ${step.status}）${evidenceText}`
-            : `本轮结束前未更新该步骤状态，系统自动标记为 failed（原状态: ${step.status}）`
-          finalPlan.steps[index].status = status
-          finalPlan.steps[index].note = note
-          onEvent?.({ type: 'plan_progress', stepIndex: index, status, note })
-        }
-      }
-
-      const completionValidation = validateCompletionClaim(textContent, {
+      pseudoToolCallRejectCount++
+      completionValidationHint = ''
+      enforceStandardToolCall = true
+      log('AGENT_REQUIRED_TOOL_CALL_REJECTED', {
         round,
-        goal: lastUserGoal,
-        toolUsageCount,
-        changedFiles,
-        touchedFiles,
-        touchedIdentifiers,
-        failures: failureLogs,
-        currentPlan,
-      })
-      if (!completionValidation.pass) {
-        completionRejectCount++
-        completionValidationHint = completionValidation.reason
-        log('AGENT_COMPLETION_REJECTED', {
-          round,
-          rejectCount: completionRejectCount,
-          reason: completionValidation.reason,
-        }, logScope)
+        rejectCount: pseudoToolCallRejectCount,
+        rawPreview: rawTextContent.slice(0, 800),
+      }, logScope)
+      if (assistantContextContent || textContent) {
         workingMessages.push({
           role: 'assistant',
           content: assistantContextContent || textContent || '',
         })
-        if (completionRejectCount >= 10) {
-          await persistTaskCoreLogWithOutcome(textContent || lastAssistantText, 'error', `完成校验连续未通过已达上限(${completionRejectCount})`)
-          onEvent?.({ type: 'error', message: `完成校验连续未通过已达上限(${completionRejectCount})：${completionValidation.reason}` })
+      }
+      if (pseudoToolCallRejectCount >= REQUIRED_TOOL_CALL_REJECT_LIMIT) {
+        const reason = `模型连续未按要求发起工具调用已达上限(${pseudoToolCallRejectCount})；必须使用 ${FINAL_REPLY_TOOL_NAME}(message) 结束回复，或调用其他工具继续执行。`
+        await persistTaskCoreLogWithOutcome(textContent || lastAssistantText, 'error', reason)
+        onEvent?.({ type: 'error', message: reason })
+        return
+      }
+      round--
+      continue
+    }
+
+    const finalReplyCalls = toolCalls.filter((tc) => tc.function.name === FINAL_REPLY_TOOL_NAME)
+    if (finalReplyCalls.length > 0) {
+      if (finalReplyCalls.length !== 1 || toolCalls.length !== 1) {
+        pseudoToolCallRejectCount++
+        completionValidationHint = ''
+        enforceStandardToolCall = true
+        const reason = `${FINAL_REPLY_TOOL_NAME} 必须单独调用，不能与其他工具混用。`
+        log('AGENT_FINAL_REPLY_TOOL_REJECTED', {
+          round,
+          rejectCount: pseudoToolCallRejectCount,
+          reason,
+          toolNames: toolCalls.map((tc) => tc.function.name),
+        }, logScope)
+        if (pseudoToolCallRejectCount >= REQUIRED_TOOL_CALL_REJECT_LIMIT) {
+          await persistTaskCoreLogWithOutcome(textContent || lastAssistantText, 'error', reason)
+          onEvent?.({ type: 'error', message: reason })
           return
         }
+        round--
         continue
       }
-      completionRejectCount = 0
-      completionValidationHint = ''
 
-      await finalizeAndDone(assistantContextContent || textContent)
-      return
+      const finalReplyText = extractFinalReplyText(finalReplyCalls[0])
+      if (!finalReplyText) {
+        pseudoToolCallRejectCount++
+        completionValidationHint = ''
+        enforceStandardToolCall = true
+        const reason = `${FINAL_REPLY_TOOL_NAME} 的 message 不能为空。`
+        log('AGENT_FINAL_REPLY_TOOL_REJECTED', {
+          round,
+          rejectCount: pseudoToolCallRejectCount,
+          reason,
+        }, logScope)
+        if (pseudoToolCallRejectCount >= REQUIRED_TOOL_CALL_REJECT_LIMIT) {
+          await persistTaskCoreLogWithOutcome(textContent || lastAssistantText, 'error', reason)
+          onEvent?.({ type: 'error', message: reason })
+          return
+        }
+        round--
+        continue
+      }
+
+      pseudoToolCallRejectCount = 0
+      enforceStandardToolCall = false
+      if (await tryFinalizeReply(finalReplyText)) return
+      continue
     }
 
     // ── 有 tool_calls：检查 propose_plan / 风险评估 → 可能需要确认 → 执行工具 ──

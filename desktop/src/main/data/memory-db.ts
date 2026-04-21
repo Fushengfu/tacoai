@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import { createHash } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { app } from 'electron'
-import type { ProjectNote, ProjectTaskMemory } from '../shared/ipc'
+import type { ProjectNote, ProjectTaskMemory } from '../../shared/ipc'
 
 export type TaskMemoryEntry = ProjectTaskMemory
 export type ProjectNoteEntry = ProjectNote
@@ -13,6 +13,25 @@ export type ChatStoreSessionEntry = {
   sessionId: string
   workspace?: string
   updatedAt: number
+  messages: unknown[]
+}
+
+export type ChatStoreSessionSummaryEntry = {
+  projectId: string
+  sessionId: string
+  workspace?: string
+  updatedAt: number
+  messageCount: number
+}
+
+export type ChatStoreSessionPageEntry = {
+  projectId: string
+  sessionId: string
+  workspace?: string
+  updatedAt: number
+  totalCount: number
+  startSeq?: number
+  endSeq?: number
   messages: unknown[]
 }
 
@@ -466,6 +485,16 @@ function rowToChatStoreSessionEntry(row: Record<string, unknown>): ChatStoreSess
   }
 }
 
+function rowToChatStoreSessionSummaryEntry(row: Record<string, unknown>): ChatStoreSessionSummaryEntry {
+  return {
+    projectId: String(row.project_id || ''),
+    sessionId: String(row.session_id || ''),
+    ...(String(row.workspace || '').trim() ? { workspace: String(row.workspace || '') } : {}),
+    updatedAt: Number(row.updated_at || 0),
+    messageCount: normalizeChatStoreSeq(row.message_count),
+  }
+}
+
 function upsertTaskMemoryRows(scope: MemoryScope, items: TaskMemoryEntry[], tier: MemoryTier): void {
   const database = ensureDb()
   const normalized = normalizeScope(scope)
@@ -832,31 +861,89 @@ export function resolveChatStoreMessageSeqRange(sessionId: string, messageIds: s
   }
 }
 
-export function listChatStoreSessions(): ChatStoreSessionEntry[] {
+export function listChatStoreSessions(): ChatStoreSessionSummaryEntry[] {
   const database = ensureDb()
   const rows = database.prepare(`
-    SELECT session_id, project_id, workspace, updated_at
-    FROM chat_sessions
-    ORDER BY updated_at ASC, session_id ASC
+    SELECT
+      s.session_id,
+      s.project_id,
+      s.workspace,
+      s.updated_at,
+      COUNT(m.seq) AS message_count
+    FROM chat_sessions s
+    LEFT JOIN chat_messages m ON m.session_id = s.session_id
+    GROUP BY s.session_id, s.project_id, s.workspace, s.updated_at
+    ORDER BY s.updated_at ASC, s.session_id ASC
   `).all() as Array<Record<string, unknown>>
-  const selectMessagesStmt = database.prepare(`
-    SELECT message_json
-    FROM chat_messages
-    WHERE session_id = ?
-    ORDER BY seq ASC
-  `)
-  return rows.map((row) => {
-    const entry = rowToChatStoreSessionEntry({ ...row, messages_json: '[]' })
-    const messageRows = selectMessagesStmt.all(String(row.session_id || '').trim()) as Array<Record<string, unknown>>
-    entry.messages = messageRows.map((messageRow) => {
-      try {
-        return JSON.parse(String(messageRow.message_json || '{}'))
-      } catch {
-        return null
-      }
-    }).filter((item) => item !== null)
-    return entry
-  })
+  return rows.map((row) => rowToChatStoreSessionSummaryEntry(row))
+}
+
+export function loadChatStoreSessionPage(
+  sessionId: string,
+  options?: { beforeSeq?: number; limit?: number },
+): ChatStoreSessionPageEntry | null {
+  const database = ensureDb()
+  const normalizedSessionId = String(sessionId || '').trim()
+  if (!normalizedSessionId) return null
+
+  const summaryRow = database.prepare(`
+    SELECT
+      s.session_id,
+      s.project_id,
+      s.workspace,
+      s.updated_at,
+      COUNT(m.seq) AS message_count
+    FROM chat_sessions s
+    LEFT JOIN chat_messages m ON m.session_id = s.session_id
+    WHERE s.session_id = ?
+    GROUP BY s.session_id, s.project_id, s.workspace, s.updated_at
+  `).get(normalizedSessionId) as Record<string, unknown> | undefined
+  if (!summaryRow) return null
+
+  const summary = rowToChatStoreSessionSummaryEntry(summaryRow)
+  const totalCount = summary.messageCount
+  const limit = Math.min(400, Math.max(1, normalizeChatStoreSeq(options?.limit) || 120))
+  const beforeSeqRaw = options?.beforeSeq
+  const hasBeforeSeq = Number.isFinite(Number(beforeSeqRaw))
+  const beforeSeq = hasBeforeSeq ? normalizeChatStoreSeq(beforeSeqRaw) : undefined
+
+  const messageRows = hasBeforeSeq
+    ? database.prepare(`
+        SELECT seq, message_json
+        FROM chat_messages
+        WHERE session_id = ? AND seq < ?
+        ORDER BY seq DESC
+        LIMIT ?
+      `).all(normalizedSessionId, beforeSeq, limit) as Array<Record<string, unknown>>
+    : database.prepare(`
+        SELECT seq, message_json
+        FROM chat_messages
+        WHERE session_id = ?
+        ORDER BY seq DESC
+        LIMIT ?
+      `).all(normalizedSessionId, limit) as Array<Record<string, unknown>>
+
+  const ascendingRows = [...messageRows].reverse()
+  const messages = ascendingRows.map((row) => {
+    try {
+      return JSON.parse(String(row.message_json || '{}'))
+    } catch {
+      return null
+    }
+  }).filter((item) => item !== null)
+  const startSeq = parseOptionalInteger(ascendingRows[0]?.seq)
+  const endSeq = parseOptionalInteger(ascendingRows[ascendingRows.length - 1]?.seq)
+
+  return {
+    projectId: summary.projectId,
+    sessionId: summary.sessionId,
+    ...(summary.workspace ? { workspace: summary.workspace } : {}),
+    updatedAt: summary.updatedAt,
+    totalCount,
+    ...(typeof startSeq === 'number' ? { startSeq } : {}),
+    ...(typeof endSeq === 'number' ? { endSeq } : {}),
+    messages,
+  }
 }
 
 export function saveChatStoreSessionPatch(entry: ChatStoreSessionPatchEntry): void {

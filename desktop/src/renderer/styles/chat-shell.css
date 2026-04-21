@@ -377,6 +377,37 @@ body.is-dragging * {
   align-content: start;
 }
 
+.chat-history-loader {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.chat-history-loader-btn {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.chat-history-loader-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.22);
+  transform: translateY(-1px);
+}
+
+.chat-history-loader-note {
+  font-size: 11px;
+  color: var(--muted);
+  opacity: 0.78;
+}
+
 .chat-row {
   display: grid;
   grid-template-columns: 1fr;

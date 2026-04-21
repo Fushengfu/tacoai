@@ -1,7 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { AppStateThread, AppStateThreadsPayload } from '../../shared/ipc'
 import type { ProviderId, Session, Thread, ThreadMode } from '../types'
-import { loadJson, saveJson } from '../lib/storage'
+import { loadJson } from '../lib/storage'
 import { providers } from '../constants'
+
+const LEGACY_THREADS_KEY = 'taco.threads'
+const LEGACY_ACTIVE_THREAD_KEY = 'taco.activeThreadId'
+
+function resolveActiveThreadId(threads: Thread[], activeThreadId: string): string {
+  if (activeThreadId && threads.some((thread) => thread.id === activeThreadId)) {
+    return activeThreadId
+  }
+  return threads[0]?.id ?? ''
+}
 
 /** 迁移旧数据：为没有 sessions 字段的线程补充默认会话 */
 function migrateThreads(saved: Thread[]): Thread[] {
@@ -12,7 +23,6 @@ function migrateThreads(saved: Thread[]): Thread[] {
     const projectRules = typeof t.projectRules === 'string' ? t.projectRules : undefined
     const mode: ThreadMode = 'agent'
     if (!t.sessions || t.sessions.length === 0) {
-      // 使用 threadId 作为首个 sessionId，这样旧的消息存储键无需迁移
       return {
         ...t,
         provider,
@@ -33,46 +43,75 @@ function migrateThreads(saved: Thread[]): Thread[] {
   })
 }
 
+function toThreadsPayload(threads: Thread[], activeThreadId: string): AppStateThreadsPayload {
+  return {
+    threads: threads as AppStateThread[],
+    activeThreadId: resolveActiveThreadId(threads, activeThreadId),
+  }
+}
+
 export function useThreads() {
-  const [threads, setThreads] = useState<Thread[]>(() =>
-    migrateThreads(loadJson('taco.threads', []))
-  )
-  const [activeThreadId, setActiveThreadId] = useState<string>(() => {
-    const saved = migrateThreads(loadJson<Thread[]>('taco.threads', []))
-    // 优先恢复上次活跃的项目
-    const lastActiveId = loadJson<string>('taco.activeThreadId', '')
-    if (lastActiveId && saved.some((t) => t.id === lastActiveId)) {
-      return lastActiveId
-    }
-    return saved[0]?.id ?? ''
-  })
+  const [threads, setThreads] = useState<Thread[]>([])
+  const [activeThreadId, setActiveThreadId] = useState<string>('')
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState('')
+  const [hydrated, setHydrated] = useState(false)
 
-  // 持久化 threads
   useEffect(() => {
-    saveJson('taco.threads', threads)
-  }, [threads])
+    let cancelled = false
 
-  // 持久化 active thread ID
-  useEffect(() => {
-    if (activeThreadId) {
-      saveJson('taco.activeThreadId', activeThreadId)
+    const hydrate = async () => {
+      try {
+        const stored = await window.taco.appState.get()
+        if (cancelled) return
+
+        let nextThreads = migrateThreads(stored.threadsState.threads as Thread[])
+        let nextActiveThreadId = resolveActiveThreadId(nextThreads, stored.threadsState.activeThreadId)
+
+        if (nextThreads.length <= 0) {
+          const legacyThreads = migrateThreads(loadJson<Thread[]>(LEGACY_THREADS_KEY, []))
+          const legacyActiveThreadId = loadJson<string>(LEGACY_ACTIVE_THREAD_KEY, '')
+          if (legacyThreads.length > 0) {
+            const saved = await window.taco.appState.saveThreads(
+              toThreadsPayload(legacyThreads, legacyActiveThreadId),
+            )
+            if (cancelled) return
+            nextThreads = migrateThreads(saved.threads as Thread[])
+            nextActiveThreadId = resolveActiveThreadId(nextThreads, saved.activeThreadId)
+            localStorage.removeItem(LEGACY_THREADS_KEY)
+            localStorage.removeItem(LEGACY_ACTIVE_THREAD_KEY)
+          }
+        }
+
+        setThreads(nextThreads)
+        setActiveThreadId(nextActiveThreadId)
+      } catch (err) {
+        console.error('[app-state] 加载项目列表失败:', err)
+      } finally {
+        if (!cancelled) setHydrated(true)
+      }
     }
-  }, [activeThreadId])
 
-  // 派生
+    void hydrate()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!hydrated) return
+    void window.taco.appState.saveThreads(toThreadsPayload(threads, activeThreadId)).catch((err) => {
+      console.error('[app-state] 保存项目列表失败:', err)
+    })
+  }, [threads, activeThreadId, hydrated])
+
   const activeThread = useMemo(
     () => threads.find((t) => t.id === activeThreadId),
-    [threads, activeThreadId]
+    [threads, activeThreadId],
   )
 
-  // 保持创建顺序（新建在最前），不按 updatedAt 重新排序
   const sortedThreads = threads
 
-  // --- 项目（线程）操作 ---
-
-  /** 创建新项目，可指定初始 provider，返回 id */
   function createThread(title = '新项目', provider?: ProviderId): string {
     const id = `t${Date.now()}`
     const sessionId = `s${Date.now()}`
@@ -105,7 +144,7 @@ export function useThreads() {
     const title = editingTitle.trim()
     if (title) {
       setThreads((prev) =>
-        prev.map((t) => (t.id === threadId ? { ...t, title, titleLocked: true, updatedAt: Date.now() } : t))
+        prev.map((t) => (t.id === threadId ? { ...t, title, titleLocked: true, updatedAt: Date.now() } : t)),
       )
     }
     setEditingThreadId(null)
@@ -123,12 +162,10 @@ export function useThreads() {
     }
   }
 
-  /** 局部更新某个线程字段 */
   function updateThread(id: string, patch: Partial<Omit<Thread, 'id'>>) {
     setThreads((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)))
   }
 
-  /** 调整项目顺序（拖拽排序） */
   function reorderThread(sourceId: string, targetId: string) {
     if (!sourceId || !targetId || sourceId === targetId) return
     setThreads((prev) => {
@@ -142,7 +179,6 @@ export function useThreads() {
     })
   }
 
-  /** 确保当前有活跃项目，没有则创建，返回线程 id */
   function ensureActiveThread(): string {
     if (activeThreadId && threads.some((t) => t.id === activeThreadId)) {
       return activeThreadId
@@ -150,9 +186,6 @@ export function useThreads() {
     return createThread()
   }
 
-  // --- 会话操作 ---
-
-  /** 在指定项目内创建新会话，返回新会话 id */
   function createSession(threadId: string): string {
     const sessionId = `s${Date.now()}`
     let newTitle = '会话 1'
@@ -167,37 +200,33 @@ export function useThreads() {
           activeSessionId: sessionId,
           updatedAt: Date.now(),
         }
-      })
+      }),
     )
     return sessionId
   }
 
-  /** 切换项目内的活跃会话 */
   function switchSession(threadId: string, sessionId: string) {
     setThreads((prev) =>
-      prev.map((t) => (t.id === threadId ? { ...t, activeSessionId: sessionId } : t))
+      prev.map((t) => (t.id === threadId ? { ...t, activeSessionId: sessionId } : t)),
     )
   }
 
-  /** 删除项目内的某个会话 */
   function deleteSession(threadId: string, sessionId: string) {
     setThreads((prev) =>
       prev.map((t) => {
         if (t.id !== threadId) return t
         const remaining = t.sessions.filter((s) => s.id !== sessionId)
-        // 如果删光了，自动创建一个新的
         if (remaining.length === 0) {
           const fallbackId = `s${Date.now()}`
           remaining.push({ id: fallbackId, title: '会话 1', createdAt: Date.now() })
           return { ...t, sessions: remaining, activeSessionId: fallbackId }
         }
-        // 如果删的是当前活跃会话，切到最后一个
         const nextActive =
           t.activeSessionId === sessionId
             ? remaining[remaining.length - 1].id
             : t.activeSessionId
         return { ...t, sessions: remaining, activeSessionId: nextActive }
-      })
+      }),
     )
   }
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ActivePlan, AgentStep, AttachedAsset, AttachedImage, ChatMsg, ProviderId, ProviderForms, QueuedMessage, TaskTiming, ThreadMode, ToolCallInfo, ToolResultInfo } from '../types'
-import type { ChatStoreSessionPatch, ChatStoreSessionSnapshot, PromptConfig } from '../../shared/ipc'
+import type { ChatStoreSessionPage, ChatStoreSessionPatch, ChatStoreSessionSummary, PromptConfig } from '../../shared/ipc'
 import { buildSystemPrompt } from '../constants'
 import { loadJson, saveJson, uid } from '../lib/storage'
 
@@ -10,6 +10,17 @@ type SessionStoreMeta = {
 }
 
 const CHAT_STORE_FLUSH_DEBOUNCE_MS = 280
+const CHAT_STORE_INITIAL_PAGE_SIZE = 120
+const CHAT_STORE_OLDER_PAGE_SIZE = 120
+
+type SessionLoadMeta = {
+  totalCount: number
+  loadedStartSeq: number
+  loadedEndSeq: number
+  isLoaded: boolean
+  isLoading: boolean
+  isLoadingOlder: boolean
+}
 
 function normalizeChatStoreMessages(messages: unknown[]): ChatMsg[] {
   return Array.isArray(messages) ? (messages as ChatMsg[]) : []
@@ -303,6 +314,7 @@ export type SendMessageParams = {
  */
 export function useChat() {
   const [threadMessages, setThreadMessages] = useState<Record<string, ChatMsg[]>>({})
+  const [sessionLoadMetaById, setSessionLoadMetaById] = useState<Record<string, SessionLoadMeta>>({})
 
   /** 每个 thread 是否正在发送 */
   const [sendingThreads, setSendingThreads] = useState<Record<string, boolean>>({})
@@ -324,6 +336,8 @@ export function useChat() {
   // Ref：始终指向最新 threadMessages，供异步回调读取
   const threadMessagesRef = useRef(threadMessages)
   threadMessagesRef.current = threadMessages
+  const sessionLoadMetaRef = useRef(sessionLoadMetaById)
+  sessionLoadMetaRef.current = sessionLoadMetaById
   const sessionStoreMetaRef = useRef<Map<string, SessionStoreMeta>>(new Map())
   const persistTimersRef = useRef<Map<string, number>>(new Map())
   const pendingPersistRef = useRef<Map<string, ChatStoreSessionPatch>>(new Map())
@@ -344,6 +358,35 @@ export function useChat() {
   const promptConfigRef = useRef<PromptConfig | null>(null)
   const promptConfigLoadedRef = useRef(false)
 
+  const commitThreadMessages = useCallback((next: Record<string, ChatMsg[]>) => {
+    threadMessagesRef.current = next
+    setThreadMessages(next)
+  }, [])
+
+  const setSessionLoadMetaEntry = useCallback((
+    sessionId: string,
+    updater: SessionLoadMeta | ((prev?: SessionLoadMeta) => SessionLoadMeta | undefined) | undefined,
+  ) => {
+    const key = String(sessionId || '').trim()
+    if (!key) return
+    const prevAll = sessionLoadMetaRef.current
+    const prevEntry = prevAll[key]
+    const nextEntry = typeof updater === 'function'
+      ? updater(prevEntry)
+      : updater
+    if (!nextEntry) {
+      if (!(key in prevAll)) return
+      const nextAll = { ...prevAll }
+      delete nextAll[key]
+      sessionLoadMetaRef.current = nextAll
+      setSessionLoadMetaById(nextAll)
+      return
+    }
+    const nextAll = { ...prevAll, [key]: nextEntry }
+    sessionLoadMetaRef.current = nextAll
+    setSessionLoadMetaById(nextAll)
+  }, [])
+
   const rememberSessionStoreMeta = useCallback((sessionId: string, meta?: SessionStoreMeta) => {
     const key = String(sessionId || '').trim()
     if (!key) return
@@ -353,6 +396,90 @@ export function useChat() {
       workspace: String(meta?.workspace || previous.workspace || '').trim() || undefined,
     })
   }, [])
+
+  const rememberSessionSummary = useCallback((summary: ChatStoreSessionSummary) => {
+    const key = String(summary.sessionId || '').trim()
+    if (!key) return
+    rememberSessionStoreMeta(key, {
+      projectId: summary.projectId,
+      workspace: summary.workspace,
+    })
+    setSessionLoadMetaEntry(key, (prev) => {
+      const totalCount = Math.max(0, Math.floor(Number(summary.messageCount) || 0))
+      if (!prev) {
+        return {
+          totalCount,
+          loadedStartSeq: totalCount,
+          loadedEndSeq: totalCount > 0 ? totalCount - 1 : -1,
+          isLoaded: false,
+          isLoading: false,
+          isLoadingOlder: false,
+        }
+      }
+      const loadedCount = prev.isLoaded && prev.loadedEndSeq >= prev.loadedStartSeq
+        ? (prev.loadedEndSeq - prev.loadedStartSeq + 1)
+        : 0
+      const maxStartSeq = Math.max(0, totalCount - loadedCount)
+      const nextStartSeq = prev.isLoaded
+        ? Math.min(prev.loadedStartSeq, maxStartSeq)
+        : totalCount
+      const nextEndSeq = prev.isLoaded
+        ? (loadedCount > 0 ? nextStartSeq + loadedCount - 1 : -1)
+        : (totalCount > 0 ? totalCount - 1 : -1)
+      return {
+        ...prev,
+        totalCount,
+        loadedStartSeq: nextStartSeq,
+        loadedEndSeq: nextEndSeq,
+      }
+    })
+  }, [rememberSessionStoreMeta, setSessionLoadMetaEntry])
+
+  const applyLoadedSessionPage = useCallback((
+    sessionId: string,
+    page: ChatStoreSessionPage | null,
+    mode: 'replace' | 'prepend',
+  ) => {
+    const key = String(sessionId || '').trim()
+    if (!key) return
+    const messages = normalizeChatStoreMessages(page?.messages ?? [])
+    const totalCount = Math.max(0, Math.floor(Number(page?.totalCount) || 0))
+    const startSeq = typeof page?.startSeq === 'number'
+      ? Math.max(0, Math.floor(page.startSeq))
+      : totalCount
+    const endSeq = typeof page?.endSeq === 'number'
+      ? Math.max(startSeq - 1, Math.floor(page.endSeq))
+      : (messages.length > 0 ? startSeq + messages.length - 1 : startSeq - 1)
+
+    if (page) {
+      rememberSessionStoreMeta(key, {
+        projectId: page.projectId,
+        workspace: page.workspace,
+      })
+    }
+
+    const currentAll = threadMessagesRef.current
+    const current = currentAll[key] ?? []
+    const nextMessages = mode === 'prepend' ? [...messages, ...current] : messages
+    const nextAll = nextMessages.length > 0
+      ? { ...currentAll, [key]: nextMessages }
+      : (() => {
+          const clone = { ...currentAll }
+          delete clone[key]
+          return clone
+        })()
+    commitThreadMessages(nextAll)
+
+    setSessionLoadMetaEntry(key, (prev) => ({
+      ...(prev ?? {}),
+      totalCount,
+      loadedStartSeq: nextMessages.length > 0 ? startSeq : totalCount,
+      loadedEndSeq: nextMessages.length > 0 ? endSeq : (totalCount > 0 ? totalCount - 1 : -1),
+      isLoaded: true,
+      isLoading: false,
+      isLoadingOlder: false,
+    }))
+  }, [commitThreadMessages, rememberSessionStoreMeta, setSessionLoadMetaEntry])
 
   const flushPersistedSession = useCallback(async (sessionId: string) => {
     const key = String(sessionId || '').trim()
@@ -375,17 +502,21 @@ export function useChat() {
   const schedulePersistedSession = useCallback((sessionId: string, prevMessages: ChatMsg[], nextMessages: ChatMsg[]) => {
     const key = String(sessionId || '').trim()
     if (!key) return
-    const fromSeq = findFirstChangedMessageIndex(prevMessages, nextMessages)
+    const loadedStartSeq = sessionLoadMetaRef.current[key]?.isLoaded
+      ? Math.max(0, Math.floor(sessionLoadMetaRef.current[key]?.loadedStartSeq ?? 0))
+      : 0
+    const fromSeq = loadedStartSeq + findFirstChangedMessageIndex(prevMessages, nextMessages)
     const pending = pendingPersistRef.current.get(key)
     const mergedFromSeq = pending ? Math.min(pending.fromSeq, fromSeq) : fromSeq
     const meta = sessionStoreMetaRef.current.get(key) ?? {}
+    const sliceStart = Math.max(0, mergedFromSeq - loadedStartSeq)
     pendingPersistRef.current.set(key, {
       projectId: String(meta.projectId || '').trim(),
       sessionId: key,
       workspace: String(meta.workspace || '').trim() || undefined,
       updatedAt: Date.now(),
       fromSeq: mergedFromSeq,
-      messages: nextMessages.slice(mergedFromSeq) as unknown[],
+      messages: nextMessages.slice(sliceStart) as unknown[],
     })
     const prevTimer = persistTimersRef.current.get(key)
     if (typeof prevTimer === 'number') {
@@ -430,34 +561,14 @@ export function useChat() {
       try {
         const entries = await window.taco.chatStore.list()
         if (cancelled) return
-
-        const loaded: Record<string, ChatMsg[]> = {}
         for (const entry of entries) {
-          const sessionId = String(entry.sessionId || '').trim()
-          if (!sessionId) continue
-          loaded[sessionId] = normalizeChatStoreMessages(entry.messages)
-          rememberSessionStoreMeta(sessionId, {
-            projectId: entry.projectId,
-            workspace: entry.workspace,
-          })
+          rememberSessionSummary(entry)
         }
 
         const legacy = loadJson<Record<string, ChatMsg[]>>('taco.messages', {})
         const legacyEntries = Object.entries(legacy ?? {}).filter(([sessionId, messages]) =>
           sessionId.trim() && Array.isArray(messages) && messages.length > 0,
         )
-
-        for (const [sessionId, messages] of legacyEntries) {
-          if (!loaded[sessionId]) {
-            loaded[sessionId] = messages
-          }
-        }
-
-        setThreadMessages((prev) => {
-          const merged = { ...loaded, ...prev }
-          threadMessagesRef.current = merged
-          return merged
-        })
 
         if (legacyEntries.length > 0) {
           const saveTasks = legacyEntries.map(async ([sessionId, messages]) => {
@@ -469,6 +580,14 @@ export function useChat() {
                 fromSeq: 0,
                 messages: messages as unknown[],
               })
+              if (!cancelled) {
+                rememberSessionSummary({
+                  projectId: '',
+                  sessionId,
+                  updatedAt: Date.now(),
+                  messageCount: messages.length,
+                })
+              }
             } catch (err) {
               console.error('[chat-store] 导入旧会话消息失败:', sessionId, err)
               throw err
@@ -498,7 +617,7 @@ export function useChat() {
       }
       persistTimersRef.current.clear()
     }
-  }, [flushAllPersistedSessions, rememberSessionStoreMeta])
+  }, [flushAllPersistedSessions, rememberSessionSummary])
 
   useEffect(() => {
     const handleBeforeUnload = () => {
@@ -533,6 +652,81 @@ export function useChat() {
     }
   }, [])
 
+  const ensureSessionLoaded = useCallback(async (sessionId: string, limit = CHAT_STORE_INITIAL_PAGE_SIZE) => {
+    const key = String(sessionId || '').trim()
+    if (!key) return
+    const currentMeta = sessionLoadMetaRef.current[key]
+    if (currentMeta?.isLoaded || currentMeta?.isLoading) return
+
+    setSessionLoadMetaEntry(key, (prev) => ({
+      totalCount: prev?.totalCount ?? 0,
+      loadedStartSeq: prev?.loadedStartSeq ?? (prev?.totalCount ?? 0),
+      loadedEndSeq: prev?.loadedEndSeq ?? ((prev?.totalCount ?? 0) > 0 ? (prev?.totalCount ?? 1) - 1 : -1),
+      isLoaded: prev?.isLoaded ?? false,
+      isLoading: true,
+      isLoadingOlder: prev?.isLoadingOlder ?? false,
+    }))
+
+    try {
+      const page = await window.taco.chatStore.loadPage(key, { limit })
+      applyLoadedSessionPage(key, page, 'replace')
+    } catch (err) {
+      console.error('[chat-store] 加载会话消息失败:', key, err)
+      setSessionLoadMetaEntry(key, (prev) => prev ? { ...prev, isLoading: false } : {
+        totalCount: 0,
+        loadedStartSeq: 0,
+        loadedEndSeq: -1,
+        isLoaded: false,
+        isLoading: false,
+        isLoadingOlder: false,
+      })
+    }
+  }, [applyLoadedSessionPage, setSessionLoadMetaEntry])
+
+  const loadOlderMessages = useCallback(async (sessionId: string, limit = CHAT_STORE_OLDER_PAGE_SIZE) => {
+    const key = String(sessionId || '').trim()
+    if (!key) return
+    const meta = sessionLoadMetaRef.current[key]
+    if (!meta?.isLoaded) {
+      await ensureSessionLoaded(key, limit)
+      return
+    }
+    if (meta.isLoadingOlder || meta.loadedStartSeq <= 0) return
+
+    setSessionLoadMetaEntry(key, { ...meta, isLoadingOlder: true })
+    try {
+      const page = await window.taco.chatStore.loadPage(key, {
+        beforeSeq: meta.loadedStartSeq,
+        limit,
+      })
+      if (!page || !Array.isArray(page.messages) || page.messages.length <= 0) {
+        setSessionLoadMetaEntry(key, (prev) => prev ? {
+          ...prev,
+          totalCount: page?.totalCount ?? prev.totalCount,
+          loadedStartSeq: 0,
+          isLoadingOlder: false,
+          isLoading: false,
+        } : undefined)
+        return
+      }
+      applyLoadedSessionPage(key, page, 'prepend')
+    } catch (err) {
+      console.error('[chat-store] 加载更早消息失败:', key, err)
+      setSessionLoadMetaEntry(key, (prev) => prev ? { ...prev, isLoadingOlder: false } : undefined)
+    }
+  }, [applyLoadedSessionPage, ensureSessionLoaded, setSessionLoadMetaEntry])
+
+  const ensureSessionFullyLoaded = useCallback(async (sessionId: string) => {
+    const key = String(sessionId || '').trim()
+    if (!key) return
+    await ensureSessionLoaded(key)
+    while (true) {
+      const meta = sessionLoadMetaRef.current[key]
+      if (!meta || !meta.isLoaded || meta.loadedStartSeq <= 0) break
+      await loadOlderMessages(key, CHAT_STORE_OLDER_PAGE_SIZE)
+    }
+  }, [ensureSessionLoaded, loadOlderMessages])
+
   /* ------------------------------------------------------------------ */
   /*  Per-thread accessors                                               */
   /* ------------------------------------------------------------------ */
@@ -566,7 +760,24 @@ export function useChat() {
   }
 
   function getMessages(threadId: string): ChatMsg[] {
-    return threadMessages[threadId] ?? []
+    return threadMessagesRef.current[threadId] ?? []
+  }
+
+  function getSessionMessageCount(threadId: string): number {
+    const meta = sessionLoadMetaRef.current[threadId]
+    if (meta) return meta.totalCount
+    return (threadMessagesRef.current[threadId] ?? []).length
+  }
+
+  function hasOlderMessages(threadId: string): boolean {
+    const meta = sessionLoadMetaRef.current[threadId]
+    if (!meta) return false
+    if (!meta.isLoaded) return meta.totalCount > 0
+    return meta.loadedStartSeq > 0
+  }
+
+  function isLoadingOlderMessages(threadId: string): boolean {
+    return Boolean(sessionLoadMetaRef.current[threadId]?.isLoadingOlder)
   }
 
   function getUsageTotalTokens(threadId: string): number | undefined {
@@ -608,27 +819,43 @@ export function useChat() {
 
   const setMessages = useCallback(
     (threadId: string, updater: ChatMsg[] | ((prev: ChatMsg[]) => ChatMsg[])) => {
-      setThreadMessages((prev) => {
-        const current = prev[threadId] ?? []
-        const next = typeof updater === 'function' ? updater(current) : updater
-        const updated = next.length > 0
-          ? { ...prev, [threadId]: next }
-          : (() => {
-              const clone = { ...prev }
-              delete clone[threadId]
-              return clone
-            })()
-        // 同步更新 ref，确保 resendFromExisting 等异步调用能立即读到最新消息
-        threadMessagesRef.current = updated
-        if (next.length > 0) {
-          schedulePersistedSession(threadId, current, next)
-        } else {
-          void deletePersistedSession(threadId)
-        }
-        return updated
-      })
+      const currentAll = threadMessagesRef.current
+      const current = currentAll[threadId] ?? []
+      const next = typeof updater === 'function' ? updater(current) : updater
+      const updated = next.length > 0
+        ? { ...currentAll, [threadId]: next }
+        : (() => {
+            const clone = { ...currentAll }
+            delete clone[threadId]
+            return clone
+          })()
+      commitThreadMessages(updated)
+
+      const prevMeta = sessionLoadMetaRef.current[threadId]
+      if (next.length > 0) {
+        const loadedStartSeq = prevMeta?.isLoaded ? prevMeta.loadedStartSeq : 0
+        setSessionLoadMetaEntry(threadId, {
+          totalCount: loadedStartSeq + next.length,
+          loadedStartSeq,
+          loadedEndSeq: loadedStartSeq + next.length - 1,
+          isLoaded: true,
+          isLoading: false,
+          isLoadingOlder: false,
+        })
+        schedulePersistedSession(threadId, current, next)
+      } else {
+        setSessionLoadMetaEntry(threadId, {
+          totalCount: 0,
+          loadedStartSeq: 0,
+          loadedEndSeq: -1,
+          isLoaded: true,
+          isLoading: false,
+          isLoadingOlder: false,
+        })
+        void deletePersistedSession(threadId)
+      }
     },
-    [deletePersistedSession, schedulePersistedSession]
+    [commitThreadMessages, deletePersistedSession, schedulePersistedSession, setSessionLoadMetaEntry]
   )
 
   function clearMessages(threadId: string) {
@@ -646,12 +873,10 @@ export function useChat() {
   }
 
   function deleteThreadMessages(threadId: string) {
-    setThreadMessages((prev) => {
-      const next = { ...prev }
-      delete next[threadId]
-      threadMessagesRef.current = next
-      return next
-    })
+    const nextMessages = { ...threadMessagesRef.current }
+    delete nextMessages[threadId]
+    commitThreadMessages(nextMessages)
+    setSessionLoadMetaEntry(threadId, undefined)
     // 同时清理该 thread 的队列
     setQueues((prev) => {
       const next = { ...prev }
@@ -1016,6 +1241,9 @@ export function useChat() {
             } else if (event.type === 'done') {
               // 最终回复写入 content
               const finishedAt = Date.now()
+              if (typeof event.finalText === 'string') {
+                accumulated = event.finalText
+              }
               if (activePlan && !activePlan.endedAt) activePlan.endedAt = finishedAt
               flushAgentMsg(accumulated, buildTaskTiming(taskStartedAt, finishedAt))
               cleanup()
@@ -1370,6 +1598,9 @@ export function useChat() {
               flushAgentMsg(undefined, runningTaskTiming)
             } else if (evt.type === 'done') {
               const finishedAt = Date.now()
+              if (typeof evt.finalText === 'string') {
+                accumulated = evt.finalText
+              }
               if (activePlan && !activePlan.endedAt) activePlan.endedAt = finishedAt
               flushAgentMsg(accumulated, buildTaskTiming(taskStartedAt, finishedAt))
               cleanup()
@@ -1505,6 +1736,7 @@ export function useChat() {
 
   return {
     threadMessages,
+    sessionLoadMetaById,
     sendingThreads,
     streamingContents,
     queues,
@@ -1513,6 +1745,9 @@ export function useChat() {
     getStreamingContent,
     getQueue,
     getMessages,
+    getSessionMessageCount,
+    hasOlderMessages,
+    isLoadingOlderMessages,
     getUsageTotalTokens,
     getActiveTaskStartedAt,
     getProjectTokenStats,
@@ -1520,6 +1755,9 @@ export function useChat() {
     clearMessages,
     deleteThreadMessages,
     clearProjectTokenStats,
+    ensureSessionLoaded,
+    ensureSessionFullyLoaded,
+    loadOlderMessages,
     sendMessage,
     resendFromExisting,
     stopSending,

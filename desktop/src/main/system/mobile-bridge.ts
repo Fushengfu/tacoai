@@ -17,8 +17,8 @@ import type {
   MobileBridgeSelectData,
   MobileBridgeThreadContext,
   FileTreeEntry,
-} from '../shared/ipc'
-import { logError, logInfo } from './logger'
+} from '../../shared/ipc'
+import { logError, logInfo } from '../system/logger'
 
 const DEFAULT_CONFIG: MobileBridgeConfig = {
   enabled: false,

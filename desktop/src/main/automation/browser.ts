@@ -9,13 +9,13 @@
 import { BrowserWindow, app, ipcMain, session } from 'electron'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import * as nodePath from 'node:path'
-import { IpcChannel } from '../shared/ipc'
+import { IpcChannel } from '../../shared/ipc'
 import type {
   BrowserActionPayload,
   BrowserActionResult,
   BrowserConsoleLevel,
   ExternalBrowserStatus,
-} from '../shared/ipc'
+} from '../../shared/ipc'
 
 /** 浏览器调试模式（是否自动打开 DevTools） */
 let browserDebugMode = false

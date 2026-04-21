@@ -1,9 +1,9 @@
 import { app } from 'electron'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
-import type { PromptConfig, PromptLayerConfig } from '../shared/ipc'
-import { DEFAULT_MODEL_PROMPT_LAYER_MAP, DEFAULT_PROVIDER_PROMPT_LAYER_MAP } from '../shared/prompt-defaults'
-import { DEFAULT_BALANCED_CHAT_EXTRA, DEFAULT_STRICT_AGENT_EXTRA } from '../shared/prompt-profile-texts'
+import type { PromptConfig, PromptLayerConfig } from '../../shared/ipc'
+import { DEFAULT_MODEL_PROMPT_LAYER_MAP, DEFAULT_PROVIDER_PROMPT_LAYER_MAP } from '../../shared/prompt-defaults'
+import { DEFAULT_BALANCED_CHAT_EXTRA, DEFAULT_STRICT_AGENT_EXTRA } from '../../shared/prompt-profile-texts'
 
 const TACO_DIR = path.join(app.getPath('home'), '.taco')
 const PROMPT_CONFIG_FILE = path.join(TACO_DIR, 'prompt-config.json')

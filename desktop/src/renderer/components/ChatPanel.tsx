@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ActivePlan, AgentStep, AttachedAsset, AttachedImage, ChatMsg, FileChangeInfo, FileChangeStatus, ProviderId, QueuedMessage, Session } from '../types'
 import type { AppUpdateCheckResult, EditorId } from '../../shared/ipc'
 import { MarkdownBubble } from './MarkdownBubble'
@@ -18,6 +18,10 @@ const planStepIcons: Record<string, string> = {
   done: '✓',
   failed: '✗',
 }
+
+const INITIAL_VISIBLE_MESSAGE_COUNT = 60
+const LOAD_MORE_MESSAGE_BATCH = 40
+const LOAD_MORE_SCROLL_THRESHOLD_PX = 72
 
 function normalizePlanStepStatus(status: string): 'pending' | 'in_progress' | 'done' | 'failed' {
   const s = String(status ?? '').trim().toLowerCase()
@@ -178,6 +182,10 @@ type ChatPanelProps = {
   updateChecking?: boolean
   onOpenUpdateDialog?: () => void
   scrollRef: React.RefObject<HTMLDivElement>
+  totalMessageCount?: number
+  hasOlderStoredMessages?: boolean
+  loadingOlderMessages?: boolean
+  onLoadOlderMessages?: () => void | Promise<void>
   queue: QueuedMessage[]
   onRemoveFromQueue: (id: string) => void
   editor: EditorId
@@ -247,6 +255,10 @@ export function ChatPanel({
   updateChecking,
   onOpenUpdateDialog,
   scrollRef,
+  totalMessageCount,
+  hasOlderStoredMessages,
+  loadingOlderMessages,
+  onLoadOlderMessages,
   queue,
   onRemoveFromQueue,
   editor,
@@ -272,6 +284,8 @@ export function ChatPanel({
   const hasProviders = configuredProviders.length > 0
   const drag = useDrag()
   const showWindowControls = globalThis.window.taco.system.platform === 'win32'
+  const [visibleMessageCount, setVisibleMessageCount] = useState(() => Math.min(messages.length, INITIAL_VISIBLE_MESSAGE_COUNT))
+  const prependAnchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
 
   // ── 图片附件状态 ──
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([])
@@ -410,6 +424,75 @@ export function ChatPanel({
     const timer = window.setInterval(() => setNowTs(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [sending])
+
+  useEffect(() => {
+    setVisibleMessageCount(Math.min(messages.length, INITIAL_VISIBLE_MESSAGE_COUNT))
+    prependAnchorRef.current = null
+  }, [activeSessionId])
+
+  useEffect(() => {
+    setVisibleMessageCount((prev) => {
+      if (messages.length <= 0) return 0
+      if (prev <= 0) return Math.min(messages.length, INITIAL_VISIBLE_MESSAGE_COUNT)
+      if (prev > messages.length) return messages.length
+      return prev
+    })
+  }, [messages.length])
+
+  const totalHistoryCount = Math.max(messages.length, totalMessageCount ?? 0)
+  const locallyHiddenMessageCount = Math.max(0, messages.length - visibleMessageCount)
+  const hiddenMessageCount = Math.max(0, totalHistoryCount - visibleMessageCount)
+  const hasHiddenHistory = locallyHiddenMessageCount > 0 || Boolean(hasOlderStoredMessages)
+  const visibleMessages = locallyHiddenMessageCount > 0
+    ? messages.slice(-visibleMessageCount)
+    : messages
+
+  const loadOlderMessages = useCallback(() => {
+    if (!hasHiddenHistory) return
+    const el = scrollRef.current
+    if (el) {
+      prependAnchorRef.current = {
+        scrollTop: el.scrollTop,
+        scrollHeight: el.scrollHeight,
+      }
+    }
+    if (locallyHiddenMessageCount > 0) {
+      setVisibleMessageCount((prev) => Math.min(messages.length, prev + LOAD_MORE_MESSAGE_BATCH))
+      return
+    }
+    void onLoadOlderMessages?.()
+  }, [hasHiddenHistory, locallyHiddenMessageCount, messages.length, onLoadOlderMessages, scrollRef])
+
+  useEffect(() => {
+    const anchor = prependAnchorRef.current
+    const el = scrollRef.current
+    if (!anchor || !el) return
+    const heightDelta = el.scrollHeight - anchor.scrollHeight
+    el.scrollTop = anchor.scrollTop + heightDelta
+    prependAnchorRef.current = null
+  }, [messages.length, visibleMessageCount, scrollRef])
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+
+    let frameId = 0
+    const handleHistoryScroll = () => {
+      if (frameId) return
+      frameId = window.requestAnimationFrame(() => {
+        frameId = 0
+        if (el.scrollTop <= LOAD_MORE_SCROLL_THRESHOLD_PX && hasHiddenHistory) {
+          loadOlderMessages()
+        }
+      })
+    }
+
+    el.addEventListener('scroll', handleHistoryScroll, { passive: true })
+    return () => {
+      if (frameId) window.cancelAnimationFrame(frameId)
+      el.removeEventListener('scroll', handleHistoryScroll)
+    }
+  }, [hasHiddenHistory, loadOlderMessages, scrollRef])
 
   function isWindowsAbsolutePath(text: string): boolean {
     return /^[a-zA-Z]:[\\/]/.test(text) || text.startsWith('\\\\')
@@ -1115,7 +1198,7 @@ export function ChatPanel({
         ref={scrollRef}
         style={selectedFileChange || viewingFile ? { display: 'none' } : undefined}
       >
-        {messages.length === 0 && !showStreamBubble && (
+        {totalHistoryCount === 0 && !showStreamBubble && (
           <div className="empty-state">
             <div className="empty-title">Taco AI</div>
             <div className="empty-sub">
@@ -1141,7 +1224,22 @@ export function ChatPanel({
         )}
 
         <div className="chat-thread">
-          {messages.map((msg) => {
+          {hasHiddenHistory && (
+            <div className="chat-history-loader">
+              <button
+                type="button"
+                className="chat-history-loader-btn"
+                onClick={loadOlderMessages}
+                disabled={Boolean(loadingOlderMessages)}
+              >
+                {loadingOlderMessages ? '加载中...' : '加载更早消息'}
+              </button>
+              <div className="chat-history-loader-note">
+                当前显示最近 {visibleMessages.length} / {totalHistoryCount} 条
+              </div>
+            </div>
+          )}
+          {visibleMessages.map((msg) => {
             const isEditing = editingMsgId === msg.id
             const isExecutingAssistant = Boolean(
               sending &&

@@ -1,5 +1,5 @@
-import type { ChatMessage } from './llm'
-import type { PlanStepStatus } from '../shared/ipc'
+import type { ChatMessage } from '../ai/llm'
+import type { PlanStepStatus } from '../../shared/ipc'
 
 type PlanStep = {
   text: string
@@ -142,6 +142,7 @@ function buildRuntimeStateCard(state: ContextBuildState): string {
   if (state.enforceStandardToolCall) {
     lines.push('- 标准工具调用要求: 上一轮出现了非标准工具调用迹象。若需要执行工具，必须通过标准 tool_calls 触发，禁止在普通文本中拼接伪调用。')
   }
+  lines.push('- 约束: 每一轮都必须通过工具完成；若要向用户输出最终答复，必须单独调用 reply_user(message)，禁止直接输出普通文本结束。')
   lines.push('- 约束: 若需要执行动作，必须先调用工具并基于工具结果回复；禁止仅凭历史总结宣称已完成。')
   return lines.join('\n')
 }

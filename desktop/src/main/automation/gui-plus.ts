@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { app } from 'electron'
-import { log } from './logger'
+import { log } from '../system/logger'
 
 export type GuiPlusConfig = {
   baseUrl: string
