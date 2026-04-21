@@ -1124,9 +1124,12 @@ function buildHistoricalTaskResultBlock(item: TaskMemoryEntry): string {
 }
 
 /**
- * 每轮任务结束后写入任务记忆（独立存储，不污染手工笔记列表）
+ * 每轮任务结束后写入任务记忆（独立存储，不污染手工笔记列表）。
+ * 仅成功任务会进入可召回的任务记忆；失败和中止任务不写入记忆总结。
  */
-export async function recordTaskLog(workspace: string, input: TaskLogInput, projectId?: string): Promise<TaskMemoryEntry> {
+export async function recordTaskLog(workspace: string, input: TaskLogInput, projectId?: string): Promise<TaskMemoryEntry | null> {
+  if (input.outcome !== 'success') return null
+
   const now = new Date().toISOString()
   const evidenceFacts = normalizeEvidenceFacts(input.evidenceFacts, 2000)
   const assistantResult = buildAssistantResultBody(input.summary, evidenceFacts)

@@ -948,7 +948,7 @@ export async function runAgent(
       const finalIntentType = intentType || inferIntentTypeFromQuery(plainUserQuery || lastUserGoal)
       const finalIntentSummary = intentSummary || plainUserQuery || lastUserGoal
       const finalIntentGoal = intentGoal || plainUserQuery || lastUserGoal
-      await recordTaskLog(
+      const savedTaskMemory = await recordTaskLog(
         workspace,
         {
           goal: plainUserQuery || lastUserGoal,
@@ -972,17 +972,19 @@ export async function runAgent(
         },
         projectId,
       )
-      try {
-        await maintainTaskMemoriesByAI(workspace, projectId, {
-          provider,
-          overrides,
-          usageTotalTokens: lastUsageTotalTokens,
-          maxTokens,
-          signal,
-          logScope,
-        })
-      } catch (err) {
-        log('TASK_MEMORY_MAINTAIN_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
+      if (savedTaskMemory) {
+        try {
+          await maintainTaskMemoriesByAI(workspace, projectId, {
+            provider,
+            overrides,
+            usageTotalTokens: lastUsageTotalTokens,
+            maxTokens,
+            signal,
+            logScope,
+          })
+        } catch (err) {
+          log('TASK_MEMORY_MAINTAIN_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
+        }
       }
       log('TASK_CORE_NOTE_SAVED', {
         reason: decision.reason,
@@ -991,6 +993,7 @@ export async function runAgent(
         toolKinds: tools.length,
         fileCount: modifiedFiles.length,
         identifierCount: touchedIdentifiers.size,
+        persisted: Boolean(savedTaskMemory),
       }, logScope)
     } catch (err) {
       log('TASK_CORE_NOTE_SAVE_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
@@ -1435,10 +1438,12 @@ export async function runAgent(
     enforceStandardToolCall = false
     completionValidationHint = ''
 
-    // 追加 assistant 消息（含 tool_calls）
+    // 追加 assistant 消息（含 tool_calls）。
+    // 这里不要把本轮“思考/计划/开始执行”的自然语言正文继续喂回下一轮，
+    // 否则部分兼容模型会被自己上一轮的计划文本反复诱导，持续重复同一工具调用。
     workingMessages.push({
       role: 'assistant',
-      content: assistantContextContent || textContent || '',
+      content: '',
       tool_calls: toolCalls,
     })
 

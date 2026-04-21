@@ -4,7 +4,12 @@ import fs from 'node:fs'
 import { createHash } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { app } from 'electron'
-import type { ProjectNote, ProjectTaskMemory } from '../../shared/ipc'
+import type {
+  AppStateProvidersPayload,
+  AppStateThreadsPayload,
+  ProjectNote,
+  ProjectTaskMemory,
+} from '../../shared/ipc'
 
 export type TaskMemoryEntry = ProjectTaskMemory
 export type ProjectNoteEntry = ProjectNote
@@ -52,6 +57,11 @@ export type MemorySnapshotEntry = {
   maxTokens?: number
   createdAt: string
   updatedAt: string
+}
+
+export type AppStateStoreEntry<T> = {
+  data: T
+  updatedAt?: string
 }
 
 type MemoryTier = 'active' | 'archive'
@@ -363,6 +373,12 @@ function ensureDb(): DatabaseSync {
 
     CREATE INDEX IF NOT EXISTS idx_chat_messages_session_seq
     ON chat_messages(session_id, seq ASC);
+
+    CREATE TABLE IF NOT EXISTS app_state_entries (
+      state_key TEXT PRIMARY KEY,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      updated_at TEXT NOT NULL
+    );
   `)
   ensureColumn(next, 'task_memories', 'scope_key', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(next, 'task_memories', 'evidence_facts_json', "TEXT NOT NULL DEFAULT '[]'")
@@ -415,6 +431,17 @@ function parseUnknownArray(raw: unknown): unknown[] {
     return Array.isArray(parsed) ? parsed : []
   } catch {
     return []
+  }
+}
+
+function parseUnknownObject(raw: unknown): Record<string, unknown> {
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {}
+  } catch {
+    return {}
   }
 }
 
@@ -828,6 +855,76 @@ export function getMemoryDbInfo(): { dbPath: string; dbSizeBytes: number } {
   return {
     dbPath,
     dbSizeBytes: dbSize + walSize,
+  }
+}
+
+function readAppStateEntryRaw(stateKey: string): { payload: Record<string, unknown>; updatedAt?: string } | null {
+  const database = ensureDb()
+  const normalizedKey = String(stateKey || '').trim()
+  if (!normalizedKey) return null
+  const row = database.prepare(`
+    SELECT payload_json, updated_at
+    FROM app_state_entries
+    WHERE state_key = ?
+  `).get(normalizedKey) as Record<string, unknown> | undefined
+  if (!row) return null
+  return {
+    payload: parseUnknownObject(row.payload_json),
+    ...(String(row.updated_at || '').trim() ? { updatedAt: String(row.updated_at || '').trim() } : {}),
+  }
+}
+
+function writeAppStateEntryRaw(stateKey: string, payload: Record<string, unknown>): string {
+  const database = ensureDb()
+  const normalizedKey = String(stateKey || '').trim()
+  if (!normalizedKey) return new Date().toISOString()
+  const updatedAt = new Date().toISOString()
+  database.prepare(`
+    INSERT INTO app_state_entries (
+      state_key, payload_json, updated_at
+    ) VALUES (?, ?, ?)
+    ON CONFLICT(state_key) DO UPDATE SET
+      payload_json=excluded.payload_json,
+      updated_at=excluded.updated_at
+  `).run(
+    normalizedKey,
+    JSON.stringify(payload ?? {}),
+    updatedAt,
+  )
+  return updatedAt
+}
+
+export function loadAppThreadsStateFromDb(): AppStateStoreEntry<AppStateThreadsPayload | null> {
+  const entry = readAppStateEntryRaw('threads_state')
+  if (!entry) return { data: null }
+  return {
+    data: entry.payload as AppStateThreadsPayload,
+    updatedAt: entry.updatedAt,
+  }
+}
+
+export function saveAppThreadsStateToDb(payload: AppStateThreadsPayload): AppStateStoreEntry<AppStateThreadsPayload> {
+  const updatedAt = writeAppStateEntryRaw('threads_state', payload as Record<string, unknown>)
+  return {
+    data: payload,
+    updatedAt,
+  }
+}
+
+export function loadAppProvidersStateFromDb(): AppStateStoreEntry<AppStateProvidersPayload | null> {
+  const entry = readAppStateEntryRaw('providers_state')
+  if (!entry) return { data: null }
+  return {
+    data: entry.payload as AppStateProvidersPayload,
+    updatedAt: entry.updatedAt,
+  }
+}
+
+export function saveAppProvidersStateToDb(payload: AppStateProvidersPayload): AppStateStoreEntry<AppStateProvidersPayload> {
+  const updatedAt = writeAppStateEntryRaw('providers_state', payload as Record<string, unknown>)
+  return {
+    data: payload,
+    updatedAt,
   }
 }
 
