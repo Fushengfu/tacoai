@@ -13,9 +13,17 @@ import type {
 } from '../../shared/ipc'
 
 const TACO_DIR = path.join(app.getPath('home'), '.taco')
-const APP_STATE_FILE = path.join(TACO_DIR, 'app-state.json')
+const LEGACY_APP_STATE_FILE = path.join(TACO_DIR, 'app-state.json')
+const THREADS_STATE_FILE = path.join(TACO_DIR, 'threads-state.json')
+const PROVIDERS_STATE_FILE = path.join(TACO_DIR, 'providers-state.json')
 const APP_STATE_VERSION = 1
 const PROVIDER_IDS: readonly AppStateProviderId[] = ['deepseek', 'kimi', 'minimax', 'glm']
+
+type StoredStateFile<T> = {
+  version: number
+  updatedAt?: string
+  data: T
+}
 
 function defaultProviderForm(): AppStateProviderForm {
   return {
@@ -46,14 +54,6 @@ function defaultProvidersState(): AppStateProvidersPayload {
   return {
     providerForms: defaultProviderForms(),
     activeProvider: 'deepseek',
-  }
-}
-
-function defaultState(): AppStateSnapshot {
-  return {
-    version: APP_STATE_VERSION,
-    threadsState: defaultThreadsState(),
-    providersState: defaultProvidersState(),
   }
 }
 
@@ -165,14 +165,18 @@ function sanitizeProvidersState(raw: unknown): AppStateProvidersPayload {
   }
 }
 
-function sanitizeSnapshot(raw: unknown): AppStateSnapshot {
+function sanitizeStoredFile<T>(
+  raw: unknown,
+  sanitizeData: (value: unknown) => T,
+  fallback: T,
+): StoredStateFile<T> {
   const obj = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
   const versionRaw = Number(obj.version)
+  const dataSource = Object.prototype.hasOwnProperty.call(obj, 'data') ? obj.data : raw
   return {
     version: Number.isFinite(versionRaw) && versionRaw > 0 ? Math.floor(versionRaw) : APP_STATE_VERSION,
     updatedAt: asOptionalString(obj.updatedAt),
-    threadsState: sanitizeThreadsState(obj.threadsState),
-    providersState: sanitizeProvidersState(obj.providersState),
+    data: sanitizeData(dataSource ?? fallback),
   }
 }
 
@@ -180,47 +184,83 @@ async function ensureStateDir(): Promise<void> {
   await fs.mkdir(TACO_DIR, { recursive: true })
 }
 
-async function writeState(state: AppStateSnapshot): Promise<void> {
+async function writeStateFile<T>(filePath: string, data: T): Promise<StoredStateFile<T>> {
   await ensureStateDir()
-  const next: AppStateSnapshot = {
-    ...state,
+  const next: StoredStateFile<T> = {
     version: APP_STATE_VERSION,
     updatedAt: new Date().toISOString(),
+    data,
   }
-  await fs.writeFile(APP_STATE_FILE, JSON.stringify(next, null, 2), 'utf-8')
+  await fs.writeFile(filePath, JSON.stringify(next, null, 2), 'utf-8')
+  return next
 }
 
-async function readState(): Promise<AppStateSnapshot> {
+async function readStateFile<T>(
+  filePath: string,
+  sanitizeData: (value: unknown) => T,
+  fallback: T,
+): Promise<StoredStateFile<T>> {
   try {
-    const raw = await fs.readFile(APP_STATE_FILE, 'utf-8')
-    return sanitizeSnapshot(JSON.parse(raw))
+    const raw = await fs.readFile(filePath, 'utf-8')
+    return sanitizeStoredFile(JSON.parse(raw), sanitizeData, fallback)
   } catch {
-    const initial = defaultState()
-    await writeState(initial)
-    return { ...initial, updatedAt: new Date().toISOString() }
+    return await writeStateFile(filePath, fallback)
   }
+}
+
+async function tryMigrateLegacyCombinedState(): Promise<void> {
+  try {
+    await fs.access(THREADS_STATE_FILE)
+    await fs.access(PROVIDERS_STATE_FILE)
+    return
+  } catch {
+    // continue
+  }
+
+  try {
+    const raw = await fs.readFile(LEGACY_APP_STATE_FILE, 'utf-8')
+    const parsed = raw ? JSON.parse(raw) as Record<string, unknown> : {}
+    const threadsState = sanitizeThreadsState(parsed.threadsState)
+    const providersState = sanitizeProvidersState(parsed.providersState)
+    await writeStateFile(THREADS_STATE_FILE, threadsState)
+    await writeStateFile(PROVIDERS_STATE_FILE, providersState)
+    await fs.rm(LEGACY_APP_STATE_FILE, { force: true })
+  } catch {
+    // ignore legacy migration failure; normal fallback will create split files
+  }
+}
+
+async function readThreadsState(): Promise<StoredStateFile<AppStateThreadsPayload>> {
+  await tryMigrateLegacyCombinedState()
+  return await readStateFile(THREADS_STATE_FILE, sanitizeThreadsState, defaultThreadsState())
+}
+
+async function readProvidersState(): Promise<StoredStateFile<AppStateProvidersPayload>> {
+  await tryMigrateLegacyCombinedState()
+  return await readStateFile(PROVIDERS_STATE_FILE, sanitizeProvidersState, defaultProvidersState())
 }
 
 export async function getAppState(): Promise<AppStateSnapshot> {
-  return await readState()
+  const [threadsFile, providersFile] = await Promise.all([
+    readThreadsState(),
+    readProvidersState(),
+  ])
+  return {
+    version: APP_STATE_VERSION,
+    updatedAt: providersFile.updatedAt || threadsFile.updatedAt,
+    threadsState: threadsFile.data,
+    providersState: providersFile.data,
+  }
 }
 
 export async function saveAppThreadsState(payload: AppStateThreadsPayload): Promise<AppStateThreadsPayload> {
-  const current = await readState()
-  const next: AppStateSnapshot = {
-    ...current,
-    threadsState: sanitizeThreadsState(payload),
-  }
-  await writeState(next)
-  return next.threadsState
+  const sanitized = sanitizeThreadsState(payload)
+  const saved = await writeStateFile(THREADS_STATE_FILE, sanitized)
+  return saved.data
 }
 
 export async function saveAppProvidersState(payload: AppStateProvidersPayload): Promise<AppStateProvidersPayload> {
-  const current = await readState()
-  const next: AppStateSnapshot = {
-    ...current,
-    providersState: sanitizeProvidersState(payload),
-  }
-  await writeState(next)
-  return next.providersState
+  const sanitized = sanitizeProvidersState(payload)
+  const saved = await writeStateFile(PROVIDERS_STATE_FILE, sanitized)
+  return saved.data
 }
