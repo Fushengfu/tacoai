@@ -2151,6 +2151,15 @@ type RunCommandExecError = Error & {
   timedOut?: boolean
 }
 
+function parseRunCommandExitCode(code: unknown): number | null {
+  if (typeof code === 'number' && Number.isFinite(code)) return code
+  if (typeof code === 'string' && code.trim()) {
+    const parsed = Number(code.trim())
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
 function trimOutputTail(raw: string): string {
   const text = String(raw ?? '').replace(/\r/g, '').trim()
   if (!text) return ''
@@ -2178,6 +2187,12 @@ function isRunCommandTimeoutError(err: RunCommandExecError): boolean {
   return false
 }
 
+function isRunCommandSearchNoMatch(command: string, exitCode: number | null, stderr: string): boolean {
+  if (exitCode !== 1) return false
+  if (trimOutputTail(stderr)) return false
+  return /\b(rg|grep|egrep|fgrep)\b/.test(command)
+}
+
 async function execRunCommand(args: Record<string, unknown>, workspace: string, signal?: AbortSignal): Promise<ExecResult> {
   const command = String(args.command ?? '')
   if (!command) return { content: 'Error: command is required', success: false }
@@ -2203,10 +2218,23 @@ async function execRunCommand(args: Record<string, unknown>, workspace: string, 
     const execErr = err as RunCommandExecError
     const stderr = execErr.stderr || ''
     const stdout = execErr.stdout || ''
+    const exitCodeNumber = parseRunCommandExitCode(execErr.code)
     const signalName = execErr.signal || 'unknown'
     const exitCode = execErr.code === null || execErr.code === undefined || execErr.code === '' ? 'unknown' : String(execErr.code)
     const message = String(execErr.message || 'Unknown error').trim()
     const details = formatRunCommandFailureDetails(stderr, stdout)
+
+    if (isRunCommandSearchNoMatch(command, exitCodeNumber, stderr)) {
+      const noMatchMessage = [
+        'No matches found',
+        `signal: ${signalName}`,
+        `exitCode: ${exitCode}`,
+        'note: rg/grep exitCode 1 表示无匹配，不是命令执行失败。',
+        trimOutputTail(stdout) ? `stdout (tail):\n${trimOutputTail(stdout)}` : '',
+      ].filter(Boolean).join('\n')
+      return { content: noMatchMessage, success: true }
+    }
+
     const timedOut = isRunCommandTimeoutError(execErr)
 
     if (timedOut) {
