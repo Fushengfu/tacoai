@@ -1,4 +1,4 @@
-import type { ProviderId, ProviderForm, ProviderForms, ThreadMode } from './types'
+import type { ModelConfig, ProviderId, ProviderForm, ProviderForms, ThreadMode } from './types'
 import type { PromptConfig, PromptLayerConfig } from '../shared/ipc'
 import { DEFAULT_MODEL_PROMPT_LAYER_MAP, DEFAULT_PROVIDER_PROMPT_LAYER_MAP } from '../shared/prompt-defaults'
 import { DEFAULT_BALANCED_CHAT_EXTRA, DEFAULT_STRICT_AGENT_EXTRA } from '../shared/prompt-profile-texts'
@@ -379,13 +379,24 @@ export const providers: readonly { id: ProviderId; label: string; maxTokens: num
   { id: 'deepseek', label: 'DeepSeek', maxTokens: 131072 },
   { id: 'kimi', label: 'Kimi', maxTokens: 131072 },
   { id: 'minimax', label: 'MiniMax', maxTokens: 1048576 },
-  { id: 'glm', label: 'GLM', maxTokens: 131072 }
+  { id: 'glm', label: 'GLM', maxTokens: 131072 },
+  { id: 'qwen', label: 'Qwen', maxTokens: 131072 }
 ]
 
 export function resolveProviderDisplayLabel(providerId: ProviderId, form?: Partial<ProviderForm>): string {
   const model = String(form?.model ?? '').trim()
   if (model) return model
   return providers.find((p) => p.id === providerId)?.label ?? providerId
+}
+
+export function resolveModelConfigDisplayLabel(config: Pick<ModelConfig, 'name' | 'model' | 'provider'>): string {
+  const name = String(config.name ?? '').trim()
+  if (name) return name
+  const model = String(config.model ?? '').trim()
+  if (model) return model
+  const providerLabel = providers.find((p) => p.id === config.provider)?.label
+  const providerId = String(config.provider || '').trim()
+  return providerLabel ?? (providerId || '模型')
 }
 
 /**
@@ -405,7 +416,8 @@ export const providerPlaceholders: Record<ProviderId, ProviderForm> = {
   deepseek: { baseUrl: 'https://api.deepseek.com', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '131072（示例）' },
   kimi: { baseUrl: 'https://api.moonshot.cn/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '131072（示例）' },
   minimax: { baseUrl: 'https://api.minimaxi.com/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '1048576（示例）' },
-  glm: { baseUrl: 'https://open.bigmodel.cn/api/paas/v4', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '131072（示例）' }
+  glm: { baseUrl: 'https://open.bigmodel.cn/api/paas/v4', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '131072（示例）' },
+  qwen: { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '131072（示例）' }
 }
 
 export function defaultProviderForms(): ProviderForms {
@@ -413,7 +425,8 @@ export function defaultProviderForms(): ProviderForms {
     deepseek: { baseUrl: '', apiKey: '', model: '', maxTokens: '' },
     kimi: { baseUrl: '', apiKey: '', model: '', maxTokens: '' },
     minimax: { baseUrl: '', apiKey: '', model: '', maxTokens: '' },
-    glm: { baseUrl: '', apiKey: '', model: '', maxTokens: '' }
+    glm: { baseUrl: '', apiKey: '', model: '', maxTokens: '' },
+    qwen: { baseUrl: '', apiKey: '', model: '', maxTokens: '' }
   }
 }
 
@@ -426,4 +439,9 @@ export function resolveProviderMaxTokens(providerId: ProviderId, form?: Partial<
   const n = Math.floor(parsed)
   if (n <= 0) return fallback
   return n
+}
+
+export function resolveModelConfigMaxTokens(config?: Pick<ModelConfig, 'provider' | 'maxTokens'> | null): number {
+  if (!config) return 65536
+  return resolveProviderMaxTokens(config.provider, { maxTokens: config.maxTokens })
 }

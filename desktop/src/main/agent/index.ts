@@ -641,6 +641,8 @@ export async function runAgent(
         droppedSnapshotReplayCount: injected.droppedSnapshotReplayCount,
         replayedTurns: injected.replayedTaskMemories.length,
         droppedReplayCount: injected.droppedReplayCount,
+        droppedReplayByLimitCount: injected.droppedReplayByLimitCount,
+        droppedReplayByBudgetCount: injected.droppedReplayByBudgetCount,
         notesCount: injected.notes.length,
         recalledCount: injected.recalled.length,
         recallMeta: injected.recallMeta,

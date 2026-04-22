@@ -27,7 +27,7 @@ export type TokenUsage = {
   cachedTokens?: number
 }
 
-export type ProviderKey = 'deepseek' | 'kimi' | 'minimax' | 'glm'
+export type ProviderKey = 'deepseek' | 'kimi' | 'minimax' | 'glm' | 'qwen'
 
 export type ProviderConfig = {
   baseUrl: string
@@ -58,6 +58,11 @@ const providerConfigs: Record<ProviderKey, ProviderConfig> = {
     baseUrl: process.env.GLM_BASE_URL ?? 'https://open.bigmodel.cn/api/paas/v4',
     apiKey: process.env.GLM_API_KEY ?? '',
     model: process.env.GLM_MODEL ?? ''
+  },
+  qwen: {
+    baseUrl: process.env.QWEN_BASE_URL ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    apiKey: process.env.QWEN_API_KEY ?? '',
+    model: process.env.QWEN_MODEL ?? ''
   }
 }
 

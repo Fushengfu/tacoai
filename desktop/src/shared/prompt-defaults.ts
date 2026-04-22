@@ -13,6 +13,9 @@ export const DEFAULT_PROVIDER_PROMPT_LAYER_MAP: Record<string, PromptLayerConfig
   glm: {
     agentExtra: '- 输出结构保持稳定，优先使用清晰步骤与可验证证据。',
   },
+  qwen: {
+    agentExtra: '- 工具调用参数保持严格 JSON，优先给出可执行结果与关键验证信息。',
+  },
 }
 
 export const DEFAULT_MODEL_PROMPT_LAYER_MAP: Record<string, PromptLayerConfig> = {

@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { AppStateThread, AppStateThreadsPayload } from '../../shared/ipc'
-import type { ProviderId, Session, Thread, ThreadMode } from '../types'
+import type { Session, Thread, ThreadMode } from '../types'
 import { loadJson } from '../lib/storage'
-import { providers } from '../constants'
 
 const LEGACY_THREADS_KEY = 'taco.threads'
 const LEGACY_ACTIVE_THREAD_KEY = 'taco.activeThreadId'
@@ -16,30 +15,31 @@ function resolveActiveThreadId(threads: Thread[], activeThreadId: string): strin
 
 /** 迁移旧数据：为没有 sessions 字段的线程补充默认会话 */
 function migrateThreads(saved: Thread[]): Thread[] {
-  const validProviders = new Set(providers.map((p) => p.id))
   return saved.map((t) => {
-    const provider = t.provider && validProviders.has(t.provider) ? t.provider : undefined
     const titleLocked = Boolean(t.titleLocked)
     const projectRules = typeof t.projectRules === 'string' ? t.projectRules : undefined
+    const modelConfigId = typeof t.modelConfigId === 'string'
+      ? t.modelConfigId
+      : (typeof t.provider === 'string' && t.provider.trim() ? `legacy-${t.provider.trim()}-0` : undefined)
     const mode: ThreadMode = 'agent'
     if (!t.sessions || t.sessions.length === 0) {
       return {
         ...t,
-        provider,
         titleLocked,
         projectRules,
+        modelConfigId,
         mode,
         sessions: [{ id: t.id, title: '会话 1', createdAt: t.updatedAt }],
         activeSessionId: t.id,
       }
     }
     if (
-      provider === t.provider &&
       titleLocked === Boolean(t.titleLocked) &&
       projectRules === t.projectRules &&
+      modelConfigId === t.modelConfigId &&
       t.mode === mode
     ) return t
-    return { ...t, provider, titleLocked, projectRules, mode }
+    return { ...t, titleLocked, projectRules, modelConfigId, mode }
   })
 }
 
@@ -112,7 +112,7 @@ export function useThreads() {
 
   const sortedThreads = threads
 
-  function createThread(title = '新项目', provider?: ProviderId): string {
+  function createThread(title = '新项目', modelConfigId?: string): string {
     const id = `t${Date.now()}`
     const sessionId = `s${Date.now()}`
     const session: Session = { id: sessionId, title: '会话 1', createdAt: Date.now() }
@@ -121,7 +121,7 @@ export function useThreads() {
       title,
       titleLocked: false,
       updatedAt: Date.now(),
-      provider,
+      modelConfigId,
       mode: 'agent',
       sessions: [session],
       activeSessionId: sessionId,

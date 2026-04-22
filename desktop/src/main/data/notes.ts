@@ -2425,14 +2425,14 @@ function sortMemorySnapshotsAsc(items: MemorySnapshotEntry[]): MemorySnapshotEnt
 }
 
 function estimateReplayBudgetChars(maxTokens?: number, replayMode: 'full' | 'compact' = 'full'): number {
-  const defaultBudget = replayMode === 'compact' ? 9000 : 32000
+  const defaultBudget = replayMode === 'compact' ? 9000 : 18000
   if (typeof maxTokens !== 'number' || !Number.isFinite(maxTokens) || maxTokens <= 0) {
     return defaultBudget
   }
-  const ratio = replayMode === 'compact' ? 0.12 : 0.3
+  const ratio = replayMode === 'compact' ? 0.12 : 0.2
   const approxChars = Math.floor(maxTokens * 3.4 * ratio)
   const min = replayMode === 'compact' ? 5000 : 12000
-  const max = replayMode === 'compact' ? 32000 : 110000
+  const max = replayMode === 'compact' ? 32000 : 64000
   return Math.max(min, Math.min(max, approxChars))
 }
 
@@ -2454,6 +2454,8 @@ export async function buildBackgroundContextConversationMessages(
   replayedTaskMemories: TaskMemoryEntry[]
   droppedSnapshotReplayCount: number
   droppedReplayCount: number
+  droppedReplayByLimitCount: number
+  droppedReplayByBudgetCount: number
   recallMeta: RecallMeta
   recallDebug: RecallDebugCandidate[]
 }> {
@@ -2465,13 +2467,16 @@ export async function buildBackgroundContextConversationMessages(
   const forceEmptyReplay = recalled.meta.selectionMethod === 'tool_call' && recalled.meta.toolSelectedCount === 0
 
   const selectedSnapshotIds = new Set(recalled.recalled.filter((item) => item.source === 'snapshot').map((item) => item.id))
+  const selectedTaskIds = new Set(recalled.recalled.filter((item) => item.source === 'task').map((item) => item.id))
 
   const orderedTaskMemories = sortTaskMemoriesAsc(recalled.taskMemories)
   const orderedSnapshots = sortMemorySnapshotsAsc(recalled.snapshots)
 
   const taskCandidates = forceEmptyReplay
     ? []
-    : orderedTaskMemories
+    : (selectedTaskIds.size > 0
+      ? orderedTaskMemories.filter((item) => selectedTaskIds.has(item.id))
+      : [])
   const snapshotCandidates = forceEmptyReplay
     ? []
     : (selectedSnapshotIds.size > 0
@@ -2481,7 +2486,7 @@ export async function buildBackgroundContextConversationMessages(
   const selectedSnapshotsFromEnd: MemorySnapshotEntry[] = []
   let droppedSnapshotReplayCount = 0
   let usedChars = safeUserQuery.length + (userAssetsBlock ? userAssetsBlock.length + 32 : 0)
-  const snapshotLimit = replayMode === 'compact' ? 2 : 4
+  const snapshotLimit = 2
   for (let i = snapshotCandidates.length - 1; i >= 0; i--) {
     if (selectedSnapshotsFromEnd.length >= snapshotLimit) {
       droppedSnapshotReplayCount++
@@ -2501,13 +2506,14 @@ export async function buildBackgroundContextConversationMessages(
   const replayedSnapshots = selectedSnapshotsFromEnd.reverse()
 
   const selectedFromEnd: TaskMemoryEntry[] = []
-  let droppedReplayCount = 0
+  let droppedReplayByLimitCount = 0
+  let droppedReplayByBudgetCount = 0
 
-  const compactLimit = replayMode === 'compact' ? 8 : Number.POSITIVE_INFINITY
+  const compactLimit = replayMode === 'compact' ? 8 : 20
 
   for (let i = taskCandidates.length - 1; i >= 0; i--) {
     if (selectedFromEnd.length >= compactLimit) {
-      droppedReplayCount++
+      droppedReplayByLimitCount++
       continue
     }
     const item = taskCandidates[i]
@@ -2517,13 +2523,14 @@ export async function buildBackgroundContextConversationMessages(
     if (!userText && !assistantText && !userAssets) continue
     const pairSize = userText.length + assistantText.length + userAssets.length + 48
     if (usedChars + pairSize > replayBudgetChars && selectedFromEnd.length > 0) {
-      droppedReplayCount++
+      droppedReplayByBudgetCount++
       continue
     }
     selectedFromEnd.push(item)
     usedChars += pairSize
   }
 
+  const droppedReplayCount = droppedReplayByLimitCount + droppedReplayByBudgetCount
   const replayedTaskMemories = selectedFromEnd.reverse()
   const messages: ChatMessage[] = []
   for (const item of replayedSnapshots) {
@@ -2554,6 +2561,8 @@ export async function buildBackgroundContextConversationMessages(
     replayedTaskMemories,
     droppedSnapshotReplayCount,
     droppedReplayCount,
+    droppedReplayByLimitCount,
+    droppedReplayByBudgetCount,
     recallMeta: recalled.meta,
     recallDebug: recalled.debugCandidates,
   }

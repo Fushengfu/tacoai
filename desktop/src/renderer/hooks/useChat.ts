@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ActivePlan, AgentStep, AttachedAsset, AttachedImage, ChatMsg, ProviderId, ProviderForms, QueuedMessage, TaskTiming, ThreadMode, ToolCallInfo, ToolResultInfo } from '../types'
+import type { ActivePlan, AgentStep, AttachedAsset, AttachedImage, ChatMsg, ModelConfig, ProviderId, QueuedMessage, TaskTiming, ThreadMode, ToolCallInfo, ToolResultInfo } from '../types'
 import type { ChatStoreSessionPage, ChatStoreSessionPatch, ChatStoreSessionSummary, PromptConfig } from '../../shared/ipc'
 import { buildSystemPrompt } from '../constants'
 import { loadJson, saveJson, uid } from '../lib/storage'
@@ -295,7 +295,7 @@ export type SendMessageParams = {
   /** 用户附带的文件附件（绝对路径） */
   attachments?: AttachedAsset[]
   provider: ProviderId
-  providerForms: ProviderForms
+  modelConfig: ModelConfig
   /** 会话模式 */
   mode?: ThreadMode
   /** Agent 模式的工作空间目录 */
@@ -979,7 +979,7 @@ export function useChat() {
   /* ------------------------------------------------------------------ */
 
   async function sendMessage(params: SendMessageParams) {
-    const { threadId, projectId, projectRules, content, images, attachments, provider, providerForms, mode, workspace, maxTokens, onFirstMessage, onComplete } = params
+    const { threadId, projectId, projectRules, content, images, attachments, provider, modelConfig, mode, workspace, maxTokens, onFirstMessage, onComplete } = params
     rememberSessionStoreMeta(threadId, { projectId, workspace })
 
     // 保存参数供队列重发
@@ -988,7 +988,7 @@ export function useChat() {
       projectId,
       projectRules,
       provider,
-      providerForms,
+      modelConfig,
       mode,
       workspace,
       onFirstMessage,
@@ -1033,7 +1033,7 @@ export function useChat() {
 
     // 构造 API 消息（支持 provider/model 差异化 + 配置文件可选覆盖）
     const promptConfig = await ensurePromptConfigLoaded()
-    const model = String(providerForms[provider]?.model ?? '').trim() || undefined
+    const model = String(modelConfig.model ?? '').trim() || undefined
     const systemContent = buildSystemPrompt({
       mode,
       workspace,
@@ -1052,9 +1052,9 @@ export function useChat() {
 
     const overrides = {
       [provider]: {
-        baseUrl: providerForms[provider]?.baseUrl || undefined,
-        apiKey: providerForms[provider]?.apiKey || undefined,
-        model: providerForms[provider]?.model || undefined
+        baseUrl: modelConfig.baseUrl || undefined,
+        apiKey: modelConfig.apiKey || undefined,
+        model: modelConfig.model || undefined
       }
     }
 
@@ -1395,7 +1395,7 @@ export function useChat() {
    * 用于「编辑后重发」或「原样重发」场景：先由外部修改好 messages，再调用此方法。
    */
   async function resendFromExisting(params: Omit<SendMessageParams, 'content'>) {
-    const { threadId, projectId, projectRules, provider, providerForms, mode, workspace, maxTokens, onFirstMessage, onComplete } = params
+    const { threadId, projectId, projectRules, provider, modelConfig, mode, workspace, maxTokens, onFirstMessage, onComplete } = params
     rememberSessionStoreMeta(threadId, { projectId, workspace })
 
     const currentMsgs = threadMessagesRef.current[threadId] ?? []
@@ -1407,7 +1407,7 @@ export function useChat() {
     inFlightThreadsRef.current.add(threadId)
     const taskStartedAt = Date.now()
 
-    sendParamsRefs.current.set(threadId, { threadId, projectId, projectRules, provider, providerForms, mode, workspace, onFirstMessage, onComplete })
+    sendParamsRefs.current.set(threadId, { threadId, projectId, projectRules, provider, modelConfig, mode, workspace, onFirstMessage, onComplete })
 
     setSendingThreads((prev) => ({ ...prev, [threadId]: true }))
     setStreamingContents((prev) => ({ ...prev, [threadId]: '' }))
@@ -1415,7 +1415,7 @@ export function useChat() {
     setActiveTaskStartedAtByThread((prev) => ({ ...prev, [threadId]: taskStartedAt }))
 
     const promptConfig = await ensurePromptConfigLoaded()
-    const model = String(providerForms[provider]?.model ?? '').trim() || undefined
+    const model = String(modelConfig.model ?? '').trim() || undefined
     const isAgent = mode === 'agent'
     const apiMessages = [
       { role: 'system' as const, content: buildSystemPrompt({ mode, workspace, provider, model, projectRules, promptConfig }) },
@@ -1424,9 +1424,9 @@ export function useChat() {
 
     const overrides = {
       [provider]: {
-        baseUrl: providerForms[provider]?.baseUrl || undefined,
-        apiKey: providerForms[provider]?.apiKey || undefined,
-        model: providerForms[provider]?.model || undefined
+        baseUrl: modelConfig.baseUrl || undefined,
+        apiKey: modelConfig.apiKey || undefined,
+        model: modelConfig.model || undefined
       }
     }
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ActivePlan, AgentStep, AttachedAsset, AttachedImage, ChatMsg, FileChangeInfo, FileChangeStatus, ProviderId, QueuedMessage, Session } from '../types'
+import type { ActivePlan, AgentStep, AttachedAsset, AttachedImage, ChatMsg, FileChangeInfo, FileChangeStatus, QueuedMessage, Session } from '../types'
 import type { EditorId } from '../../shared/ipc'
 import { MarkdownBubble } from './MarkdownBubble'
 import { DiffView } from './DiffView'
@@ -171,9 +171,9 @@ type ChatPanelProps = {
   onEditResend: (msgId: string, newContent: string) => void
   workspace: string
   onSelectWorkspace: () => void
-  provider: ProviderId
-  onProviderChange: (id: ProviderId) => void
-  configuredProviders: readonly { id: ProviderId; label: string }[]
+  provider: string
+  onProviderChange: (id: string) => void
+  configuredProviders: readonly { id: string; label: string }[]
   scrollRef: React.RefObject<HTMLDivElement>
   totalMessageCount?: number
   hasOlderStoredMessages?: boolean
@@ -1589,15 +1589,15 @@ export function ChatPanel({
                 </svg>
                 <span>{workspace ? workspace.split('/').pop() || workspace : '选择工作空间'}</span>
               </button>
-              <select
-                className="provider-select"
-                value={provider}
-                onChange={(e) => onProviderChange(e.target.value as ProviderId)}
-                disabled={!hasProviders}
-                aria-label="Select AI provider"
-              >
+                <select
+                  className="provider-select"
+                  value={provider}
+                  onChange={(e) => onProviderChange(e.target.value)}
+                  disabled={!hasProviders}
+                  aria-label="Select AI provider"
+                >
                 {!hasProviders ? (
-                  <option value="deepseek">请先配置模型</option>
+                  <option value="">请先配置模型</option>
                 ) : (
                   configuredProviders.map((item) => (
                     <option key={item.id} value={item.id}>

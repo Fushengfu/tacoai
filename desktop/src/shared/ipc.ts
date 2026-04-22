@@ -835,16 +835,21 @@ export type MobileBridgeContextSnapshot = {
   threads: MobileBridgeThreadContext[]
 }
 
-export type AppStateProviderId = 'deepseek' | 'kimi' | 'minimax' | 'glm'
+export type AppStateProviderId = 'deepseek' | 'kimi' | 'minimax' | 'glm' | 'qwen'
 
-export type AppStateProviderForm = {
+export type AppStateModelConfig = {
+  id: string
+  /** 底层 provider 类型（请求路由） */
+  provider: AppStateProviderId
+  /** 卡片显示名（可自定义） */
+  name: string
   baseUrl: string
   apiKey: string
   model: string
   maxTokens: string
+  createdAt?: number
+  updatedAt?: number
 }
-
-export type AppStateProviderForms = Record<AppStateProviderId, AppStateProviderForm>
 
 export type AppStateSession = {
   id: string
@@ -857,6 +862,9 @@ export type AppStateThread = {
   title: string
   titleLocked?: boolean
   updatedAt: number
+  /** 绑定的模型配置记录 ID */
+  modelConfigId?: string
+  /** 兼容历史字段（已弃用） */
   provider?: AppStateProviderId
   mode?: 'chat' | 'agent'
   workspace?: string
@@ -871,8 +879,8 @@ export type AppStateThreadsPayload = {
 }
 
 export type AppStateProvidersPayload = {
-  providerForms: AppStateProviderForms
-  activeProvider: AppStateProviderId
+  modelConfigs: AppStateModelConfig[]
+  activeModelConfigId: string
 }
 
 export type AppStateSnapshot = {

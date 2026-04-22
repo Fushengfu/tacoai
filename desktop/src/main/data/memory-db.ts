@@ -5,6 +5,10 @@ import { createHash } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { app } from 'electron'
 import type {
+  AppStateModelConfig,
+  AppStateProviderId,
+  AppStateSession,
+  AppStateThread,
   AppStateProvidersPayload,
   AppStateThreadsPayload,
   ProjectNote,
@@ -71,6 +75,8 @@ type MemoryScope = {
   projectId?: string
   scopeKey?: string
 }
+
+const APP_PROVIDER_IDS: readonly AppStateProviderId[] = ['deepseek', 'kimi', 'minimax', 'glm', 'qwen']
 
 function resolveHomeDir(): string {
   try {
@@ -374,6 +380,55 @@ function ensureDb(): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_chat_messages_session_seq
     ON chat_messages(session_id, seq ASC);
 
+    CREATE TABLE IF NOT EXISTS app_project_configs (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL DEFAULT '',
+      title_locked INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL DEFAULT 0,
+      model_config_id TEXT NOT NULL DEFAULT '',
+      provider TEXT NOT NULL DEFAULT '',
+      mode TEXT NOT NULL DEFAULT '',
+      workspace TEXT NOT NULL DEFAULT '',
+      project_rules TEXT NOT NULL DEFAULT '',
+      active_session_id TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_app_project_configs_updated
+    ON app_project_configs(updated_at DESC, id ASC);
+
+    CREATE TABLE IF NOT EXISTS app_project_sessions (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (thread_id) REFERENCES app_project_configs(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_app_project_sessions_thread_sort
+    ON app_project_sessions(thread_id, sort_order ASC, created_at ASC, id ASC);
+
+    CREATE TABLE IF NOT EXISTS app_model_configs (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL DEFAULT 'deepseek',
+      name TEXT NOT NULL DEFAULT '',
+      base_url TEXT NOT NULL DEFAULT '',
+      api_key TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL DEFAULT '',
+      max_tokens TEXT NOT NULL DEFAULT '',
+      created_at INTEGER,
+      updated_at INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_app_model_configs_updated
+    ON app_model_configs(updated_at DESC, created_at DESC, id ASC);
+
+    CREATE TABLE IF NOT EXISTS app_state_meta (
+      meta_key TEXT PRIMARY KEY,
+      meta_value TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS app_state_entries (
       state_key TEXT PRIMARY KEY,
       payload_json TEXT NOT NULL DEFAULT '{}',
@@ -392,6 +447,15 @@ function ensureDb(): DatabaseSync {
   ensureColumn(next, 'memory_snapshots', 'scope_key', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(next, 'memory_maintain_runs', 'scope_key', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(next, 'chat_sessions', 'snapshot_migrated', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(next, 'app_project_configs', 'model_config_id', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(next, 'app_project_configs', 'provider', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(next, 'app_project_configs', 'mode', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(next, 'app_project_configs', 'workspace', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(next, 'app_project_configs', 'project_rules', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(next, 'app_project_configs', 'active_session_id', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(next, 'app_model_configs', 'name', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(next, 'app_model_configs', 'created_at', 'INTEGER')
+  ensureColumn(next, 'app_model_configs', 'updated_at', 'INTEGER')
   backfillScopeKey(next, 'task_memories')
   backfillScopeKey(next, 'project_notes')
   backfillScopeKey(next, 'memory_snapshots')
@@ -858,9 +922,49 @@ export function getMemoryDbInfo(): { dbPath: string; dbSizeBytes: number } {
   }
 }
 
-function readAppStateEntryRaw(stateKey: string): { payload: Record<string, unknown>; updatedAt?: string } | null {
-  const database = ensureDb()
-  const normalizedKey = String(stateKey || '').trim()
+let appStateRecordMigrationChecked = false
+
+function parseOptionalTimestamp(raw: unknown): number | undefined {
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return undefined
+  const normalized = Math.trunc(value)
+  return normalized >= 0 ? normalized : undefined
+}
+
+function asTrimmedString(value: unknown): string {
+  return String(value ?? '').trim()
+}
+
+function asOptionalTrimmedString(value: unknown): string | undefined {
+  const text = asTrimmedString(value)
+  return text || undefined
+}
+
+function normalizeProviderId(value: unknown, fallback: AppStateProviderId = 'deepseek'): AppStateProviderId {
+  const text = asTrimmedString(value) as AppStateProviderId
+  return APP_PROVIDER_IDS.includes(text) ? text : fallback
+}
+
+function normalizeMode(value: unknown): 'chat' | 'agent' | undefined {
+  const text = asTrimmedString(value)
+  if (text === 'chat' || text === 'agent') return text
+  return undefined
+}
+
+function resolveLatestIsoTimestamp(values: Array<string | undefined>): string | undefined {
+  let latest = 0
+  for (const item of values) {
+    const ts = Date.parse(String(item || ''))
+    if (Number.isFinite(ts) && ts > latest) latest = ts
+  }
+  return latest > 0 ? new Date(latest).toISOString() : undefined
+}
+
+function readAppStateEntryRaw(
+  stateKey: string,
+  database: DatabaseSync = ensureDb(),
+): { payload: Record<string, unknown>; updatedAt?: string } | null {
+  const normalizedKey = asTrimmedString(stateKey)
   if (!normalizedKey) return null
   const row = database.prepare(`
     SELECT payload_json, updated_at
@@ -870,60 +974,518 @@ function readAppStateEntryRaw(stateKey: string): { payload: Record<string, unkno
   if (!row) return null
   return {
     payload: parseUnknownObject(row.payload_json),
-    ...(String(row.updated_at || '').trim() ? { updatedAt: String(row.updated_at || '').trim() } : {}),
+    ...(asTrimmedString(row.updated_at) ? { updatedAt: asTrimmedString(row.updated_at) } : {}),
   }
 }
 
-function writeAppStateEntryRaw(stateKey: string, payload: Record<string, unknown>): string {
-  const database = ensureDb()
-  const normalizedKey = String(stateKey || '').trim()
+function deleteAppStateEntryRaw(stateKey: string, database: DatabaseSync = ensureDb()): void {
+  const normalizedKey = asTrimmedString(stateKey)
+  if (!normalizedKey) return
+  database.prepare(`DELETE FROM app_state_entries WHERE state_key = ?`).run(normalizedKey)
+}
+
+function readAppStateMetaRaw(
+  metaKey: string,
+  database: DatabaseSync = ensureDb(),
+): { value: string; updatedAt?: string } | null {
+  const normalizedKey = asTrimmedString(metaKey)
+  if (!normalizedKey) return null
+  const row = database.prepare(`
+    SELECT meta_value, updated_at
+    FROM app_state_meta
+    WHERE meta_key = ?
+  `).get(normalizedKey) as Record<string, unknown> | undefined
+  if (!row) return null
+  return {
+    value: asTrimmedString(row.meta_value),
+    ...(asTrimmedString(row.updated_at) ? { updatedAt: asTrimmedString(row.updated_at) } : {}),
+  }
+}
+
+function writeAppStateMetaRaw(
+  metaKey: string,
+  metaValue: string,
+  database: DatabaseSync = ensureDb(),
+  updatedAtInput?: string,
+): string {
+  const normalizedKey = asTrimmedString(metaKey)
   if (!normalizedKey) return new Date().toISOString()
-  const updatedAt = new Date().toISOString()
+  const updatedAt = asTrimmedString(updatedAtInput) || new Date().toISOString()
   database.prepare(`
-    INSERT INTO app_state_entries (
-      state_key, payload_json, updated_at
+    INSERT INTO app_state_meta (
+      meta_key, meta_value, updated_at
     ) VALUES (?, ?, ?)
-    ON CONFLICT(state_key) DO UPDATE SET
-      payload_json=excluded.payload_json,
+    ON CONFLICT(meta_key) DO UPDATE SET
+      meta_value=excluded.meta_value,
       updated_at=excluded.updated_at
-  `).run(
-    normalizedKey,
-    JSON.stringify(payload ?? {}),
-    updatedAt,
-  )
+  `).run(normalizedKey, asTrimmedString(metaValue), updatedAt)
   return updatedAt
 }
 
-export function loadAppThreadsStateFromDb(): AppStateStoreEntry<AppStateThreadsPayload | null> {
-  const entry = readAppStateEntryRaw('threads_state')
-  if (!entry) return { data: null }
+function normalizeSessionForStorage(raw: unknown, index: number, nowTs: number): AppStateSession | null {
+  const item = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+  const id = asTrimmedString(item.id)
+  if (!id) return null
+  const createdAt = parseOptionalTimestamp(item.createdAt) ?? nowTs + index
   return {
-    data: entry.payload as AppStateThreadsPayload,
-    updatedAt: entry.updatedAt,
+    id,
+    title: asTrimmedString(item.title) || '会话',
+    createdAt,
+  }
+}
+
+function normalizeThreadForStorage(raw: unknown, index: number, nowTs: number): AppStateThread | null {
+  const item = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+  const id = asTrimmedString(item.id)
+  if (!id) return null
+  const sessionMap = new Map<string, AppStateSession>()
+  const sessionList = Array.isArray(item.sessions) ? item.sessions : []
+  sessionList.forEach((sessionItem, sessionIndex) => {
+    const normalized = normalizeSessionForStorage(sessionItem, sessionIndex, nowTs)
+    if (normalized) sessionMap.set(normalized.id, normalized)
+  })
+  const sessions = [...sessionMap.values()]
+  if (sessions.length <= 0) return null
+  const activeSessionRaw = asTrimmedString(item.activeSessionId)
+  const activeSessionId = sessions.some((session) => session.id === activeSessionRaw)
+    ? activeSessionRaw
+    : sessions[0].id
+  const modelConfigId = asOptionalTrimmedString(item.modelConfigId)
+  const providerRaw = asOptionalTrimmedString(item.provider)
+  const provider = providerRaw ? normalizeProviderId(providerRaw) : undefined
+  const mode = normalizeMode(item.mode)
+  const workspace = asOptionalTrimmedString(item.workspace)
+  const projectRules = asOptionalTrimmedString(item.projectRules)
+  return {
+    id,
+    title: asTrimmedString(item.title) || '新项目',
+    titleLocked: Boolean(item.titleLocked),
+    updatedAt: parseOptionalTimestamp(item.updatedAt) ?? (nowTs + index),
+    ...(modelConfigId ? { modelConfigId } : {}),
+    ...(provider ? { provider } : {}),
+    ...(mode ? { mode } : {}),
+    ...(workspace ? { workspace } : {}),
+    ...(projectRules ? { projectRules } : {}),
+    sessions,
+    activeSessionId,
+  }
+}
+
+function normalizeModelConfigForStorage(raw: unknown, index: number, nowTs: number): AppStateModelConfig | null {
+  const item = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+  const id = asTrimmedString(item.id)
+  if (!id) return null
+  const provider = normalizeProviderId(item.provider, 'deepseek')
+  const model = asTrimmedString(item.model)
+  const name = asTrimmedString(item.name) || model || provider
+  return {
+    id,
+    provider,
+    name,
+    baseUrl: asTrimmedString(item.baseUrl),
+    apiKey: asTrimmedString(item.apiKey),
+    model,
+    maxTokens: asTrimmedString(item.maxTokens),
+    ...(typeof parseOptionalTimestamp(item.createdAt) === 'number'
+      ? { createdAt: parseOptionalTimestamp(item.createdAt) }
+      : { createdAt: nowTs + index }),
+    ...(typeof parseOptionalTimestamp(item.updatedAt) === 'number'
+      ? { updatedAt: parseOptionalTimestamp(item.updatedAt) }
+      : { updatedAt: nowTs + index }),
+  }
+}
+
+function normalizeLegacyProviderFormsForStorage(raw: unknown, nowTs: number): AppStateModelConfig[] {
+  const obj = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+  const configs: AppStateModelConfig[] = []
+  APP_PROVIDER_IDS.forEach((provider, index) => {
+    const form = obj[provider]
+    const formObj = form && typeof form === 'object' ? form as Record<string, unknown> : {}
+    const baseUrl = asTrimmedString(formObj.baseUrl)
+    const apiKey = asTrimmedString(formObj.apiKey)
+    const model = asTrimmedString(formObj.model)
+    const maxTokens = asTrimmedString(formObj.maxTokens)
+    if (!baseUrl && !apiKey && !model && !maxTokens) return
+    configs.push({
+      id: `legacy-${provider}-0`,
+      provider,
+      name: model || provider,
+      baseUrl,
+      apiKey,
+      model,
+      maxTokens,
+      createdAt: nowTs + index,
+      updatedAt: nowTs + index,
+    })
+  })
+  return configs
+}
+
+function countTableRows(database: DatabaseSync, tableName: string): number {
+  const row = database.prepare(`SELECT COUNT(1) AS count FROM ${tableName}`).get() as Record<string, unknown> | undefined
+  return Number(row?.count || 0)
+}
+
+function ensureAppStateRecordMigration(database: DatabaseSync): void {
+  if (appStateRecordMigrationChecked) return
+  const threadCount = countTableRows(database, 'app_project_configs')
+  const modelCount = countTableRows(database, 'app_model_configs')
+  const activeThreadMeta = readAppStateMetaRaw('active_thread_id', database)
+  const activeModelMeta = readAppStateMetaRaw('active_model_config_id', database)
+  const legacyThreads = readAppStateEntryRaw('threads_state', database)
+  const legacyProviders = readAppStateEntryRaw('providers_state', database)
+  const hasLegacyThreads = Boolean(legacyThreads)
+  const hasLegacyProviders = Boolean(legacyProviders)
+  if (!hasLegacyThreads && !hasLegacyProviders) {
+    appStateRecordMigrationChecked = true
+    return
+  }
+
+  const nowTs = Date.now()
+  runInTransaction(database, () => {
+    if (threadCount <= 0 && legacyThreads) {
+      const payload = legacyThreads.payload
+      const normalizedThreads = Array.isArray(payload.threads)
+        ? payload.threads
+          .map((item, index) => normalizeThreadForStorage(item, index, nowTs))
+          .filter((item): item is AppStateThread => Boolean(item))
+        : []
+      const insertThreadStmt = database.prepare(`
+        INSERT INTO app_project_configs (
+          id, title, title_locked, updated_at, model_config_id, provider, mode, workspace, project_rules, active_session_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      const insertSessionStmt = database.prepare(`
+        INSERT INTO app_project_sessions (
+          id, thread_id, title, created_at, sort_order
+        ) VALUES (?, ?, ?, ?, ?)
+      `)
+      for (const thread of normalizedThreads) {
+        insertThreadStmt.run(
+          thread.id,
+          thread.title,
+          thread.titleLocked ? 1 : 0,
+          thread.updatedAt,
+          asTrimmedString(thread.modelConfigId),
+          asTrimmedString(thread.provider),
+          asTrimmedString(thread.mode),
+          asTrimmedString(thread.workspace),
+          asTrimmedString(thread.projectRules),
+          thread.activeSessionId,
+        )
+        thread.sessions.forEach((session, sessionIndex) => {
+          insertSessionStmt.run(session.id, thread.id, session.title, session.createdAt, sessionIndex)
+        })
+      }
+      if (!activeThreadMeta?.value) {
+        const activeThreadRaw = asTrimmedString(payload.activeThreadId)
+        const resolvedActiveThreadId = normalizedThreads.some((item) => item.id === activeThreadRaw)
+          ? activeThreadRaw
+          : (normalizedThreads[0]?.id ?? '')
+        writeAppStateMetaRaw(
+          'active_thread_id',
+          resolvedActiveThreadId,
+          database,
+          legacyThreads.updatedAt,
+        )
+      }
+    }
+
+    if (modelCount <= 0 && legacyProviders) {
+      const payload = legacyProviders.payload
+      const fromNew = Array.isArray(payload.modelConfigs)
+        ? payload.modelConfigs
+          .map((item, index) => normalizeModelConfigForStorage(item, index, nowTs))
+          .filter((item): item is AppStateModelConfig => Boolean(item))
+        : []
+      const normalizedModels = fromNew.length > 0
+        ? fromNew
+        : normalizeLegacyProviderFormsForStorage(payload.providerForms, nowTs)
+      const insertModelStmt = database.prepare(`
+        INSERT INTO app_model_configs (
+          id, provider, name, base_url, api_key, model, max_tokens, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      for (const model of normalizedModels) {
+        insertModelStmt.run(
+          model.id,
+          model.provider,
+          model.name,
+          model.baseUrl,
+          model.apiKey,
+          model.model,
+          model.maxTokens,
+          parseOptionalTimestamp(model.createdAt),
+          parseOptionalTimestamp(model.updatedAt),
+        )
+      }
+      if (!activeModelMeta?.value) {
+        const activeModelRaw = asTrimmedString(payload.activeModelConfigId)
+        const byActiveId = normalizedModels.find((item) => item.id === activeModelRaw)
+        const legacyActiveProvider = normalizeProviderId(payload.activeProvider, 'deepseek')
+        const byProvider = normalizedModels.find((item) => item.provider === legacyActiveProvider)
+        const resolvedActiveModelId = byActiveId?.id ?? byProvider?.id ?? normalizedModels[0]?.id ?? ''
+        writeAppStateMetaRaw(
+          'active_model_config_id',
+          resolvedActiveModelId,
+          database,
+          legacyProviders.updatedAt,
+        )
+      }
+    }
+  })
+
+  deleteAppStateEntryRaw('threads_state', database)
+  deleteAppStateEntryRaw('providers_state', database)
+  appStateRecordMigrationChecked = true
+}
+
+export function loadAppThreadsStateFromDb(): AppStateStoreEntry<AppStateThreadsPayload | null> {
+  const database = ensureDb()
+  ensureAppStateRecordMigration(database)
+  const threadRows = database.prepare(`
+    SELECT
+      id,
+      title,
+      title_locked,
+      updated_at,
+      model_config_id,
+      provider,
+      mode,
+      workspace,
+      project_rules,
+      active_session_id
+    FROM app_project_configs
+    ORDER BY updated_at DESC, id ASC
+  `).all() as Array<Record<string, unknown>>
+  const sessionRows = database.prepare(`
+    SELECT id, thread_id, title, created_at, sort_order
+    FROM app_project_sessions
+    ORDER BY thread_id ASC, sort_order ASC, created_at ASC, id ASC
+  `).all() as Array<Record<string, unknown>>
+  if (threadRows.length <= 0 && sessionRows.length <= 0) return { data: null }
+
+  const sessionsByThread = new Map<string, AppStateSession[]>()
+  for (const row of sessionRows) {
+    const threadId = asTrimmedString(row.thread_id)
+    const sessionId = asTrimmedString(row.id)
+    if (!threadId || !sessionId) continue
+    const current = sessionsByThread.get(threadId) ?? []
+    current.push({
+      id: sessionId,
+      title: asTrimmedString(row.title) || '会话',
+      createdAt: parseOptionalTimestamp(row.created_at) ?? Date.now(),
+    })
+    sessionsByThread.set(threadId, current)
+  }
+
+  const threads: AppStateThread[] = []
+  for (const row of threadRows) {
+    const threadId = asTrimmedString(row.id)
+    if (!threadId) continue
+    const sessions = sessionsByThread.get(threadId) ?? []
+    if (sessions.length <= 0) continue
+    const activeSessionRaw = asTrimmedString(row.active_session_id)
+    const activeSessionId = sessions.some((item) => item.id === activeSessionRaw)
+      ? activeSessionRaw
+      : sessions[0].id
+    const mode = normalizeMode(row.mode)
+    const modelConfigId = asOptionalTrimmedString(row.model_config_id)
+    const providerRaw = asOptionalTrimmedString(row.provider)
+    const provider = providerRaw ? normalizeProviderId(providerRaw) : undefined
+    const workspace = asOptionalTrimmedString(row.workspace)
+    const projectRules = asOptionalTrimmedString(row.project_rules)
+    threads.push({
+      id: threadId,
+      title: asTrimmedString(row.title) || '新项目',
+      titleLocked: Number(row.title_locked || 0) > 0,
+      updatedAt: parseOptionalTimestamp(row.updated_at) ?? Date.now(),
+      ...(modelConfigId ? { modelConfigId } : {}),
+      ...(provider ? { provider } : {}),
+      ...(mode ? { mode } : {}),
+      ...(workspace ? { workspace } : {}),
+      ...(projectRules ? { projectRules } : {}),
+      sessions,
+      activeSessionId,
+    })
+  }
+
+  const activeMeta = readAppStateMetaRaw('active_thread_id', database)
+  const activeIdRaw = asTrimmedString(activeMeta?.value)
+  const activeThreadId = threads.some((item) => item.id === activeIdRaw)
+    ? activeIdRaw
+    : (threads[0]?.id ?? '')
+  const maxUpdatedAt = threads.reduce((acc, thread) => Math.max(acc, thread.updatedAt || 0), 0)
+  const derivedUpdatedAt = maxUpdatedAt > 0 ? new Date(maxUpdatedAt).toISOString() : undefined
+  return {
+    data: {
+      threads,
+      activeThreadId,
+    },
+    updatedAt: resolveLatestIsoTimestamp([
+      activeMeta?.updatedAt,
+      derivedUpdatedAt,
+    ]),
   }
 }
 
 export function saveAppThreadsStateToDb(payload: AppStateThreadsPayload): AppStateStoreEntry<AppStateThreadsPayload> {
-  const updatedAt = writeAppStateEntryRaw('threads_state', payload as Record<string, unknown>)
+  const database = ensureDb()
+  ensureAppStateRecordMigration(database)
+  const nowTs = Date.now()
+  const threadMap = new Map<string, AppStateThread>()
+  for (const [index, item] of (payload.threads ?? []).entries()) {
+    const normalized = normalizeThreadForStorage(item, index, nowTs)
+    if (normalized) threadMap.set(normalized.id, normalized)
+  }
+  const threads = [...threadMap.values()]
+  const activeRaw = asTrimmedString(payload.activeThreadId)
+  const activeThreadId = threads.some((item) => item.id === activeRaw)
+    ? activeRaw
+    : (threads[0]?.id ?? '')
+  const updatedAt = new Date().toISOString()
+
+  runInTransaction(database, () => {
+    database.prepare(`DELETE FROM app_project_sessions`).run()
+    database.prepare(`DELETE FROM app_project_configs`).run()
+    const insertThreadStmt = database.prepare(`
+      INSERT INTO app_project_configs (
+        id, title, title_locked, updated_at, model_config_id, provider, mode, workspace, project_rules, active_session_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    const insertSessionStmt = database.prepare(`
+      INSERT INTO app_project_sessions (
+        id, thread_id, title, created_at, sort_order
+      ) VALUES (?, ?, ?, ?, ?)
+    `)
+    for (const thread of threads) {
+      insertThreadStmt.run(
+        thread.id,
+        thread.title,
+        thread.titleLocked ? 1 : 0,
+        thread.updatedAt,
+        asTrimmedString(thread.modelConfigId),
+        asTrimmedString(thread.provider),
+        asTrimmedString(thread.mode),
+        asTrimmedString(thread.workspace),
+        asTrimmedString(thread.projectRules),
+        thread.activeSessionId,
+      )
+      thread.sessions.forEach((session, sessionIndex) => {
+        insertSessionStmt.run(session.id, thread.id, session.title, session.createdAt, sessionIndex)
+      })
+    }
+    writeAppStateMetaRaw('active_thread_id', activeThreadId, database, updatedAt)
+  })
+
   return {
-    data: payload,
+    data: {
+      threads,
+      activeThreadId,
+    },
     updatedAt,
   }
 }
 
 export function loadAppProvidersStateFromDb(): AppStateStoreEntry<AppStateProvidersPayload | null> {
-  const entry = readAppStateEntryRaw('providers_state')
-  if (!entry) return { data: null }
+  const database = ensureDb()
+  ensureAppStateRecordMigration(database)
+  const rows = database.prepare(`
+    SELECT
+      id,
+      provider,
+      name,
+      base_url,
+      api_key,
+      model,
+      max_tokens,
+      created_at,
+      updated_at
+    FROM app_model_configs
+    ORDER BY updated_at DESC, created_at DESC, id ASC
+  `).all() as Array<Record<string, unknown>>
+  if (rows.length <= 0) return { data: null }
+
+  const modelConfigs: AppStateModelConfig[] = rows
+    .map((row, index) => normalizeModelConfigForStorage({
+      id: asTrimmedString(row.id),
+      provider: row.provider,
+      name: row.name,
+      baseUrl: row.base_url,
+      apiKey: row.api_key,
+      model: row.model,
+      maxTokens: row.max_tokens,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }, index, Date.now()))
+    .filter((item): item is AppStateModelConfig => Boolean(item))
+
+  const activeMeta = readAppStateMetaRaw('active_model_config_id', database)
+  const activeRaw = asTrimmedString(activeMeta?.value)
+  const activeModelConfigId = modelConfigs.some((item) => item.id === activeRaw)
+    ? activeRaw
+    : (modelConfigs[0]?.id ?? '')
+  const maxUpdatedAt = modelConfigs.reduce(
+    (acc, item) => Math.max(acc, parseOptionalTimestamp(item.updatedAt) ?? 0),
+    0,
+  )
+  const derivedUpdatedAt = maxUpdatedAt > 0 ? new Date(maxUpdatedAt).toISOString() : undefined
   return {
-    data: entry.payload as AppStateProvidersPayload,
-    updatedAt: entry.updatedAt,
+    data: {
+      modelConfigs,
+      activeModelConfigId,
+    },
+    updatedAt: resolveLatestIsoTimestamp([
+      activeMeta?.updatedAt,
+      derivedUpdatedAt,
+    ]),
   }
 }
 
 export function saveAppProvidersStateToDb(payload: AppStateProvidersPayload): AppStateStoreEntry<AppStateProvidersPayload> {
-  const updatedAt = writeAppStateEntryRaw('providers_state', payload as Record<string, unknown>)
+  const database = ensureDb()
+  ensureAppStateRecordMigration(database)
+  const nowTs = Date.now()
+  const modelMap = new Map<string, AppStateModelConfig>()
+  for (const [index, item] of (payload.modelConfigs ?? []).entries()) {
+    const normalized = normalizeModelConfigForStorage(item, index, nowTs)
+    if (normalized) modelMap.set(normalized.id, normalized)
+  }
+  const modelConfigs = [...modelMap.values()]
+  const activeRaw = asTrimmedString(payload.activeModelConfigId)
+  const activeModelConfigId = modelConfigs.some((item) => item.id === activeRaw)
+    ? activeRaw
+    : (modelConfigs[0]?.id ?? '')
+  const updatedAt = new Date().toISOString()
+
+  runInTransaction(database, () => {
+    database.prepare(`DELETE FROM app_model_configs`).run()
+    const insertStmt = database.prepare(`
+      INSERT INTO app_model_configs (
+        id, provider, name, base_url, api_key, model, max_tokens, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    for (const model of modelConfigs) {
+      insertStmt.run(
+        model.id,
+        model.provider,
+        model.name,
+        model.baseUrl,
+        model.apiKey,
+        model.model,
+        model.maxTokens,
+        parseOptionalTimestamp(model.createdAt),
+        parseOptionalTimestamp(model.updatedAt),
+      )
+    }
+    writeAppStateMetaRaw('active_model_config_id', activeModelConfigId, database, updatedAt)
+  })
+
   return {
-    data: payload,
+    data: {
+      modelConfigs,
+      activeModelConfigId,
+    },
     updatedAt,
   }
 }

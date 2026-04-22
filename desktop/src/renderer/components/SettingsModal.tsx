@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import QRCode from 'qrcode'
-import type { ProviderId, ProviderForm, ProviderForms, GuiPlusForm, ThemeMode } from '../types'
+import type { GuiPlusForm, ModelConfig, ThemeMode } from '../types'
 import type { SkillInfo, ProjectNote, ProjectTaskMemory, NoteCategory, McpServerInfo, MobileBridgeConfig, MemoryScopeStats, AppUpdateCheckResult } from '../../shared/ipc'
-import { providers, providerPlaceholders } from '../constants'
+import { providers } from '../constants'
 
 const NOTE_CATEGORIES: { value: NoteCategory; label: string }[] = [
   { value: 'convention', label: '代码规范' },
@@ -19,8 +19,12 @@ const DEFAULT_MOBILE_BRIDGE_CONFIG: MobileBridgeConfig = {
 }
 
 type SettingsPageProps = {
-  providerForms: ProviderForms
-  onUpdateField: (id: ProviderId, field: keyof ProviderForm, value: string) => void
+  modelConfigs: ModelConfig[]
+  activeModelConfigId: string
+  onSetActiveModelConfigId: (id: string) => void
+  onAddModelConfig: () => string
+  onUpdateModelConfig: (id: string, patch: Partial<Omit<ModelConfig, 'id'>>) => void
+  onRemoveModelConfig: (id: string) => void
   guiPlusForm: GuiPlusForm
   onUpdateGuiPlusField: <K extends keyof GuiPlusForm>(key: K, value: GuiPlusForm[K]) => void
   themeMode: ThemeMode
@@ -35,8 +39,12 @@ type SettingsPageProps = {
 type SettingsTab = 'general' | 'models' | 'skills' | 'notes' | 'mcp'
 
 export function SettingsPage({
-  providerForms,
-  onUpdateField,
+  modelConfigs,
+  activeModelConfigId,
+  onSetActiveModelConfigId,
+  onAddModelConfig,
+  onUpdateModelConfig,
+  onRemoveModelConfig,
   guiPlusForm,
   onUpdateGuiPlusField,
   themeMode,
@@ -49,6 +57,7 @@ export function SettingsPage({
 }: Readonly<SettingsPageProps>) {
   const [tab, setTab] = useState<SettingsTab>('general')
   const [revealApiKey, setRevealApiKey] = useState<Record<string, boolean>>({})
+  const [editingModelId, setEditingModelId] = useState<string | null>(null)
   const [revealGuiPlusKey, setRevealGuiPlusKey] = useState(false)
 
   // Skills 状态
@@ -122,6 +131,16 @@ export function SettingsPage({
   useEffect(() => {
     setProjectRulesDraft(projectRules ?? '')
   }, [projectRules])
+
+  useEffect(() => {
+    if (modelConfigs.length <= 0) {
+      if (editingModelId) setEditingModelId(null)
+      return
+    }
+    if (editingModelId && !modelConfigs.some((item) => item.id === editingModelId)) {
+      setEditingModelId(null)
+    }
+  }, [modelConfigs, editingModelId])
 
   const notesWorkspace = (workspace ?? '').trim()
   const notesProjectId = (projectId ?? '').trim()
@@ -901,64 +920,158 @@ export function SettingsPage({
           </>)}
 
           {/* ── 模型配置 ── */}
-          {tab === 'models' && providers.map((item) => {
-            const form = providerForms[item.id]
-            const placeholder = providerPlaceholders[item.id]
+          {tab === 'models' && (
+            <div className="settings-card">
+              <div className="settings-card-title">模型配置</div>
+              <div className="settings-card-desc">支持动态添加多个模型配置；每条模型配置会独立存储。</div>
+              <div className="settings-action-row">
+                <div className="settings-action-info">
+                  <strong>新增模型</strong>
+                  <small>先添加一条记录，再补全 provider / API Key / model</small>
+                </div>
+                <button
+                  type="button"
+                  className="settings-action-btn"
+                  onClick={() => {
+                    const id = onAddModelConfig()
+                    setEditingModelId(id)
+                  }}
+                >
+                  添加模型
+                </button>
+              </div>
+            </div>
+          )}
+
+          {tab === 'models' && modelConfigs.length <= 0 && (
+            <div className="settings-card">
+              <div className="settings-card-desc">暂无模型配置，点击上方“添加模型”开始。</div>
+            </div>
+          )}
+
+          {tab === 'models' && modelConfigs.map((item) => {
             const isRevealed = revealApiKey[item.id] ?? false
+            const isEditing = editingModelId === item.id
+            const providerLabel = providers.find((p) => p.id === item.provider)?.label ?? item.provider
+            const cardTitle = item.name.trim() || item.model.trim() || `${providerLabel} 模型`
             return (
               <div key={item.id} className="settings-card">
-                <div className="settings-card-title">{item.label}</div>
-                <div className="settings-grid">
-                  <label className="settings-field">
-                    <span>Base URL</span>
-                    <input
-                      value={form.baseUrl}
-                      onChange={(e) => onUpdateField(item.id, 'baseUrl', e.target.value)}
-                      placeholder={placeholder.baseUrl}
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span>API Key</span>
-                    <div className="api-key-row">
-                      <input
-                        type={isRevealed ? 'text' : 'password'}
-                        value={form.apiKey}
-                        onChange={(e) => onUpdateField(item.id, 'apiKey', e.target.value)}
-                        placeholder={placeholder.apiKey}
-                        aria-label={`${item.label} API Key`}
-                      />
-                      <button
-                        type="button"
-                        className="reveal-btn"
-                        title={isRevealed ? '隐藏 API Key' : '显示 API Key'}
-                        onClick={() =>
-                          setRevealApiKey((prev) => ({ ...prev, [item.id]: !isRevealed }))
-                        }
-                      >
-                        {isRevealed ? '隐藏' : '显示'}
-                      </button>
-                    </div>
-                  </label>
-                  <label className="settings-field">
-                    <span>Model</span>
-                    <input
-                      value={form.model}
-                      onChange={(e) => onUpdateField(item.id, 'model', e.target.value)}
-                      placeholder={placeholder.model}
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span>Max Tokens</span>
-                    <input
-                      type="number"
-                      min={1}
-                      step={1}
-                      value={form.maxTokens}
-                      onChange={(e) => onUpdateField(item.id, 'maxTokens', e.target.value)}
-                      placeholder={placeholder.maxTokens}
-                    />
-                  </label>
+                <div className="settings-action-row">
+                  <div className="settings-action-info">
+                    <strong>{cardTitle}</strong>
+                    <small>{item.id}</small>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button
+                      type="button"
+                      className="settings-action-btn"
+                      onClick={() => {
+                        setEditingModelId((prev) => (prev === item.id ? null : item.id))
+                      }}
+                    >
+                      {isEditing ? '收起' : '编辑'}
+                    </button>
+                    <button
+                      type="button"
+                      className="settings-action-btn"
+                      disabled={activeModelConfigId === item.id}
+                      onClick={() => onSetActiveModelConfigId(item.id)}
+                    >
+                      {activeModelConfigId === item.id ? '默认模型' : '设为默认'}
+                    </button>
+                    <button
+                      type="button"
+                      className="settings-action-btn"
+                      onClick={() => {
+                        if (editingModelId === item.id) setEditingModelId(null)
+                        onRemoveModelConfig(item.id)
+                      }}
+                    >
+                      删除
+                    </button>
+                  </div>
                 </div>
+                {!isEditing && (
+                  <div className="settings-card-desc">
+                    <strong>{providerLabel}</strong>
+                    {' · '}
+                    {item.model.trim() || '未填写模型 ID'}
+                    {' · '}
+                    {item.apiKey.trim() ? '已配置 API Key' : '未配置 API Key'}
+                  </div>
+                )}
+                {isEditing && (
+                  <div className="settings-grid">
+                    <label className="settings-field">
+                      <span>显示名称</span>
+                      <input
+                        value={item.name}
+                        onChange={(e) => onUpdateModelConfig(item.id, { name: e.target.value })}
+                        placeholder="例如：DeepSeek V3（生产）"
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>Provider</span>
+                      <select
+                        value={item.provider}
+                        onChange={(e) => onUpdateModelConfig(item.id, { provider: e.target.value as ModelConfig['provider'] })}
+                      >
+                        {providers.map((provider) => (
+                          <option key={provider.id} value={provider.id}>{provider.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="settings-field">
+                      <span>Base URL</span>
+                      <input
+                        value={item.baseUrl}
+                        onChange={(e) => onUpdateModelConfig(item.id, { baseUrl: e.target.value })}
+                        placeholder="https://api.example.com/v1"
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>API Key</span>
+                      <div className="api-key-row">
+                        <input
+                          type={isRevealed ? 'text' : 'password'}
+                          value={item.apiKey}
+                          onChange={(e) => onUpdateModelConfig(item.id, { apiKey: e.target.value })}
+                          placeholder="sk-..."
+                          aria-label={`${cardTitle} API Key`}
+                        />
+                        <button
+                          type="button"
+                          className="reveal-btn"
+                          title={isRevealed ? '隐藏 API Key' : '显示 API Key'}
+                          onClick={() =>
+                            setRevealApiKey((prev) => ({ ...prev, [item.id]: !isRevealed }))
+                          }
+                        >
+                          {isRevealed ? '隐藏' : '显示'}
+                        </button>
+                      </div>
+                    </label>
+                    <label className="settings-field">
+                      <span>Model</span>
+                      <input
+                        value={item.model}
+                        onChange={(e) => onUpdateModelConfig(item.id, { model: e.target.value })}
+                        placeholder="填写官方模型 ID（以控制台为准）"
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>Max Tokens</span>
+                      <input
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={item.maxTokens}
+                        onChange={(e) => onUpdateModelConfig(item.id, { maxTokens: e.target.value })}
+                        placeholder="131072（示例）"
+                      />
+                    </label>
+                  </div>
+                )}
               </div>
             )
           })}

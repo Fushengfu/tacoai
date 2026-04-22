@@ -1,7 +1,7 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, useTransition, type ErrorInfo } from 'react'
 import type { AttachedAsset, AttachedImage, ChatMsg, FileChangeInfo, FileChangeStatus, GitVersionCommit, ProviderId, ThemeMode, ThreadMode } from './types'
 import type { AppUpdateCheckResult, EditorId, FileTreeEntry, BrowserConsoleLevel, MobileBridgeContextSnapshot, GitWorkingTreeStatus } from '../shared/ipc'
-import { providers, estimateTokens, buildSystemPrompt, resolveProviderDisplayLabel, resolveProviderMaxTokens } from './constants'
+import { estimateTokens, buildSystemPrompt, resolveModelConfigDisplayLabel, resolveModelConfigMaxTokens } from './constants'
 import { loadJson, saveJson } from './lib/storage'
 import { useThreads } from './hooks/useThreads'
 import { useChat } from './hooks/useChat'
@@ -200,7 +200,7 @@ export default function App() {
   type BrowserErrorCandidate = BrowserConsoleEntry & { weight: number; fingerprint: string }
   const browserErrorCandidatesRef = useRef<BrowserErrorCandidate[]>([])
   /** doSend 的 ref，避免 useEffect 闭包捕获旧引用 */
-  type MobileTarget = { threadId?: string; sessionId?: string; provider?: ProviderId }
+  type MobileTarget = { threadId?: string; sessionId?: string; modelConfigId?: string }
   const doSendRef = useRef<(content: string, images?: AttachedImage[], attachments?: AttachedAsset[], target?: MobileTarget) => void>(() => {})
   const mobileSyncTimerRef = useRef<number | null>(null)
   const lastMobileSnapshotDigestRef = useRef('')
@@ -320,13 +320,12 @@ export default function App() {
     return filePath
   }, [currentWorkspace])
 
-  // 当前项目使用的 provider（项目级 > 全局默认）
-  const currentProvider: ProviderId =
-    threadStore.activeThread?.provider ?? providerSettings.activeProvider
-  const activeProviderLabel = resolveProviderDisplayLabel(
-    currentProvider,
-    providerSettings.providerForms[currentProvider]
-  )
+  // 当前项目使用的模型配置（项目级 > 全局默认）
+  const currentModelConfigId =
+    threadStore.activeThread?.modelConfigId ?? providerSettings.activeModelConfigId
+  const currentModelConfig = providerSettings.getModelConfig(currentModelConfigId || '')
+  const currentProvider: ProviderId | undefined = currentModelConfig?.provider
+  const activeProviderLabel = currentModelConfig ? resolveModelConfigDisplayLabel(currentModelConfig) : ''
 
   useEffect(() => {
     try { localStorage.setItem('taco.panel.treeExpanded', String(detailTreeExpanded)) } catch { /* ignore */ }
@@ -353,15 +352,15 @@ export default function App() {
     buildSystemPrompt({
       mode: currentMode,
       workspace: currentWorkspace,
-      provider: currentProvider,
-      model: providerSettings.providerForms[currentProvider]?.model,
+      provider: currentProvider ?? 'deepseek',
+      model: currentModelConfig?.model,
       projectRules: currentProjectRules,
     })
   ) +
     messages.reduce((sum, m) => sum + estimateTokens(m.content), 0)
   const usageTotalTokens = chat.getUsageTotalTokens(sessionId)
   const usedTokens = typeof usageTotalTokens === 'number' ? usageTotalTokens : estimatedTokens
-  const maxTokens = resolveProviderMaxTokens(currentProvider, providerSettings.providerForms[currentProvider])
+  const maxTokens = resolveModelConfigMaxTokens(currentModelConfig)
   const contextPercent = Math.min(Math.round((usedTokens / maxTokens) * 100), 100)
   const projectTokenStats = tid ? chat.getProjectTokenStats(tid) : undefined
 
@@ -1727,7 +1726,7 @@ export default function App() {
 
   /** 新建项目 */
   function handleNewThread() {
-    threadStore.createThread('新项目', providerSettings.activeProvider)
+    threadStore.createThread('新项目', providerSettings.activeModelConfigId || undefined)
     setDraft('')
     setSelectedFile(null)
     setViewingFile(null)
@@ -1829,13 +1828,12 @@ export default function App() {
     }
   }
 
-  /** 切换当前项目的 provider */
-  function handleProviderChange(id: ProviderId) {
+  /** 切换当前项目的模型配置 */
+  function handleProviderChange(id: string) {
     if (tid) {
-      threadStore.updateThread(tid, { provider: id })
+      threadStore.updateThread(tid, { modelConfigId: id })
     }
-    // 同时更新全局默认，新项目会继承
-    providerSettings.setActiveProvider(id)
+    providerSettings.setActiveModelConfigId(id)
   }
 
   const notifyTaskCompleted = useCallback((threadTitle?: string) => {
@@ -1872,13 +1870,13 @@ export default function App() {
         next.sessionId = target.sessionId
       }
     }
-    if (target.provider) {
-      const provider = providers.find((p) => p.id === target.provider)?.id
-      if (provider) {
+    if (target.modelConfigId) {
+      const modelId = String(target.modelConfigId || '').trim()
+      if (modelId && providerState.getModelConfig(modelId)) {
         const threadId = next.threadId ?? currentThreadId
-        if (threadId) store.updateThread(threadId, { provider })
-        providerState.setActiveProvider(provider)
-        next.provider = provider
+        if (threadId) store.updateThread(threadId, { modelConfigId: modelId })
+        providerState.setActiveModelConfigId(modelId)
+        next.modelConfigId = modelId
       }
     }
     return next
@@ -1890,10 +1888,20 @@ export default function App() {
     const thread = threadStore.threads.find((t) => t.id === threadId)
     const sid = target?.sessionId ?? thread?.activeSessionId ?? ''
     if (!sid) return
-    const provider = target?.provider ?? thread?.provider ?? providerSettings.activeProvider
+    const modelConfigId = String(
+      target?.modelConfigId
+      || thread?.modelConfigId
+      || providerSettings.activeModelConfigId
+      || '',
+    ).trim()
+    const modelConfig = providerSettings.getModelConfig(modelConfigId)
+    if (!modelConfig || !modelConfig.provider) return
+    if (threadId && thread?.modelConfigId !== modelConfigId) {
+      threadStore.updateThread(threadId, { modelConfigId })
+    }
     const mode: ThreadMode = 'agent'
     const workspace = thread?.workspace ?? ''
-    const targetMaxTokens = resolveProviderMaxTokens(provider, providerSettings.providerForms[provider])
+    const targetMaxTokens = resolveModelConfigMaxTokens(modelConfig)
 
     chat.sendMessage({
       threadId: sid,
@@ -1902,8 +1910,8 @@ export default function App() {
       content,
       images,
       attachments,
-      provider,
-      providerForms: providerSettings.providerForms,
+      provider: modelConfig.provider,
+      modelConfig,
       mode,
       workspace,
       maxTokens: targetMaxTokens,
@@ -1932,7 +1940,7 @@ export default function App() {
       const selected = applyMobileSelection({
         threadId: cmd.threadId,
         sessionId: cmd.sessionId,
-        provider: cmd.provider as ProviderId | undefined,
+        modelConfigId: cmd.provider as string | undefined,
       })
       doSendRef.current(text, undefined, undefined, selected)
     })
@@ -1945,7 +1953,7 @@ export default function App() {
       applyMobileSelection({
         threadId: sel.threadId,
         sessionId: sel.sessionId,
-        provider: sel.provider as ProviderId | undefined,
+        modelConfigId: sel.provider as string | undefined,
       })
     })
     return unsubscribe
@@ -2075,8 +2083,8 @@ export default function App() {
       updatedAt: Date.now(),
       activeThreadId,
       activeSessionId,
-      activeProvider: currentProvider,
-      providers: providerSettings.configuredProviders.map((p) => ({ id: p.id, label: p.label })),
+      activeProvider: currentModelConfigId || undefined,
+      providers: providerSettings.configuredModels.map((p) => ({ id: p.id, label: p.label })),
       threads: threadStore.threads.map((thread) => {
         const isActiveThread = thread.id === activeThreadId
         const threadActiveSessionId = isActiveThread ? (activeSessionId ?? thread.activeSessionId) : ''
@@ -2100,7 +2108,7 @@ export default function App() {
           threadId: thread.id,
           title: thread.title,
           updatedAt: thread.updatedAt,
-          provider: thread.provider,
+          provider: thread.modelConfigId,
           mode: thread.mode ?? 'agent',
           workspace: thread.workspace,
           activeSessionId: thread.activeSessionId,
@@ -2111,8 +2119,8 @@ export default function App() {
   }, [
     tid,
     sessionId,
-    currentProvider,
-    providerSettings.configuredProviders,
+    currentModelConfigId,
+    providerSettings.configuredModels,
     threadStore.threads,
     chat.threadMessages,
     chat.sessionLoadMetaById,
@@ -2149,7 +2157,7 @@ export default function App() {
 
   /** 重新发送：保留该消息，删掉之后的回复，重新请求 */
   async function handleResend(msgId: string) {
-    if (sessionSending || !sessionId) return
+    if (sessionSending || !sessionId || !currentModelConfig || !currentProvider) return
     await chat.ensureSessionFullyLoaded(sessionId)
     const latestMessages = chat.getMessages(sessionId)
     const idx = latestMessages.findIndex((m) => m.id === msgId)
@@ -2160,7 +2168,7 @@ export default function App() {
       projectId: tid,
       projectRules: currentProjectRules,
       provider: currentProvider,
-      providerForms: providerSettings.providerForms,
+      modelConfig: currentModelConfig,
       mode: currentMode,
       workspace: currentWorkspace,
       onComplete: () => {
@@ -2172,7 +2180,7 @@ export default function App() {
 
   /** 编辑后重新发送：更新原消息内容，删掉之后的回复，重新请求 */
   async function handleEditResend(msgId: string, newContent: string) {
-    if (sessionSending || !sessionId) return
+    if (sessionSending || !sessionId || !currentModelConfig || !currentProvider) return
     await chat.ensureSessionFullyLoaded(sessionId)
     const latestMessages = chat.getMessages(sessionId)
     const idx = latestMessages.findIndex((m) => m.id === msgId)
@@ -2185,7 +2193,7 @@ export default function App() {
       projectId: tid,
       projectRules: currentProjectRules,
       provider: currentProvider,
-      providerForms: providerSettings.providerForms,
+      modelConfig: currentModelConfig,
       mode: currentMode,
       workspace: currentWorkspace,
       onComplete: () => {
@@ -2199,7 +2207,7 @@ export default function App() {
     const content = draft.trim()
     if (
       (!content && (!images || images.length === 0) && (!attachments || attachments.length === 0))
-      || providerSettings.configuredProviders.length === 0
+      || providerSettings.configuredModels.length === 0
     ) return
     setDraft('')
 
@@ -2294,7 +2302,9 @@ export default function App() {
 
   /* ---- render ---- */
   const drag = useDrag()
-  const showWindowControls = globalThis.window.taco.system.platform === 'win32'
+  const platform = globalThis.window.taco.system.platform
+  const showWindowControls = platform === 'win32'
+  const hasMacTrafficLights = platform === 'darwin'
   const activeThreadTitle = threadStore.activeThread?.title ?? '新项目'
   const clampedSidebarRatio = clampNumber(sidebarWidthRatio, sidebarMinRatio, sidebarMaxRatio)
   const clampedSidebarWidth = sidebarAreaWidth > 0 ? clampedSidebarRatio * sidebarAreaWidth : 0
@@ -2307,15 +2317,19 @@ export default function App() {
   return (
     <div ref={appShellRef} className="app-shell" style={gridStyle}>
       <header
-        className="topbar app-topbar draggable"
+        className={`topbar app-topbar draggable ${hasMacTrafficLights ? 'has-native-traffic-lights' : ''}`}
         style={{ gridColumn: '1 / 6', gridRow: '1 / 2' }}
         {...drag}
-        onDoubleClick={() => globalThis.window.taco.window.toggleMaximize()}
+        onDoubleClick={(e) => {
+          const target = e.target as HTMLElement
+          if (target.closest('.no-drag')) return
+          globalThis.window.taco.window.toggleMaximize()
+        }}
       >
-        <div className="app-topbar-left no-drag">
+        <div className="app-topbar-left">
           <button
             type="button"
-            className="sidebar-fixed-toggle"
+            className="sidebar-fixed-toggle no-drag"
             onClick={() => setSidebarVisible((v) => !v)}
             title={sidebarVisible ? '隐藏左侧项目栏' : '显示左侧项目栏'}
             aria-label={sidebarVisible ? '隐藏左侧项目栏' : '显示左侧项目栏'}
@@ -2338,8 +2352,8 @@ export default function App() {
           </div>
         </div>
 
-        <div className={`topbar-actions no-drag app-topbar-right ${showWindowControls ? 'has-window-controls' : ''}`}>
-          <div className="topbar-main-actions">
+        <div className={`topbar-actions app-topbar-right ${showWindowControls ? 'has-window-controls' : ''}`}>
+          <div className="topbar-main-actions no-drag">
             {updateStatus?.success && updateStatus.hasUpdate && (
               <button
                 className="pill update-pill"
@@ -2369,7 +2383,7 @@ export default function App() {
             </button>
           </div>
           {showWindowControls && (
-            <div className="window-controls">
+            <div className="window-controls no-drag">
               <button
                 type="button"
                 className="window-control-btn"
@@ -2511,8 +2525,12 @@ export default function App() {
               onError={reportPaneRenderError}
             >
               <SettingsPage
-                providerForms={providerSettings.providerForms}
-                onUpdateField={providerSettings.updateField}
+                modelConfigs={providerSettings.modelConfigs}
+                activeModelConfigId={providerSettings.activeModelConfigId}
+                onSetActiveModelConfigId={providerSettings.setActiveModelConfigId}
+                onAddModelConfig={providerSettings.addModelConfig}
+                onUpdateModelConfig={providerSettings.updateModelConfig}
+                onRemoveModelConfig={providerSettings.removeModelConfig}
                 guiPlusForm={guiPlusSettings.guiPlusForm}
                 onUpdateGuiPlusField={guiPlusSettings.updateGuiPlusField}
                 themeMode={themeMode}
@@ -2555,9 +2573,9 @@ export default function App() {
               onEditResend={handleEditResend}
               workspace={currentWorkspace}
               onSelectWorkspace={handleSelectWorkspace}
-              provider={currentProvider}
+              provider={currentModelConfigId}
               onProviderChange={handleProviderChange}
-              configuredProviders={providerSettings.configuredProviders}
+              configuredProviders={providerSettings.configuredModels}
               scrollRef={scrollRef}
               totalMessageCount={totalSessionMessageCount}
               hasOlderStoredMessages={chat.hasOlderMessages(sessionId)}
@@ -2627,7 +2645,7 @@ export default function App() {
             title={threadStore.activeThread?.title ?? '未选择项目'}
             messageCount={messages.length}
             providerLabel={
-              providerSettings.configuredProviders.length > 0 ? activeProviderLabel : undefined
+              providerSettings.configuredModels.length > 0 ? activeProviderLabel : undefined
             }
             contextPercent={contextPercent}
             usedTokens={usedTokens}

@@ -426,6 +426,10 @@ body.is-dragging * {
   padding: 12px 14px;
 }
 
+.chat-row.assistant .bubble {
+  max-width: 760px;
+}
+
 /* 用户消息操作按钮（编辑 + 重发），显示在气泡右下方 */
 .chat-row.user .msg-actions {
   display: flex;

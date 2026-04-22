@@ -2,8 +2,7 @@ import { app } from 'electron'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import type {
-  AppStateProviderForm,
-  AppStateProviderForms,
+  AppStateModelConfig,
   AppStateProviderId,
   AppStateProvidersPayload,
   AppStateSession,
@@ -22,31 +21,13 @@ const TACO_DIR = path.join(app.getPath('home'), '.taco')
 const LEGACY_APP_STATE_FILE = path.join(TACO_DIR, 'app-state.json')
 const THREADS_STATE_FILE = path.join(TACO_DIR, 'threads-state.json')
 const PROVIDERS_STATE_FILE = path.join(TACO_DIR, 'providers-state.json')
-const APP_STATE_VERSION = 1
-const PROVIDER_IDS: readonly AppStateProviderId[] = ['deepseek', 'kimi', 'minimax', 'glm']
+const APP_STATE_VERSION = 2
+const PROVIDER_IDS: readonly AppStateProviderId[] = ['deepseek', 'kimi', 'minimax', 'glm', 'qwen']
 
 type StoredStateRecord<T> = {
   version: number
   updatedAt?: string
   data: T
-}
-
-function defaultProviderForm(): AppStateProviderForm {
-  return {
-    baseUrl: '',
-    apiKey: '',
-    model: '',
-    maxTokens: '',
-  }
-}
-
-function defaultProviderForms(): AppStateProviderForms {
-  return {
-    deepseek: defaultProviderForm(),
-    kimi: defaultProviderForm(),
-    minimax: defaultProviderForm(),
-    glm: defaultProviderForm(),
-  }
 }
 
 function defaultThreadsState(): AppStateThreadsPayload {
@@ -58,8 +39,8 @@ function defaultThreadsState(): AppStateThreadsPayload {
 
 function defaultProvidersState(): AppStateProvidersPayload {
   return {
-    providerForms: defaultProviderForms(),
-    activeProvider: 'deepseek',
+    modelConfigs: [],
+    activeModelConfigId: '',
   }
 }
 
@@ -78,29 +59,83 @@ function asTimestamp(value: unknown): number {
   return Math.max(0, Math.trunc(num))
 }
 
+function asOptionalTimestamp(value: unknown): number | undefined {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return undefined
+  return Math.max(0, Math.trunc(num))
+}
+
 function sanitizeProviderId(value: unknown, fallback: AppStateProviderId = 'deepseek'): AppStateProviderId {
   const text = asString(value).trim() as AppStateProviderId
   return PROVIDER_IDS.includes(text) ? text : fallback
 }
 
-function sanitizeProviderForm(raw: unknown): AppStateProviderForm {
-  const obj = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+function normalizeModelConfig(raw: unknown, index: number): AppStateModelConfig | null {
+  const obj = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null
+  if (!obj) return null
+  const provider = sanitizeProviderId(obj.provider, 'deepseek')
+  const model = asString(obj.model).trim()
+  const id = asString(obj.id).trim() || `model-${Date.now()}-${index}`
+  if (!id) return null
+  const name = asString(obj.name).trim() || model || provider
   return {
+    id,
+    provider,
+    name,
     baseUrl: asString(obj.baseUrl).trim(),
     apiKey: asString(obj.apiKey).trim(),
-    model: asString(obj.model).trim(),
+    model,
     maxTokens: asString(obj.maxTokens).trim(),
+    ...(typeof asOptionalTimestamp(obj.createdAt) === 'number' ? { createdAt: asOptionalTimestamp(obj.createdAt) } : {}),
+    ...(typeof asOptionalTimestamp(obj.updatedAt) === 'number' ? { updatedAt: asOptionalTimestamp(obj.updatedAt) } : {}),
   }
 }
 
-function sanitizeProviderForms(raw: unknown): AppStateProviderForms {
+function legacyProviderFormsToModelConfigs(raw: unknown): AppStateModelConfig[] {
   const obj = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
-  return {
-    deepseek: sanitizeProviderForm(obj.deepseek),
-    kimi: sanitizeProviderForm(obj.kimi),
-    minimax: sanitizeProviderForm(obj.minimax),
-    glm: sanitizeProviderForm(obj.glm),
+  const now = Date.now()
+  const out: AppStateModelConfig[] = []
+  for (const provider of PROVIDER_IDS) {
+    const form = obj[provider]
+    const formObj = form && typeof form === 'object' ? form as Record<string, unknown> : {}
+    const baseUrl = asString(formObj.baseUrl).trim()
+    const apiKey = asString(formObj.apiKey).trim()
+    const model = asString(formObj.model).trim()
+    const maxTokens = asString(formObj.maxTokens).trim()
+    if (!baseUrl && !apiKey && !model && !maxTokens) continue
+    out.push({
+      id: `legacy-${provider}-0`,
+      provider,
+      name: model || provider,
+      baseUrl,
+      apiKey,
+      model,
+      maxTokens,
+      createdAt: now,
+      updatedAt: now,
+    })
   }
+  return out
+}
+
+function sanitizeModelConfigs(raw: unknown): AppStateModelConfig[] {
+  if (Array.isArray(raw)) {
+    const dedup = new Map<string, AppStateModelConfig>()
+    raw.forEach((item, index) => {
+      const normalized = normalizeModelConfig(item, index)
+      if (normalized) dedup.set(normalized.id, normalized)
+    })
+    return [...dedup.values()]
+  }
+  return []
+}
+
+function resolveActiveModelConfigId(activeModelConfigId: unknown, modelConfigs: AppStateModelConfig[]): string {
+  const activeId = asString(activeModelConfigId).trim()
+  if (activeId && modelConfigs.some((item) => item.id === activeId)) return activeId
+  const configured = modelConfigs.find((item) => Boolean(item.apiKey && item.model))
+  if (configured) return configured.id
+  return modelConfigs[0]?.id ?? ''
 }
 
 function sanitizeSession(raw: unknown): AppStateSession | null {
@@ -129,12 +164,15 @@ function sanitizeThread(raw: unknown): AppStateThread | null {
     ? activeSessionIdRaw
     : sessions[0].id
   const modeRaw = asString(obj.mode).trim()
+  const modelConfigId = asOptionalString(obj.modelConfigId)
+  const legacyProvider = asOptionalString(obj.provider) ? sanitizeProviderId(obj.provider) : undefined
   return {
     id,
     title: asString(obj.title).trim() || '新项目',
     titleLocked: Boolean(obj.titleLocked),
     updatedAt: asTimestamp(obj.updatedAt),
-    provider: asOptionalString(obj.provider) ? sanitizeProviderId(obj.provider) : undefined,
+    ...(modelConfigId ? { modelConfigId } : {}),
+    ...(legacyProvider ? { provider: legacyProvider } : {}),
     mode: modeRaw === 'chat' || modeRaw === 'agent' ? modeRaw : undefined,
     workspace: asOptionalString(obj.workspace),
     projectRules: asOptionalString(obj.projectRules),
@@ -165,9 +203,20 @@ function sanitizeThreadsState(raw: unknown): AppStateThreadsPayload {
 
 function sanitizeProvidersState(raw: unknown): AppStateProvidersPayload {
   const obj = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+  const fromNew = sanitizeModelConfigs(obj.modelConfigs)
+  const fromLegacy = fromNew.length > 0 ? [] : legacyProviderFormsToModelConfigs(obj.providerForms)
+  const modelConfigs = fromNew.length > 0 ? fromNew : fromLegacy
+  const activeModelConfigId = resolveActiveModelConfigId(
+    obj.activeModelConfigId,
+    modelConfigs,
+  ) || (() => {
+    const legacyActiveProvider = sanitizeProviderId(obj.activeProvider, 'deepseek')
+    const matched = modelConfigs.find((item) => item.provider === legacyActiveProvider)
+    return matched?.id ?? modelConfigs[0]?.id ?? ''
+  })()
   return {
-    providerForms: sanitizeProviderForms(obj.providerForms),
-    activeProvider: sanitizeProviderId(obj.activeProvider, 'deepseek'),
+    modelConfigs,
+    activeModelConfigId,
   }
 }
 
@@ -188,17 +237,6 @@ function sanitizeStoredFile<T>(
 
 async function ensureStateDir(): Promise<void> {
   await fs.mkdir(TACO_DIR, { recursive: true })
-}
-
-async function writeStateFile<T>(filePath: string, data: T): Promise<StoredStateRecord<T>> {
-  await ensureStateDir()
-  const next: StoredStateRecord<T> = {
-    version: APP_STATE_VERSION,
-    updatedAt: new Date().toISOString(),
-    data,
-  }
-  await fs.writeFile(filePath, JSON.stringify(next, null, 2), 'utf-8')
-  return next
 }
 
 async function readStateFile<T>(
@@ -232,15 +270,7 @@ async function migrateLegacyFileStateToDbIfNeeded(): Promise<void> {
     Promise.resolve(loadAppProvidersStateFromDb()),
   ])
   const hasThreadsInDb = Array.isArray(threadsDbEntry.data?.threads) && threadsDbEntry.data.threads.length > 0
-  const hasProvidersInDb = Boolean(
-    providersDbEntry.data &&
-    (
-      Object.values(providersDbEntry.data.providerForms ?? {}).some((form) =>
-        Boolean(form?.baseUrl || form?.apiKey || form?.model || form?.maxTokens),
-      ) ||
-      providersDbEntry.data.activeProvider
-    ),
-  )
+  const hasProvidersInDb = Array.isArray(providersDbEntry.data?.modelConfigs) && providersDbEntry.data.modelConfigs.length > 0
   if (hasThreadsInDb && hasProvidersInDb) {
     await removeLegacyStateFiles()
     return
@@ -269,15 +299,9 @@ async function migrateLegacyFileStateToDbIfNeeded(): Promise<void> {
   const providersToPersist = hasProvidersInDb
     ? null
     : (() => {
-        const hasCombined = combinedProviders && (
-          Object.values(combinedProviders.providerForms).some((form) =>
-            Boolean(form.baseUrl || form.apiKey || form.model || form.maxTokens),
-          ) || combinedProviders.activeProvider
-        )
+        const hasCombined = Boolean(combinedProviders?.modelConfigs?.length)
         if (hasCombined) return combinedProviders
-        const hasLegacy = Object.values(legacyProviders.data.providerForms).some((form) =>
-          Boolean(form.baseUrl || form.apiKey || form.model || form.maxTokens),
-        )
+        const hasLegacy = Boolean(legacyProviders.data.modelConfigs.length)
         return hasLegacy ? legacyProviders.data : null
       })()
 

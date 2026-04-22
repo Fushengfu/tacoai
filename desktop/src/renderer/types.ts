@@ -15,7 +15,9 @@ export type Thread = {
   /** 用户手动改名后锁定，自动命名不再覆盖 */
   titleLocked?: boolean
   updatedAt: number
-  /** 该项目使用的模型 */
+  /** 该项目绑定的模型配置记录 ID */
+  modelConfigId?: string
+  /** 兼容历史字段（已弃用） */
   provider?: ProviderId
   /** 会话模式：统一固定为 agent（带工具调用） */
   mode?: ThreadMode
@@ -161,8 +163,21 @@ export type ChatMsg = {
   toolResults?: ToolResultInfo[]
 }
 
-export type ProviderId = 'deepseek' | 'kimi' | 'minimax' | 'glm'
+export type ProviderId = 'deepseek' | 'kimi' | 'minimax' | 'glm' | 'qwen'
 
+export type ModelConfig = {
+  id: string
+  provider: ProviderId
+  name: string
+  baseUrl: string
+  apiKey: string
+  model: string
+  maxTokens: string
+  createdAt?: number
+  updatedAt?: number
+}
+
+/** 兼容旧版本地缓存结构（固定 provider 表单） */
 export type ProviderForm = {
   baseUrl: string
   apiKey: string
@@ -170,6 +185,7 @@ export type ProviderForm = {
   maxTokens: string
 }
 
+/** 兼容旧版本地缓存结构（固定 provider 表单） */
 export type ProviderForms = Record<ProviderId, ProviderForm>
 
 export type GuiPlusForm = {
