@@ -168,10 +168,7 @@ export default function App() {
   /* ---- local UI state ---- */
   const [draft, setDraft] = useState('')
   const [showSettings, setShowSettings] = useState(false)
-  const [sidebarVisible, setSidebarVisible] = useState<boolean>(() => {
-    const saved = localStorage.getItem('taco.sidebarVisible')
-    return saved === null ? true : saved === 'true'
-  })
+  const [sidebarVisible, setSidebarVisible] = useState<boolean>(true)
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   /** 当前在中间区域查看/编辑的文件（非变更文件） */
   const [viewingFile, setViewingFile] = useState<string | null>(null)
@@ -422,10 +419,6 @@ export default function App() {
       window.clearInterval(interval)
     }
   }, [refreshUpdateStatus])
-
-  useEffect(() => {
-    localStorage.setItem('taco.sidebarVisible', String(sidebarVisible))
-  }, [sidebarVisible])
 
   useEffect(() => {
     const normalized = Number.isFinite(sidebarWidthRatio) ? sidebarWidthRatio : SIDEBAR_DEFAULT_RATIO

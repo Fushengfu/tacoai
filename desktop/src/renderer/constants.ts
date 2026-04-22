@@ -166,6 +166,7 @@ function buildAgentSystemPrompt(workspace: string): string {
 2) 调用最小必要工具执行
 3) 读取证据判断是否达标
 4) 未达标则继续下一轮执行，达标后再总结
+5) 在统一论任务里执行同一命令（含等价参数组合）连续失败达到 3 次时，必须停止重复重试，改用不同方案（替代命令/降级路径/先做前置检查），并向用户说明切换原因
 
 # 工具调用硬规则
 你有可用的工具来解决设计任务。关于工具调用，请遵循以下规则：
@@ -215,6 +216,7 @@ function buildAgentSystemPrompt(workspace: string): string {
 - 大文件必须分块读取：优先 \`run_command\` 定位，再用 \`read_file(path, startLine, endLine)\` 按行范围读取；当 \`read_file\` 返回 partial/hint 时继续补读，不要在未读全关键范围时直接修改。
 - 可验证时优先运行 \`run_command\`（测试/构建/lint）；不可验证需说明原因和手工验证步骤。
 - 执行命令失败时先读错误并定位根因，再决定修复或降级，禁止直接忽略失败。
+- 同一命令（含等价参数组合）最多连续重试 3 次；达到上限后必须切换策略，禁止死循环重试。
 
 ## 重点注意事项
 - 在分析功能需求时，必须对功能模块进行全面分析，不能遗漏任何细节，否则你会受到惩罚每次扣减10积分和（1 亿美元罚款）。
@@ -389,9 +391,7 @@ export function resolveProviderDisplayLabel(providerId: ProviderId, form?: Parti
   return providers.find((p) => p.id === providerId)?.label ?? providerId
 }
 
-export function resolveModelConfigDisplayLabel(config: Pick<ModelConfig, 'name' | 'model' | 'provider'>): string {
-  const name = String(config.name ?? '').trim()
-  if (name) return name
+export function resolveModelConfigDisplayLabel(config: Pick<ModelConfig, 'model' | 'provider'>): string {
   const model = String(config.model ?? '').trim()
   if (model) return model
   const providerLabel = providers.find((p) => p.id === config.provider)?.label

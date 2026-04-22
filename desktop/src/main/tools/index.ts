@@ -2138,6 +2138,46 @@ async function execListDirectory(args: Record<string, unknown>, workspace: strin
   return { content: correctedNote + lines.join('\n'), success: true }
 }
 
+const RUN_COMMAND_TIMEOUT_MS = 120_000
+const RUN_COMMAND_OUTPUT_MAX_LINES = 80
+const RUN_COMMAND_OUTPUT_MAX_CHARS = 2400
+
+type RunCommandExecError = Error & {
+  stdout?: string
+  stderr?: string
+  code?: string | number | null
+  signal?: string | null
+  killed?: boolean
+  timedOut?: boolean
+}
+
+function trimOutputTail(raw: string): string {
+  const text = String(raw ?? '').replace(/\r/g, '').trim()
+  if (!text) return ''
+  const lines = text.split('\n')
+  const tailLines = lines.slice(-RUN_COMMAND_OUTPUT_MAX_LINES).join('\n')
+  if (tailLines.length <= RUN_COMMAND_OUTPUT_MAX_CHARS) return tailLines
+  return `...${tailLines.slice(-RUN_COMMAND_OUTPUT_MAX_CHARS)}`
+}
+
+function formatRunCommandFailureDetails(stderr: string, stdout: string): string {
+  const parts: string[] = []
+  const stderrTail = trimOutputTail(stderr)
+  const stdoutTail = trimOutputTail(stdout)
+  if (stderrTail) parts.push(`stderr (tail):\n${stderrTail}`)
+  if (stdoutTail) parts.push(`stdout (tail):\n${stdoutTail}`)
+  return parts.join('\n\n')
+}
+
+function isRunCommandTimeoutError(err: RunCommandExecError): boolean {
+  const message = String(err.message ?? '')
+  if (err.timedOut === true) return true
+  if (String(err.code ?? '').toUpperCase() === 'ETIMEDOUT') return true
+  if (/(timed?\s*out|timeout)/i.test(message)) return true
+  if (err.killed === true && err.signal === 'SIGTERM' && (err.code === null || err.code === undefined)) return true
+  return false
+}
+
 async function execRunCommand(args: Record<string, unknown>, workspace: string, signal?: AbortSignal): Promise<ExecResult> {
   const command = String(args.command ?? '')
   if (!command) return { content: 'Error: command is required', success: false }
@@ -2152,7 +2192,7 @@ async function execRunCommand(args: Record<string, unknown>, workspace: string, 
     const env = await getRunCommandEnv()
     const { stdout } = await execAsync(command, {
       cwd,
-      timeout: 30_000,
+      timeout: RUN_COMMAND_TIMEOUT_MS,
       maxBuffer: 1024 * 1024,
       signal,
       env,
@@ -2160,10 +2200,35 @@ async function execRunCommand(args: Record<string, unknown>, workspace: string, 
     return { content: stdout || '(no output)', success: true }
   } catch (err: unknown) {
     if (isAbortError(err)) return { content: '命令执行已取消', success: false }
-    const execErr = err as { stderr?: string; stdout?: string; message?: string }
+    const execErr = err as RunCommandExecError
     const stderr = execErr.stderr || ''
     const stdout = execErr.stdout || ''
-    return { content: `Exit with error:\n${stderr || stdout || execErr.message || 'Unknown error'}`, success: false }
+    const signalName = execErr.signal || 'unknown'
+    const exitCode = execErr.code === null || execErr.code === undefined || execErr.code === '' ? 'unknown' : String(execErr.code)
+    const message = String(execErr.message || 'Unknown error').trim()
+    const details = formatRunCommandFailureDetails(stderr, stdout)
+    const timedOut = isRunCommandTimeoutError(execErr)
+
+    if (timedOut) {
+      const timeoutMessage = [
+        'Exit with timeout',
+        `timeoutMs: ${RUN_COMMAND_TIMEOUT_MS}`,
+        `signal: ${signalName}`,
+        `exitCode: ${exitCode}`,
+        `message: ${message}`,
+        details,
+      ].filter(Boolean).join('\n')
+      return { content: timeoutMessage, success: false }
+    }
+
+    const errorMessage = [
+      'Exit with error',
+      `signal: ${signalName}`,
+      `exitCode: ${exitCode}`,
+      `message: ${message}`,
+      details,
+    ].filter(Boolean).join('\n')
+    return { content: errorMessage, success: false }
   }
 }
 

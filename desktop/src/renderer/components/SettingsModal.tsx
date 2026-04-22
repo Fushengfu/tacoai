@@ -36,7 +36,18 @@ type SettingsPageProps = {
   projectId?: string
 }
 
-type SettingsTab = 'general' | 'models' | 'skills' | 'notes' | 'mcp'
+type SettingsTab = 'general' | 'models' | 'gui_plus' | 'skills' | 'notes' | 'mcp'
+type ModelConfigDraft = Pick<ModelConfig, 'provider' | 'baseUrl' | 'apiKey' | 'model' | 'maxTokens'>
+
+function toModelDraft(model: ModelConfig): ModelConfigDraft {
+  return {
+    provider: model.provider,
+    baseUrl: model.baseUrl,
+    apiKey: model.apiKey,
+    model: model.model,
+    maxTokens: model.maxTokens,
+  }
+}
 
 export function SettingsPage({
   modelConfigs,
@@ -58,6 +69,9 @@ export function SettingsPage({
   const [tab, setTab] = useState<SettingsTab>('general')
   const [revealApiKey, setRevealApiKey] = useState<Record<string, boolean>>({})
   const [editingModelId, setEditingModelId] = useState<string | null>(null)
+  const [modelDraftForId, setModelDraftForId] = useState('')
+  const [modelDraftDirty, setModelDraftDirty] = useState(false)
+  const [modelDraft, setModelDraft] = useState<ModelConfigDraft | null>(null)
   const [revealGuiPlusKey, setRevealGuiPlusKey] = useState(false)
 
   // Skills 状态
@@ -134,13 +148,36 @@ export function SettingsPage({
 
   useEffect(() => {
     if (modelConfigs.length <= 0) {
-      if (editingModelId) setEditingModelId(null)
+      setEditingModelId(null)
+      setModelDraft(null)
+      setModelDraftForId('')
+      setModelDraftDirty(false)
       return
     }
-    if (editingModelId && !modelConfigs.some((item) => item.id === editingModelId)) {
-      setEditingModelId(null)
+
+    const hasEditing = editingModelId && modelConfigs.some((item) => item.id === editingModelId)
+    if (hasEditing) return
+
+    const active = modelConfigs.find((item) => item.id === activeModelConfigId)
+    setEditingModelId(active?.id ?? modelConfigs[0].id)
+  }, [activeModelConfigId, editingModelId, modelConfigs])
+
+  useEffect(() => {
+    if (!editingModelId) {
+      setModelDraft(null)
+      setModelDraftForId('')
+      setModelDraftDirty(false)
+      return
     }
-  }, [modelConfigs, editingModelId])
+    const selected = modelConfigs.find((item) => item.id === editingModelId)
+    if (!selected) return
+
+    if (modelDraftForId !== selected.id || !modelDraftDirty) {
+      setModelDraft(toModelDraft(selected))
+      setModelDraftForId(selected.id)
+      setModelDraftDirty(false)
+    }
+  }, [editingModelId, modelConfigs, modelDraftDirty, modelDraftForId])
 
   const notesWorkspace = (workspace ?? '').trim()
   const notesProjectId = (projectId ?? '').trim()
@@ -529,13 +566,84 @@ export function SettingsPage({
     }
   }
 
+  const selectedModel = editingModelId
+    ? (modelConfigs.find((item) => item.id === editingModelId) ?? null)
+    : null
+
+  const modelHasChanges = Boolean(
+    selectedModel
+    && modelDraft
+    && (
+      selectedModel.provider !== modelDraft.provider
+      || selectedModel.baseUrl !== modelDraft.baseUrl
+      || selectedModel.apiKey !== modelDraft.apiKey
+      || selectedModel.model !== modelDraft.model
+      || selectedModel.maxTokens !== modelDraft.maxTokens
+    ),
+  )
+
+  const updateDraftField = <K extends keyof ModelConfigDraft>(key: K, value: ModelConfigDraft[K]) => {
+    setModelDraft((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        [key]: value,
+      }
+    })
+    setModelDraftDirty(true)
+  }
+
+  const handleSaveModelDraft = () => {
+    if (!selectedModel || !modelDraft) return
+    onUpdateModelConfig(selectedModel.id, modelDraft)
+    setModelDraftDirty(false)
+  }
+
+  const flushModelDraft = useCallback(() => {
+    if (!modelDraftDirty || !modelDraftForId || !modelDraft) return false
+    onUpdateModelConfig(modelDraftForId, modelDraft)
+    setModelDraftDirty(false)
+    return true
+  }, [modelDraftDirty, modelDraftForId, modelDraft, onUpdateModelConfig])
+
+  const handleSelectModel = useCallback((id: string) => {
+    if (!id || id === editingModelId) return
+    flushModelDraft()
+    setEditingModelId(id)
+  }, [editingModelId, flushModelDraft])
+
+  const handleAddModel = useCallback(() => {
+    flushModelDraft()
+    const id = onAddModelConfig()
+    setEditingModelId(id)
+  }, [flushModelDraft, onAddModelConfig])
+
+  const handleRemoveModelWithConfirm = useCallback((id: string, displayName: string) => {
+    const targetId = String(id || '').trim()
+    if (!targetId) return
+    const targetName = String(displayName || '').trim() || targetId
+    const confirmed = window.confirm(`确认删除模型「${targetName}」？此操作不可恢复。`)
+    if (!confirmed) return
+    if (editingModelId === targetId) setEditingModelId(null)
+    onRemoveModelConfig(targetId)
+  }, [editingModelId, onRemoveModelConfig])
+
+  useEffect(() => {
+    if (tab !== 'models') {
+      flushModelDraft()
+    }
+  }, [tab, flushModelDraft])
+
   return (
     <main className="settings-page">
       <header className="settings-header">
         <button
           className="settings-back-btn"
           type="button"
-          onClick={onClose}
+          onClick={() => {
+            flushModelDraft()
+            onClose()
+          }}
           title="返回"
         >
           ← 返回
@@ -561,6 +669,13 @@ export function SettingsPage({
           </button>
           <button
             type="button"
+            className={`settings-tab ${tab === 'gui_plus' ? 'active' : ''}`}
+            onClick={() => setTab('gui_plus')}
+          >
+            GUI-Plus
+          </button>
+          <button
+            type="button"
             className={`settings-tab ${tab === 'skills' ? 'active' : ''}`}
             onClick={() => setTab('skills')}
           >
@@ -582,7 +697,7 @@ export function SettingsPage({
           </button>
         </div>
 
-        <div className="settings-body">
+        <div className={`settings-body ${tab === 'models' ? 'is-models' : ''}`}>
           {/* ── 通用设置 ── */}
           {tab === 'general' && (<>
             <div className="settings-card">
@@ -921,166 +1036,186 @@ export function SettingsPage({
 
           {/* ── 模型配置 ── */}
           {tab === 'models' && (
-            <div className="settings-card">
-              <div className="settings-card-title">模型配置</div>
-              <div className="settings-card-desc">支持动态添加多个模型配置；每条模型配置会独立存储。</div>
-              <div className="settings-action-row">
-                <div className="settings-action-info">
-                  <strong>新增模型</strong>
-                  <small>先添加一条记录，再补全 provider / API Key / model</small>
-                </div>
+            <>
+              <div className="settings-models-add-wrap">
                 <button
                   type="button"
-                  className="settings-action-btn"
-                  onClick={() => {
-                    const id = onAddModelConfig()
-                    setEditingModelId(id)
-                  }}
+                  className="notes-add-btn settings-models-add-btn"
+                  onClick={handleAddModel}
                 >
-                  添加模型
+                  + 添加模型
                 </button>
               </div>
-            </div>
-          )}
 
-          {tab === 'models' && modelConfigs.length <= 0 && (
-            <div className="settings-card">
-              <div className="settings-card-desc">暂无模型配置，点击上方“添加模型”开始。</div>
-            </div>
-          )}
-
-          {tab === 'models' && modelConfigs.map((item) => {
-            const isRevealed = revealApiKey[item.id] ?? false
-            const isEditing = editingModelId === item.id
-            const providerLabel = providers.find((p) => p.id === item.provider)?.label ?? item.provider
-            const cardTitle = item.name.trim() || item.model.trim() || `${providerLabel} 模型`
-            return (
-              <div key={item.id} className="settings-card">
-                <div className="settings-action-row">
-                  <div className="settings-action-info">
-                    <strong>{cardTitle}</strong>
-                    <small>{item.id}</small>
+              {modelConfigs.length <= 0 ? (
+                <div className="settings-card">
+                  <div className="settings-card-desc">暂无模型配置，点击上方“添加模型”开始。</div>
+                </div>
+              ) : (
+                <div className="settings-models-layout">
+                  <div className="settings-models-list-wrap">
+                    <div className="settings-models-list">
+                      {modelConfigs.map((item) => {
+                        const isSelected = editingModelId === item.id
+                        const providerLabel = providers.find((p) => p.id === item.provider)?.label ?? item.provider
+                        const cardTitle = item.model.trim() || `${providerLabel} 模型`
+                        return (
+                          <div
+                            key={item.id}
+                            className={`settings-model-card ${isSelected ? 'active' : ''}`}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => handleSelectModel(item.id)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault()
+                                handleSelectModel(item.id)
+                              }
+                            }}
+                          >
+                          <div className="settings-model-card-top">
+                            <div className="settings-model-card-title">{cardTitle}</div>
+                            <div className="settings-model-card-top-actions">
+                              {activeModelConfigId === item.id && (
+                                <span className="settings-model-badge">默认</span>
+                              )}
+                              <button
+                                type="button"
+                                className="settings-model-card-delete"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleRemoveModelWithConfirm(item.id, cardTitle)
+                                }}
+                              >
+                                删除
+                              </button>
+                            </div>
+                          </div>
+                          <div className="settings-model-card-meta-row">
+                            <span className="settings-model-card-meta">{providerLabel}</span>
+                            <span className={`settings-model-mini-tag ${item.apiKey.trim() ? 'ok' : ''}`}>
+                              {item.apiKey.trim() ? 'API Key 已配置' : '缺少 API Key'}
+                            </span>
+                          </div>
+                        </div>
+                      )
+                    })}
                   </div>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <button
-                      type="button"
-                      className="settings-action-btn"
-                      onClick={() => {
-                        setEditingModelId((prev) => (prev === item.id ? null : item.id))
-                      }}
-                    >
-                      {isEditing ? '收起' : '编辑'}
-                    </button>
-                    <button
-                      type="button"
-                      className="settings-action-btn"
-                      disabled={activeModelConfigId === item.id}
-                      onClick={() => onSetActiveModelConfigId(item.id)}
-                    >
-                      {activeModelConfigId === item.id ? '默认模型' : '设为默认'}
-                    </button>
-                    <button
-                      type="button"
-                      className="settings-action-btn"
-                      onClick={() => {
-                        if (editingModelId === item.id) setEditingModelId(null)
-                        onRemoveModelConfig(item.id)
-                      }}
-                    >
-                      删除
-                    </button>
+                  </div>
+
+                  <div className="settings-card settings-models-editor">
+                    {selectedModel && modelDraft ? (
+                      <>
+                        <div className="settings-action-row">
+                          <div className="settings-action-info">
+                            <strong>编辑模型：{selectedModel.model.trim() || selectedModel.id}</strong>
+                            <small>{selectedModel.id}</small>
+                          </div>
+                          <div className="settings-model-editor-actions">
+                            <button
+                              type="button"
+                              className="settings-action-btn"
+                              disabled={activeModelConfigId === selectedModel.id}
+                              onClick={() => onSetActiveModelConfigId(selectedModel.id)}
+                            >
+                              {activeModelConfigId === selectedModel.id ? '默认模型' : '设为默认'}
+                            </button>
+                          </div>
+                        </div>
+                        <div className="settings-grid settings-model-editor-grid">
+                          <label className="settings-field">
+                            <span>Provider</span>
+                            <select
+                              value={modelDraft.provider}
+                              onChange={(e) => updateDraftField('provider', e.target.value as ModelConfig['provider'])}
+                            >
+                              {providers.map((provider) => (
+                                <option key={provider.id} value={provider.id}>{provider.label}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="settings-field">
+                            <span>Base URL</span>
+                            <input
+                              value={modelDraft.baseUrl}
+                              onChange={(e) => updateDraftField('baseUrl', e.target.value)}
+                              placeholder="https://api.example.com/v1"
+                            />
+                          </label>
+                          <label className="settings-field">
+                            <span>API Key</span>
+                            <div className="api-key-row">
+                              <input
+                                type={revealApiKey[selectedModel.id] ? 'text' : 'password'}
+                                value={modelDraft.apiKey}
+                                onChange={(e) => updateDraftField('apiKey', e.target.value)}
+                                placeholder="sk-..."
+                                aria-label={`${selectedModel.id} API Key`}
+                              />
+                              <button
+                                type="button"
+                                className="reveal-btn"
+                                title={revealApiKey[selectedModel.id] ? '隐藏 API Key' : '显示 API Key'}
+                                onClick={() =>
+                                  setRevealApiKey((prev) => ({ ...prev, [selectedModel.id]: !(prev[selectedModel.id] ?? false) }))
+                                }
+                              >
+                                {revealApiKey[selectedModel.id] ? '隐藏' : '显示'}
+                              </button>
+                            </div>
+                          </label>
+                          <label className="settings-field">
+                            <span>Model</span>
+                            <input
+                              value={modelDraft.model}
+                              onChange={(e) => updateDraftField('model', e.target.value)}
+                              placeholder="填写官方模型 ID（以控制台为准）"
+                            />
+                          </label>
+                          <label className="settings-field">
+                            <span>Max Tokens</span>
+                            <input
+                              type="number"
+                              min={1}
+                              step={1}
+                              value={modelDraft.maxTokens}
+                              onChange={(e) => updateDraftField('maxTokens', e.target.value)}
+                              placeholder="131072（示例）"
+                            />
+                          </label>
+                        </div>
+                        <div className="settings-action-row">
+                          <div className="settings-action-info">
+                            <strong>{modelHasChanges ? '有未保存修改' : '已保存'}</strong>
+                            <small>点击保存后，配置会立即写入本地。</small>
+                          </div>
+                          <button
+                            type="button"
+                            className="settings-action-btn"
+                            disabled={!modelHasChanges}
+                            onClick={handleSaveModelDraft}
+                          >
+                            保存模型配置
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="settings-card-desc">请选择左侧模型后进行编辑。</div>
+                    )}
                   </div>
                 </div>
-                {!isEditing && (
-                  <div className="settings-card-desc">
-                    <strong>{providerLabel}</strong>
-                    {' · '}
-                    {item.model.trim() || '未填写模型 ID'}
-                    {' · '}
-                    {item.apiKey.trim() ? '已配置 API Key' : '未配置 API Key'}
-                  </div>
-                )}
-                {isEditing && (
-                  <div className="settings-grid">
-                    <label className="settings-field">
-                      <span>显示名称</span>
-                      <input
-                        value={item.name}
-                        onChange={(e) => onUpdateModelConfig(item.id, { name: e.target.value })}
-                        placeholder="例如：DeepSeek V3（生产）"
-                      />
-                    </label>
-                    <label className="settings-field">
-                      <span>Provider</span>
-                      <select
-                        value={item.provider}
-                        onChange={(e) => onUpdateModelConfig(item.id, { provider: e.target.value as ModelConfig['provider'] })}
-                      >
-                        {providers.map((provider) => (
-                          <option key={provider.id} value={provider.id}>{provider.label}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="settings-field">
-                      <span>Base URL</span>
-                      <input
-                        value={item.baseUrl}
-                        onChange={(e) => onUpdateModelConfig(item.id, { baseUrl: e.target.value })}
-                        placeholder="https://api.example.com/v1"
-                      />
-                    </label>
-                    <label className="settings-field">
-                      <span>API Key</span>
-                      <div className="api-key-row">
-                        <input
-                          type={isRevealed ? 'text' : 'password'}
-                          value={item.apiKey}
-                          onChange={(e) => onUpdateModelConfig(item.id, { apiKey: e.target.value })}
-                          placeholder="sk-..."
-                          aria-label={`${cardTitle} API Key`}
-                        />
-                        <button
-                          type="button"
-                          className="reveal-btn"
-                          title={isRevealed ? '隐藏 API Key' : '显示 API Key'}
-                          onClick={() =>
-                            setRevealApiKey((prev) => ({ ...prev, [item.id]: !isRevealed }))
-                          }
-                        >
-                          {isRevealed ? '隐藏' : '显示'}
-                        </button>
-                      </div>
-                    </label>
-                    <label className="settings-field">
-                      <span>Model</span>
-                      <input
-                        value={item.model}
-                        onChange={(e) => onUpdateModelConfig(item.id, { model: e.target.value })}
-                        placeholder="填写官方模型 ID（以控制台为准）"
-                      />
-                    </label>
-                    <label className="settings-field">
-                      <span>Max Tokens</span>
-                      <input
-                        type="number"
-                        min={1}
-                        step={1}
-                        value={item.maxTokens}
-                        onChange={(e) => onUpdateModelConfig(item.id, { maxTokens: e.target.value })}
-                        placeholder="131072（示例）"
-                      />
-                    </label>
-                  </div>
-                )}
-              </div>
-            )
-          })}
+              )}
+            </>
+          )}
 
-          {tab === 'models' && (
-            <div className="settings-card">
-              <div className="settings-card-title">GUI-Plus（桌面识别工具）</div>
-              <div className="settings-card-desc">仅用于截图分析工具，不参与模型选择</div>
-              <div className="settings-grid">
+          {tab === 'gui_plus' && (
+            <div className="gui-plus-panel">
+              <div className="mcp-desc">
+                GUI-Plus 用于桌面截图识别与结构化视觉理解，不参与聊天模型选择。
+              </div>
+              <div className="settings-card">
+                <div className="settings-card-title">GUI-Plus（桌面识别工具）</div>
+                <div className="settings-grid">
                 <label className="settings-field">
                   <span>Base URL</span>
                   <input
@@ -1165,6 +1300,7 @@ export function SettingsPage({
                     />
                   </div>
                 </label>
+                </div>
               </div>
             </div>
           )}
