@@ -53,6 +53,16 @@ function asOptionalString(value: unknown): string | undefined {
   return text || undefined
 }
 
+function asBoolean(value: unknown): boolean {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') return value > 0
+  if (typeof value === 'string') {
+    const text = value.trim().toLowerCase()
+    return text === '1' || text === 'true' || text === 'yes'
+  }
+  return false
+}
+
 function asTimestamp(value: unknown): number {
   const num = Number(value)
   if (!Number.isFinite(num)) return Date.now()
@@ -86,6 +96,8 @@ function normalizeModelConfig(raw: unknown, index: number): AppStateModelConfig 
     apiKey: asString(obj.apiKey).trim(),
     model,
     maxTokens: asString(obj.maxTokens).trim(),
+    temperature: asString(obj.temperature).trim(),
+    supportsVision: asBoolean(obj.supportsVision),
     ...(typeof asOptionalTimestamp(obj.createdAt) === 'number' ? { createdAt: asOptionalTimestamp(obj.createdAt) } : {}),
     ...(typeof asOptionalTimestamp(obj.updatedAt) === 'number' ? { updatedAt: asOptionalTimestamp(obj.updatedAt) } : {}),
   }
@@ -102,7 +114,8 @@ function legacyProviderFormsToModelConfigs(raw: unknown): AppStateModelConfig[] 
     const apiKey = asString(formObj.apiKey).trim()
     const model = asString(formObj.model).trim()
     const maxTokens = asString(formObj.maxTokens).trim()
-    if (!baseUrl && !apiKey && !model && !maxTokens) continue
+    const temperature = asString(formObj.temperature).trim()
+    if (!baseUrl && !apiKey && !model && !maxTokens && !temperature) continue
     out.push({
       id: `legacy-${provider}-0`,
       provider,
@@ -111,6 +124,8 @@ function legacyProviderFormsToModelConfigs(raw: unknown): AppStateModelConfig[] 
       apiKey,
       model,
       maxTokens,
+      temperature,
+      supportsVision: false,
       createdAt: now,
       updatedAt: now,
     })

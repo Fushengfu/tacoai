@@ -1,11 +1,18 @@
 import type { IncomingHttpHeaders } from 'node:http'
+import { createHmac, randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import { basename, extname, isAbsolute } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { log } from '../system/logger'
 import type { ToolDefinition, ToolCall } from '../tools'
+import type { IpcUploadConfig } from '../../shared/ipc'
 
 /** 标准聊天消息 */
 export type ChatMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
+  /** 用户消息可附带的图片（data URL / URL） */
+  images?: string[]
   /** assistant 消息可能包含 tool_calls */
   tool_calls?: ToolCall[]
   /** tool 消息需要关联的 tool_call_id */
@@ -33,7 +40,9 @@ export type ProviderConfig = {
   baseUrl: string
   apiKey: string
   model: string
+  temperature?: number
   headers?: IncomingHttpHeaders
+  upload?: IpcUploadConfig
 }
 
 export type ProviderOverrides = Partial<Record<ProviderKey, Partial<ProviderConfig>>>
@@ -66,11 +75,110 @@ const providerConfigs: Record<ProviderKey, ProviderConfig> = {
   }
 }
 
-/**
- * 固定模型温度（不走设置页配置）：
- * 值越低输出越稳定、越可复现。
- */
+/** 默认模型温度（未显式配置时使用）。 */
 const FIXED_MODEL_TEMPERATURE = 0.05
+const MIN_MODEL_TEMPERATURE = 0
+const MAX_MODEL_TEMPERATURE = 2
+const RATE_LIMIT_MAX_ATTEMPTS = 5
+const RATE_LIMIT_BASE_DELAY_MS = 2000
+const RATE_LIMIT_MAX_DELAY_MS = 15000
+
+function resolveRequestTemperature(config: ProviderConfig): number {
+  const value = Number(config.temperature)
+  if (!Number.isFinite(value)) return FIXED_MODEL_TEMPERATURE
+  if (value < MIN_MODEL_TEMPERATURE || value > MAX_MODEL_TEMPERATURE) {
+    return FIXED_MODEL_TEMPERATURE
+  }
+  return value
+}
+
+function createAbortError(): Error {
+  try {
+    return new DOMException('The operation was aborted.', 'AbortError')
+  } catch {
+    return new Error('The operation was aborted.')
+  }
+}
+
+async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return
+  if (signal?.aborted) throw createAbortError()
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      reject(createAbortError())
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+function parseRetryAfterMs(retryAfterValue: string | null): number | null {
+  if (!retryAfterValue) return null
+  const seconds = Number(retryAfterValue)
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.max(0, Math.floor(seconds * 1000))
+  }
+  const dateMs = Date.parse(retryAfterValue)
+  if (Number.isFinite(dateMs)) {
+    return Math.max(0, dateMs - Date.now())
+  }
+  return null
+}
+
+function resolve429DelayMs(response: Response, attempt: number): number {
+  const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'))
+  if (retryAfterMs !== null) {
+    return Math.min(RATE_LIMIT_MAX_DELAY_MS, Math.max(500, retryAfterMs))
+  }
+  const backoffMs = RATE_LIMIT_BASE_DELAY_MS * (2 ** (attempt - 1))
+  return Math.min(RATE_LIMIT_MAX_DELAY_MS, backoffMs)
+}
+
+async function readResponseTextSafe(response: Response): Promise<string> {
+  try {
+    return await response.text()
+  } catch {
+    return ''
+  }
+}
+
+async function fetchWith429Retry(
+  url: string,
+  init: RequestInit,
+  signal: AbortSignal | undefined,
+  logScope: string | undefined,
+): Promise<Response> {
+  for (let attempt = 1; attempt <= RATE_LIMIT_MAX_ATTEMPTS; attempt++) {
+    const response = await fetch(url, { ...init, signal })
+    if (response.status !== 429) return response
+
+    const canRetry = attempt < RATE_LIMIT_MAX_ATTEMPTS
+    const waitMs = canRetry ? resolve429DelayMs(response, attempt) : 0
+    const body = await readResponseTextSafe(response.clone())
+    log('REQUEST_RETRY', {
+      url,
+      method: init.method,
+      reason: 'HTTP 429 Too Many Requests',
+      attempt,
+      maxAttempts: RATE_LIMIT_MAX_ATTEMPTS,
+      waitMs,
+      status: response.status,
+      statusText: response.statusText,
+      headers: Object.fromEntries(response.headers.entries()),
+      body,
+    }, logScope)
+
+    if (!canRetry) return response
+    await sleep(waitMs, signal)
+  }
+
+  throw new Error('Unexpected retry state')
+}
 
 function getProviderConfig(
   provider: ProviderKey,
@@ -216,6 +324,706 @@ function normalizeMessages(messages: ChatMessage[]): ChatMessage[] {
   return out
 }
 
+type UserAssetEntry = { type: string; path: string }
+
+type QwenContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+  | { type: 'video'; video: string[] }
+
+type DashScopeUploadPolicyData = {
+  upload_dir: string
+  oss_access_key_id: string
+  signature: string
+  policy: string
+  x_oss_object_acl: string
+  x_oss_forbid_overwrite: string
+  upload_host: string
+}
+
+type QwenMessageBuildState = {
+  requiresOssResolveHeader: boolean
+  uploadedUrlByPath: Map<string, string>
+  uploadPolicyPromise?: Promise<DashScopeUploadPolicyData>
+}
+
+const USER_ASSETS_BLOCK_REGEX = /\s*\[USER_ASSETS\][\s\S]*?\[\/USER_ASSETS\]\s*/gi
+const USER_ASSETS_BLOCK_CAPTURE_REGEX = /\[USER_ASSETS\]([\s\S]*?)\[\/USER_ASSETS\]/i
+const USER_QUERY_BLOCK_CAPTURE_REGEX = /\[USER_QUERY\]([\s\S]*?)\[\/USER_QUERY\]/i
+const IMAGE_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico', '.tif', '.tiff', '.heic', '.heif', '.avif',
+])
+const VIDEO_EXTENSIONS = new Set([
+  '.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi', '.wmv', '.flv', '.mpeg', '.mpg', '.3gp', '.ts', '.m2ts',
+])
+
+function stripUserAssetsBlock(content: string): string {
+  return String(content ?? '')
+    .replace(USER_ASSETS_BLOCK_REGEX, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function extractUserAssetsBlock(content: string): string {
+  const raw = String(content ?? '')
+  const wrapped = raw.match(USER_ASSETS_BLOCK_CAPTURE_REGEX)
+  if (!wrapped || !wrapped[1]) return ''
+  return wrapped[1].trim()
+}
+
+function extractUserQueryText(content: string): string {
+  const raw = stripUserAssetsBlock(String(content ?? ''))
+  const wrapped = raw.match(USER_QUERY_BLOCK_CAPTURE_REGEX)
+  if (wrapped && wrapped[1]) return wrapped[1].trim()
+  return raw.trim()
+}
+
+function parseUserAssetEntries(content: string): UserAssetEntry[] {
+  const body = extractUserAssetsBlock(content)
+  if (!body) return []
+  const entries: UserAssetEntry[] = []
+  let currentType = ''
+  for (const rawLine of body.split('\n')) {
+    const line = rawLine.trim()
+    if (!line) continue
+    const typeMatch = line.match(/^-+\s*type:\s*(.+)$/i)
+    if (typeMatch && typeMatch[1]) {
+      currentType = typeMatch[1].trim() || 'file'
+      continue
+    }
+    const pathMatch = line.match(/^(?:-+\s*)?path:\s*(.+)$/i)
+    if (pathMatch && pathMatch[1]) {
+      entries.push({
+        type: currentType || 'file',
+        path: pathMatch[1].trim(),
+      })
+    }
+  }
+  return entries
+}
+
+function toAssetExtension(value: string): string {
+  const clean = String(value ?? '').trim().split(/[?#]/, 1)[0] ?? ''
+  return extname(clean).toLowerCase()
+}
+
+function inferAssetKind(entry: UserAssetEntry): 'image' | 'video' | 'other' {
+  const type = String(entry.type ?? '').trim().toLowerCase()
+  if (type.includes('video')) return 'video'
+  if (type.includes('image')) return 'image'
+  const ext = toAssetExtension(entry.path)
+  if (IMAGE_EXTENSIONS.has(ext)) return 'image'
+  if (VIDEO_EXTENSIONS.has(ext)) return 'video'
+  return 'other'
+}
+
+function normalizeMediaUrl(raw: string): string {
+  const value = String(raw ?? '').trim()
+  if (!value) return ''
+  if (/^(?:https?:\/\/|data:|oss:\/\/|file:\/\/)/i.test(value)) return value
+  if (isAbsolute(value)) {
+    try {
+      return pathToFileURL(value).toString()
+    } catch {
+      return value
+    }
+  }
+  return value
+}
+
+function dedupStrings(values: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const value of values) {
+    const text = String(value ?? '').trim()
+    if (!text) continue
+    if (seen.has(text)) continue
+    seen.add(text)
+    out.push(text)
+  }
+  return out
+}
+
+function buildUserAssetsBlock(entries: UserAssetEntry[]): string {
+  if (entries.length <= 0) return ''
+  const lines: string[] = ['[USER_ASSETS]']
+  for (const entry of entries) {
+    const type = String(entry?.type ?? '').trim() || 'file'
+    const path = String(entry?.path ?? '').trim()
+    if (!path) continue
+    lines.push(`- type: ${type}`)
+    lines.push(`  path: ${path}`)
+  }
+  if (lines.length <= 1) return ''
+  lines.push('[/USER_ASSETS]')
+  return lines.join('\n')
+}
+
+function resolveDashScopeUploadPolicyUrls(baseUrl: string): string[] {
+  const urls: string[] = ['https://dashscope.aliyuncs.com/api/v1/uploads']
+  const pushUrl = (value: string) => {
+    const text = String(value ?? '').trim()
+    if (text) urls.push(text)
+  }
+
+  try {
+    const parsed = new URL(baseUrl)
+    const pathname = parsed.pathname.replace(/\/+$/, '')
+    if (/\/compatible-mode\/v\d+$/i.test(pathname)) {
+      const rewritten = new URL(parsed.toString())
+      rewritten.pathname = pathname.replace(/\/compatible-mode\/v\d+$/i, '/api/v1/uploads')
+      rewritten.search = ''
+      rewritten.hash = ''
+      pushUrl(rewritten.toString())
+    }
+    pushUrl(new URL('/api/v1/uploads', parsed.origin).toString())
+  } catch {
+    // ignore invalid baseUrl and fallback to official endpoint.
+  }
+
+  return dedupStrings(urls)
+}
+
+function maskAuthHeader(value: string): string {
+  const text = String(value ?? '').trim()
+  if (!text) return text
+  const m = text.match(/^(Bearer\s+)(.+)$/i)
+  if (!m) return text
+  const prefix = m[1]
+  const token = m[2]
+  if (token.length <= 12) return `${prefix}***`
+  return `${prefix}${token.slice(0, 6)}...${token.slice(-4)}`
+}
+
+function isLikelyLocalPath(value: string): boolean {
+  if (isAbsolute(value)) return true
+  return /^[a-zA-Z]:[\\/]/.test(value)
+}
+
+function isTokenPlanBaseUrl(baseUrl: string): boolean {
+  const raw = String(baseUrl ?? '').trim()
+  if (!raw) return false
+  try {
+    const u = new URL(raw)
+    return /(^|\.)maas\.aliyuncs\.com$/i.test(u.hostname) && /^\/compatible-mode\/v\d+$/i.test(u.pathname.replace(/\/+$/, ''))
+  } catch {
+    return /token-plan\.cn-beijing\.maas\.aliyuncs\.com\/compatible-mode\/v\d+/i.test(raw)
+  }
+}
+
+type ResolvedAliyunOssUploadConfig = {
+  provider: 'aliyun_oss'
+  accessKeyId: string
+  accessKeySecret: string
+  bucket: string
+  endpoint: string
+  objectPrefix: string
+  publicBaseUrl: string
+}
+
+type ResolvedQiniuUploadConfig = {
+  provider: 'qiniu'
+  accessKey: string
+  secretKey: string
+  bucket: string
+  uploadUrl: string
+  objectPrefix: string
+  publicBaseUrl: string
+  expiresSeconds: number
+}
+
+type ResolvedUploadConfig = ResolvedAliyunOssUploadConfig | ResolvedQiniuUploadConfig
+
+function asTrimmedText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function normalizeObjectPrefix(prefix: string): string {
+  return asTrimmedText(prefix)
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '')
+}
+
+function ensureUrlWithScheme(value: string): string {
+  const raw = asTrimmedText(value)
+  if (!raw) return ''
+  if (/^https?:\/\//i.test(raw)) return raw
+  return `https://${raw}`
+}
+
+function normalizePublicBaseUrl(value: string): string {
+  return ensureUrlWithScheme(value).replace(/\/+$/, '')
+}
+
+function buildStorageObjectKey(filePath: string, objectPrefix: string): string {
+  const safePrefix = normalizeObjectPrefix(objectPrefix)
+  const ext = extname(filePath).toLowerCase()
+  const datePart = new Date().toISOString().slice(0, 10)
+  const randomPart = randomUUID()
+  const filePart = ext ? `${randomPart}${ext}` : randomPart
+  return [safePrefix, datePart, filePart].filter(Boolean).join('/')
+}
+
+function encodeObjectKeyPath(key: string): string {
+  return key
+    .split('/')
+    .filter(Boolean)
+    .map((part) => encodeURIComponent(part))
+    .join('/')
+}
+
+function buildPublicUrl(publicBaseUrl: string, key: string): string {
+  const base = normalizePublicBaseUrl(publicBaseUrl)
+  const path = encodeObjectKeyPath(key)
+  return `${base}/${path}`
+}
+
+function toUrlSafeBase64(value: string | Buffer): string {
+  const encoded = Buffer.isBuffer(value)
+    ? value.toString('base64')
+    : Buffer.from(value).toString('base64')
+  return encoded.replace(/\+/g, '-').replace(/\//g, '_')
+}
+
+function resolveQiniuRegionUploadUrl(rawText: string, currentUploadUrl: string): string | null {
+  const text = String(rawText ?? '')
+  const match = text.match(/please use\s+([a-z0-9.-]+qiniup\.com)/i)
+  const host = match?.[1] ? match[1].trim() : ''
+  if (!host) return null
+  const current = String(currentUploadUrl ?? '').trim()
+  const protocolMatch = current.match(/^(https?):\/\//i)
+  const protocol = protocolMatch?.[1] ? protocolMatch[1].toLowerCase() : 'https'
+  const next = `${protocol}://${host}`
+  if (current && current.toLowerCase() === next.toLowerCase()) return null
+  return next
+}
+
+function resolveUploadConfig(config: ProviderConfig): ResolvedUploadConfig | null {
+  const upload = config.upload
+  if (!upload || typeof upload !== 'object') return null
+  if (upload.provider === 'aliyun_oss') {
+    const accessKeyId = asTrimmedText(upload.accessKeyId)
+    const accessKeySecret = asTrimmedText(upload.accessKeySecret)
+    const bucket = asTrimmedText(upload.bucket)
+    const endpoint = asTrimmedText(upload.endpoint)
+    const objectPrefix = normalizeObjectPrefix(upload.objectPrefix || '')
+    if (!accessKeyId || !accessKeySecret || !bucket || !endpoint) {
+      throw new Error('Aliyun OSS upload config is incomplete: accessKeyId/accessKeySecret/bucket/endpoint are required')
+    }
+    const endpointUrl = new URL(ensureUrlWithScheme(endpoint))
+    const bucketHost = endpointUrl.host.startsWith(`${bucket}.`)
+      ? endpointUrl.host
+      : `${bucket}.${endpointUrl.host}`
+    const uploadOrigin = `${endpointUrl.protocol}//${bucketHost}`
+    const publicBaseUrl = asTrimmedText(upload.publicBaseUrl)
+      ? normalizePublicBaseUrl(upload.publicBaseUrl)
+      : uploadOrigin
+    return {
+      provider: 'aliyun_oss',
+      accessKeyId,
+      accessKeySecret,
+      bucket,
+      endpoint: uploadOrigin,
+      objectPrefix,
+      publicBaseUrl,
+    }
+  }
+  if (upload.provider === 'qiniu') {
+    const accessKey = asTrimmedText(upload.accessKey)
+    const secretKey = asTrimmedText(upload.secretKey)
+    const bucket = asTrimmedText(upload.bucket)
+    const uploadUrl = asTrimmedText(upload.uploadUrl) ? ensureUrlWithScheme(upload.uploadUrl) : 'https://up.qiniup.com'
+    const publicBaseUrl = normalizePublicBaseUrl(asTrimmedText(upload.publicBaseUrl))
+    const objectPrefix = normalizeObjectPrefix(upload.objectPrefix || '')
+    const expiresSecondsRaw = Number(upload.expiresSeconds)
+    const expiresSeconds = Number.isFinite(expiresSecondsRaw) && expiresSecondsRaw > 0
+      ? Math.floor(expiresSecondsRaw)
+      : 3600
+    if (!accessKey || !secretKey || !bucket || !publicBaseUrl) {
+      throw new Error('Qiniu upload config is incomplete: accessKey/secretKey/bucket/publicBaseUrl are required')
+    }
+    return {
+      provider: 'qiniu',
+      accessKey,
+      secretKey,
+      bucket,
+      uploadUrl,
+      objectPrefix,
+      publicBaseUrl,
+      expiresSeconds,
+    }
+  }
+  return null
+}
+
+async function uploadLocalFileToAliyunOss(
+  config: ResolvedAliyunOssUploadConfig,
+  filePath: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const bytes = await readFile(filePath)
+  const fileName = basename(filePath)
+  const key = buildStorageObjectKey(filePath, config.objectPrefix)
+  const expiration = new Date(Date.now() + 10 * 60 * 1000).toISOString()
+  const policyText = JSON.stringify({
+    expiration,
+    conditions: [
+      ['starts-with', '$key', normalizeObjectPrefix(config.objectPrefix)],
+      ['content-length-range', 0, 1024 * 1024 * 200],
+    ],
+  })
+  const policy = Buffer.from(policyText).toString('base64')
+  const signature = createHmac('sha1', config.accessKeySecret).update(policy).digest('base64')
+  const formData = new FormData()
+  formData.append('key', key)
+  formData.append('policy', policy)
+  formData.append('OSSAccessKeyId', config.accessKeyId)
+  formData.append('Signature', signature)
+  formData.append('success_action_status', '200')
+  formData.append('file', new Blob([bytes]), fileName)
+  const response = await fetch(config.endpoint, {
+    method: 'POST',
+    body: formData,
+    signal,
+  })
+  if (!response.ok) {
+    const rawText = await readResponseTextSafe(response)
+    throw new Error(`Aliyun OSS upload failed: ${response.status} ${response.statusText} ${rawText}`)
+  }
+  return buildPublicUrl(config.publicBaseUrl, key)
+}
+
+async function uploadLocalFileToQiniu(
+  config: ResolvedQiniuUploadConfig,
+  filePath: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const bytes = await readFile(filePath)
+  const fileName = basename(filePath)
+  const key = buildStorageObjectKey(filePath, config.objectPrefix)
+  const deadline = Math.floor(Date.now() / 1000) + config.expiresSeconds
+  const putPolicy = JSON.stringify({
+    scope: `${config.bucket}:${key}`,
+    deadline,
+  })
+  const encodedPutPolicy = toUrlSafeBase64(putPolicy)
+  const signed = createHmac('sha1', config.secretKey).update(encodedPutPolicy).digest()
+  const encodedSign = toUrlSafeBase64(signed)
+  const uploadToken = `${config.accessKey}:${encodedSign}:${encodedPutPolicy}`
+  const buildFormData = () => {
+    const formData = new FormData()
+    formData.append('token', uploadToken)
+    formData.append('key', key)
+    formData.append('file', new Blob([bytes]), fileName)
+    return formData
+  }
+  let uploadUrl = config.uploadUrl
+  let response = await fetch(uploadUrl, {
+    method: 'POST',
+    body: buildFormData(),
+    signal,
+  })
+  if (!response.ok) {
+    const rawText = await readResponseTextSafe(response)
+    if (response.status === 400) {
+      const regionUploadUrl = resolveQiniuRegionUploadUrl(rawText, uploadUrl)
+      if (regionUploadUrl) {
+        uploadUrl = regionUploadUrl
+        response = await fetch(uploadUrl, {
+          method: 'POST',
+          body: buildFormData(),
+          signal,
+        })
+      }
+    }
+    if (!response.ok) {
+      const retryRaw = await readResponseTextSafe(response)
+      throw new Error(`Qiniu upload failed: ${response.status} ${response.statusText} ${retryRaw}`)
+    }
+  }
+  return buildPublicUrl(config.publicBaseUrl, key)
+}
+
+async function uploadLocalFileToPublicStorage(
+  config: ResolvedUploadConfig,
+  filePath: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (config.provider === 'aliyun_oss') {
+    return uploadLocalFileToAliyunOss(config, filePath, signal)
+  }
+  return uploadLocalFileToQiniu(config, filePath, signal)
+}
+
+function toLocalPathIfFileUrl(value: string): string | null {
+  const raw = String(value ?? '').trim()
+  if (!/^file:\/\//i.test(raw)) return null
+  try {
+    return fileURLToPath(raw)
+  } catch {
+    return null
+  }
+}
+
+async function getDashScopeUploadPolicy(
+  config: ProviderConfig,
+  signal?: AbortSignal,
+  logScope?: string,
+): Promise<DashScopeUploadPolicyData> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${config.apiKey}`,
+    'Content-Type': 'application/json',
+  }
+  const endpoints = resolveDashScopeUploadPolicyUrls(config.baseUrl)
+  const endpointErrors: string[] = []
+
+  for (const endpoint of endpoints) {
+    const uploadUrl = new URL(endpoint)
+    uploadUrl.searchParams.set('action', 'getPolicy')
+    uploadUrl.searchParams.set('model', config.model)
+
+    console.log('QWEN_UPLOAD_POLICY_REQUEST', {
+      url: uploadUrl.toString(),
+      headers: {
+        ...headers,
+        Authorization: maskAuthHeader(headers.Authorization),
+      },
+    }, logScope)
+    const response = await fetchWith429Retry(uploadUrl.toString(), {
+      method: 'GET',
+      headers,
+    }, signal, logScope)
+
+    const rawText = await response.text()
+    if (!response.ok) {
+      endpointErrors.push(`${uploadUrl.toString()} => ${response.status} ${response.statusText} ${rawText}`)
+      if (response.status === 404) continue
+      throw new Error(`Failed to get upload policy: ${response.status} ${response.statusText} ${rawText}`)
+    }
+
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(rawText)
+      log('QWEN_UPLOAD_POLICY', parsed, logScope)
+    } catch {
+      throw new Error(`Failed to parse upload policy response: ${rawText}`)
+    }
+    const data = (parsed && typeof parsed === 'object')
+      ? (parsed as { data?: unknown }).data
+      : null
+    if (!data || typeof data !== 'object') {
+      throw new Error(`Upload policy missing data field: ${rawText}`)
+    }
+    const policy = data as Partial<DashScopeUploadPolicyData>
+    if (
+      !policy.upload_dir ||
+      !policy.oss_access_key_id ||
+      !policy.signature ||
+      !policy.policy ||
+      !policy.x_oss_object_acl ||
+      !policy.x_oss_forbid_overwrite ||
+      !policy.upload_host
+    ) {
+      throw new Error(`Upload policy fields are incomplete: ${rawText}`)
+    }
+    return {
+      upload_dir: policy.upload_dir,
+      oss_access_key_id: policy.oss_access_key_id,
+      signature: policy.signature,
+      policy: policy.policy,
+      x_oss_object_acl: policy.x_oss_object_acl,
+      x_oss_forbid_overwrite: policy.x_oss_forbid_overwrite,
+      upload_host: policy.upload_host,
+    }
+  }
+
+  throw new Error(
+    `Failed to get upload policy: no reachable upload endpoint. ` +
+      `The current Qwen base URL may not support media upload policy API. ` +
+      `Tried: ${endpointErrors.join(' | ')}`,
+  )
+}
+
+async function uploadLocalFileToDashScopeOss(
+  policy: DashScopeUploadPolicyData,
+  filePath: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const fileName = basename(filePath)
+  const uploadDir = String(policy.upload_dir || '').replace(/\/+$/, '')
+  const key = `${uploadDir}/${fileName}`
+  const bytes = await readFile(filePath)
+  const formData = new FormData()
+  formData.append('OSSAccessKeyId', policy.oss_access_key_id)
+  formData.append('Signature', policy.signature)
+  formData.append('policy', policy.policy)
+  formData.append('x-oss-object-acl', policy.x_oss_object_acl)
+  formData.append('x-oss-forbid-overwrite', policy.x_oss_forbid_overwrite)
+  formData.append('key', key)
+  formData.append('success_action_status', '200')
+  formData.append('file', new Blob([bytes]), fileName)
+
+  const response = await fetch(policy.upload_host, {
+    method: 'POST',
+    body: formData,
+    signal,
+  })
+  if (!response.ok) {
+    const rawText = await readResponseTextSafe(response)
+    throw new Error(`Failed to upload file: ${response.status} ${response.statusText} ${rawText}`)
+  }
+  return `oss://${key}`
+}
+
+async function resolveQwenMediaUrl(
+  raw: string,
+  config: ProviderConfig,
+  state: QwenMessageBuildState,
+  signal?: AbortSignal,
+  logScope?: string,
+): Promise<string> {
+  const value = String(raw ?? '').trim()
+  if (!value) return ''
+  if (/^oss:\/\//i.test(value)) {
+    state.requiresOssResolveHeader = true
+    return value
+  }
+  if (/^(?:https?:\/\/|data:)/i.test(value)) return value
+
+  const localPathFromFileUrl = toLocalPathIfFileUrl(value)
+  const localPath = localPathFromFileUrl || (isLikelyLocalPath(value) ? value : '')
+  if (!localPath) return normalizeMediaUrl(value)
+  const uploadConfig = resolveUploadConfig(config)
+  if (uploadConfig) {
+    const cacheKey = `${uploadConfig.provider}:${localPath}`
+    const cached = state.uploadedUrlByPath.get(cacheKey)
+    if (cached) return cached
+    const publicUrl = await uploadLocalFileToPublicStorage(uploadConfig, localPath, signal)
+    state.uploadedUrlByPath.set(cacheKey, publicUrl)
+    log('QWEN_MEDIA_UPLOADED_PUBLIC', {
+      provider: uploadConfig.provider,
+      filePath: localPath,
+      publicUrl,
+    }, logScope)
+    return publicUrl
+  }
+  if (isTokenPlanBaseUrl(config.baseUrl)) {
+    throw new Error(
+      `Current Qwen endpoint does not support local-file upload policy with this API key. ` +
+      `Please use a public https:// media URL instead of local path: ${localPath}`,
+    )
+  }
+
+  const cacheKey = localPath
+  const cached = state.uploadedUrlByPath.get(cacheKey)
+  if (cached) {
+    state.requiresOssResolveHeader = true
+    return cached
+  }
+  if (!state.uploadPolicyPromise) {
+    state.uploadPolicyPromise = getDashScopeUploadPolicy(config, signal, logScope)
+  }
+  const policy = await state.uploadPolicyPromise
+  const ossUrl = await uploadLocalFileToDashScopeOss(policy, localPath, signal)
+  state.uploadedUrlByPath.set(cacheKey, ossUrl)
+  state.requiresOssResolveHeader = true
+  log('QWEN_MEDIA_UPLOADED', {
+    filePath: localPath,
+    ossUrl,
+  }, logScope)
+  return ossUrl
+}
+
+async function buildQwenUserContent(
+  message: ChatMessage,
+  config: ProviderConfig,
+  state: QwenMessageBuildState,
+  signal?: AbortSignal,
+  logScope?: string,
+): Promise<string | QwenContentPart[]> {
+  const rawContent = String(message.content ?? '')
+  const entries = parseUserAssetEntries(rawContent)
+  const imageUrls: string[] = []
+  for (const item of message.images ?? []) {
+    const resolved = await resolveQwenMediaUrl(item, config, state, signal, logScope)
+    if (resolved) imageUrls.push(resolved)
+  }
+  const entryImageUrls: string[] = []
+  const entryVideoUrls: string[] = []
+  const nonMediaEntries: UserAssetEntry[] = []
+
+  for (const entry of entries) {
+    const normalizedPath = await resolveQwenMediaUrl(entry.path, config, state, signal, logScope)
+    if (!normalizedPath) continue
+    const kind = inferAssetKind(entry)
+    if (kind === 'image') {
+      entryImageUrls.push(normalizedPath)
+      continue
+    }
+    if (kind === 'video') {
+      entryVideoUrls.push(normalizedPath)
+      continue
+    }
+    nonMediaEntries.push({
+      type: String(entry.type || 'file').trim() || 'file',
+      path: entry.path,
+    })
+  }
+
+  const parts: QwenContentPart[] = []
+  for (const url of dedupStrings([...imageUrls, ...entryImageUrls])) {
+    parts.push({ type: 'image_url', image_url: { url } })
+  }
+
+  const videoUrls = dedupStrings(entryVideoUrls)
+  if (videoUrls.length > 0) {
+    parts.push({ type: 'video', video: videoUrls })
+  }
+
+  const textSegments: string[] = []
+  const userQueryText = extractUserQueryText(rawContent)
+  if (userQueryText) textSegments.push(userQueryText)
+  const nonMediaAssetsBlock = buildUserAssetsBlock(nonMediaEntries)
+  if (nonMediaAssetsBlock) textSegments.push(nonMediaAssetsBlock)
+  const text = textSegments.join('\n\n').trim()
+  if (text) parts.push({ type: 'text', text })
+
+  if (parts.length <= 0) return rawContent
+  return parts
+}
+
+async function buildProviderMessages(
+  provider: ProviderKey,
+  config: ProviderConfig,
+  messages: ChatMessage[],
+  signal?: AbortSignal,
+  logScope?: string,
+): Promise<{ messages: unknown[]; requiresOssResolveHeader: boolean }> {
+  if (provider !== 'qwen') {
+    return { messages, requiresOssResolveHeader: false }
+  }
+  const state: QwenMessageBuildState = {
+    requiresOssResolveHeader: false,
+    uploadedUrlByPath: new Map<string, string>(),
+  }
+  const out: unknown[] = []
+  for (const message of messages) {
+    const { images: _unusedImages, ...rest } = message
+    if (message.role !== 'user') {
+      out.push(rest)
+      continue
+    }
+    out.push({
+      ...rest,
+      content: await buildQwenUserContent(message, config, state, signal, logScope),
+    })
+  }
+  return {
+    messages: out,
+    requiresOssResolveHeader: state.requiresOssResolveHeader,
+  }
+}
+
 function fullHeadersForLog(headers: HeadersInit | undefined): Record<string, string> {
   const out: Record<string, string> = {}
   if (!headers) return out
@@ -235,8 +1043,17 @@ function parseJsonBodyForLog(body: BodyInit | null | undefined): unknown {
   }
 }
 
-function buildRequest(config: ProviderConfig, messages: ChatMessage[], stream: boolean, options?: RequestOptions) {
+async function buildRequest(
+  provider: ProviderKey,
+  config: ProviderConfig,
+  messages: ChatMessage[],
+  stream: boolean,
+  options?: RequestOptions,
+  signal?: AbortSignal,
+  logScope?: string,
+) {
   const normalizedMessages = normalizeMessages(messages)
+  const providerPrepared = await buildProviderMessages(provider, config, normalizedMessages, signal, logScope)
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${config.apiKey}`,
@@ -246,12 +1063,15 @@ function buildRequest(config: ProviderConfig, messages: ChatMessage[], stream: b
       if (typeof v === 'string') headers[k] = v
     }
   }
+  if (provider === 'qwen' || providerPrepared.requiresOssResolveHeader) {
+    headers['X-DashScope-OssResourceResolve'] = 'enable'
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const body: Record<string, any> = {
     model: config.model,
-    messages: normalizedMessages,
-    temperature: FIXED_MODEL_TEMPERATURE,
+    messages: providerPrepared.messages,
+    temperature: resolveRequestTemperature(config),
     stream,
   }
   if (options?.tools && options.tools.length > 0) {
@@ -262,6 +1082,12 @@ function buildRequest(config: ProviderConfig, messages: ChatMessage[], stream: b
     // 请求 provider 在流式响应中返回 usage（尤其 total_tokens）
     body.stream_options = { include_usage: true }
   }
+
+  console.log('REQUEST_BUILD', {
+    url: `${config.baseUrl}/chat/completions`,
+    method: 'POST',
+    headers: fullHeadersForLog(headers),
+  }, logScope)
 
   return {
     url: `${config.baseUrl}/chat/completions`,
@@ -307,7 +1133,7 @@ async function retryStreamRequestWithoutUsageOption(
       headers: fullHeadersForLog(retryInit.headers),
       body: parseJsonBodyForLog(retryInit.body),
     }, logScope)
-    return await fetch(url, { ...retryInit, signal })
+    return await fetchWith429Retry(url, retryInit, signal, logScope)
   } catch {
     return null
   }
@@ -326,7 +1152,7 @@ export async function requestChatCompletion(
     throw new Error(`Missing API key or model for ${provider}`)
   }
 
-  const { url, init } = buildRequest(config, messages, false)
+  const { url, init } = await buildRequest(provider, config, messages, false, undefined, signal, logScope)
   const startTime = Date.now()
 
   // ── 记录完整请求 ──
@@ -339,13 +1165,13 @@ export async function requestChatCompletion(
 
   let response: Response
   try {
-    response = await fetch(url, { ...init, signal })
+    response = await fetchWith429Retry(url, init, signal, logScope)
   } catch (err) {
     log('ERROR', { url, error: String(err), durationMs: Date.now() - startTime }, logScope)
     throw err
   }
 
-  const rawText = await response.text()
+  const finalRawText = await response.text()
 
   // ── 记录完整响应 ──
   log('RESPONSE', {
@@ -354,14 +1180,14 @@ export async function requestChatCompletion(
     statusText: response.statusText,
     headers: Object.fromEntries(response.headers.entries()),
     durationMs: Date.now() - startTime,
-    body: rawText,
+    body: finalRawText,
   }, logScope)
 
   if (!response.ok) {
-    throw new Error(`Request failed: ${response.status} ${response.statusText} ${rawText}`)
+    throw new Error(`Request failed: ${response.status} ${response.statusText} ${finalRawText}`)
   }
 
-  const data = JSON.parse(rawText)
+  const data = JSON.parse(finalRawText)
   const content = data?.choices?.[0]?.message?.content
   if (!content) {
     throw new Error('Empty response from provider')
@@ -383,7 +1209,7 @@ export async function* requestChatCompletionStream(
     throw new Error(`Missing API key or model for ${provider}`)
   }
 
-  const { url, init } = buildRequest(config, messages, true)
+  const { url, init } = await buildRequest(provider, config, messages, true, undefined, signal, logScope)
   const startTime = Date.now()
 
   // ── 记录完整请求 ──
@@ -396,7 +1222,7 @@ export async function* requestChatCompletionStream(
 
   let response: Response
   try {
-    response = await fetch(url, { ...init, signal })
+    response = await fetchWith429Retry(url, init, signal, logScope)
   } catch (err) {
     log('ERROR', { url, error: String(err), durationMs: Date.now() - startTime }, logScope)
     throw err
@@ -642,7 +1468,7 @@ export async function* requestStreamWithTools(
     throw new Error(`Missing API key or model for ${provider}`)
   }
 
-  const { url, init } = buildRequest(config, messages, true, options)
+  const { url, init } = await buildRequest(provider, config, messages, true, options, signal, logScope)
   const startTime = Date.now()
 
   log('REQUEST', {
@@ -654,7 +1480,7 @@ export async function* requestStreamWithTools(
 
   let response: Response
   try {
-    response = await fetch(url, { ...init, signal })
+    response = await fetchWith429Retry(url, init, signal, logScope)
   } catch (err) {
     log('ERROR', { url, error: String(err), durationMs: Date.now() - startTime }, logScope)
     throw err

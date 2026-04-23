@@ -1443,11 +1443,21 @@ export async function runAgent(
     // 追加 assistant 消息（含 tool_calls）。
     // 这里不要把本轮“思考/计划/开始执行”的自然语言正文继续喂回下一轮，
     // 否则部分兼容模型会被自己上一轮的计划文本反复诱导，持续重复同一工具调用。
-    workingMessages.push({
+    // 兼容推理模型：assistant+tool_calls 统一带 reasoning_content，content 仍保持空字符串。
+    const sanitizedReasoningForToolCall = sanitizeContextArtifacts(rawReasoningContent).trim()
+    const reasoningForToolCall =
+      sanitizedReasoningForToolCall
+      || sanitizeContextArtifacts(toolCallThinking).trim()
+    const assistantToolCallContent = ''
+    const assistantToolCallMessage: ChatMessage & { reasoning_content?: string } = {
       role: 'assistant',
-      content: '',
+      content: assistantToolCallContent,
       tool_calls: toolCalls,
-    })
+    }
+    if (reasoningForToolCall) {
+      assistantToolCallMessage.reasoning_content = reasoningForToolCall
+    }
+    workingMessages.push(assistantToolCallMessage)
 
     // 通知前端：AI 要调用工具了
     onEvent?.({ type: 'tool_calls', toolCalls, ...(toolCallThinking ? { thinking: toolCallThinking } : {}) })

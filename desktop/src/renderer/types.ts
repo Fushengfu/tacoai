@@ -173,6 +173,8 @@ export type ModelConfig = {
   apiKey: string
   model: string
   maxTokens: string
+  temperature: string
+  supportsVision?: boolean
   createdAt?: number
   updatedAt?: number
 }
@@ -183,6 +185,7 @@ export type ProviderForm = {
   apiKey: string
   model: string
   maxTokens: string
+  temperature: string
 }
 
 /** 兼容旧版本地缓存结构（固定 provider 表单） */

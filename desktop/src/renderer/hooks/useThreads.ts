@@ -5,6 +5,26 @@ import { loadJson } from '../lib/storage'
 
 const LEGACY_THREADS_KEY = 'taco.threads'
 const LEGACY_ACTIVE_THREAD_KEY = 'taco.activeThreadId'
+let runtimeIdSeq = 0
+
+function nextRuntimeId(prefix: 't' | 's'): string {
+  runtimeIdSeq += 1
+  return `${prefix}${Date.now()}-${runtimeIdSeq.toString(36)}`
+}
+
+function createUniqueId(prefix: 't' | 's', usedIds: Set<string>, preferred?: string): string {
+  const preferredId = String(preferred || '').trim()
+  if (preferredId && !usedIds.has(preferredId)) {
+    usedIds.add(preferredId)
+    return preferredId
+  }
+  let id = nextRuntimeId(prefix)
+  while (usedIds.has(id)) {
+    id = nextRuntimeId(prefix)
+  }
+  usedIds.add(id)
+  return id
+}
 
 function resolveActiveThreadId(threads: Thread[], activeThreadId: string): string {
   if (activeThreadId && threads.some((thread) => thread.id === activeThreadId)) {
@@ -15,6 +35,9 @@ function resolveActiveThreadId(threads: Thread[], activeThreadId: string): strin
 
 /** 迁移旧数据：为没有 sessions 字段的线程补充默认会话 */
 function migrateThreads(saved: Thread[]): Thread[] {
+  const usedThreadIds = new Set<string>()
+  const usedSessionIds = new Set<string>()
+
   return saved.map((t) => {
     const titleLocked = Boolean(t.titleLocked)
     const projectRules = typeof t.projectRules === 'string' ? t.projectRules : undefined
@@ -22,24 +45,53 @@ function migrateThreads(saved: Thread[]): Thread[] {
       ? t.modelConfigId
       : (typeof t.provider === 'string' && t.provider.trim() ? `legacy-${t.provider.trim()}-0` : undefined)
     const mode: ThreadMode = 'agent'
-    if (!t.sessions || t.sessions.length === 0) {
+
+    const threadId = createUniqueId('t', usedThreadIds, t.id)
+    const rawSessions = Array.isArray(t.sessions) && t.sessions.length > 0
+      ? t.sessions
+      : [{ id: threadId, title: '会话 1', createdAt: t.updatedAt }]
+    const sessions: Session[] = rawSessions.map((session, index) => {
+      const normalizedId = createUniqueId('s', usedSessionIds, session?.id)
+      const title = String(session?.title || '').trim() || `会话 ${index + 1}`
+      const createdAtRaw = Number(session?.createdAt)
+      const createdAt = Number.isFinite(createdAtRaw) ? createdAtRaw : t.updatedAt
       return {
-        ...t,
-        titleLocked,
-        projectRules,
-        modelConfigId,
-        mode,
-        sessions: [{ id: t.id, title: '会话 1', createdAt: t.updatedAt }],
-        activeSessionId: t.id,
+        id: normalizedId,
+        title,
+        createdAt,
       }
-    }
+    })
+    const activeSessionRaw = String(t.activeSessionId || '').trim()
+    const activeSessionId = sessions.some((session) => session.id === activeSessionRaw)
+      ? activeSessionRaw
+      : sessions[0].id
+
     if (
+      threadId === t.id &&
       titleLocked === Boolean(t.titleLocked) &&
       projectRules === t.projectRules &&
       modelConfigId === t.modelConfigId &&
-      t.mode === mode
-    ) return t
-    return { ...t, titleLocked, projectRules, modelConfigId, mode }
+      t.mode === mode &&
+      sessions.length === (t.sessions?.length ?? 0) &&
+      sessions.every((session, index) =>
+        session.id === t.sessions?.[index]?.id
+        && session.title === t.sessions?.[index]?.title
+        && session.createdAt === t.sessions?.[index]?.createdAt
+      ) &&
+      activeSessionId === t.activeSessionId
+    ) {
+      return t
+    }
+    return {
+      ...t,
+      id: threadId,
+      titleLocked,
+      projectRules,
+      modelConfigId,
+      mode,
+      sessions,
+      activeSessionId,
+    }
   })
 }
 
@@ -113,8 +165,12 @@ export function useThreads() {
   const sortedThreads = threads
 
   function createThread(title = '新项目', modelConfigId?: string): string {
-    const id = `t${Date.now()}`
-    const sessionId = `s${Date.now()}`
+    const usedThreadIds = new Set(threads.map((thread) => String(thread.id || '').trim()).filter(Boolean))
+    const usedSessionIds = new Set(
+      threads.flatMap((thread) => (thread.sessions ?? []).map((session) => String(session.id || '').trim()).filter(Boolean))
+    )
+    const id = createUniqueId('t', usedThreadIds)
+    const sessionId = createUniqueId('s', usedSessionIds)
     const session: Session = { id: sessionId, title: '会话 1', createdAt: Date.now() }
     const thread: Thread = {
       id,
@@ -187,7 +243,10 @@ export function useThreads() {
   }
 
   function createSession(threadId: string): string {
-    const sessionId = `s${Date.now()}`
+    const usedSessionIds = new Set(
+      threads.flatMap((thread) => (thread.sessions ?? []).map((session) => String(session.id || '').trim()).filter(Boolean))
+    )
+    const sessionId = createUniqueId('s', usedSessionIds)
     let newTitle = '会话 1'
     setThreads((prev) =>
       prev.map((t) => {
@@ -217,7 +276,11 @@ export function useThreads() {
         if (t.id !== threadId) return t
         const remaining = t.sessions.filter((s) => s.id !== sessionId)
         if (remaining.length === 0) {
-          const fallbackId = `s${Date.now()}`
+          const usedSessionIds = new Set(
+            prev.flatMap((thread) => (thread.sessions ?? []).map((session) => String(session.id || '').trim()).filter(Boolean))
+          )
+          usedSessionIds.delete(String(sessionId || '').trim())
+          const fallbackId = createUniqueId('s', usedSessionIds)
           remaining.push({ id: fallbackId, title: '会话 1', createdAt: Date.now() })
           return { ...t, sessions: remaining, activeSessionId: fallbackId }
         }

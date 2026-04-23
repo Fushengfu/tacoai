@@ -3,6 +3,12 @@ import QRCode from 'qrcode'
 import type { GuiPlusForm, ModelConfig, ThemeMode } from '../types'
 import type { SkillInfo, ProjectNote, ProjectTaskMemory, NoteCategory, McpServerInfo, MobileBridgeConfig, MemoryScopeStats, AppUpdateCheckResult } from '../../shared/ipc'
 import { providers } from '../constants'
+import {
+  loadUploadSettings,
+  normalizeUploadSettingsState,
+  saveUploadSettings,
+  type UploadSettingsState,
+} from '../lib/upload-config'
 
 const NOTE_CATEGORIES: { value: NoteCategory; label: string }[] = [
   { value: 'convention', label: '代码规范' },
@@ -37,7 +43,7 @@ type SettingsPageProps = {
 }
 
 type SettingsTab = 'general' | 'models' | 'gui_plus' | 'skills' | 'notes' | 'mcp'
-type ModelConfigDraft = Pick<ModelConfig, 'provider' | 'baseUrl' | 'apiKey' | 'model' | 'maxTokens'>
+type ModelConfigDraft = Pick<ModelConfig, 'provider' | 'baseUrl' | 'apiKey' | 'model' | 'maxTokens' | 'temperature' | 'supportsVision'>
 
 function toModelDraft(model: ModelConfig): ModelConfigDraft {
   return {
@@ -46,6 +52,8 @@ function toModelDraft(model: ModelConfig): ModelConfigDraft {
     apiKey: model.apiKey,
     model: model.model,
     maxTokens: model.maxTokens,
+    temperature: model.temperature ?? '',
+    supportsVision: Boolean(model.supportsVision),
   }
 }
 
@@ -73,6 +81,9 @@ export function SettingsPage({
   const [modelDraftDirty, setModelDraftDirty] = useState(false)
   const [modelDraft, setModelDraft] = useState<ModelConfigDraft | null>(null)
   const [revealGuiPlusKey, setRevealGuiPlusKey] = useState(false)
+  const [uploadDraft, setUploadDraft] = useState<UploadSettingsState>(() => loadUploadSettings())
+  const [uploadSaved, setUploadSaved] = useState<UploadSettingsState>(() => loadUploadSettings())
+  const [revealUploadSecrets, setRevealUploadSecrets] = useState<Record<string, boolean>>({})
 
   // Skills 状态
   const [skills, setSkills] = useState<SkillInfo[]>([])
@@ -579,6 +590,8 @@ export function SettingsPage({
       || selectedModel.apiKey !== modelDraft.apiKey
       || selectedModel.model !== modelDraft.model
       || selectedModel.maxTokens !== modelDraft.maxTokens
+      || (selectedModel.temperature ?? '') !== modelDraft.temperature
+      || Boolean(selectedModel.supportsVision) !== Boolean(modelDraft.supportsVision)
     ),
   )
 
@@ -597,6 +610,46 @@ export function SettingsPage({
     if (!selectedModel || !modelDraft) return
     onUpdateModelConfig(selectedModel.id, modelDraft)
     setModelDraftDirty(false)
+  }
+
+  const uploadHasChanges = JSON.stringify(normalizeUploadSettingsState(uploadDraft))
+    !== JSON.stringify(normalizeUploadSettingsState(uploadSaved))
+
+  const updateUploadProvider = (provider: UploadSettingsState['provider']) => {
+    setUploadDraft((prev) => ({ ...prev, provider }))
+  }
+
+  const updateUploadField = <K extends keyof UploadSettingsState['aliyunOss']>(
+    key: K,
+    value: UploadSettingsState['aliyunOss'][K],
+  ) => {
+    setUploadDraft((prev) => ({
+      ...prev,
+      aliyunOss: {
+        ...prev.aliyunOss,
+        [key]: value,
+      },
+    }))
+  }
+
+  const updateQiniuField = <K extends keyof UploadSettingsState['qiniu']>(
+    key: K,
+    value: UploadSettingsState['qiniu'][K],
+  ) => {
+    setUploadDraft((prev) => ({
+      ...prev,
+      qiniu: {
+        ...prev.qiniu,
+        [key]: value,
+      },
+    }))
+  }
+
+  const handleSaveUploadDraft = () => {
+    const normalized = normalizeUploadSettingsState(uploadDraft)
+    saveUploadSettings(normalized)
+    setUploadDraft(normalized)
+    setUploadSaved(normalized)
   }
 
   const flushModelDraft = useCallback(() => {
@@ -646,7 +699,27 @@ export function SettingsPage({
           }}
           title="返回"
         >
-          ← 返回
+          <svg
+            className="settings-back-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            aria-hidden="true"
+          >
+            <path
+              d="M14.75 6.5L9.25 12L14.75 17.5"
+              stroke="currentColor"
+              strokeWidth="1.9"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <path
+              d="M10 12H20"
+              stroke="currentColor"
+              strokeWidth="1.9"
+              strokeLinecap="round"
+            />
+          </svg>
+          <span>返回</span>
         </button>
         <div className="settings-title">设置</div>
       </header>
@@ -1183,6 +1256,35 @@ export function SettingsPage({
                               placeholder="131072（示例）"
                             />
                           </label>
+                          <label className="settings-field">
+                            <span>Temperature（可选）</span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={2}
+                              step={0.1}
+                              value={modelDraft.temperature}
+                              onChange={(e) => updateDraftField('temperature', e.target.value)}
+                              placeholder="留空则使用默认值"
+                            />
+                          </label>
+                          <label className="settings-field">
+                            <span>视觉理解能力</span>
+                            <div className="settings-toggle-row">
+                              <span className="settings-toggle-label">
+                                <strong>{modelDraft.supportsVision ? '支持视觉理解' : '不支持视觉理解'}</strong>
+                                <small>
+                                  启用后，系统提示词会允许模型直接理解用户图片，不再强制要求必须通过 MCP 图片分析。
+                                </small>
+                              </span>
+                              <input
+                                type="checkbox"
+                                className="settings-toggle"
+                                checked={Boolean(modelDraft.supportsVision)}
+                                onChange={(e) => updateDraftField('supportsVision', e.target.checked)}
+                              />
+                            </div>
+                          </label>
                         </div>
                         <div className="settings-action-row">
                           <div className="settings-action-info">
@@ -1205,6 +1307,178 @@ export function SettingsPage({
                   </div>
                 </div>
               )}
+
+              <div className="settings-card" style={{ marginTop: 16 }}>
+                <div className="settings-card-title">上传配置（公网媒体）</div>
+                <div className="settings-card-desc">
+                  当消息包含本地媒体路径时，可先上传到你配置的对象存储，再以公网 https URL 发送给模型。
+                </div>
+                <div className="settings-grid">
+                  <label className="settings-field">
+                    <span>上传服务</span>
+                    <select
+                      value={uploadDraft.provider}
+                      onChange={(e) => updateUploadProvider(e.target.value as UploadSettingsState['provider'])}
+                    >
+                      <option value="none">不启用</option>
+                      <option value="aliyun_oss">阿里云 OSS</option>
+                      <option value="qiniu">七牛云</option>
+                    </select>
+                  </label>
+                </div>
+
+                {uploadDraft.provider === 'aliyun_oss' && (
+                  <div className="settings-grid" style={{ marginTop: 12 }}>
+                    <label className="settings-field">
+                      <span>AccessKey ID</span>
+                      <input
+                        value={uploadDraft.aliyunOss.accessKeyId}
+                        onChange={(e) => updateUploadField('accessKeyId', e.target.value)}
+                        placeholder="LTAI..."
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>AccessKey Secret</span>
+                      <div className="api-key-row">
+                        <input
+                          type={revealUploadSecrets.aliyunSecret ? 'text' : 'password'}
+                          value={uploadDraft.aliyunOss.accessKeySecret}
+                          onChange={(e) => updateUploadField('accessKeySecret', e.target.value)}
+                          placeholder="请输入 AccessKey Secret"
+                        />
+                        <button
+                          type="button"
+                          className="reveal-btn"
+                          onClick={() => setRevealUploadSecrets((prev) => ({ ...prev, aliyunSecret: !prev.aliyunSecret }))}
+                        >
+                          {revealUploadSecrets.aliyunSecret ? '隐藏' : '显示'}
+                        </button>
+                      </div>
+                    </label>
+                    <label className="settings-field">
+                      <span>Bucket</span>
+                      <input
+                        value={uploadDraft.aliyunOss.bucket}
+                        onChange={(e) => updateUploadField('bucket', e.target.value)}
+                        placeholder="my-bucket"
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>Endpoint</span>
+                      <input
+                        value={uploadDraft.aliyunOss.endpoint}
+                        onChange={(e) => updateUploadField('endpoint', e.target.value)}
+                        placeholder="oss-cn-beijing.aliyuncs.com"
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>公网访问前缀（可选）</span>
+                      <input
+                        value={uploadDraft.aliyunOss.publicBaseUrl}
+                        onChange={(e) => updateUploadField('publicBaseUrl', e.target.value)}
+                        placeholder="https://cdn.example.com"
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>对象前缀（可选）</span>
+                      <input
+                        value={uploadDraft.aliyunOss.objectPrefix}
+                        onChange={(e) => updateUploadField('objectPrefix', e.target.value)}
+                        placeholder="taco/uploads"
+                      />
+                    </label>
+                  </div>
+                )}
+
+                {uploadDraft.provider === 'qiniu' && (
+                  <div className="settings-grid" style={{ marginTop: 12 }}>
+                    <label className="settings-field">
+                      <span>AccessKey</span>
+                      <input
+                        value={uploadDraft.qiniu.accessKey}
+                        onChange={(e) => updateQiniuField('accessKey', e.target.value)}
+                        placeholder="请输入七牛 AccessKey"
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>SecretKey</span>
+                      <div className="api-key-row">
+                        <input
+                          type={revealUploadSecrets.qiniuSecret ? 'text' : 'password'}
+                          value={uploadDraft.qiniu.secretKey}
+                          onChange={(e) => updateQiniuField('secretKey', e.target.value)}
+                          placeholder="请输入七牛 SecretKey"
+                        />
+                        <button
+                          type="button"
+                          className="reveal-btn"
+                          onClick={() => setRevealUploadSecrets((prev) => ({ ...prev, qiniuSecret: !prev.qiniuSecret }))}
+                        >
+                          {revealUploadSecrets.qiniuSecret ? '隐藏' : '显示'}
+                        </button>
+                      </div>
+                    </label>
+                    <label className="settings-field">
+                      <span>Bucket</span>
+                      <input
+                        value={uploadDraft.qiniu.bucket}
+                        onChange={(e) => updateQiniuField('bucket', e.target.value)}
+                        placeholder="my-bucket"
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>上传地址（可选）</span>
+                      <input
+                        value={uploadDraft.qiniu.uploadUrl}
+                        onChange={(e) => updateQiniuField('uploadUrl', e.target.value)}
+                        placeholder="https://up.qiniup.com"
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>公网访问前缀</span>
+                      <input
+                        value={uploadDraft.qiniu.publicBaseUrl}
+                        onChange={(e) => updateQiniuField('publicBaseUrl', e.target.value)}
+                        placeholder="https://cdn.example.com"
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>对象前缀（可选）</span>
+                      <input
+                        value={uploadDraft.qiniu.objectPrefix}
+                        onChange={(e) => updateQiniuField('objectPrefix', e.target.value)}
+                        placeholder="taco/uploads"
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>Token 有效期（秒，可选）</span>
+                      <input
+                        type="number"
+                        min={60}
+                        step={60}
+                        value={uploadDraft.qiniu.expiresSeconds}
+                        onChange={(e) => updateQiniuField('expiresSeconds', e.target.value)}
+                        placeholder="3600"
+                      />
+                    </label>
+                  </div>
+                )}
+
+                <div className="settings-action-row">
+                  <div className="settings-action-info">
+                    <strong>{uploadHasChanges ? '有未保存修改' : '已保存'}</strong>
+                    <small>仅本机保存；启用后会用于本地媒体文件上传。</small>
+                  </div>
+                  <button
+                    type="button"
+                    className="settings-action-btn"
+                    disabled={!uploadHasChanges}
+                    onClick={handleSaveUploadDraft}
+                  >
+                    保存上传配置
+                  </button>
+                </div>
+              </div>
             </>
           )}
 

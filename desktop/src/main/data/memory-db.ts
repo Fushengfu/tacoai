@@ -416,6 +416,8 @@ function ensureDb(): DatabaseSync {
       api_key TEXT NOT NULL DEFAULT '',
       model TEXT NOT NULL DEFAULT '',
       max_tokens TEXT NOT NULL DEFAULT '',
+      temperature TEXT NOT NULL DEFAULT '',
+      supports_vision INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER,
       updated_at INTEGER
     );
@@ -454,6 +456,8 @@ function ensureDb(): DatabaseSync {
   ensureColumn(next, 'app_project_configs', 'project_rules', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(next, 'app_project_configs', 'active_session_id', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(next, 'app_model_configs', 'name', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(next, 'app_model_configs', 'temperature', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(next, 'app_model_configs', 'supports_vision', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(next, 'app_model_configs', 'created_at', 'INTEGER')
   ensureColumn(next, 'app_model_configs', 'updated_at', 'INTEGER')
   backfillScopeKey(next, 'task_memories')
@@ -940,6 +944,14 @@ function asOptionalTrimmedString(value: unknown): string | undefined {
   return text || undefined
 }
 
+function asBooleanFlag(value: unknown): boolean {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') return value > 0
+  const text = asTrimmedString(value).toLowerCase()
+  if (!text) return false
+  return text === '1' || text === 'true' || text === 'yes'
+}
+
 function normalizeProviderId(value: unknown, fallback: AppStateProviderId = 'deepseek'): AppStateProviderId {
   const text = asTrimmedString(value) as AppStateProviderId
   return APP_PROVIDER_IDS.includes(text) ? text : fallback
@@ -1086,6 +1098,8 @@ function normalizeModelConfigForStorage(raw: unknown, index: number, nowTs: numb
     apiKey: asTrimmedString(item.apiKey),
     model,
     maxTokens: asTrimmedString(item.maxTokens),
+    temperature: asTrimmedString(item.temperature),
+    supportsVision: asBooleanFlag(item.supportsVision),
     ...(typeof parseOptionalTimestamp(item.createdAt) === 'number'
       ? { createdAt: parseOptionalTimestamp(item.createdAt) }
       : { createdAt: nowTs + index }),
@@ -1105,7 +1119,8 @@ function normalizeLegacyProviderFormsForStorage(raw: unknown, nowTs: number): Ap
     const apiKey = asTrimmedString(formObj.apiKey)
     const model = asTrimmedString(formObj.model)
     const maxTokens = asTrimmedString(formObj.maxTokens)
-    if (!baseUrl && !apiKey && !model && !maxTokens) return
+    const temperature = asTrimmedString(formObj.temperature)
+    if (!baseUrl && !apiKey && !model && !maxTokens && !temperature) return
     configs.push({
       id: `legacy-${provider}-0`,
       provider,
@@ -1114,6 +1129,8 @@ function normalizeLegacyProviderFormsForStorage(raw: unknown, nowTs: number): Ap
       apiKey,
       model,
       maxTokens,
+      temperature,
+      supportsVision: false,
       createdAt: nowTs + index,
       updatedAt: nowTs + index,
     })
@@ -1203,8 +1220,8 @@ function ensureAppStateRecordMigration(database: DatabaseSync): void {
         : normalizeLegacyProviderFormsForStorage(payload.providerForms, nowTs)
       const insertModelStmt = database.prepare(`
         INSERT INTO app_model_configs (
-          id, provider, name, base_url, api_key, model, max_tokens, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, provider, name, base_url, api_key, model, max_tokens, temperature, supports_vision, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       for (const model of normalizedModels) {
         insertModelStmt.run(
@@ -1215,6 +1232,8 @@ function ensureAppStateRecordMigration(database: DatabaseSync): void {
           model.apiKey,
           model.model,
           model.maxTokens,
+          model.temperature,
+          model.supportsVision ? 1 : 0,
           parseOptionalTimestamp(model.createdAt),
           parseOptionalTimestamp(model.updatedAt),
         )
@@ -1399,6 +1418,8 @@ export function loadAppProvidersStateFromDb(): AppStateStoreEntry<AppStateProvid
       api_key,
       model,
       max_tokens,
+      temperature,
+      supports_vision,
       created_at,
       updated_at
     FROM app_model_configs
@@ -1415,6 +1436,8 @@ export function loadAppProvidersStateFromDb(): AppStateStoreEntry<AppStateProvid
       apiKey: row.api_key,
       model: row.model,
       maxTokens: row.max_tokens,
+      temperature: row.temperature,
+      supportsVision: Number(row.supports_vision || 0) > 0,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }, index, Date.now()))
@@ -1462,8 +1485,8 @@ export function saveAppProvidersStateToDb(payload: AppStateProvidersPayload): Ap
     database.prepare(`DELETE FROM app_model_configs`).run()
     const insertStmt = database.prepare(`
       INSERT INTO app_model_configs (
-        id, provider, name, base_url, api_key, model, max_tokens, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, provider, name, base_url, api_key, model, max_tokens, temperature, supports_vision, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     for (const model of modelConfigs) {
       insertStmt.run(
@@ -1474,6 +1497,8 @@ export function saveAppProvidersStateToDb(payload: AppStateProvidersPayload): Ap
         model.apiKey,
         model.model,
         model.maxTokens,
+        model.temperature,
+        model.supportsVision ? 1 : 0,
         parseOptionalTimestamp(model.createdAt),
         parseOptionalTimestamp(model.updatedAt),
       )

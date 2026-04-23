@@ -351,6 +351,7 @@ export default function App() {
       workspace: currentWorkspace,
       provider: currentProvider ?? 'deepseek',
       model: currentModelConfig?.model,
+      supportsVision: Boolean(currentModelConfig?.supportsVision),
       projectRules: currentProjectRules,
     })
   ) +

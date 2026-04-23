@@ -424,10 +424,13 @@ body.is-dragging * {
   background: rgba(86, 217, 197, 0.08);
   border: 1px solid rgba(86, 217, 197, 0.2);
   padding: 12px 14px;
+  width: fit-content;
+  max-width: min(100%, 760px);
 }
 
 .chat-row.assistant .bubble {
-  max-width: 760px;
+  width: 100%;
+  max-width: 100%;
 }
 
 /* 用户消息操作按钮（编辑 + 重发），显示在气泡右下方 */

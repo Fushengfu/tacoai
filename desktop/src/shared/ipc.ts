@@ -202,9 +202,34 @@ export type IpcChatOverrides = Record<
     baseUrl?: string
     apiKey?: string
     model?: string
+    temperature?: number
     headers?: Record<string, string>
+    upload?: IpcUploadConfig
   }
 >
+
+export type IpcAliyunOssUploadConfig = {
+  provider: 'aliyun_oss'
+  accessKeyId?: string
+  accessKeySecret?: string
+  bucket?: string
+  endpoint?: string
+  objectPrefix?: string
+  publicBaseUrl?: string
+}
+
+export type IpcQiniuUploadConfig = {
+  provider: 'qiniu'
+  accessKey?: string
+  secretKey?: string
+  bucket?: string
+  uploadUrl?: string
+  publicBaseUrl?: string
+  objectPrefix?: string
+  expiresSeconds?: number
+}
+
+export type IpcUploadConfig = IpcAliyunOssUploadConfig | IpcQiniuUploadConfig
 
 /* ------------------------------------------------------------------ */
 /*  Payloads (renderer → main)                                         */
@@ -847,6 +872,8 @@ export type AppStateModelConfig = {
   apiKey: string
   model: string
   maxTokens: string
+  temperature?: string
+  supportsVision?: boolean
   createdAt?: number
   updatedAt?: number
 }

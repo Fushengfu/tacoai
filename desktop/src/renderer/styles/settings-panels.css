@@ -22,6 +22,9 @@
   border: none;
   color: var(--muted);
   font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   cursor: pointer;
   padding: 4px 8px;
   border-radius: 6px;
@@ -30,6 +33,12 @@
 .settings-back-btn:hover {
   color: var(--text);
   background: rgba(255, 255, 255, 0.06);
+}
+
+.settings-back-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
 }
 
 .settings-title {

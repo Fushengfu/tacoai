@@ -3,6 +3,7 @@ import type { ActivePlan, AgentStep, AttachedAsset, AttachedImage, ChatMsg, Mode
 import type { ChatStoreSessionPage, ChatStoreSessionPatch, ChatStoreSessionSummary, PromptConfig } from '../../shared/ipc'
 import { buildSystemPrompt } from '../constants'
 import { loadJson, saveJson, uid } from '../lib/storage'
+import { loadUploadSettings, toIpcUploadConfig } from '../lib/upload-config'
 
 type SessionStoreMeta = {
   projectId?: string
@@ -75,12 +76,23 @@ function buildTaskTiming(startedAt: number, endedAt = Date.now()): TaskTiming {
 }
 
 const USER_ASSETS_BLOCK_STRIP_REGEX = /\s*\[USER_ASSETS\][\s\S]*?\[\/USER_ASSETS\]\s*/gi
+const IMAGE_ASSET_EXT_REGEX = /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?|heic|heif|avif)$/i
+const VIDEO_ASSET_EXT_REGEX = /\.(mp4|mov|m4v|webm|mkv|avi|wmv|flv|mpeg|mpg|3gp|ts|m2ts)$/i
 
 function stripUserAssetsBlock(content: string): string {
   return String(content ?? '')
     .replace(USER_ASSETS_BLOCK_STRIP_REGEX, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
+}
+
+function inferAssetType(path: string): 'image' | 'video' | 'file' {
+  const raw = String(path ?? '').trim()
+  if (!raw) return 'file'
+  const normalized = raw.replace(/\\/g, '/').split(/[?#]/, 1)[0] ?? raw
+  if (IMAGE_ASSET_EXT_REGEX.test(normalized)) return 'image'
+  if (VIDEO_ASSET_EXT_REGEX.test(normalized)) return 'video'
+  return 'file'
 }
 
 function buildUserAssetsBlock(attachments?: AttachedAsset[]): string {
@@ -93,7 +105,7 @@ function buildUserAssetsBlock(attachments?: AttachedAsset[]): string {
     const key = path.toLowerCase()
     if (dedup.has(key)) continue
     dedup.add(key)
-    lines.push('- type: file')
+    lines.push(`- type: ${inferAssetType(path)}`)
     lines.push(`  path: ${path}`)
   }
   if (lines.length === 1) return ''
@@ -101,27 +113,36 @@ function buildUserAssetsBlock(attachments?: AttachedAsset[]): string {
   return lines.join('\n')
 }
 
-function mapMessageForApi(msg: ChatMsg): { role: ChatMsg['role']; content: string } {
+type ApiChatMessage = { role: ChatMsg['role']; content: string; images?: string[] }
+
+function mapMessageForApi(msg: ChatMsg): ApiChatMessage {
   if (msg.role !== 'user') return { role: msg.role, content: msg.content }
+  const imageDataUrls = (msg.images ?? [])
+    .map((img) => String(img?.dataUrl ?? '').trim())
+    .filter(Boolean)
   const raw = stripUserAssetsBlock(String(msg.content ?? ''))
   const wrapped = raw.match(/\[USER_QUERY\]([\s\S]*?)\[\/USER_QUERY\]/i)
   const userQueryBlock = wrapped && wrapped[1] !== undefined
     ? raw.trim()
     : `[USER_QUERY]\n${raw.trim()}\n[/USER_QUERY]`
   const assetsBlock = buildUserAssetsBlock(msg.attachments)
+  const withImages = (base: ApiChatMessage): ApiChatMessage => {
+    if (imageDataUrls.length <= 0) return base
+    return { ...base, images: imageDataUrls }
+  }
   if (assetsBlock) {
-    return {
+    return withImages({
       role: msg.role,
       content: `${userQueryBlock}\n\n${assetsBlock}`,
-    }
+    })
   }
   if (wrapped && wrapped[1] !== undefined) {
-    return { role: msg.role, content: raw.trim() }
+    return withImages({ role: msg.role, content: raw.trim() })
   }
-  return { role: msg.role, content: userQueryBlock }
+  return withImages({ role: msg.role, content: userQueryBlock })
 }
 
-function buildMessagesForApi(messages: ChatMsg[], mode?: ThreadMode): Array<{ role: ChatMsg['role']; content: string }> {
+function buildMessagesForApi(messages: ChatMsg[], mode?: ThreadMode): ApiChatMessage[] {
   if (mode === 'agent') {
     // Agent 模式优先发送最近上下文，避免“仅发最后一条用户消息”导致在记忆为空时丢失链路。
     const MAX_RECENT_MESSAGES = 8
@@ -146,6 +167,20 @@ function buildMessagesForApi(messages: ChatMsg[], mode?: ThreadMode): Array<{ ro
 
 function isRecallDebugEnabled(): boolean {
   return localStorage.getItem('taco.recallDebugEnabled') === 'true'
+}
+
+function parseConfiguredTemperature(raw: unknown): number | undefined {
+  const text = String(raw ?? '').trim()
+  if (!text) return undefined
+  const value = Number(text)
+  if (!Number.isFinite(value)) return undefined
+  if (value < 0 || value > 2) return undefined
+  return value
+}
+
+function resolveUploadOverrideForProvider(provider: ProviderId) {
+  if (provider !== 'qwen') return undefined
+  return toIpcUploadConfig(loadUploadSettings())
 }
 
 export type ProjectTokenStats = {
@@ -1039,6 +1074,7 @@ export function useChat() {
       workspace,
       provider,
       model,
+      supportsVision: Boolean(modelConfig.supportsVision),
       projectRules,
       promptConfig,
     })
@@ -1054,7 +1090,9 @@ export function useChat() {
       [provider]: {
         baseUrl: modelConfig.baseUrl || undefined,
         apiKey: modelConfig.apiKey || undefined,
-        model: modelConfig.model || undefined
+        model: modelConfig.model || undefined,
+        temperature: parseConfiguredTemperature(modelConfig.temperature),
+        upload: resolveUploadOverrideForProvider(provider),
       }
     }
 
@@ -1418,7 +1456,18 @@ export function useChat() {
     const model = String(modelConfig.model ?? '').trim() || undefined
     const isAgent = mode === 'agent'
     const apiMessages = [
-      { role: 'system' as const, content: buildSystemPrompt({ mode, workspace, provider, model, projectRules, promptConfig }) },
+      {
+        role: 'system' as const,
+        content: buildSystemPrompt({
+          mode,
+          workspace,
+          provider,
+          model,
+          supportsVision: Boolean(modelConfig.supportsVision),
+          projectRules,
+          promptConfig,
+        }),
+      },
       ...buildMessagesForApi(currentMsgs, mode)
     ]
 
@@ -1426,7 +1475,9 @@ export function useChat() {
       [provider]: {
         baseUrl: modelConfig.baseUrl || undefined,
         apiKey: modelConfig.apiKey || undefined,
-        model: modelConfig.model || undefined
+        model: modelConfig.model || undefined,
+        temperature: parseConfiguredTemperature(modelConfig.temperature),
+        upload: resolveUploadOverrideForProvider(provider),
       }
     }
 
