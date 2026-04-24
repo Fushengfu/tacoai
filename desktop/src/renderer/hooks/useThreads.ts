@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AppStateThread, AppStateThreadsPayload } from '../../shared/ipc'
 import type { Session, Thread, ThreadMode } from '../types'
 import { loadJson } from '../lib/storage'
@@ -108,6 +108,11 @@ export function useThreads() {
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState('')
   const [hydrated, setHydrated] = useState(false)
+  const threadsRef = useRef<Thread[]>(threads)
+
+  useEffect(() => {
+    threadsRef.current = threads
+  }, [threads])
 
   useEffect(() => {
     let cancelled = false
@@ -157,6 +162,16 @@ export function useThreads() {
     })
   }, [threads, activeThreadId, hydrated])
 
+  useEffect(() => {
+    if (threads.length <= 0) {
+      if (activeThreadId) setActiveThreadId('')
+      return
+    }
+    if (!threads.some((thread) => thread.id === activeThreadId)) {
+      setActiveThreadId(threads[0].id)
+    }
+  }, [threads, activeThreadId])
+
   const activeThread = useMemo(
     () => threads.find((t) => t.id === activeThreadId),
     [threads, activeThreadId],
@@ -188,7 +203,10 @@ export function useThreads() {
   }
 
   function switchThread(id: string) {
-    setActiveThreadId(id)
+    const targetId = String(id || '').trim()
+    if (!targetId) return
+    if (!threadsRef.current.some((thread) => thread.id === targetId)) return
+    setActiveThreadId(targetId)
   }
 
   function startRename(thread: Thread) {
@@ -211,11 +229,16 @@ export function useThreads() {
   }
 
   function deleteThread(threadId: string) {
-    setThreads((prev) => prev.filter((t) => t.id !== threadId))
-    if (activeThreadId === threadId) {
-      const next = threads.find((t) => t.id !== threadId)
-      setActiveThreadId(next?.id ?? '')
-    }
+    const targetId = String(threadId || '').trim()
+    if (!targetId) return
+    setThreads((prev) => prev.filter((t) => t.id !== targetId))
+    setActiveThreadId((current) => {
+      const remaining = threadsRef.current.filter((thread) => thread.id !== targetId)
+      if (remaining.length <= 0) return ''
+      if (current === targetId) return remaining[0].id
+      if (remaining.some((thread) => thread.id === current)) return current
+      return remaining[0].id
+    })
   }
 
   function updateThread(id: string, patch: Partial<Omit<Thread, 'id'>>) {
@@ -265,8 +288,15 @@ export function useThreads() {
   }
 
   function switchSession(threadId: string, sessionId: string) {
+    const targetThreadId = String(threadId || '').trim()
+    const targetSessionId = String(sessionId || '').trim()
+    if (!targetThreadId || !targetSessionId) return
     setThreads((prev) =>
-      prev.map((t) => (t.id === threadId ? { ...t, activeSessionId: sessionId } : t)),
+      prev.map((t) => {
+        if (t.id !== targetThreadId) return t
+        if (!t.sessions.some((s) => s.id === targetSessionId)) return t
+        return { ...t, activeSessionId: targetSessionId }
+      }),
     )
   }
 

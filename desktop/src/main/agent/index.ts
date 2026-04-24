@@ -107,6 +107,14 @@ function safeParseObject(raw: string): Record<string, unknown> | null {
 
 const USER_ASSETS_BLOCK_REGEX = /\s*\[USER_ASSETS\][\s\S]*?\[\/USER_ASSETS\]\s*/gi
 const USER_ASSETS_BLOCK_CAPTURE_REGEX = /\[USER_ASSETS\]([\s\S]*?)\[\/USER_ASSETS\]/i
+const USER_ASSET_IMAGE_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico', '.tif', '.tiff', '.heic', '.heif', '.avif',
+])
+const USER_ASSET_VIDEO_EXTENSIONS = new Set([
+  '.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi', '.wmv', '.flv', '.mpeg', '.mpg', '.3gp', '.ts', '.m2ts',
+])
+
+type UserAssetEntry = { type: string; path: string }
 
 function stripUserAssetsBlock(content: string): string {
   return String(content ?? '')
@@ -127,6 +135,82 @@ function extractUserAssetsBlock(content: string): string {
   const wrapped = raw.match(USER_ASSETS_BLOCK_CAPTURE_REGEX)
   if (!wrapped || !wrapped[1]) return ''
   return wrapped[1].trim()
+}
+
+function parseUserAssetEntries(content: string): UserAssetEntry[] {
+  const body = extractUserAssetsBlock(content)
+  if (!body) return []
+  const entries: UserAssetEntry[] = []
+  let currentType = ''
+  for (const rawLine of body.split('\n')) {
+    const line = rawLine.trim()
+    if (!line) continue
+    const typeMatch = line.match(/^-+\s*type:\s*(.+)$/i)
+    if (typeMatch && typeMatch[1]) {
+      currentType = typeMatch[1].trim() || 'file'
+      continue
+    }
+    const pathMatch = line.match(/^(?:-+\s*)?path:\s*(.+)$/i)
+    if (pathMatch && pathMatch[1]) {
+      entries.push({
+        type: currentType || 'file',
+        path: pathMatch[1].trim(),
+      })
+    }
+  }
+  return entries
+}
+
+function userAssetExtension(value: string): string {
+  const clean = String(value ?? '').trim().split(/[?#]/, 1)[0] ?? ''
+  return path.extname(clean).toLowerCase()
+}
+
+function inferUserAssetKind(entry: UserAssetEntry): 'image' | 'video' | 'other' {
+  const type = String(entry.type ?? '').trim().toLowerCase()
+  if (type.includes('video')) return 'video'
+  if (type.includes('image')) return 'image'
+  const ext = userAssetExtension(entry.path)
+  if (USER_ASSET_IMAGE_EXTENSIONS.has(ext)) return 'image'
+  if (USER_ASSET_VIDEO_EXTENSIONS.has(ext)) return 'video'
+  return 'other'
+}
+
+function collectUserMediaRefsFromContent(content: string): string[] {
+  const refs: string[] = []
+  for (const entry of parseUserAssetEntries(content)) {
+    const kind = inferUserAssetKind(entry)
+    if (kind !== 'image' && kind !== 'video') continue
+    const ref = String(entry.path ?? '').trim()
+    if (!ref) continue
+    if (refs.includes(ref)) continue
+    refs.push(ref)
+  }
+  return refs
+}
+
+function collectUserMediaRefsFromMessages(messages: ChatMessage[]): string[] {
+  const refs: string[] = []
+  for (const message of messages) {
+    if (message.role !== 'user') continue
+    for (const item of collectUserMediaRefsFromContent(String(message.content ?? ''))) {
+      if (refs.includes(item)) continue
+      refs.push(item)
+    }
+  }
+  return refs
+}
+
+function appendMediaRefsToSummary(summary: string, mediaRefs: string[]): string {
+  const cleanedSummary = String(summary ?? '').trim()
+  if (mediaRefs.length <= 0) return cleanedSummary
+  const missingRefs = mediaRefs.filter((ref) => !cleanedSummary.includes(ref))
+  if (missingRefs.length <= 0) return cleanedSummary
+  const mediaBlock = [
+    '用户提交媒体文件（路径/链接）:',
+    ...missingRefs.map((ref) => `- ${ref}`),
+  ].join('\n')
+  return cleanedSummary ? `${cleanedSummary}\n\n${mediaBlock}` : mediaBlock
 }
 
 function inferIntentTypeFromQuery(query: string): string {
@@ -181,6 +265,16 @@ function sanitizeContextArtifacts(input: string): string {
   return output
 }
 
+function sanitizeReasoningForContext(input: string): string {
+  let output = stripPseudoToolCallArtifacts(stripInternalContextTags(String(input ?? '')))
+  output = output
+    .replace(/<\/?(?:think|reflection|tool_code)\b[^>]*>/gi, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  return output
+}
+
 function sanitizeUserFacingText(input: string): string {
   let output = sanitizeContextArtifacts(input)
   for (const rule of USER_VISIBLE_SOURCE_PHRASE_RULES) {
@@ -218,7 +312,7 @@ function extractThinkingFromAssistantRawText(rawText: string): string {
 function buildAssistantContextContent(rawText: string, sanitizedText: string, rawReasoning: string): string {
   const replayRawText = sanitizeReplayRawText(rawText)
   const visibleText = sanitizeUserFacingText(sanitizedText).trim()
-  const reasoning = sanitizeContextArtifacts(rawReasoning).trim()
+  const reasoning = sanitizeReasoningForContext(rawReasoning).trim()
   const primaryText = replayRawText || visibleText
 
   if (primaryText && reasoning) {
@@ -370,6 +464,7 @@ async function summarizeCurrentTaskProgress(
   logScope?: string,
 ): Promise<string> {
   const lines: string[] = []
+  const userMediaRefs = collectUserMediaRefsFromMessages(messagesToSummarize)
   for (const m of messagesToSummarize) {
     const sanitizedContent = sanitizeContextArtifacts(String(m.content ?? ''))
     if (!sanitizedContent) continue
@@ -379,6 +474,9 @@ async function summarizeCurrentTaskProgress(
       : '系统'
     const compacted = m.role === 'system' ? compactLine(sanitizedContent, 360) : sanitizedContent
     lines.push(`[${role}] ${compacted}`)
+  }
+  if (userMediaRefs.length > 0) {
+    lines.push(`[用户提交媒体文件]\n${userMediaRefs.map((ref) => `- ${ref}`).join('\n')}`)
   }
 
   const prompt: ChatMessage[] = [
@@ -393,7 +491,8 @@ async function summarizeCurrentTaskProgress(
 4. 不要丢失文件路径、函数名、命令、报错、关键结论。
 5. 用户原始问题会在上下文里单独保留，摘要不要重复改写用户问题本身，重点总结该问题之后的执行进度。
 6. 如果当前存在执行计划，必须明确保留计划已完成步骤、待继续步骤，以及后续继续执行时仍需更新计划状态。
-7. 使用中文结构化输出。`,
+7. 若用户提交了媒体文件（图片/视频等），必须在总结中原样保留这些媒体文件的路径或链接。
+8. 使用中文结构化输出。`,
     },
     {
       role: 'user',
@@ -950,6 +1049,8 @@ export async function runAgent(
       const finalIntentType = intentType || inferIntentTypeFromQuery(plainUserQuery || lastUserGoal)
       const finalIntentSummary = intentSummary || plainUserQuery || lastUserGoal
       const finalIntentGoal = intentGoal || plainUserQuery || lastUserGoal
+      const userMediaRefs = collectUserMediaRefsFromContent(lastUserGoal)
+      const summaryWithMediaRefs = appendMediaRefsToSummary(finalSummary, userMediaRefs)
       const savedTaskMemory = await recordTaskLog(
         workspace,
         {
@@ -959,7 +1060,7 @@ export async function runAgent(
           intentType: finalIntentType,
           intentSummary: finalIntentSummary,
           intentGoal: finalIntentGoal,
-          summary: finalSummary,
+          summary: summaryWithMediaRefs,
           outcome,
           tools,
           changedFiles: modifiedFiles.slice(0, 80),
@@ -1288,7 +1389,7 @@ export async function runAgent(
           if (delta) onEvent?.({ type: 'text', content: delta })
         } else if (event.type === 'reasoning') {
           rawReasoningContent += event.content
-          const sanitizedReasoning = sanitizeContextArtifacts(rawReasoningContent)
+          const sanitizedReasoning = sanitizeReasoningForContext(rawReasoningContent)
           const reasoningDelta = sanitizedReasoning.slice(emittedSanitizedReasoning.length)
           emittedSanitizedReasoning = sanitizedReasoning
           if (reasoningDelta) onEvent?.({ type: 'reasoning', content: reasoningDelta })
@@ -1307,13 +1408,13 @@ export async function runAgent(
       const finalSanitizedText = sanitizeUserFacingText(rawTextContent)
       const tailDelta = finalSanitizedText.slice(emittedSanitizedText.length)
       if (tailDelta) onEvent?.({ type: 'text', content: tailDelta })
-      const finalSanitizedReasoning = sanitizeContextArtifacts(rawReasoningContent)
+      const finalSanitizedReasoning = sanitizeReasoningForContext(rawReasoningContent)
       const reasoningTailDelta = finalSanitizedReasoning.slice(emittedSanitizedReasoning.length)
       if (reasoningTailDelta) onEvent?.({ type: 'reasoning', content: reasoningTailDelta })
       textContent = finalSanitizedText
       assistantContextContent = buildAssistantContextContent(rawTextContent, finalSanitizedText, rawReasoningContent)
       toolCallThinking =
-        sanitizeContextArtifacts(rawReasoningContent).trim() ||
+        sanitizeReasoningForContext(rawReasoningContent).trim() ||
         extractThinkingFromAssistantRawText(rawTextContent) ||
         sanitizeReplayRawText(rawTextContent)
       lastAssistantText = assistantContextContent || textContent || lastAssistantText
@@ -1444,10 +1545,10 @@ export async function runAgent(
     // 这里不要把本轮“思考/计划/开始执行”的自然语言正文继续喂回下一轮，
     // 否则部分兼容模型会被自己上一轮的计划文本反复诱导，持续重复同一工具调用。
     // 兼容推理模型：assistant+tool_calls 统一带 reasoning_content，content 仍保持空字符串。
-    const sanitizedReasoningForToolCall = sanitizeContextArtifacts(rawReasoningContent).trim()
+    const sanitizedReasoningForToolCall = sanitizeReasoningForContext(rawReasoningContent).trim()
     const reasoningForToolCall =
       sanitizedReasoningForToolCall
-      || sanitizeContextArtifacts(toolCallThinking).trim()
+      || sanitizeReasoningForContext(toolCallThinking).trim()
     const assistantToolCallContent = ''
     const assistantToolCallMessage: ChatMessage & { reasoning_content?: string } = {
       role: 'assistant',

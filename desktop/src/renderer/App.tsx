@@ -275,30 +275,50 @@ export default function App() {
   }, [scoreBrowserError])
 
   /* ---- derived ---- */
-  const tid = threadStore.activeThreadId                           // 当前项目 ID
-  const sessionId = threadStore.activeThread?.activeSessionId ?? '' // 当前会话 ID
-  const sessions = threadStore.activeThread?.sessions ?? []
+  const activeThread = threadStore.activeThread
+  const tid = activeThread?.id ?? '' // 当前项目 ID
+  const sessions = activeThread?.sessions ?? []
+  const sessionId = useMemo(() => {
+    if (!activeThread || sessions.length <= 0) return ''
+    const activeSessionRaw = String(activeThread.activeSessionId || '').trim()
+    if (activeSessionRaw && sessions.some((session) => session.id === activeSessionRaw)) {
+      return activeSessionRaw
+    }
+    return sessions[0]?.id ?? ''
+  }, [activeThread, sessions])
+  const hasValidActiveSession = Boolean(
+    activeThread
+    && sessionId
+    && sessions.some((session) => session.id === sessionId),
+  )
 
   // 消息、发送状态等全部以 sessionId 为 key
-  const messages = chat.getMessages(sessionId)
-  const totalSessionMessageCount = chat.getSessionMessageCount(sessionId)
-  const sessionSending = chat.isSending(sessionId)
-  const sessionStreamingContent = chat.getStreamingContent(sessionId)
-  const sessionQueue = chat.getQueue(sessionId)
-  const activeTaskStartedAt = chat.getActiveTaskStartedAt(sessionId)
+  const messages = hasValidActiveSession ? chat.getMessages(sessionId) : []
+  const totalSessionMessageCount = hasValidActiveSession ? chat.getSessionMessageCount(sessionId) : 0
+  const sessionSending = hasValidActiveSession ? chat.isSending(sessionId) : false
+  const sessionStreamingContent = hasValidActiveSession ? chat.getStreamingContent(sessionId) : ''
+  const sessionQueue = hasValidActiveSession ? chat.getQueue(sessionId) : []
+  const activeTaskStartedAt = hasValidActiveSession ? chat.getActiveTaskStartedAt(sessionId) : undefined
 
   // 当前项目的模式和工作空间
   const currentMode: ThreadMode = 'agent'
-  const currentProjectRules = threadStore.activeThread?.projectRules ?? ''
+  const currentProjectRules = activeThread?.projectRules ?? ''
 
   // Agent 模式下文本已在消息内实时更新，不需要独立的流式气泡
   const showStreamBubble = sessionSending && currentMode !== 'agent'
-  const currentWorkspace: string = threadStore.activeThread?.workspace ?? ''
+  const currentWorkspace: string = activeThread?.workspace ?? ''
 
   useEffect(() => {
-    if (!sessionId) return
+    if (!activeThread || sessions.length <= 0 || !sessionId) return
+    if (activeThread.activeSessionId !== sessionId) {
+      threadStore.switchSession(activeThread.id, sessionId)
+    }
+  }, [activeThread, sessions, sessionId, threadStore])
+
+  useEffect(() => {
+    if (!hasValidActiveSession) return
     void chat.ensureSessionLoaded(sessionId)
-  }, [chat, sessionId])
+  }, [chat, sessionId, hasValidActiveSession])
 
   /** 将相对路径解析为绝对路径 */
   const resolveFilePath = useCallback((filePath: string) => {
@@ -1880,7 +1900,14 @@ export default function App() {
   function doSend(content: string, images?: AttachedImage[], attachments?: AttachedAsset[], target?: MobileTarget) {
     const threadId = target?.threadId ?? threadStore.ensureActiveThread()
     const thread = threadStore.threads.find((t) => t.id === threadId)
-    const sid = target?.sessionId ?? thread?.activeSessionId ?? ''
+    const targetSessionId = String(target?.sessionId || '').trim()
+    const activeSessionId = String(thread?.activeSessionId || '').trim()
+    const sid = (() => {
+      if (!thread) return ''
+      if (targetSessionId && thread.sessions.some((session) => session.id === targetSessionId)) return targetSessionId
+      if (activeSessionId && thread.sessions.some((session) => session.id === activeSessionId)) return activeSessionId
+      return thread.sessions[0]?.id ?? ''
+    })()
     if (!sid) return
     const modelConfigId = String(
       target?.modelConfigId
