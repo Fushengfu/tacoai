@@ -1358,7 +1358,7 @@ export async function runAgent(
     let rawReasoningContent = ''
     let emittedSanitizedReasoning = ''
     let assistantContextContent = ''
-    let toolCallThinking = ''
+    let toolCallThinking = 'enabled'
     let toolCalls: ToolCall[] = []
     let invalidToolCallNames: string[] = []
 
@@ -1553,10 +1553,10 @@ export async function runAgent(
     const assistantToolCallMessage: ChatMessage & { reasoning_content?: string } = {
       role: 'assistant',
       content: assistantToolCallContent,
-      tool_calls: toolCalls,
+      tool_calls: toolCalls
     }
-    if (reasoningForToolCall) {
-      assistantToolCallMessage.reasoning_content = reasoningForToolCall
+    if (provider !== 'qwen') {
+      assistantToolCallMessage.reasoning_content = reasoningForToolCall || '继续'
     }
     workingMessages.push(assistantToolCallMessage)
 

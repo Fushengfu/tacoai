@@ -1158,6 +1158,9 @@ async function buildRequest(
     messages: providerPrepared.messages,
     temperature: resolveRequestTemperature(config),
     stream,
+    thinking: {
+      "type": "enabled"
+    },
   }
   if (options?.tools && options.tools.length > 0) {
     body.tools = options.tools
@@ -1166,6 +1169,10 @@ async function buildRequest(
   if (stream) {
     // 请求 provider 在流式响应中返回 usage（尤其 total_tokens）
     body.stream_options = { include_usage: true }
+  }
+
+  if (provider === 'deepseek') {
+    body.reasoning_effort = 'max'
   }
 
   console.log('REQUEST_BUILD', {
@@ -1649,6 +1656,7 @@ export async function* requestStreamWithTools(
         }
         try {
           const parsed = JSON.parse(data)
+          log('STREAM_DATA', parsed, logScope)
           if (!firstChunk) firstChunk = parsed
           lastChunk = parsed
           if (Object.prototype.hasOwnProperty.call(parsed, 'usage')) {

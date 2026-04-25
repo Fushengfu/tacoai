@@ -97,8 +97,8 @@ body {
 
 .app-shell {
   display: grid;
-  /* 5 列: sidebar | left-resize | main | right-resize | detail */
-  grid-template-columns: 280px 0px minmax(0, 1fr) 0px 300px;
+  /* 3 列: sidebar | resize | main（由 App.tsx 动态 style 覆盖） */
+  grid-template-columns: 280px 0px minmax(0, 1fr);
   grid-template-rows: 48px minmax(0, 1fr);
   height: 100%;
   background: linear-gradient(180deg, var(--app-bg-start) 0%, var(--app-bg-end) 100%);
@@ -249,7 +249,7 @@ body {
   color: #f56565;
 }
 
-/* ---- Resize handle (中间/右侧面板分隔条) ---- */
+/* ---- Resize handle (左侧面板分隔条) ---- */
 .resize-handle {
   width: 6px;
   margin-left: -3px;
@@ -540,7 +540,7 @@ body.is-resizing iframe {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Context usage bar (shared by sidebar & detail panel)               */
+/*  Context usage bar (sidebar)                                        */
 /* ------------------------------------------------------------------ */
 
 .context-bar {

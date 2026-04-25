@@ -125,8 +125,7 @@
   }
 
   .sidebar,
-  .resize-handle,
-  .detail-panel {
+  .resize-handle {
     display: none;
   }
 

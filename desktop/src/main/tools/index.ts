@@ -270,25 +270,25 @@ export const toolDefinitions: ToolDefinition[] = [
       },
     },
   },
-  {
-    type: 'function',
-    function: {
-      name: 'codebase_search',
-      description: '兼容旧版本的内容搜索工具。默认不作为首选代码检索方式；代码搜索优先使用 run_command 执行 rg/grep/find。仅在明确需要简单文本搜索且其他方式不适用时才可使用。',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: '搜索关键词或正则表达式（必填）' },
-          path: { type: 'string', description: '搜索范围路径（目录或文件，支持相对/绝对路径；默认项目根目录）' },
-          glob: { type: 'string', description: '限定文件类型，如 "*.ts"、"*.{ts,tsx}"（可选）' },
-          context: { type: 'number', description: '每个匹配项显示的上下文行数，默认 2，范围 0-5' },
-          limit: { type: 'number', description: '最大返回匹配数，默认 30，范围 1-80' },
-          caseSensitive: { type: 'boolean', description: '是否区分大小写，默认 false' },
-        },
-        required: ['query'],
-      },
-    },
-  },
+  // {
+  //   type: 'function',
+  //   function: {
+  //     name: 'codebase_search',
+  //     description: '兼容旧版本的内容搜索工具。默认不作为首选代码检索方式；代码搜索优先使用 run_command 执行 rg/grep/find。仅在明确需要简单文本搜索且其他方式不适用时才可使用。',
+  //     parameters: {
+  //       type: 'object',
+  //       properties: {
+  //         query: { type: 'string', description: '搜索关键词或正则表达式（必填）' },
+  //         path: { type: 'string', description: '搜索范围路径（目录或文件，支持相对/绝对路径；默认项目根目录）' },
+  //         glob: { type: 'string', description: '限定文件类型，如 "*.ts"、"*.{ts,tsx}"（可选）' },
+  //         context: { type: 'number', description: '每个匹配项显示的上下文行数，默认 2，范围 0-5' },
+  //         limit: { type: 'number', description: '最大返回匹配数，默认 30，范围 1-80' },
+  //         caseSensitive: { type: 'boolean', description: '是否区分大小写，默认 false' },
+  //       },
+  //       required: ['query'],
+  //     },
+  //   },
+  // },
   {
     type: 'function',
     function: {
@@ -727,9 +727,10 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
       '优先按行范围分块读取（startLine/endLine），先小块定位再扩展上下文。',
       '每次读取后必须判断已获取信息是否足够完成当前任务，并记录尚未覆盖的区段。',
       '如果文件过大，则分多次读取，每次读取后必须判断已获取信息是否足够完成当前任务，并记录尚未覆盖的区段。',
-      '注意：此调用最多查看 250 行，最少 200 行。如果读取行范围不够，可以选择读取整个文件。读取整个文件通常低效且缓慢，尤其对于大文件（数百行以上），请谨慎使用。大多数情况下不允许读取整个文件，只有文件被编辑过或由用户手动附加到对话时才可读取全文。',
       '当用户提供的文件路径在工作空间之外但任务确需读取时，必须直接调用 read_file；系统会在执行前触发授权确认，禁止先口头拒绝访问。',
       '信息不足时继续读取相邻区段，直到可执行，不允许凭猜测修改代码。',
+      '注意：此调用最多查看 1000 行。读取整个文件通常低效且缓慢，尤其对于大文件（数百行以上），请谨慎使用。大多数情况下不允许读取整个文件，只有文件被编辑过或由用户手动附加到对话时才可读取全文。如果读取行范围不够，可以选择读取整个文件。',
+      '注意：避免连续使用相同参数调用此工具，以免造成重复读取。',
     ],
     cautions: [
       '除非确实需要，不要直接读取整文件，尤其是大文件。',
@@ -764,8 +765,9 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
     usage: [
       '用于构建、测试、运行和验证真实结果，优先执行最小必要命令。',
       '明确设置 cwd 到目标项目目录，避免在错误目录执行。',
-      '代码搜索默认优先使用 rg；定位文件名可配合 find 命令，搜索不到再拆分关键词继续 rg，不要先调用 codebase_search。',
+      '代码搜索默认优先使用 rg；定位文件名可配合 find 命令，搜索不到再拆分关键词继续 rg。',
       '命令失败时返回关键 stdout/stderr，并给出下一步处理动作。',
+      '注意：在同一轮询中，避免连续执行同一个命令，如果尝试执行失败请更换别的方式或者别的命令。',
     ],
     cautions: ['未获用户明确授权时，禁止执行高风险破坏性命令。'],
   },
@@ -798,13 +800,13 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
       '大范围匹配时通过 directory/type/mode 缩小范围。',
     ],
   },
-  codebase_search: {
-    usage: [
-      '该工具仅保留给旧会话兼容，默认代码检索不要使用它。',
-      '代码搜索统一优先 run_command 执行 rg；需要文件名定位时优先 find_file 或 run_command 执行 find。',
-      '只有在明确需要简单兜底文本搜索且 run_command 不适用时，才考虑使用此工具。',
-    ],
-  },
+  // codebase_search: {
+  //   usage: [
+  //     '该工具仅保留给旧会话兼容，默认代码检索不要使用它。',
+  //     '代码搜索统一优先 run_command 执行 rg；需要文件名定位时优先 find_file 或 run_command 执行 find。',
+  //     '只有在明确需要简单兜底文本搜索且 run_command 不适用时，才考虑使用此工具。',
+  //   ],
+  // },
   read_skill: {
     usage: [
       '先查看系统注入的 `SKILLS_CATALOG`，确认需要的技能 ID 后再调用。',
@@ -1433,8 +1435,8 @@ async function executeTool(
         return await execRunCommand(args, workspace, signal)
       case 'find_file':
         return await execFindFile(args, workspace)
-      case 'codebase_search':
-        return await execCodebaseSearch(args, workspace)
+      // case 'codebase_search':
+      //   return await execCodebaseSearch(args, workspace)
       case 'save_note':
         return await execSaveNote(args, workspace, projectId)
       case 'delete_note':

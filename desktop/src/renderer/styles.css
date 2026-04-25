@@ -2,7 +2,7 @@
 @import './styles/chat-shell.css';
 @import './styles/embedded-browser.css';
 @import './styles/settings-panels.css';
-@import './styles/detail-panel.css';
 @import './styles/agent-and-changes.css';
 @import './styles/terminal-and-responsive.css';
 @import './styles/file-editor.css';
+@import './styles/chat-status-overlay.css';

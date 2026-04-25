@@ -1,6 +1,6 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, useTransition, type ErrorInfo } from 'react'
-import type { AttachedAsset, AttachedImage, ChatMsg, FileChangeInfo, FileChangeStatus, GitVersionCommit, ProviderId, ThemeMode, ThreadMode } from './types'
-import type { AppUpdateCheckResult, EditorId, FileTreeEntry, BrowserConsoleLevel, MobileBridgeContextSnapshot, GitWorkingTreeStatus } from '../shared/ipc'
+import { useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo } from 'react'
+import type { AttachedAsset, AttachedImage, ChatMsg, FileChangeInfo, FileChangeStatus, ProviderId, ThemeMode, ThreadMode } from './types'
+import type { AppUpdateCheckResult, EditorId, BrowserConsoleLevel, MobileBridgeContextSnapshot, GitWorkingTreeStatus } from '../shared/ipc'
 import { estimateTokens, buildSystemPrompt, resolveModelConfigDisplayLabel, resolveModelConfigMaxTokens } from './constants'
 import { loadJson, saveJson } from './lib/storage'
 import { useThreads } from './hooks/useThreads'
@@ -9,19 +9,15 @@ import { useProviderSettings } from './hooks/useProviderSettings'
 import { useGuiPlusSettings } from './hooks/useGuiPlusSettings'
 import { Sidebar } from './components/Sidebar'
 import { ChatPanel } from './components/ChatPanel'
-import { DetailPanel } from './components/DetailPanel'
+import { ChatStatusOverlay } from './components/ChatStatusOverlay'
 import { SettingsPage } from './components/SettingsModal'
 import { PaneErrorBoundary } from './components/PaneErrorBoundary'
-import { useResize } from './hooks/useResize'
 import { useDrag } from './hooks/useDrag'
 
 const DEV_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1'])
 const SIDEBAR_MIN_WIDTH = 220
 const SIDEBAR_DEFAULT_RATIO = 0.2
 const CHAT_MIN_WIDTH = 640
-const DETAIL_DEFAULT_WIDTH = 340
-const DETAIL_MIN_WIDTH = 260
-const DETAIL_MAX_WIDTH = 700
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
@@ -160,10 +156,6 @@ export default function App() {
   const chat = useChat()
   const providerSettings = useProviderSettings()
   const guiPlusSettings = useGuiPlusSettings()
-  const [, startPanelStateTransition] = useTransition()
-  const { width: detailWidth, setWidth: setDetailWidth, handleMouseDown: handleResizeMouseDown } = useResize(
-    DETAIL_DEFAULT_WIDTH, DETAIL_MIN_WIDTH, DETAIL_MAX_WIDTH, 'taco.detailPanelWidth', 'right'
-  )
 
   /* ---- local UI state ---- */
   const [draft, setDraft] = useState('')
@@ -174,10 +166,8 @@ export default function App() {
   const [viewingFile, setViewingFile] = useState<string | null>(null)
   /** 打开文件后需要定位到的行列（供编辑器跳转定义使用） */
   const [viewingSelection, setViewingSelection] = useState<{ line: number; column: number } | null>(null)
-  const [detailTreeExpanded, setDetailTreeExpanded] = useState<boolean>(() => readStoredBoolean('taco.panel.treeExpanded', false))
-  const [detailChangesExpanded, setDetailChangesExpanded] = useState<boolean>(() => readStoredBoolean('taco.panel.changesExpanded', true))
-  const [detailGitExpanded, setDetailGitExpanded] = useState<boolean>(() => readStoredBoolean('taco.panel.gitExpanded', true))
   const [showTerminal, setShowTerminal] = useState(false)
+  const [showStatusOverlay, setShowStatusOverlay] = useState(false)
   /** 外部浏览器窗口状态 Map<appId, url> */
   const [browserWindows, setBrowserWindows] = useState<Map<string, string>>(new Map())
   /** 外部浏览器控制台日志 */
@@ -232,7 +222,6 @@ export default function App() {
     typeof window === 'undefined' ? 1440 : window.innerWidth
   )
   const appShellRef = useRef<HTMLDivElement | null>(null)
-  const detailWidthRef = useRef(detailWidth)
   const scrollRef = useRef<HTMLDivElement>(null)
   /** 手动编辑产生的文件变更（按 session 隔离），用于右侧变更面板实时同步 */
   const [manualFileChangesBySession, setManualFileChangesBySession] = useState<Record<string, FileChangeInfo[]>>({})
@@ -343,18 +332,6 @@ export default function App() {
   const currentModelConfig = providerSettings.getModelConfig(currentModelConfigId || '')
   const currentProvider: ProviderId | undefined = currentModelConfig?.provider
   const activeProviderLabel = currentModelConfig ? resolveModelConfigDisplayLabel(currentModelConfig) : ''
-
-  useEffect(() => {
-    try { localStorage.setItem('taco.panel.treeExpanded', String(detailTreeExpanded)) } catch { /* ignore */ }
-  }, [detailTreeExpanded])
-
-  useEffect(() => {
-    try { localStorage.setItem('taco.panel.changesExpanded', String(detailChangesExpanded)) } catch { /* ignore */ }
-  }, [detailChangesExpanded])
-
-  useEffect(() => {
-    try { localStorage.setItem('taco.panel.gitExpanded', String(detailGitExpanded)) } catch { /* ignore */ }
-  }, [detailGitExpanded])
 
   useEffect(() => {
     threadStoreRef.current = threadStore
@@ -470,25 +447,7 @@ export default function App() {
     }
   }, [])
 
-  const detailAutoMaxWidth = clampNumber(
-    appShellWidth - SIDEBAR_MIN_WIDTH - CHAT_MIN_WIDTH,
-    DETAIL_MIN_WIDTH,
-    DETAIL_MAX_WIDTH,
-  )
-  const effectiveDetailWidth = clampNumber(detailWidth, DETAIL_MIN_WIDTH, detailAutoMaxWidth)
-
-  useEffect(() => {
-    setDetailWidth((prev) => {
-      const next = clampNumber(prev, DETAIL_MIN_WIDTH, detailAutoMaxWidth)
-      return Math.abs(next - prev) < 0.5 ? prev : next
-    })
-  }, [detailAutoMaxWidth, setDetailWidth])
-
-  useEffect(() => {
-    detailWidthRef.current = effectiveDetailWidth
-  }, [effectiveDetailWidth])
-
-  const sidebarAreaWidth = Math.max(0, appShellWidth - effectiveDetailWidth)
+  const sidebarAreaWidth = Math.max(0, appShellWidth)
   const sidebarAutoMinWidth = Math.min(SIDEBAR_MIN_WIDTH, sidebarAreaWidth)
   const sidebarAutoMaxWidth = Math.max(sidebarAutoMinWidth, sidebarAreaWidth - CHAT_MIN_WIDTH)
   const sidebarMinRatio = sidebarAreaWidth > 0 ? (sidebarAutoMinWidth / sidebarAreaWidth) : 0
@@ -509,7 +468,7 @@ export default function App() {
     const startX = e.clientX
     const getAreaWidth = () => {
       const shellWidth = appShellRef.current?.clientWidth ?? appShellWidth
-      return Math.max(1, shellWidth - detailWidthRef.current)
+      return Math.max(1, shellWidth)
     }
     const startAreaWidth = getAreaWidth()
     const startMinWidth = Math.min(SIDEBAR_MIN_WIDTH, startAreaWidth)
@@ -676,14 +635,14 @@ export default function App() {
     pushPath(selectedFile)
     pushPath(viewingFile)
 
-    if (detailChangesExpanded) {
+    if (currentMode === 'agent') {
       for (let i = dedupedFileChanges.length - 1; i >= 0 && ordered.length < 18; i--) {
         pushPath(dedupedFileChanges[i]?.filePath ?? null)
       }
     }
 
     return ordered
-  }, [currentMode, selectedFile, viewingFile, detailChangesExpanded, dedupedFileChanges])
+  }, [currentMode, selectedFile, viewingFile, dedupedFileChanges])
   const liveDiffTargetKey = liveDiffPriorityPaths.join('|')
   const syncLiveNewContentByPath = useCallback(async () => {
     const now = Date.now()
@@ -698,11 +657,11 @@ export default function App() {
     const seq = ++liveFileChangeSyncSeqRef.current
     if (!currentWorkspace || currentMode !== 'agent' || liveDiffPriorityPaths.length === 0) {
       liveDiffLastTargetKeyRef.current = liveDiffTargetKey
-      startPanelStateTransition(() => setLiveFileChangeOverrides({}))
+      setLiveFileChangeOverrides({})
       return
     }
 
-    const maxTargets = detailChangesExpanded
+    const maxTargets = currentMode === 'agent'
       ? (sessionSending ? 10 : 24)
       : 2
     const changeMap = new Map(
@@ -719,7 +678,7 @@ export default function App() {
     }
 
     if (targetChanges.length === 0) {
-      startPanelStateTransition(() => setLiveFileChangeOverrides({}))
+      setLiveFileChangeOverrides({})
       return
     }
 
@@ -749,17 +708,15 @@ export default function App() {
     }
 
     if (seq !== liveFileChangeSyncSeqRef.current) return
-    startPanelStateTransition(() => setLiveFileChangeOverrides(next))
+    setLiveFileChangeOverrides(next)
   }, [
     currentWorkspace,
     currentMode,
     dedupedFileChanges,
-    detailChangesExpanded,
     liveDiffPriorityPaths,
     liveDiffTargetKey,
     sessionSending,
     resolveFilePath,
-    startPanelStateTransition,
   ])
 
   const effectiveFileChanges = useMemo(() => {
@@ -794,129 +751,70 @@ export default function App() {
     return segments.join('|')
   }, [messages, currentMode, currentWorkspace])
 
-  // 工作区目录树
-  const [workspaceTree, setWorkspaceTree] = useState<FileTreeEntry[]>([])
-  const workspaceTreeRefreshSeqRef = useRef(0)
-  const gitLogRefreshSeqRef = useRef(0)
+  // 工作区目录树（不再需要面板展示，移除 tree 刷新）
   const gitStatusRefreshSeqRef = useRef(0)
-
-  /** 刷新工作区目录树 */
-  const refreshWorkspaceTree = useCallback(async () => {
-    const seq = ++workspaceTreeRefreshSeqRef.current
-    if (!currentWorkspace) {
-      startPanelStateTransition(() => setWorkspaceTree([]))
-      return
-    }
-    try {
-      const tree = await window.taco.workspace.tree(currentWorkspace)
-      if (seq !== workspaceTreeRefreshSeqRef.current) return
-      startPanelStateTransition(() => setWorkspaceTree(tree))
-    } catch (err) {
-      if (seq !== workspaceTreeRefreshSeqRef.current) return
-      console.error('读取工作区目录失败:', err)
-      startPanelStateTransition(() => setWorkspaceTree([]))
-    }
-  }, [currentWorkspace, startPanelStateTransition])
-
-  // Git 版本历史
-  const [gitVersions, setGitVersions] = useState<GitVersionCommit[]>([])
-
-  /** 刷新 Git 版本历史 */
-  const refreshGitLog = useCallback(async () => {
-    const seq = ++gitLogRefreshSeqRef.current
-    if (!currentWorkspace || currentMode !== 'agent') {
-      startPanelStateTransition(() => setGitVersions([]))
-      return
-    }
-    try {
-      const commits = await window.taco.git.log(currentWorkspace)
-      if (seq !== gitLogRefreshSeqRef.current) return
-      startPanelStateTransition(() => setGitVersions(commits))
-    } catch (err) {
-      if (seq !== gitLogRefreshSeqRef.current) return
-      console.error('获取 Git 版本历史失败:', err)
-      startPanelStateTransition(() => setGitVersions([]))
-    }
-  }, [currentWorkspace, currentMode, startPanelStateTransition])
 
   /** 刷新 Git 工作区状态（已暂存/未暂存） */
   const refreshGitStatus = useCallback(async () => {
     const seq = ++gitStatusRefreshSeqRef.current
     if (!currentWorkspace) {
-      startPanelStateTransition(() => setGitWorkingStatus({ staged: [], unstaged: [] }))
+      setGitWorkingStatus({ staged: [], unstaged: [] })
       setGitStatusLoaded(false)
       return
     }
     try {
       const status = await window.taco.git.status(currentWorkspace)
       if (seq !== gitStatusRefreshSeqRef.current) return
-      startPanelStateTransition(() => {
-        setGitWorkingStatus({
-          staged: Array.isArray(status?.staged) ? status.staged : [],
-          unstaged: Array.isArray(status?.unstaged) ? status.unstaged : [],
-        })
+      setGitWorkingStatus({
+        staged: Array.isArray(status?.staged) ? status.staged : [],
+        unstaged: Array.isArray(status?.unstaged) ? status.unstaged : [],
       })
       setGitStatusLoaded(true)
     } catch (err) {
       if (seq !== gitStatusRefreshSeqRef.current) return
       console.error('获取 Git 工作区状态失败:', err)
-      startPanelStateTransition(() => setGitWorkingStatus({ staged: [], unstaged: [] }))
+      setGitWorkingStatus({ staged: [], unstaged: [] })
       setGitStatusLoaded(true)
     }
-  }, [currentWorkspace, startPanelStateTransition])
+  }, [currentWorkspace])
 
   type ProjectRefreshFlags = {
-    tree: boolean
     gitStatus: boolean
-    gitLog: boolean
     liveDiff: boolean
   }
 
   const autoRefreshFlags = useMemo<ProjectRefreshFlags>(() => ({
-    tree: detailTreeExpanded,
-    gitStatus: currentMode === 'agent' && detailChangesExpanded,
-    gitLog: currentMode === 'agent' && detailGitExpanded,
+    gitStatus: false,
     liveDiff: currentMode === 'agent' && liveDiffPriorityPaths.length > 0,
   }), [
     currentMode,
-    detailTreeExpanded,
-    detailChangesExpanded,
-    detailGitExpanded,
     liveDiffPriorityPaths.length,
   ])
-  const shouldWatchWorkspace = autoRefreshFlags.tree || autoRefreshFlags.gitStatus || autoRefreshFlags.liveDiff
+  const shouldWatchWorkspace = autoRefreshFlags.liveDiff
 
   const refreshQueueRef = useRef<{
     pending: ProjectRefreshFlags
     timer: ReturnType<typeof window.setTimeout> | null
     running: boolean
-    lastTreeAt: number
     lastGitStatusAt: number
-    lastGitLogAt: number
   }>({
-    pending: { tree: false, gitStatus: false, gitLog: false, liveDiff: false },
+    pending: { gitStatus: false, liveDiff: false },
     timer: null,
     running: false,
-    lastTreeAt: 0,
     lastGitStatusAt: 0,
-    lastGitLogAt: 0,
   })
   const refreshFnsRef = useRef({
-    refreshWorkspaceTree,
     refreshGitStatus,
-    refreshGitLog,
     syncLiveNewContentByPath,
     sessionSending,
   })
   useEffect(() => {
     refreshFnsRef.current = {
-      refreshWorkspaceTree,
       refreshGitStatus,
-      refreshGitLog,
       syncLiveNewContentByPath,
       sessionSending,
     }
-  }, [refreshWorkspaceTree, refreshGitStatus, refreshGitLog, syncLiveNewContentByPath, sessionSending])
+  }, [refreshGitStatus, syncLiveNewContentByPath, sessionSending])
 
   const runQueuedProjectRefresh = useCallback(async () => {
     const yieldToUI = () => new Promise<void>((resolve) => window.setTimeout(resolve, 0))
@@ -930,29 +828,15 @@ export default function App() {
     try {
       while (true) {
         const pending = state.pending
-        const shouldTree = pending.tree
         const shouldGitStatus = pending.gitStatus
-        const shouldGitLog = pending.gitLog
         const shouldLiveDiff = pending.liveDiff
 
-        state.pending = { tree: false, gitStatus: false, gitLog: false, liveDiff: false }
+        state.pending = { gitStatus: false, liveDiff: false }
 
-        if (!shouldTree && !shouldGitStatus && !shouldGitLog && !shouldLiveDiff) break
+        if (!shouldGitStatus && !shouldLiveDiff) break
 
         const refreshFns = refreshFnsRef.current
         let didWork = false
-        if (shouldTree) {
-          const now = Date.now()
-          const minTreeInterval = refreshFns.sessionSending ? 2800 : 1200
-          if ((now - state.lastTreeAt) >= minTreeInterval) {
-            didWork = true
-            state.lastTreeAt = now
-            await refreshFns.refreshWorkspaceTree()
-            await yieldToUI()
-          } else {
-            state.pending.tree = true
-          }
-        }
         if (shouldGitStatus) {
           const now = Date.now()
           const minGitStatusInterval = refreshFns.sessionSending ? 1400 : 600
@@ -971,21 +855,7 @@ export default function App() {
           await yieldToUI()
         }
 
-        if (shouldGitLog) {
-          const now = Date.now()
-          const canRefreshGitLog = !refreshFns.sessionSending || (now - state.lastGitLogAt >= 1200)
-          if (canRefreshGitLog) {
-            didWork = true
-            state.lastGitLogAt = now
-            await refreshFns.refreshGitLog()
-            await yieldToUI()
-          } else {
-            // 限频期间保留请求，避免高频消息时反复打满 git log
-            state.pending.gitLog = true
-          }
-        }
-
-        if (!didWork && (state.pending.tree || state.pending.gitStatus || state.pending.gitLog)) {
+        if (!didWork && state.pending.gitStatus) {
           // 限频导致本轮未执行真实刷新时，短暂等待避免 busy loop 占满 CPU。
           await new Promise<void>((resolve) => {
             window.setTimeout(resolve, 220)
@@ -994,7 +864,7 @@ export default function App() {
       }
     } finally {
       state.running = false
-      const hasPending = state.pending.tree || state.pending.gitStatus || state.pending.gitLog || state.pending.liveDiff
+      const hasPending = state.pending.gitStatus || state.pending.liveDiff
       if (hasPending && !state.timer) {
         state.timer = window.setTimeout(() => {
           state.timer = null
@@ -1006,9 +876,7 @@ export default function App() {
 
   const queueProjectRefresh = useCallback((flags: Partial<ProjectRefreshFlags>, debounceMs = 120) => {
     const state = refreshQueueRef.current
-    state.pending.tree = state.pending.tree || !!flags.tree
     state.pending.gitStatus = state.pending.gitStatus || !!flags.gitStatus
-    state.pending.gitLog = state.pending.gitLog || !!flags.gitLog
     state.pending.liveDiff = state.pending.liveDiff || !!flags.liveDiff
 
     if (debounceMs <= 0) {
@@ -1027,18 +895,11 @@ export default function App() {
     }, debounceMs)
   }, [runQueuedProjectRefresh])
 
-  // 切换工作区时：立即刷新目录树 + 启动文件监听
+  // 切换工作区时：刷新 git status
   useEffect(() => {
     setGitStatusLoaded(false)
-    const initialFlags: Partial<ProjectRefreshFlags> = {
-      tree: true, // 始终加载目录树，不管面板是否展开
-      gitStatus: currentMode === 'agent' && detailChangesExpanded,
-      gitLog: currentMode === 'agent' && detailGitExpanded,
-    }
-    if (initialFlags.tree || initialFlags.gitStatus || initialFlags.gitLog) {
-      queueProjectRefresh(initialFlags, 0)
-    }
-  }, [currentWorkspace, currentMode, queueProjectRefresh])
+    queueProjectRefresh({ gitStatus: true }, 0)
+  }, [currentWorkspace, queueProjectRefresh])
 
   useEffect(() => {
     if (!currentWorkspace || !shouldWatchWorkspace) return
@@ -1048,27 +909,22 @@ export default function App() {
     }
   }, [currentWorkspace, shouldWatchWorkspace])
 
-  // 切换会话/项目时刷新一次状态（去掉消息长度驱动，避免频繁重刷）
+  // 切换会话/项目时刷新 git status + live diff
   useEffect(() => {
     if (!currentWorkspace) return
-    const sessionRefreshFlags: Partial<ProjectRefreshFlags> = {
-      gitStatus: currentMode === 'agent' && detailChangesExpanded,
-      gitLog: currentMode === 'agent' && detailGitExpanded,
+    const flags: Partial<ProjectRefreshFlags> = {
+      gitStatus: currentMode === 'agent',
       liveDiff: currentMode === 'agent' && liveDiffPriorityPaths.length > 0,
     }
-    if (sessionRefreshFlags.gitStatus || sessionRefreshFlags.gitLog || sessionRefreshFlags.liveDiff) {
-      queueProjectRefresh({
-        gitStatus: sessionRefreshFlags.gitStatus,
-        gitLog: sessionRefreshFlags.gitLog,
-        liveDiff: sessionRefreshFlags.liveDiff,
-      }, 120)
+    if (flags.gitStatus || flags.liveDiff) {
+      queueProjectRefresh(flags, 120)
     }
   }, [sessionId, currentWorkspace, currentMode, queueProjectRefresh])
 
   // 监听文件系统变化通知，自动刷新（合并到调度队列）
   useEffect(() => {
     const unsubscribe = window.taco.workspace.onChanged(() => {
-      if (!autoRefreshFlags.tree && !autoRefreshFlags.gitStatus && !autoRefreshFlags.gitLog && !autoRefreshFlags.liveDiff) {
+      if (!autoRefreshFlags.liveDiff) {
         return
       }
       queueProjectRefresh(autoRefreshFlags, 260)
@@ -1078,18 +934,14 @@ export default function App() {
 
   useEffect(() => {
     if (!currentWorkspace || currentMode !== 'agent' || !changeSyncSignal) return
-    if (!autoRefreshFlags.tree && !autoRefreshFlags.gitStatus && !autoRefreshFlags.liveDiff) return
-    queueProjectRefresh({
-      tree: autoRefreshFlags.tree,
-      gitStatus: autoRefreshFlags.gitStatus,
-      liveDiff: autoRefreshFlags.liveDiff,
-    }, 80)
+    if (!autoRefreshFlags.liveDiff) return
+    queueProjectRefresh({ liveDiff: autoRefreshFlags.liveDiff }, 80)
   }, [currentWorkspace, currentMode, changeSyncSignal, autoRefreshFlags, queueProjectRefresh])
 
   // 低频兜底轮询（监听漏事件时保持状态最终一致）
   useEffect(() => {
     if (!currentWorkspace || sessionSending) return
-    if (!autoRefreshFlags.tree && !autoRefreshFlags.gitStatus && !autoRefreshFlags.gitLog && !autoRefreshFlags.liveDiff) return
+    if (!autoRefreshFlags.liveDiff) return
     const intervalMs = 15000
     const timer = window.setInterval(() => {
       queueProjectRefresh(autoRefreshFlags, 120)
@@ -1097,14 +949,14 @@ export default function App() {
     return () => window.clearInterval(timer)
   }, [currentWorkspace, sessionSending, autoRefreshFlags, queueProjectRefresh])
 
-  // Agent 一轮任务结束后立即做一次全量刷新，避免目录/变更面板停留旧状态
+  // Agent 一轮任务结束后立即刷新 live diff
   const prevSessionSendingRef = useRef(false)
   useEffect(() => {
     const prev = prevSessionSendingRef.current
     prevSessionSendingRef.current = sessionSending
     if (!currentWorkspace || currentMode !== 'agent') return
     if (prev && !sessionSending) {
-      if (autoRefreshFlags.tree || autoRefreshFlags.gitStatus || autoRefreshFlags.gitLog || autoRefreshFlags.liveDiff) {
+      if (autoRefreshFlags.liveDiff) {
         queueProjectRefresh(autoRefreshFlags, 0)
       }
     }
@@ -1112,7 +964,7 @@ export default function App() {
 
   useEffect(() => {
     if (!currentWorkspace) return
-    if (!autoRefreshFlags.tree && !autoRefreshFlags.gitStatus && !autoRefreshFlags.gitLog && !autoRefreshFlags.liveDiff) return
+    if (!autoRefreshFlags.liveDiff) return
     const handleFocusRefresh = () => {
       queueProjectRefresh(autoRefreshFlags, 0)
     }
@@ -1126,51 +978,6 @@ export default function App() {
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
   }, [currentWorkspace, autoRefreshFlags, queueProjectRefresh])
-
-  const panelVisibilityRef = useRef({
-    treeExpanded: detailTreeExpanded,
-    changesExpanded: detailChangesExpanded,
-    gitExpanded: detailGitExpanded,
-    liveDiffTargetKey,
-  })
-  useEffect(() => {
-    const prev = panelVisibilityRef.current
-    panelVisibilityRef.current = {
-      treeExpanded: detailTreeExpanded,
-      changesExpanded: detailChangesExpanded,
-      gitExpanded: detailGitExpanded,
-      liveDiffTargetKey,
-    }
-
-    if (!currentWorkspace) return
-
-    const nextFlags: Partial<ProjectRefreshFlags> = {}
-    if (detailTreeExpanded && !prev.treeExpanded) {
-      nextFlags.tree = true
-    }
-    if (currentMode === 'agent' && detailChangesExpanded && !prev.changesExpanded) {
-      nextFlags.gitStatus = true
-      if (liveDiffTargetKey) nextFlags.liveDiff = true
-    }
-    if (currentMode === 'agent' && detailGitExpanded && !prev.gitExpanded) {
-      nextFlags.gitLog = true
-    }
-    if (currentMode === 'agent' && liveDiffTargetKey && liveDiffTargetKey !== prev.liveDiffTargetKey) {
-      nextFlags.liveDiff = true
-    }
-
-    if (nextFlags.tree || nextFlags.gitStatus || nextFlags.gitLog || nextFlags.liveDiff) {
-      queueProjectRefresh(nextFlags, 0)
-    }
-  }, [
-    currentWorkspace,
-    currentMode,
-    detailTreeExpanded,
-    detailChangesExpanded,
-    detailGitExpanded,
-    liveDiffTargetKey,
-    queueProjectRefresh,
-  ])
 
   useEffect(() => {
     return () => {
@@ -1304,12 +1111,6 @@ export default function App() {
     [effectiveFileChanges, selectedFile]
   )
 
-  // 右侧面板采用延后值，避免高频刷新时阻塞主线程
-  const deferredWorkspaceTree = useDeferredValue(workspaceTree)
-  const deferredFileChanges = useDeferredValue(effectiveFileChanges)
-  const deferredGitStagedFiles = useDeferredValue(gitStagedFiles)
-  const deferredGitUnstagedFiles = useDeferredValue(gitUnstagedFiles)
-
   // 文件变更审核状态：key = filePath, value = 'pending' | 'accepted' | 'rejected'
   // 按 sessionId 持久化到 localStorage
   const fileStatusKey = `taco.fileStatuses.${sessionId}`
@@ -1407,17 +1208,13 @@ export default function App() {
     try {
       await stageSingleFileWithFallback(filePath)
       queueProjectRefresh({
-        tree: true,
         gitStatus: true,
-        gitLog: currentMode === 'agent',
         liveDiff: currentMode === 'agent',
       }, 0)
     } catch (err) {
       setFileStatuses((prev) => ({ ...prev, [filePath]: 'pending', [candidatePath]: 'pending' }))
       queueProjectRefresh({
-        tree: true,
         gitStatus: true,
-        gitLog: currentMode === 'agent',
         liveDiff: currentMode === 'agent',
       }, 0)
       console.error('暂存文件候选路径:', buildGitStageCandidates(filePath))
@@ -1473,49 +1270,13 @@ export default function App() {
       setFileStatuses((prev) => ({ ...prev, [filePath]: 'rejected' }))
       removeManualChanges([filePath])
       queueProjectRefresh({
-        tree: true,
         gitStatus: true,
-        gitLog: currentMode === 'agent',
         liveDiff: currentMode === 'agent',
       }, 0)
     } catch (err) {
       console.error('撤销文件变更失败:', filePath, err)
     }
   }, [currentMode, effectiveFileChanges, resolveFilePath, removeManualChanges, queueProjectRefresh])
-
-  /** 从文件树中删除文件 */
-  const handleDeleteFile = useCallback(async (filePath: string) => {
-    if (!currentWorkspace) return
-    try {
-      const absPath = resolveFilePath(filePath)
-      await window.taco.file.delete(absPath)
-      queueProjectRefresh({
-        tree: true,
-        gitStatus: true,
-        gitLog: currentMode === 'agent',
-        liveDiff: currentMode === 'agent',
-      }, 0)
-    } catch (err) {
-      console.error('删除文件失败:', filePath, err)
-    }
-  }, [currentWorkspace, currentMode, resolveFilePath, queueProjectRefresh])
-
-  /** 从文件树中删除目录 */
-  const handleDeleteDirectory = useCallback(async (dirPath: string) => {
-    if (!currentWorkspace) return
-    try {
-      const absPath = resolveFilePath(dirPath)
-      await window.taco.file.deleteDirectory(absPath)
-      queueProjectRefresh({
-        tree: true,
-        gitStatus: true,
-        gitLog: currentMode === 'agent',
-        liveDiff: currentMode === 'agent',
-      }, 0)
-    } catch (err) {
-      console.error('删除目录失败:', dirPath, err)
-    }
-  }, [currentWorkspace, currentMode, resolveFilePath, queueProjectRefresh])
 
   /** 保存所有 pending 变更 */
   const handleAcceptAll = useCallback(async () => {
@@ -1555,9 +1316,7 @@ export default function App() {
         if (!successAny) throw errAll
       }
       queueProjectRefresh({
-        tree: true,
         gitStatus: true,
-        gitLog: currentMode === 'agent',
         liveDiff: currentMode === 'agent',
       }, 0)
     } catch (err) {
@@ -1567,9 +1326,7 @@ export default function App() {
         return next
       })
       queueProjectRefresh({
-        tree: true,
         gitStatus: true,
-        gitLog: currentMode === 'agent',
         liveDiff: currentMode === 'agent',
       }, 0)
       console.error('暂存全部失败:', err)
@@ -1601,59 +1358,25 @@ export default function App() {
     }
     removeManualChanges(pending.map((fc) => fc.filePath))
     queueProjectRefresh({
-      tree: true,
       gitStatus: true,
-      gitLog: currentMode === 'agent',
       liveDiff: currentMode === 'agent',
     }, 0)
   }, [currentMode, effectiveFileChanges, readFileStatus, resolveFilePath, removeManualChanges, queueProjectRefresh])
-
-  /** 回退到指定 Git 版本 */
-  const handleGitRollback = useCallback(async (hash: string) => {
-    if (!currentWorkspace) return
-    try {
-      await window.taco.git.rollback(currentWorkspace, hash)
-      // 刷新版本历史
-      await refreshGitLog()
-      await refreshGitStatus()
-      // 回退后清除文件审核状态（文件内容已变更）
-      setFileStatuses({})
-      if (sessionId) {
-        setManualFileChangesBySession((prev) => ({ ...prev, [sessionId]: [] }))
-      }
-      await refreshWorkspaceTree()
-    } catch (err) {
-      console.error('Git 回退失败:', err)
-    }
-  }, [currentWorkspace, sessionId, refreshWorkspaceTree, refreshGitLog, refreshGitStatus])
 
   /** 回滚到某条消息之前的 Git 版本：reset 到该 commit 的父提交 */
   const handleRollbackBeforeMsg = useCallback(async (commitHash: string) => {
     if (!currentWorkspace) return
     try {
-      // 回退到该提交的父版本（即 agent 操作之前的状态）
       await window.taco.git.rollback(currentWorkspace, `${commitHash}~1`)
-      await refreshGitLog()
       await refreshGitStatus()
       setFileStatuses({})
       if (sessionId) {
         setManualFileChangesBySession((prev) => ({ ...prev, [sessionId]: [] }))
       }
-      await refreshWorkspaceTree()
     } catch (err) {
       console.error('Git 回退失败:', err)
     }
-  }, [currentWorkspace, sessionId, refreshWorkspaceTree, refreshGitLog, refreshGitStatus])
-
-  /** 加载某个 Git 提交的变更文件列表 */
-  const handleLoadCommitFiles = useCallback(async (hash: string): Promise<string[]> => {
-    if (!currentWorkspace) return []
-    try {
-      return await window.taco.git.commitFiles(currentWorkspace, hash)
-    } catch {
-      return []
-    }
-  }, [currentWorkspace])
+  }, [currentWorkspace, sessionId, refreshGitStatus])
 
   // 用 ref 追踪当前 sessionId，避免切换会话时把旧数据保存到新 key
   const sessionIdRef = useRef(sessionId)
@@ -1740,7 +1463,22 @@ export default function App() {
 
   /** 新建项目 */
   function handleNewThread() {
+    const oldSessionId = sessionId
     threadStore.createThread('新项目', providerSettings.activeModelConfigId || undefined)
+    // 清理旧会话的 UI 状态
+    if (oldSessionId) {
+      setManualFileChangesBySession((prev) => {
+        const next = { ...prev }
+        delete next[oldSessionId]
+        return next
+      })
+      setChangeStartIndexBySession((prev) => {
+        const next = { ...prev }
+        delete next[oldSessionId]
+        return next
+      })
+      delete lastWorkspaceBySessionRef.current[oldSessionId]
+    }
     setDraft('')
     setSelectedFile(null)
     setViewingFile(null)
@@ -1749,7 +1487,22 @@ export default function App() {
   }
 
   function handleSwitchThread(id: string) {
+    const oldSessionId = sessionId
     threadStore.switchThread(id)
+    // 清理旧会话的 UI 状态
+    if (oldSessionId) {
+      setManualFileChangesBySession((prev) => {
+        const next = { ...prev }
+        delete next[oldSessionId]
+        return next
+      })
+      setChangeStartIndexBySession((prev) => {
+        const next = { ...prev }
+        delete next[oldSessionId]
+        return next
+      })
+      delete lastWorkspaceBySessionRef.current[oldSessionId]
+    }
     setDraft('')
     setSelectedFile(null)
     setViewingFile(null)
@@ -2302,9 +2055,6 @@ export default function App() {
         mode: currentMode,
         middleView,
         sidebarVisible,
-        detailTreeExpanded,
-        detailChangesExpanded,
-        detailGitExpanded,
       },
     }).catch(() => {
       // ignore logging failures
@@ -2316,9 +2066,6 @@ export default function App() {
     currentMode,
     middleView,
     sidebarVisible,
-    detailTreeExpanded,
-    detailChangesExpanded,
-    detailGitExpanded,
   ])
 
   /* ---- render ---- */
@@ -2332,14 +2079,14 @@ export default function App() {
   const effectiveSidebarWidth = sidebarVisible ? clampedSidebarWidth : 0
   const gridStyle = {
     gridTemplateRows: '48px minmax(0, 1fr)',
-    gridTemplateColumns: `${effectiveSidebarWidth}px 0px minmax(0, 1fr) 0px minmax(${DETAIL_MIN_WIDTH}px, ${effectiveDetailWidth}px)`,
+    gridTemplateColumns: `${effectiveSidebarWidth}px 0px minmax(0, 1fr)`,
   }
 
   return (
     <div ref={appShellRef} className="app-shell" style={gridStyle}>
       <header
         className={`topbar app-topbar draggable ${hasMacTrafficLights ? 'has-native-traffic-lights' : ''}`}
-        style={{ gridColumn: '1 / 6', gridRow: '1 / 2' }}
+        style={{ gridColumn: '1 / 4', gridRow: '1 / 2' }}
         {...drag}
         onDoubleClick={(e) => {
           const target = e.target as HTMLElement
@@ -2393,6 +2140,19 @@ export default function App() {
               title={showTerminal ? '关闭终端' : '打开终端'}
             >
               {'>'}_
+            </button>
+            <button
+              className={`pill status-toggle ${showStatusOverlay ? 'active' : ''}`}
+              type="button"
+              onClick={() => setShowStatusOverlay((v) => !v)}
+              title="模型用量"
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                <rect x="1.5" y="1.5" width="13" height="13" rx="2" fill="none" stroke="currentColor" strokeWidth="1.4" />
+                <rect x="4" y="10" width="2" height="3" rx="0.5" fill="currentColor" />
+                <rect x="7" y="7" width="2" height="6" rx="0.5" fill="currentColor" />
+                <rect x="10" y="4" width="2" height="9" rx="0.5" fill="currentColor" />
+              </svg>
             </button>
             {messages.length > 0 && (
               <button className="pill" type="button" onClick={handleClearChat}>
@@ -2572,6 +2332,7 @@ export default function App() {
         {/* 聊天视图 */}
         <div className="middle-view" style={{ display: middleView === 'chat' || (middleView === 'settings' && !showSettings) ? 'flex' : 'none' }}>
           <PaneErrorBoundary
+            key={tid}
             pane="chat"
             title="聊天面板"
             resetKey={`${sessionId}:${messages.length}:${selectedFile ?? ''}:${viewingFile ?? ''}`}
@@ -2627,9 +2388,7 @@ export default function App() {
               onCloseFileEditor={handleCloseFileEditor}
               onFileSaved={() => {
                 queueProjectRefresh({
-                  tree: true,
                   gitStatus: true,
-                  gitLog: currentMode === 'agent',
                   liveDiff: currentMode === 'agent',
                 }, 0)
               }}
@@ -2640,76 +2399,19 @@ export default function App() {
             />
           </PaneErrorBoundary>
         </div>
-      </div>
 
-      {/* 拖拽调整中间/右侧面板大小的分隔条 */}
-      <div
-        className="resize-handle resize-handle-right"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="调整面板大小"
-        tabIndex={0}
-        onMouseDown={handleResizeMouseDown}
-        style={{ gridColumn: '4 / 5', gridRow: '2 / 3' }}
-      >
-        <div className="resize-handle-line" />
-      </div>
-
-      <div style={{ gridColumn: '5 / 6', gridRow: '2 / 3', minWidth: 0, minHeight: 0, width: '100%', display: 'flex', overflow: 'hidden' }}>
-        <PaneErrorBoundary
-          pane="detail"
-          title="右侧详情面板"
-          resetKey={`${currentWorkspace}:${selectedFile ?? ''}:${detailTreeExpanded ? '1' : '0'}:${detailChangesExpanded ? '1' : '0'}:${detailGitExpanded ? '1' : '0'}`}
-          onError={reportPaneRenderError}
-        >
-          <DetailPanel
-            title={threadStore.activeThread?.title ?? '未选择项目'}
-            messageCount={messages.length}
-            providerLabel={
-              providerSettings.configuredModels.length > 0 ? activeProviderLabel : undefined
-            }
-            contextPercent={contextPercent}
-            usedTokens={usedTokens}
-            maxTokens={maxTokens}
-            projectTokenStats={projectTokenStats}
-            workspaceTree={deferredWorkspaceTree}
-            fileChanges={deferredFileChanges.length > 0 ? deferredFileChanges : undefined}
-            selectedFile={selectedFile}
-            onSelectFile={setSelectedFile}
-            fileStatuses={fileStatuses}
-            onAcceptFile={handleAcceptFile}
-            onRejectFile={handleRejectFile}
-            onAcceptAll={handleAcceptAll}
-            onRejectAll={handleRejectAll}
-            stagedFiles={deferredGitStagedFiles}
-            unstagedFiles={deferredGitUnstagedFiles}
-            gitStatusLoaded={gitStatusLoaded}
-            onStageFile={handleAcceptFile}
-            onStageAll={handleAcceptAll}
-            gitVersions={gitVersions}
-            onGitRollback={handleGitRollback}
-            onLoadCommitFiles={handleLoadCommitFiles}
-            workspace={currentWorkspace}
-            treeExpanded={detailTreeExpanded}
-            onTreeExpandedChange={setDetailTreeExpanded}
-            changesExpanded={detailChangesExpanded}
-            onChangesExpandedChange={setDetailChangesExpanded}
-            gitExpanded={detailGitExpanded}
-            onGitExpandedChange={setDetailGitExpanded}
-            onRefreshTree={() => {
-              queueProjectRefresh({
-                tree: true,
-                gitStatus: true,
-                gitLog: currentMode === 'agent',
-                liveDiff: currentMode === 'agent',
-              }, 0)
-            }}
-            onOpenFileView={handleOpenFileView}
-            viewingFile={viewingFile}
-            onDeleteFile={handleDeleteFile}
-            onDeleteDirectory={handleDeleteDirectory}
-          />
-        </PaneErrorBoundary>
+        {/* 模型用量悬浮面板 */}
+        <ChatStatusOverlay
+          open={showStatusOverlay}
+          onClose={() => setShowStatusOverlay(false)}
+          providerLabel={
+            providerSettings.configuredModels.length > 0 ? activeProviderLabel : undefined
+          }
+          contextPercent={contextPercent}
+          usedTokens={usedTokens}
+          maxTokens={maxTokens}
+          projectTokenStats={projectTokenStats}
+        />
       </div>
 
     </div>
