@@ -431,6 +431,8 @@ body.is-dragging * {
 .chat-row.assistant .bubble {
   width: 100%;
   max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
 }
 
 /* 用户消息操作按钮（编辑 + 重发），显示在气泡右下方 */
@@ -530,6 +532,8 @@ body.is-dragging * {
   max-width: 640px;
   overflow-wrap: break-word;
   word-break: break-word;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .assistant-task-meta {
@@ -603,6 +607,7 @@ body.is-dragging * {
   width: 100%;
   margin: 10px 0;
   font-size: 13px;
+  table-layout: fixed;
 }
 
 .bubble th,
