@@ -31,7 +31,7 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
       source: 'app-boundary',
       message: error.message || String(error),
       stack: error.stack,
-      componentStack: info.componentStack,
+      componentStack: info.componentStack ?? undefined,
       metadata: {
         autoRecoveryCooldownMs: AUTO_RECOVERY_COOLDOWN_MS,
       },

@@ -163,7 +163,7 @@ export type ChatMsg = {
   toolResults?: ToolResultInfo[]
 }
 
-export type ProviderId = 'deepseek' | 'kimi' | 'minimax' | 'glm' | 'qwen'
+export type ProviderId = 'deepseek' | 'kimi' | 'minimax' | 'glm' | 'qwen' | 'mimo'
 
 export type ModelConfig = {
   id: string

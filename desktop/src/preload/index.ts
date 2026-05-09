@@ -25,15 +25,8 @@ import type {
   AppNotifyPayload,
   AppUpdateCheckResult,
   RendererErrorPayload,
-  MobileBridgeConfig,
-  MobileBridgeCommandData,
-  MobileBridgeContextSnapshot,
-  MobileBridgeSelectData,
-  MobileBridgeAbortData,
-  MobileBridgeConfirmData,
-  MobileBridgeNewSessionData,
-  MobileBridgeClearSessionData,
   PromptConfig,
+  BridgeStatusPayload,
 } from '../shared/ipc'
 
 // 沙盒化 preload 无法使用 os 模块，用 process 和环境变量替代
@@ -73,6 +66,10 @@ const tacoApi: TacoApi = {
     return appVersion
   },
   system: systemInfo,
+  auth: {
+    login: (username: string, password: string) =>
+      ipcRenderer.invoke(IpcChannel.MEMBER_LOGIN, { username, password }),
+  },
   shell: {
     openInEditor: (filePath: string, editor: EditorId) =>
       ipcRenderer.invoke(IpcChannel.OPEN_IN_EDITOR, filePath, editor),
@@ -88,56 +85,6 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.APP_CHECK_UPDATE, Boolean(manual)),
     getStatus: (): Promise<AppUpdateCheckResult | null> =>
       ipcRenderer.invoke(IpcChannel.APP_GET_UPDATE_STATUS),
-  },
-  mobileBridge: {
-    getConfig: (): Promise<MobileBridgeConfig> =>
-      ipcRenderer.invoke(IpcChannel.MOBILE_BRIDGE_GET),
-    setConfig: (config: MobileBridgeConfig): Promise<MobileBridgeConfig> =>
-      ipcRenderer.invoke(IpcChannel.MOBILE_BRIDGE_SET, config),
-    syncContext: (snapshot: MobileBridgeContextSnapshot) =>
-      ipcRenderer.send(IpcChannel.MOBILE_BRIDGE_SYNC_CONTEXT, snapshot),
-    onCommand: (callback: (data: MobileBridgeCommandData) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, data: MobileBridgeCommandData) => callback(data)
-      ipcRenderer.on(IpcChannel.MOBILE_BRIDGE_COMMAND, handler)
-      return () => {
-        ipcRenderer.removeListener(IpcChannel.MOBILE_BRIDGE_COMMAND, handler)
-      }
-    },
-    onSelect: (callback: (data: MobileBridgeSelectData) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, data: MobileBridgeSelectData) => callback(data)
-      ipcRenderer.on(IpcChannel.MOBILE_BRIDGE_SELECT, handler)
-      return () => {
-        ipcRenderer.removeListener(IpcChannel.MOBILE_BRIDGE_SELECT, handler)
-      }
-    },
-    onAbort: (callback: (data: MobileBridgeAbortData) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, data: MobileBridgeAbortData) => callback(data)
-      ipcRenderer.on(IpcChannel.MOBILE_BRIDGE_ABORT, handler)
-      return () => {
-        ipcRenderer.removeListener(IpcChannel.MOBILE_BRIDGE_ABORT, handler)
-      }
-    },
-    onConfirm: (callback: (data: MobileBridgeConfirmData) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, data: MobileBridgeConfirmData) => callback(data)
-      ipcRenderer.on(IpcChannel.MOBILE_BRIDGE_CONFIRM, handler)
-      return () => {
-        ipcRenderer.removeListener(IpcChannel.MOBILE_BRIDGE_CONFIRM, handler)
-      }
-    },
-    onNewSession: (callback: (data: MobileBridgeNewSessionData) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, data: MobileBridgeNewSessionData) => callback(data)
-      ipcRenderer.on(IpcChannel.MOBILE_BRIDGE_NEW_SESSION, handler)
-      return () => {
-        ipcRenderer.removeListener(IpcChannel.MOBILE_BRIDGE_NEW_SESSION, handler)
-      }
-    },
-    onClearSession: (callback: (data: MobileBridgeClearSessionData) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, data: MobileBridgeClearSessionData) => callback(data)
-      ipcRenderer.on(IpcChannel.MOBILE_BRIDGE_CLEAR_SESSION, handler)
-      return () => {
-        ipcRenderer.removeListener(IpcChannel.MOBILE_BRIDGE_CLEAR_SESSION, handler)
-      }
-    },
   },
   chat: {
     send: (payload: ChatSendPayload) =>
@@ -438,6 +385,80 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.PROMPT_CONFIG_GET),
     saveConfig: (config: PromptConfig): Promise<PromptConfig> =>
       ipcRenderer.invoke(IpcChannel.PROMPT_CONFIG_SAVE, config),
+  },
+  bridge: {
+    connect: (token: string): void =>
+      ipcRenderer.send(IpcChannel.BRIDGE_CONNECT, token),
+
+    disconnect: () =>
+      ipcRenderer.send(IpcChannel.BRIDGE_DISCONNECT),
+
+    onStatusChange: (callback: (status: BridgeStatusPayload) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: BridgeStatusPayload) => callback(status)
+      ipcRenderer.on(IpcChannel.BRIDGE_STATUS_CHANGED, handler)
+      return () => {
+        ipcRenderer.removeListener(IpcChannel.BRIDGE_STATUS_CHANGED, handler)
+      }
+    },
+
+    onPairingCode: (callback: (code: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, code: string) => callback(code)
+      ipcRenderer.on(IpcChannel.BRIDGE_PAIRING_CODE, handler)
+      return () => {
+        ipcRenderer.removeListener(IpcChannel.BRIDGE_PAIRING_CODE, handler)
+      }
+    },
+
+    getStatus: (): Promise<BridgeStatusPayload> =>
+      ipcRenderer.invoke(IpcChannel.BRIDGE_GET_STATUS),
+
+    onSwitchProject: (callback: (data: { projectId: string; sessionId?: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: { projectId: string; sessionId?: string }) => callback(data)
+      ipcRenderer.on('bridge:switch-project-from-mobile', handler)
+      return () => {
+        ipcRenderer.removeListener('bridge:switch-project-from-mobile', handler)
+      }
+    },
+
+    onClientMessage: (callback: (msg: Record<string, unknown>) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, msg: Record<string, unknown>) => callback(msg)
+      ipcRenderer.on(IpcChannel.BRIDGE_CLIENT_MESSAGE, handler)
+      return () => {
+        ipcRenderer.removeListener(IpcChannel.BRIDGE_CLIENT_MESSAGE, handler)
+      }
+    },
+
+    sendStateSnapshotResponse: (payload: {
+      messages: Array<{ id: string; role: string; content: string; hasImages: boolean; streaming: boolean }>
+      threadId: string
+      sessionId?: string
+      workspace?: string
+      modelLabel?: string
+      threadTitle?: string
+      activeAgentRequestId?: string
+    }) => {
+      ipcRenderer.send('bridge:state-snapshot-response', payload)
+    },
+
+    onRequestStateSnapshot: (callback: (payload: {
+      threadId: string
+      sessionId?: string
+      workspace?: string
+      modelConfigId?: string
+      threadTitle?: string
+    }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: {
+        threadId: string
+        sessionId?: string
+        workspace?: string
+        modelConfigId?: string
+        threadTitle?: string
+      }) => callback(payload)
+      ipcRenderer.on('bridge:request-state-snapshot', handler)
+      return () => {
+        ipcRenderer.removeListener('bridge:request-state-snapshot', handler)
+      }
+    },
   }
 }
 

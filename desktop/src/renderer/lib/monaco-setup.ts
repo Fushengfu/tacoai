@@ -12,7 +12,7 @@ let dartFallbackRegistered = false
 
 function ensureDartLanguage(monaco: Monaco) {
   if (dartFallbackRegistered) return
-  const hasDart = monaco.languages.getLanguages().some((lang) => lang.id === 'dart')
+  const hasDart = monaco.languages.getLanguages().some((lang: { id: string }) => lang.id === 'dart')
   if (hasDart) {
     dartFallbackRegistered = true
     return

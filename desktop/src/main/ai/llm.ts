@@ -40,7 +40,7 @@ export type TokenUsage = {
   cachedTokens?: number
 }
 
-export type ProviderKey = 'deepseek' | 'kimi' | 'minimax' | 'glm' | 'qwen'
+export type ProviderKey = 'deepseek' | 'kimi' | 'minimax' | 'glm' | 'qwen' | 'mimo'
 
 export type ProviderConfig = {
   baseUrl: string
@@ -78,6 +78,11 @@ const providerConfigs: Record<ProviderKey, ProviderConfig> = {
     baseUrl: process.env.QWEN_BASE_URL ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     apiKey: process.env.QWEN_API_KEY ?? '',
     model: process.env.QWEN_MODEL ?? ''
+  },
+  mimo: {
+    baseUrl: process.env.MIMO_BASE_URL ?? 'https://api.xiaomimimo.com/v1',
+    apiKey: process.env.MIMO_API_KEY ?? '',
+    model: process.env.MIMO_MODEL ?? ''
   }
 }
 
@@ -680,7 +685,7 @@ function resolveUploadConfig(config: ProviderConfig): ResolvedUploadConfig | nul
       : `${bucket}.${endpointUrl.host}`
     const uploadOrigin = `${endpointUrl.protocol}//${bucketHost}`
     const publicBaseUrl = asTrimmedText(upload.publicBaseUrl)
-      ? normalizePublicBaseUrl(upload.publicBaseUrl)
+      ? normalizePublicBaseUrl(upload.publicBaseUrl || '')
       : uploadOrigin
     return {
       provider: 'aliyun_oss',
@@ -696,7 +701,7 @@ function resolveUploadConfig(config: ProviderConfig): ResolvedUploadConfig | nul
     const accessKey = asTrimmedText(upload.accessKey)
     const secretKey = asTrimmedText(upload.secretKey)
     const bucket = asTrimmedText(upload.bucket)
-    const uploadUrl = asTrimmedText(upload.uploadUrl) ? ensureUrlWithScheme(upload.uploadUrl) : 'https://up.qiniup.com'
+    const uploadUrl = asTrimmedText(upload.uploadUrl) ? ensureUrlWithScheme(upload.uploadUrl || '') : 'https://up.qiniup.com'
     const publicBaseUrl = normalizePublicBaseUrl(asTrimmedText(upload.publicBaseUrl))
     const objectPrefix = normalizeObjectPrefix(upload.objectPrefix || '')
     const expiresSecondsRaw = Number(upload.expiresSeconds)
@@ -1175,11 +1180,11 @@ async function buildRequest(
     body.reasoning_effort = 'max'
   }
 
-  console.log('REQUEST_BUILD', {
-    url: `${config.baseUrl}/chat/completions`,
-    method: 'POST',
-    headers: fullHeadersForLog(headers),
-  }, logScope)
+  // console.log('REQUEST_BUILD', {
+  //   url: `${config.baseUrl}/chat/completions`,
+  //   method: 'POST',
+  //   headers: fullHeadersForLog(headers),
+  // }, logScope)
 
   return {
     url: `${config.baseUrl}/chat/completions`,
@@ -1656,7 +1661,7 @@ export async function* requestStreamWithTools(
         }
         try {
           const parsed = JSON.parse(data)
-          log('STREAM_DATA', parsed, logScope)
+          // log('STREAM_DATA', parsed, logScope)
           if (!firstChunk) firstChunk = parsed
           lastChunk = parsed
           if (Object.prototype.hasOwnProperty.call(parsed, 'usage')) {

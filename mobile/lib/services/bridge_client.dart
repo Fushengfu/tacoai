@@ -1,340 +1,470 @@
+import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:web_socket_channel/status.dart' as ws_status;
+import 'bridge_protocol.dart';
 
-import '../models/bridge_models.dart';
+const String _kCachedRelayUrlKey = 'bridge_cached_relay_url';
 
+/// BridgeClient — 移动端 WebSocket 客户端（新版：扫码配对）
+///
+/// 流程：
+/// 1. 扫码获取配对码
+/// 2. 使用会员 token + 配对码连接 Relay
+/// 3. 接收 Host 转发的桥接消息
+/// 4. 发送指令到 Host（发消息、确认、终止）
 class BridgeClient {
-  const BridgeClient({required this.config});
+  final String? _relayUrlOverride;
 
-  final BridgeConfig config;
+  WebSocketChannel? _channel;
+  BridgeConnectionStatus _status = BridgeConnectionStatus.disconnected;
+  String? _token;
+  String? _pairingCode;
+  String? _resolvedRelayUrl;
+  int _reconnectAttempts = 0;
+  Timer? _heartbeatTimer;
+  Timer? _heartbeatCheckTimer;
+  Timer? _reconnectTimer;
+  DateTime? _lastHeartbeatReceived;
 
-  Uri _uri(String path, {Map<String, String>? queryParameters}) {
-    final endpoint = _resolveEndpoint(config.host, config.port);
-    return Uri(
-      scheme: endpoint.scheme,
-      host: endpoint.host,
-      port: endpoint.port,
-      path: _joinPath(endpoint.basePath, path),
-      queryParameters:
-          queryParameters == null || queryParameters.isEmpty ? null : queryParameters,
-    );
+  final List<BridgeChatMessage> _messages = [];
+  final List<Function(BridgeStatus)> _statusListeners = [];
+  final List<Function(dynamic)> _messageListeners = [];
+  String? _error;
+
+  /// 请求/响应模式：requestId → Completer
+  final Map<String, Completer<Map<String, dynamic>>> _pendingRequests = {};
+  int _requestCounter = 0;
+
+  BridgeClient({String? relayUrl}) : _relayUrlOverride = relayUrl;
+
+  /* ------------------------------------------------------------------ */
+  /*  Public API                                                         */
+  /* ------------------------------------------------------------------ */
+
+  /// 移除状态监听器
+  void removeStatusListener(Function(BridgeStatus) callback) {
+    _statusListeners.remove(callback);
   }
 
-  Uri _wsUri(String path) {
-    final endpoint = _resolveEndpoint(config.host, config.port);
-    final wsScheme = endpoint.scheme == 'https' ? 'wss' : 'ws';
-    return Uri(
-      scheme: wsScheme,
-      host: endpoint.host,
-      port: endpoint.port,
-      path: _joinPath(endpoint.basePath, path),
-      queryParameters:
-          config.token.isEmpty ? null : <String, String>{'token': config.token},
-    );
+  /// 移除消息监听器
+  void removeMessageListener(Function(dynamic) callback) {
+    _messageListeners.remove(callback);
   }
 
-  Map<String, String> _authHeaders() {
-    if (config.token.isEmpty) return const <String, String>{};
-    return <String, String>{'X-Taco-Token': config.token};
+  /* ------------------------------------------------------------------ */
+  /*  Public API                                                         */
+  /* ------------------------------------------------------------------ */
+
+  /// 连接 Relay
+  void connect({required String token, required String pairingCode}) {
+    _token = token;
+    _pairingCode = pairingCode;
+    _reconnectAttempts = 0;
+    _connect();
   }
 
-  Future<BridgeHttpResponse> _request({
-    required String method,
-    required String path,
-    Map<String, String>? queryParameters,
-    Map<String, String>? headers,
-    Object? body,
-  }) async {
-    final client = HttpClient();
-    client.connectionTimeout = const Duration(seconds: 5);
-    try {
-      final req = await client.openUrl(
-        method,
-        _uri(path, queryParameters: queryParameters),
+  /// 断开连接
+  void disconnect() {
+    _stopTimers();
+    _channel?.sink.close(ws_status.normalClosure);
+    _channel = null;
+    _token = null;
+    _pairingCode = null;
+    _reconnectAttempts = 0;
+    _setStatus(BridgeConnectionStatus.disconnected);
+  }
+
+  /// 获取当前状态
+  BridgeStatus get status => BridgeStatus(
+        status: _status,
+        error: _error,
       );
-      headers?.forEach(req.headers.set);
-      if (body != null) {
-        final content = utf8.encode(jsonEncode(body));
-        req.headers.set(HttpHeaders.contentTypeHeader, 'application/json');
-        req.headers.set(HttpHeaders.contentLengthHeader, content.length);
-        req.add(content);
+
+  /// 获取当前消息列表
+  List<BridgeChatMessage> get messages => List.unmodifiable(_messages);
+
+  /// 监听状态变更
+  void onStatusChange(Function(BridgeStatus) callback) {
+    _statusListeners.add(callback);
+  }
+
+  /// 监听消息
+  void onMessage(Function(dynamic) callback) {
+    _messageListeners.add(callback);
+  }
+
+  /// 发送用户消息
+  void sendChatMessage(String content) {
+    _send(BridgeChatSend(content: content));
+  }
+
+  /// 发送 Agent 确认
+  void sendAgentConfirm(String confirmId, bool approved) {
+    _send(BridgeAgentConfirm(confirmId: confirmId, approved: approved));
+  }
+
+  /// 终止 Agent
+  void sendAgentAbort(String requestId) {
+    _send(BridgeAgentAbort(requestId: requestId));
+  }
+
+  /// 发送心跳
+  void sendHeartbeat() {
+    if (_channel != null) {
+      _sendRaw({'type': 'heartbeat', 'timestamp': DateTime.now().millisecondsSinceEpoch});
+    }
+  }
+
+  /// 请求项目列表
+  Future<List<BridgeProjectInfo>> requestProjects() async {
+    final requestId = 'req-${++_requestCounter}-${DateTime.now().millisecondsSinceEpoch}';
+    final completer = Completer<Map<String, dynamic>>();
+    _pendingRequests[requestId] = completer;
+
+    _send(BridgeGetProjects(requestId: requestId));
+
+    final response = await completer.future;
+    final projectsResponse = BridgeProjectsResponse.fromJson(response);
+    return projectsResponse.projects;
+  }
+
+  /// 请求工作区目录树
+  Future<List<BridgeFileTreeEntry>> requestWorkspaceTree(String path) async {
+    final requestId = 'req-${++_requestCounter}-${DateTime.now().millisecondsSinceEpoch}';
+    final completer = Completer<Map<String, dynamic>>();
+    _pendingRequests[requestId] = completer;
+
+    _send(BridgeGetWorkspaceTree(requestId: requestId, path: path));
+
+    final response = await completer.future;
+    final treeResponse = BridgeWorkspaceTreeResponse.fromJson(response);
+    return treeResponse.tree;
+  }
+
+  /// 读取文件内容
+  Future<BridgeFileContentResponse> readFile(String filePath) async {
+    final requestId = 'req-${++_requestCounter}-${DateTime.now().millisecondsSinceEpoch}';
+    final completer = Completer<Map<String, dynamic>>();
+    _pendingRequests[requestId] = completer;
+
+    _send(BridgeFileRead(requestId: requestId, path: filePath));
+
+    final response = await completer.future;
+    return BridgeFileContentResponse.fromJson(response);
+  }
+
+  /// 写入文件
+  Future<BridgeFileWrittenResponse> writeFile(String filePath, String content) async {
+    final requestId = 'req-${++_requestCounter}-${DateTime.now().millisecondsSinceEpoch}';
+    final completer = Completer<Map<String, dynamic>>();
+    _pendingRequests[requestId] = completer;
+
+    _send(BridgeFileWrite(requestId: requestId, path: filePath, content: content));
+
+    final response = await completer.future;
+    return BridgeFileWrittenResponse.fromJson(response);
+  }
+
+  /// 切换活跃项目
+  Future<BridgeProjectSwitchedResponse> switchProject(String projectId, {String? sessionId}) async {
+    final requestId = 'req-${++_requestCounter}-${DateTime.now().millisecondsSinceEpoch}';
+    final completer = Completer<Map<String, dynamic>>();
+    _pendingRequests[requestId] = completer;
+
+    _send(BridgeSwitchProject(requestId: requestId, projectId: projectId, sessionId: sessionId));
+
+    final response = await completer.future;
+    return BridgeProjectSwitchedResponse.fromJson(response);
+  }
+
+  /// 发送原始消息（用于请求/响应模式）
+  void _sendRequest(Map<String, dynamic> data) {
+    _sendRaw(data);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Private: connection                                                */
+  /* ------------------------------------------------------------------ */
+
+  Future<void> _connect() async {
+    if (_token == null || _pairingCode == null) {
+      _error = '缺少 token 或配对码';
+      _setStatus(BridgeConnectionStatus.disconnected);
+      return;
+    }
+
+    // 解析 relayUrl：优先使用传入的，其次读取缓存，最后用默认值
+    if (_relayUrlOverride != null && _relayUrlOverride!.isNotEmpty) {
+      _resolvedRelayUrl = _relayUrlOverride;
+    } else {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        _resolvedRelayUrl = prefs.getString(_kCachedRelayUrlKey);
+      } catch (_) {
+        _resolvedRelayUrl = null;
       }
-      final resp = await req.close();
-      final text = await utf8.decodeStream(resp);
-      return BridgeHttpResponse(statusCode: resp.statusCode, body: text);
-    } finally {
-      client.close(force: true);
+      if (_resolvedRelayUrl == null || _resolvedRelayUrl!.isEmpty) {
+        _resolvedRelayUrl = defaultRelayUrl;
+      }
+    }
+
+    _setStatus(BridgeConnectionStatus.connecting);
+
+    // 解析 relayUrl 并构建正确的 WebSocket URI
+    final baseUri = Uri.parse(_resolvedRelayUrl!);
+
+    // 将 http/https 转换为 ws/wss
+    String scheme = baseUri.scheme;
+    if (scheme == 'http') scheme = 'ws';
+    if (scheme == 'https') scheme = 'wss';
+
+    // 只保留非标准端口（跳过 0、80/ws、443/wss）
+    String portPart = '';
+    if (baseUri.hasPort && baseUri.port > 0) {
+      final isStandardPort = (scheme == 'ws' && baseUri.port == 80) ||
+                             (scheme == 'wss' && baseUri.port == 443);
+      if (!isStandardPort) {
+        portPart = ':${baseUri.port}';
+      }
+    }
+
+    // 确保有路径
+    String path = baseUri.path;
+    if (path.isEmpty) path = '/ws';
+
+    final uriString = '$scheme://${baseUri.host}$portPart$path?token=${Uri.encodeQueryComponent(_token!)}&role=client&code=${Uri.encodeQueryComponent(_pairingCode!)}';
+    final uri = Uri.parse(uriString);
+
+    try {
+      _channel = WebSocketChannel.connect(uri);
+      _channel!.stream.listen(
+        _onMessage,
+        onError: _onError,
+        onDone: _onDone,
+        cancelOnError: false,
+      );
+    } catch (e) {
+      _error = '连接失败: $e';
+      _setStatus(BridgeConnectionStatus.disconnected);
+      _attemptReconnect();
     }
   }
 
-  Future<BridgeHttpResponse> health() {
-    return _request(method: 'GET', path: '/health');
-  }
+  /* ------------------------------------------------------------------ */
+  /*  Private: message handling                                          */
+  /* ------------------------------------------------------------------ */
 
-  Future<WebSocket> connectContextSocket() {
-    return WebSocket.connect(
-      _wsUri('/ws').toString(),
-      headers: _authHeaders(),
-    );
-  }
+  void _onMessage(dynamic data) {
+    try {
+      final json = jsonDecode(data as String) as Map<String, dynamic>;
+      final type = json['type'] as String?;
 
-  Future<DesktopBridgeContext> context() async {
-    final resp = await _request(
-      method: 'GET',
-      path: '/context',
-      headers: _authHeaders(),
-    );
-    if (resp.statusCode != 200) {
-      throw Exception('读取上下文失败: ${resp.statusCode}');
+      switch (type) {
+        case 'connected':
+          _reconnectAttempts = 0;
+          _setStatus(BridgeConnectionStatus.connected);
+          _startHeartbeat();
+          break;
+
+        case 'error':
+          _error = json['message'] as String?;
+          _setStatus(BridgeConnectionStatus.disconnected);
+          break;
+
+        case 'host_disconnected':
+          _error = 'Host 已断开连接';
+          _setStatus(BridgeConnectionStatus.disconnected);
+          break;
+
+        case 'ping':
+          _lastHeartbeatReceived = DateTime.now();
+          break;
+
+        case 'bridge:state':
+          final state = BridgeState.fromJson(json);
+          _messages.clear();
+          _messages.addAll(state.messages);
+          _notifyListeners(json);
+          break;
+
+        case 'bridge:chat-delta':
+          final delta = BridgeChatDelta.fromJson(json);
+          _applyDelta(delta);
+          _notifyListeners(json);
+          break;
+
+        case 'bridge:agent-event':
+        case 'bridge:files-changed':
+          _notifyListeners(json);
+          break;
+
+        // 数据查询响应
+        case 'bridge:projects':
+        case 'bridge:workspace-tree':
+        case 'bridge:file-content':
+        case 'bridge:file-written':
+        case 'bridge:project-switched':
+          {
+            final rid = json['requestId'] as String?;
+            if (rid != null) {
+              final completer = _pendingRequests.remove(rid);
+              if (completer != null && !completer.isCompleted) {
+                completer.complete(json);
+              }
+            }
+          }
+          break;
+
+        default:
+          _notifyListeners(json);
+          break;
+      }
+    } catch (e) {
+      print('[BridgeClient] Failed to parse message: $e');
     }
-    final decoded = jsonDecode(resp.body);
-    if (decoded is! Map<String, dynamic>) {
-      throw Exception('读取上下文失败: 响应格式错误');
+  }
+
+  void _applyDelta(BridgeChatDelta delta) {
+    final idx = _messages.indexWhere((m) => m.id == delta.messageId);
+    if (idx >= 0) {
+      final old = _messages[idx];
+      _messages[idx] = BridgeChatMessage(
+        id: old.id,
+        role: old.role,
+        content: old.content + delta.delta,
+        hasImages: old.hasImages,
+        streaming: !delta.done,
+      );
+    } else {
+      _messages.add(BridgeChatMessage(
+        id: delta.messageId,
+        role: 'assistant',
+        content: delta.delta,
+        streaming: !delta.done,
+      ));
     }
-    final rawContext = decoded['context'];
-    if (rawContext is! Map<String, dynamic>) {
-      throw Exception('读取上下文失败: context 缺失');
+  }
+
+  void _onError(error) {
+    print('[BridgeClient] WebSocket error: $error');
+  }
+
+  void _onDone() {
+    print('[BridgeClient] WebSocket closed');
+    _stopTimers();
+    _channel = null;
+    if (_status != BridgeConnectionStatus.disconnected) {
+      _setStatus(BridgeConnectionStatus.disconnected);
+      _attemptReconnect();
     }
-    return DesktopBridgeContext.fromJson(rawContext);
   }
 
-  Future<BridgeHttpResponse> sendCommand(QueuedMobileCommand cmd) {
-    return _request(
-      method: 'POST',
-      path: '/command',
-      headers: _authHeaders(),
-      body: {
-        'text': cmd.text,
-        if (cmd.threadId != null && cmd.threadId!.isNotEmpty)
-          'threadId': cmd.threadId,
-        if (cmd.sessionId != null && cmd.sessionId!.isNotEmpty)
-          'sessionId': cmd.sessionId,
-        if (cmd.provider != null && cmd.provider!.isNotEmpty)
-          'provider': cmd.provider,
-        if (cmd.mode != null &&
-            (cmd.mode == 'chat' || cmd.mode == 'agent'))
-          'mode': cmd.mode,
-      },
-    );
+  /* ------------------------------------------------------------------ */
+  /*  Private: heartbeat                                                 */
+  /* ------------------------------------------------------------------ */
+
+  void _startHeartbeat() {
+    _stopTimers();
+    _lastHeartbeatReceived = DateTime.now();
+
+    _heartbeatTimer = Timer.periodic(heartbeatInterval, (_) {
+      sendHeartbeat();
+    });
+
+    _heartbeatCheckTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (_lastHeartbeatReceived != null &&
+          DateTime.now().difference(_lastHeartbeatReceived!) > heartbeatTimeout) {
+        print('[BridgeClient] Heartbeat timeout, reconnecting...');
+        _channel?.sink.close(ws_status.normalClosure);
+      }
+    });
   }
 
-  Future<BridgeHttpResponse> syncSelection({
-    String? threadId,
-    String? sessionId,
-    String? provider,
-    String? mode,
-  }) {
-    return _request(
-      method: 'POST',
-      path: '/select',
-      headers: _authHeaders(),
-      body: {
-        if (threadId != null && threadId.isNotEmpty) 'threadId': threadId,
-        if (sessionId != null && sessionId.isNotEmpty) 'sessionId': sessionId,
-        if (provider != null && provider.isNotEmpty) 'provider': provider,
-        if (mode == 'chat' || mode == 'agent') 'mode': mode,
-      },
-    );
+  void _stopTimers() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+    _heartbeatCheckTimer?.cancel();
+    _heartbeatCheckTimer = null;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
   }
 
-  Future<BridgeHttpResponse> abort({
-    String? threadId,
-    String? sessionId,
-  }) {
-    return _request(
-      method: 'POST',
-      path: '/abort',
-      headers: _authHeaders(),
-      body: {
-        if (threadId != null && threadId.isNotEmpty) 'threadId': threadId,
-        if (sessionId != null && sessionId.isNotEmpty) 'sessionId': sessionId,
-      },
-    );
-  }
+  /* ------------------------------------------------------------------ */
+  /*  Private: reconnect                                                 */
+  /* ------------------------------------------------------------------ */
 
-  Future<BridgeHttpResponse> confirm({
-    required String confirmId,
-    required bool approved,
-    String? threadId,
-    String? sessionId,
-  }) {
-    return _request(
-      method: 'POST',
-      path: '/confirm',
-      headers: _authHeaders(),
-      body: {
-        'confirmId': confirmId,
-        'approved': approved,
-        if (threadId != null && threadId.isNotEmpty) 'threadId': threadId,
-        if (sessionId != null && sessionId.isNotEmpty) 'sessionId': sessionId,
-      },
-    );
-  }
-
-  Future<BridgeHttpResponse> createSession({String? threadId}) {
-    return _request(
-      method: 'POST',
-      path: '/session/new',
-      headers: _authHeaders(),
-      body: {
-        if (threadId != null && threadId.isNotEmpty) 'threadId': threadId,
-      },
-    );
-  }
-
-  Future<BridgeHttpResponse> clearSession({
-    String? threadId,
-    String? sessionId,
-  }) {
-    return _request(
-      method: 'POST',
-      path: '/session/clear',
-      headers: _authHeaders(),
-      body: {
-        if (threadId != null && threadId.isNotEmpty) 'threadId': threadId,
-        if (sessionId != null && sessionId.isNotEmpty) 'sessionId': sessionId,
-      },
-    );
-  }
-
-  Future<BridgeWorkspaceTreeResponse> workspaceTree({
-    String? threadId,
-    String? sessionId,
-  }) async {
-    final resp = await _request(
-      method: 'GET',
-      path: '/workspace/tree',
-      queryParameters: {
-        if (threadId != null && threadId.isNotEmpty) 'threadId': threadId,
-        if (sessionId != null && sessionId.isNotEmpty) 'sessionId': sessionId,
-      },
-      headers: _authHeaders(),
-    );
-    if (resp.statusCode != 200) {
-      throw Exception('读取目录结构失败: ${resp.statusCode}');
+  void _attemptReconnect() {
+    if (_reconnectAttempts >= maxReconnectAttempts) {
+      _error = '重连次数已达上限';
+      _setStatus(BridgeConnectionStatus.disconnected);
+      return;
     }
-    final decoded = jsonDecode(resp.body);
-    if (decoded is! Map<String, dynamic>) {
-      throw Exception('读取目录结构失败: 响应格式错误');
+
+    _reconnectAttempts++;
+    _setStatus(BridgeConnectionStatus.reconnecting);
+
+    final delay = reconnectBaseDelay * _reconnectAttempts;
+    print('[BridgeClient] Reconnecting in ${delay.inSeconds}s (attempt $_reconnectAttempts/$maxReconnectAttempts)');
+
+    _reconnectTimer = Timer(delay, () {
+      _connect();
+    });
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Private: utils                                                     */
+  /* ------------------------------------------------------------------ */
+
+  void _send(dynamic message) {
+    if (_channel != null) {
+      _sendRaw(message is Map<String, dynamic> ? message : _messageToJson(message));
     }
-    return BridgeWorkspaceTreeResponse.fromJson(decoded);
   }
 
-  Future<BridgeWorkspaceFileContent> readWorkspaceFile({
-    required String path,
-    String? threadId,
-    String? sessionId,
-  }) async {
-    final resp = await _request(
-      method: 'POST',
-      path: '/workspace/file/read',
-      headers: _authHeaders(),
-      body: {
-        'path': path,
-        if (threadId != null && threadId.isNotEmpty) 'threadId': threadId,
-        if (sessionId != null && sessionId.isNotEmpty) 'sessionId': sessionId,
-      },
-    );
-    if (resp.statusCode != 200) {
-      throw Exception('读取文件失败: ${resp.statusCode}');
+  void _sendRaw(Map<String, dynamic> data) {
+    _channel?.sink.add(jsonEncode(data));
+  }
+
+  Map<String, dynamic> _messageToJson(dynamic message) {
+    if (message is BridgeChatSend) return message.toJson();
+    if (message is BridgeAgentConfirm) return message.toJson();
+    if (message is BridgeAgentAbort) return message.toJson();
+    if (message is BridgeGetProjects) return message.toJson();
+    if (message is BridgeGetWorkspaceTree) return message.toJson();
+    if (message is BridgeFileRead) return message.toJson();
+    if (message is BridgeFileWrite) return message.toJson();
+    if (message is BridgeSwitchProject) return message.toJson();
+    return {'type': 'unknown'};
+  }
+
+  void _setStatus(BridgeConnectionStatus newStatus) {
+    _status = newStatus;
+    if (newStatus != BridgeConnectionStatus.reconnecting) {
+      _error = null;
     }
-    final decoded = jsonDecode(resp.body);
-    if (decoded is! Map<String, dynamic>) {
-      throw Exception('读取文件失败: 响应格式错误');
+    _notifyStatus();
+  }
+
+  void _notifyStatus() {
+    final snap = status;
+    for (final cb in _statusListeners) {
+      try {
+        cb(snap);
+      } catch (e) {
+        print('[BridgeClient] Status callback error: $e');
+      }
     }
-    return BridgeWorkspaceFileContent.fromJson(decoded);
   }
 
-  Future<BridgeHttpResponse> writeWorkspaceFile({
-    required String path,
-    required String content,
-    String? threadId,
-    String? sessionId,
-  }) {
-    return _request(
-      method: 'POST',
-      path: '/workspace/file/write',
-      headers: _authHeaders(),
-      body: {
-        'path': path,
-        'content': content,
-        if (threadId != null && threadId.isNotEmpty) 'threadId': threadId,
-        if (sessionId != null && sessionId.isNotEmpty) 'sessionId': sessionId,
-      },
-    );
+  void _notifyListeners(dynamic data) {
+    for (final cb in _messageListeners) {
+      try {
+        cb(data);
+      } catch (e) {
+        print('[BridgeClient] Message callback error: $e');
+      }
+    }
   }
-
-  String screenshotUrl(String screenshotPath) {
-    final raw = screenshotPath.trim();
-    if (raw.isEmpty) return '';
-    if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
-    final uri = _uri(
-      '/screenshot',
-      queryParameters: <String, String>{
-        'path': raw,
-        if (config.token.isNotEmpty) 'token': config.token,
-      },
-    );
-    return uri.toString();
-  }
-}
-
-class _BridgeEndpoint {
-  const _BridgeEndpoint({
-    required this.scheme,
-    required this.host,
-    required this.port,
-    required this.basePath,
-  });
-
-  final String scheme;
-  final String host;
-  final int? port;
-  final String basePath;
-}
-
-_BridgeEndpoint _resolveEndpoint(String hostInput, int fallbackPort) {
-  final raw = hostInput.trim().isEmpty ? '127.0.0.1' : hostInput.trim();
-  final hasScheme = raw.contains('://');
-  final candidate = hasScheme ? raw : 'http://$raw';
-  final uri = Uri.parse(candidate);
-  final host = uri.host.trim();
-  if (host.isEmpty) {
-    throw FormatException('无效连接地址: $hostInput');
-  }
-
-  int? port;
-  if (uri.hasPort) {
-    port = uri.port;
-  } else if (!hasScheme) {
-    port = fallbackPort;
-  } else {
-    port = null;
-  }
-
-  final normalizedPath = _normalizeBasePath(uri.path);
-  return _BridgeEndpoint(
-    scheme: uri.scheme.isEmpty ? 'http' : uri.scheme,
-    host: host,
-    port: port,
-    basePath: normalizedPath,
-  );
-}
-
-String _normalizeBasePath(String rawPath) {
-  if (rawPath.isEmpty || rawPath == '/') return '';
-  var path = rawPath.trim();
-  if (!path.startsWith('/')) path = '/$path';
-  while (path.endsWith('/') && path.length > 1) {
-    path = path.substring(0, path.length - 1);
-  }
-  return path;
-}
-
-String _joinPath(String basePath, String requestPath) {
-  var path = requestPath.trim();
-  if (path.isEmpty) path = '/';
-  if (!path.startsWith('/')) path = '/$path';
-  if (basePath.isEmpty || basePath == '/') return path;
-  return '$basePath$path';
 }

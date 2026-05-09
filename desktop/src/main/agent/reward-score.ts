@@ -130,7 +130,7 @@ function normalizeState(raw: unknown): RewardScoreState {
       const channel = String(r.channel) === 'chat' ? 'chat' : 'agent'
       const outcomeText = String(r.outcome)
       const outcome: RewardOutcome = outcomeText === 'aborted' ? 'aborted' : outcomeText === 'error' ? 'error' : 'success'
-      return {
+      const base: Omit<RewardLedgerEntry, 'meta'> = {
         id: String(r.id || randomUUID()),
         createdAt: String(r.createdAt || now),
         channel,
@@ -139,8 +139,10 @@ function normalizeState(raw: unknown): RewardScoreState {
         pointsAfter: Math.max(0, normalizeInt(r.pointsAfter, points)),
         debtUsdAfter: Math.max(0, normalizeInt(r.debtUsdAfter, debtUsd)),
         breakdown,
-        meta: r.meta && typeof r.meta === 'object' ? (r.meta as RewardLedgerEntry['meta']) : undefined,
       }
+      const metaVal: RewardLedgerEntry['meta'] | undefined =
+        r.meta && typeof r.meta === 'object' ? (r.meta as RewardLedgerEntry['meta']) : undefined
+      return metaVal ? { ...base, meta: metaVal } : base
     })
     .filter((v): v is RewardLedgerEntry => Boolean(v))
     .slice(-SCORE_STATE_MAX_ENTRIES)

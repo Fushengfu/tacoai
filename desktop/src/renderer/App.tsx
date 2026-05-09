@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo } from 'react'
 import type { AttachedAsset, AttachedImage, ChatMsg, FileChangeInfo, FileChangeStatus, ProviderId, ThemeMode, ThreadMode } from './types'
-import type { AppUpdateCheckResult, EditorId, BrowserConsoleLevel, MobileBridgeContextSnapshot, GitWorkingTreeStatus } from '../shared/ipc'
+import type { AppUpdateCheckResult, EditorId, BrowserConsoleLevel, GitWorkingTreeStatus } from '../shared/ipc'
 import { estimateTokens, buildSystemPrompt, resolveModelConfigDisplayLabel, resolveModelConfigMaxTokens } from './constants'
 import { loadJson, saveJson } from './lib/storage'
 import { useThreads } from './hooks/useThreads'
@@ -11,6 +11,8 @@ import { Sidebar } from './components/Sidebar'
 import { ChatPanel } from './components/ChatPanel'
 import { ChatStatusOverlay } from './components/ChatStatusOverlay'
 import { SettingsPage } from './components/SettingsModal'
+import { BridgePanel } from './components/BridgePanel'
+import { LoginModal, type MemberInfo } from './components/LoginModal'
 import { PaneErrorBoundary } from './components/PaneErrorBoundary'
 import { useDrag } from './hooks/useDrag'
 
@@ -40,6 +42,10 @@ function isPrivateIpv4(hostname: string): boolean {
   if (a === 192 && b === 168) return true
   if (a === 172 && b >= 16 && b <= 31) return true
   return false
+}
+
+function normalizeSlashPath(input: string): string {
+  return String(input ?? '').trim().replace(/[\\/]+/g, '/').replace(/\/+/g, '/')
 }
 
 function isDevBrowserUrl(rawUrl?: string): boolean {
@@ -108,18 +114,6 @@ function collectMessageScreenshotPaths(msg: ChatMsg): string[] {
   return Array.from(paths)
 }
 
-function buildMobileBridgeSnapshotDigest(snapshot: MobileBridgeContextSnapshot): string {
-  // 与主进程保持一致：去重时忽略顶层 updatedAt，避免时间戳导致的伪变化。
-  return JSON.stringify({
-    ...snapshot,
-    updatedAt: 0,
-  })
-}
-
-function normalizeSlashPath(input: string): string {
-  return String(input ?? '').trim().replace(/[\\/]+/g, '/').replace(/\/+/g, '/')
-}
-
 function normalizeWorkspaceRelativePath(filePath: string, workspace?: string | null): string {
   const normalizedFilePath = normalizeSlashPath(filePath).replace(/^\.\//, '')
   if (!normalizedFilePath) return normalizedFilePath
@@ -168,6 +162,18 @@ export default function App() {
   const [viewingSelection, setViewingSelection] = useState<{ line: number; column: number } | null>(null)
   const [showTerminal, setShowTerminal] = useState(false)
   const [showStatusOverlay, setShowStatusOverlay] = useState(false)
+  const [showBridgePanel, setShowBridgePanel] = useState(false)
+  /** 登录状态 */
+  const [memberInfo, setMemberInfo] = useState<MemberInfo | null>(() => {
+    try {
+      const stored = localStorage.getItem('taco.memberInfo')
+      return stored ? JSON.parse(stored) : null
+    } catch { return null }
+  })
+  const [memberToken, setMemberToken] = useState<string | null>(() => {
+    return localStorage.getItem('taco.memberToken') || null
+  })
+  const [showLoginModal, setShowLoginModal] = useState(false)
   /** 外部浏览器窗口状态 Map<appId, url> */
   const [browserWindows, setBrowserWindows] = useState<Map<string, string>>(new Map())
   /** 外部浏览器控制台日志 */
@@ -189,8 +195,6 @@ export default function App() {
   /** doSend 的 ref，避免 useEffect 闭包捕获旧引用 */
   type MobileTarget = { threadId?: string; sessionId?: string; modelConfigId?: string }
   const doSendRef = useRef<(content: string, images?: AttachedImage[], attachments?: AttachedAsset[], target?: MobileTarget) => void>(() => {})
-  const mobileSyncTimerRef = useRef<number | null>(null)
-  const lastMobileSnapshotDigestRef = useRef('')
   /** 中间区域当前视图：chat / settings */
   type MiddleView = 'chat' | 'settings'
   const [middleView, setMiddleView] = useState<MiddleView>('chat')
@@ -794,7 +798,7 @@ export default function App() {
 
   const refreshQueueRef = useRef<{
     pending: ProjectRefreshFlags
-    timer: ReturnType<typeof window.setTimeout> | null
+    timer: number | null
     running: boolean
     lastGitStatusAt: number
   }>({
@@ -989,6 +993,19 @@ export default function App() {
     }
   }, [])
 
+  const handleLoginSuccess = useCallback((token: string, member: MemberInfo) => {
+    setMemberInfo(member)
+    setMemberToken(token)
+    setShowLoginModal(false)
+  }, [])
+
+  const handleLogout = useCallback(() => {
+    localStorage.removeItem('taco.memberToken')
+    localStorage.removeItem('taco.memberInfo')
+    setMemberInfo(null)
+    setMemberToken(null)
+  }, [])
+
   // （浏览器模式已统一为外部 BrowserWindow，不再需要模式切换）
 
   const currentBrowserAppId = tid
@@ -1080,6 +1097,114 @@ export default function App() {
   useEffect(() => {
     browserWindowsRef.current = browserWindows
   }, [browserWindows])
+
+  // 监听移动端请求切换项目
+  useEffect(() => {
+    const unsubscribe = window.taco.bridge.onSwitchProject((data) => {
+      const store = threadStoreRef.current
+      const projectId = data.projectId
+      const sessionId = data.sessionId || undefined
+
+      if (!projectId || !store.threads.some((t) => t.id === projectId)) return
+
+      store.switchThread(projectId)
+      if (sessionId) {
+        const thread = store.threads.find((t) => t.id === projectId)
+        if (thread && thread.sessions.some((s) => s.id === sessionId)) {
+          store.switchSession(projectId, sessionId)
+        }
+      }
+    })
+    return unsubscribe
+  }, [])
+
+  // 监听移动端发来的消息（chat-send / agent-confirm / agent-abort）
+  useEffect(() => {
+    const unsubscribe = window.taco.bridge.onClientMessage((msg) => {
+      const type = String(msg.type || '')
+      const doSend = doSendRef.current
+      if (!doSend) return
+
+      switch (type) {
+        case 'bridge:chat-send': {
+          const content = String(msg.content || '')
+          if (content.trim()) {
+            doSend(content, undefined)
+          }
+          break
+        }
+        case 'bridge:agent-confirm': {
+          const confirmId = String(msg.confirmId || '')
+          const approved = Boolean(msg.approved)
+          if (confirmId) {
+            window.taco.agent.confirmResponse(confirmId, approved)
+          }
+          break
+        }
+        case 'bridge:agent-abort': {
+          const requestId = String(msg.requestId || '')
+          if (requestId) {
+            window.taco.chat.abort(requestId)
+          }
+          break
+        }
+      }
+    })
+    return unsubscribe
+  }, [])
+
+  // 监听主进程请求状态快照（移动端连接成功时触发）
+  useEffect(() => {
+    const handler = (payload: {
+      threadId: string
+      sessionId?: string
+      workspace?: string
+      modelConfigId?: string
+      threadTitle?: string
+    }) => {
+      const store = threadStoreRef.current
+      const chatState = chatRef.current
+      const providerState = providerSettingsRef.current
+
+      const thread = store.threads.find((t) => t.id === payload.threadId)
+      if (!thread) {
+        window.taco.bridge.sendStateSnapshotResponse({
+          messages: [],
+          threadId: payload.threadId,
+        })
+        return
+      }
+
+      const sessionId = payload.sessionId || thread.activeSessionId || thread.sessions[0]?.id || ''
+      const messages = chatState.getMessages(sessionId)
+
+      // 获取模型标签
+      const modelConfigId = payload.modelConfigId || thread.modelConfigId || providerState.activeModelConfigId
+      const modelConfig = providerState.getModelConfig(modelConfigId || '')
+      const modelLabel = modelConfig ? resolveModelConfigDisplayLabel(modelConfig) : ''
+
+      // 获取当前活跃的 Agent 请求 ID
+      const activeAgentRequestId = chatState.getActiveTaskStartedAt(sessionId) ? `agent-${sessionId}` : undefined
+
+      window.taco.bridge.sendStateSnapshotResponse({
+        messages: messages.map((m) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          hasImages: (m.images && m.images.length > 0) ?? false,
+          streaming: false,
+        })),
+        threadId: payload.threadId,
+        sessionId,
+        workspace: payload.workspace || thread.workspace,
+        modelLabel,
+        threadTitle: payload.threadTitle || thread.title,
+        activeAgentRequestId,
+      })
+    }
+
+    return window.taco.bridge.onRequestStateSnapshot(handler)
+  }, [])
 
   // （浏览器自动化操作统一在主进程通过 CDP 执行，不再需要渲染进程中转）
 
@@ -1706,229 +1831,6 @@ export default function App() {
   // 保持 ref 指向最新的 doSend
   doSendRef.current = doSend
 
-  // 移动端桥接：手机输入的指令直接作为当前会话用户消息发送
-  useEffect(() => {
-    const unsubscribe = window.taco.mobileBridge.onCommand((cmd) => {
-      const text = cmd.text.trim()
-      if (!text) return
-      const selected = applyMobileSelection({
-        threadId: cmd.threadId,
-        sessionId: cmd.sessionId,
-        modelConfigId: cmd.provider as string | undefined,
-      })
-      doSendRef.current(text, undefined, undefined, selected)
-    })
-    return unsubscribe
-  }, [applyMobileSelection])
-
-  // 移动端桥接：仅同步选择，不发送消息
-  useEffect(() => {
-    const unsubscribe = window.taco.mobileBridge.onSelect((sel) => {
-      applyMobileSelection({
-        threadId: sel.threadId,
-        sessionId: sel.sessionId,
-        modelConfigId: sel.provider as string | undefined,
-      })
-    })
-    return unsubscribe
-  }, [applyMobileSelection])
-
-  // 移动端桥接：停止当前任务（与桌面 stop 语义一致，仅终止在执行任务，队列保留）
-  useEffect(() => {
-    const unsubscribe = window.taco.mobileBridge.onAbort((evt) => {
-      const store = threadStoreRef.current
-      const selected = applyMobileSelection({
-        threadId: evt.threadId,
-        sessionId: evt.sessionId,
-      })
-      const targetThreadId = selected.threadId ?? evt.threadId
-      const targetSessionId =
-        selected.sessionId ??
-        evt.sessionId ??
-        (targetThreadId ? store.threads.find((t) => t.id === targetThreadId)?.activeSessionId : undefined) ??
-        activeSessionIdRef.current
-      if (targetSessionId) {
-        chatRef.current.stopSending(targetSessionId)
-      }
-    })
-    return unsubscribe
-  }, [applyMobileSelection])
-
-  // 移动端桥接：确认/拒绝当前风险步骤（恢复 agent 执行）
-  useEffect(() => {
-    const unsubscribe = window.taco.mobileBridge.onConfirm((evt) => {
-      applyMobileSelection({
-        threadId: evt.threadId,
-        sessionId: evt.sessionId,
-      })
-      if (!evt.confirmId) return
-      window.taco.agent.confirmResponse(evt.confirmId, evt.approved === true)
-    })
-    return unsubscribe
-  }, [applyMobileSelection])
-
-  // 移动端桥接：在同一项目内新建会话
-  useEffect(() => {
-    const unsubscribe = window.taco.mobileBridge.onNewSession((evt) => {
-      const store = threadStoreRef.current
-      const selected = applyMobileSelection({ threadId: evt.threadId })
-      const targetThreadId = selected.threadId ?? evt.threadId ?? activeThreadIdRef.current
-      if (!targetThreadId) return
-      const exists = store.threads.some((thread) => thread.id === targetThreadId)
-      if (!exists) return
-      store.switchThread(targetThreadId)
-      store.createSession(targetThreadId)
-    })
-    return unsubscribe
-  }, [applyMobileSelection])
-
-  // 移动端桥接：清空会话记录（不删除会话本身）
-  useEffect(() => {
-    const unsubscribe = window.taco.mobileBridge.onClearSession((evt) => {
-      const store = threadStoreRef.current
-      const selected = applyMobileSelection({
-        threadId: evt.threadId,
-        sessionId: evt.sessionId,
-      })
-      const targetThreadId = selected.threadId ?? evt.threadId
-      const targetSessionId =
-        selected.sessionId ??
-        evt.sessionId ??
-        (targetThreadId ? store.threads.find((t) => t.id === targetThreadId)?.activeSessionId : undefined) ??
-        activeSessionIdRef.current
-      if (!targetSessionId) return
-      chatRef.current.clearMessages(targetSessionId)
-    })
-    return unsubscribe
-  }, [applyMobileSelection])
-
-  const mobileBridgeSnapshot = useMemo<MobileBridgeContextSnapshot>(() => {
-    const activeThreadId = tid || undefined
-    const activeSessionId = sessionId || undefined
-    const toMobileMessage = (msg: ChatMsg) => ({
-      id: msg.id,
-      role: msg.role,
-      content: msg.content.slice(0, 4000),
-      screenshotPaths: collectMessageScreenshotPaths(msg).map((p) => p.slice(0, 1024)),
-      agentSteps: Array.isArray(msg.agentSteps)
-        ? msg.agentSteps.map((step) => ({
-          round: step.round,
-          thinking: step.thinking.slice(0, 4000),
-          status: step.status,
-          confirmId: step.confirmId?.slice(0, 128),
-          risks: step.risks?.map((r) => ({
-            toolName: r.toolName.slice(0, 128),
-            reason: r.reason.slice(0, 1000),
-            detail: r.detail.slice(0, 2000),
-            level: r.level,
-          })),
-          toolCalls: step.toolCalls.map((tc) => ({
-            id: tc.id,
-            name: tc.name,
-            arguments: tc.arguments.slice(0, 2000),
-          })),
-          toolResults: step.toolResults.map((tr) => ({
-            tool_call_id: tr.tool_call_id,
-            name: tr.name,
-            content: tr.content.slice(0, 3000),
-            success: tr.success,
-            fileChange: tr.fileChange ? {
-              filePath: tr.fileChange.filePath.slice(0, 1024),
-              oldContent: tr.fileChange.oldContent?.slice(0, 12000) ?? null,
-              newContent: tr.fileChange.newContent?.slice(0, 12000) ?? null,
-            } : undefined,
-          })),
-        }))
-        : undefined,
-      activePlan: msg.activePlan
-        ? {
-          summary: msg.activePlan.summary.slice(0, 500),
-          reasoning: msg.activePlan.reasoning?.slice(0, 1000),
-          steps: msg.activePlan.steps.map((s) => ({
-            text: s.text.slice(0, 500),
-            status: s.status,
-            note: s.note?.slice(0, 500),
-          })),
-        }
-        : undefined,
-    })
-
-    return {
-      updatedAt: Date.now(),
-      activeThreadId,
-      activeSessionId,
-      activeProvider: currentModelConfigId || undefined,
-      providers: providerSettings.configuredModels.map((p) => ({ id: p.id, label: p.label })),
-      threads: threadStore.threads.map((thread) => {
-        const isActiveThread = thread.id === activeThreadId
-        const threadActiveSessionId = isActiveThread ? (activeSessionId ?? thread.activeSessionId) : ''
-        const sessionContexts = thread.sessions.map((session) => {
-          const sid = session.id
-          const sessionMessages = chat.threadMessages[sid] ?? []
-          const sessionMessageCount = chat.getSessionMessageCount(sid)
-          const syncFull = isActiveThread && sid === threadActiveSessionId
-          return {
-            sessionId: sid,
-            title: session.title,
-            messageCount: sessionMessageCount,
-            detailLevel: syncFull ? 'full' as const : 'meta' as const,
-            messages: syncFull ? sessionMessages.map(toMobileMessage) : [],
-            sending: Boolean(chat.sendingThreads[sid]),
-            queue: syncFull ? (chat.queues[sid] ?? []).map((q) => q.content.slice(0, 500)) : [],
-            streamingContent: syncFull ? String(chat.streamingContents[sid] ?? '').slice(0, 4000) : '',
-          }
-        })
-        return {
-          threadId: thread.id,
-          title: thread.title,
-          updatedAt: thread.updatedAt,
-          provider: thread.modelConfigId,
-          mode: thread.mode ?? 'agent',
-          workspace: thread.workspace,
-          activeSessionId: thread.activeSessionId,
-          sessions: sessionContexts,
-        }
-      }),
-    }
-  }, [
-    tid,
-    sessionId,
-    currentModelConfigId,
-    providerSettings.configuredModels,
-    threadStore.threads,
-    chat.threadMessages,
-    chat.sessionLoadMetaById,
-    chat.sendingThreads,
-    chat.queues,
-    chat.streamingContents,
-  ])
-
-  const mobileBridgeSnapshotDigest = useMemo(
-    () => buildMobileBridgeSnapshotDigest(mobileBridgeSnapshot),
-    [mobileBridgeSnapshot],
-  )
-
-  // 移动端桥接：将桌面端当前会话历史/上下文同步到主进程缓存（去重 + 节流），供手机端查询
-  useEffect(() => {
-    if (mobileBridgeSnapshotDigest === lastMobileSnapshotDigestRef.current) return
-    if (mobileSyncTimerRef.current != null) {
-      window.clearTimeout(mobileSyncTimerRef.current)
-      mobileSyncTimerRef.current = null
-    }
-    mobileSyncTimerRef.current = window.setTimeout(() => {
-      window.taco.mobileBridge.syncContext(mobileBridgeSnapshot)
-      lastMobileSnapshotDigestRef.current = mobileBridgeSnapshotDigest
-      mobileSyncTimerRef.current = null
-    }, 120)
-  }, [mobileBridgeSnapshot, mobileBridgeSnapshotDigest])
-
-  useEffect(() => () => {
-    if (mobileSyncTimerRef.current != null) {
-      window.clearTimeout(mobileSyncTimerRef.current)
-      mobileSyncTimerRef.current = null
-    }
-  }, [])
-
   /** 重新发送：保留该消息，删掉之后的回复，重新请求 */
   async function handleResend(msgId: string) {
     if (sessionSending || !sessionId || !currentModelConfig || !currentProvider) return
@@ -2045,7 +1947,7 @@ export default function App() {
       source: `pane:${pane}`,
       message: error.message || String(error),
       stack: error.stack,
-      componentStack: info.componentStack,
+      componentStack: info.componentStack ?? undefined,
       projectId: tid || undefined,
       workspace: currentWorkspace || undefined,
       metadata: {
@@ -2154,6 +2056,21 @@ export default function App() {
                 <rect x="10" y="4" width="2" height="9" rx="0.5" fill="currentColor" />
               </svg>
             </button>
+            <button
+              className={`pill bridge-toggle ${showBridgePanel ? 'active' : ''}`}
+              type="button"
+              onClick={() => setShowBridgePanel((v) => !v)}
+              title="跨端桥接"
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                <path d="M8 2.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 2.5Z" fill="currentColor" opacity=".4"/>
+                <path d="M8 10.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 10.5Z" fill="currentColor" opacity=".4"/>
+                <path d="M5 5.5a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5h-1.5A.75.75 0 0 1 5 5.5Z" fill="currentColor" opacity=".4"/>
+                <path d="M11 9.5a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5a.75.75 0 0 1 .75.75Z" fill="currentColor" opacity=".4"/>
+                <path d="M3.5 4.25a.75.75 0 0 1 1.06-.06L6.4 5.93a1.41 1.41 0 0 0 2.19-.22l1.21-2.02a.75.75 0 1 1 1.28.76L9.87 6.47a2.91 2.91 0 0 1-4.53.44L3.56 5.31a.75.75 0 0 1-.06-1.06Z" fill="currentColor"/>
+                <path d="M12.5 11.75a.75.75 0 0 1-1.06.06L9.6 10.07a1.41 1.41 0 0 0-2.19.22l-1.21 2.02a.75.75 0 1 1-1.28-.76L6.13 9.53a2.91 2.91 0 0 1 4.53-.44l1.78 1.6a.75.75 0 0 1 .06 1.06Z" fill="currentColor"/>
+              </svg>
+            </button>
             {messages.length > 0 && (
               <button className="pill" type="button" onClick={handleClearChat}>
                 清空
@@ -2240,6 +2157,9 @@ export default function App() {
             isSending={isThreadSending}
             isCompleted={isThreadCompleted}
             contextPercent={contextPercent}
+            memberInfo={memberInfo}
+            onLoginClick={() => setShowLoginModal(true)}
+            onLogoutClick={handleLogout}
           />
         </PaneErrorBoundary>
       </div>
@@ -2324,6 +2244,8 @@ export default function App() {
                 onClose={() => { setShowSettings(false); setMiddleView('chat') }}
                 workspace={currentWorkspace}
                 projectId={tid}
+                memberInfo={memberInfo}
+                memberToken={memberToken ?? undefined}
               />
             </PaneErrorBoundary>
           </div>
@@ -2412,6 +2334,19 @@ export default function App() {
           maxTokens={maxTokens}
           projectTokenStats={projectTokenStats}
         />
+
+        {/* 跨端桥接面板 */}
+        {showBridgePanel && (
+          <BridgePanel onClose={() => setShowBridgePanel(false)} memberToken={memberToken} />
+        )}
+
+        {/* 登录弹窗 */}
+        {showLoginModal && (
+          <LoginModal
+            onClose={() => setShowLoginModal(false)}
+            onLoginSuccess={handleLoginSuccess}
+          />
+        )}
       </div>
 
     </div>

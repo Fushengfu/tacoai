@@ -6,3 +6,5 @@
 @import './styles/terminal-and-responsive.css';
 @import './styles/file-editor.css';
 @import './styles/chat-status-overlay.css';
+@import './styles/login-modal.css';
+@import './styles/bridge-panel.css';

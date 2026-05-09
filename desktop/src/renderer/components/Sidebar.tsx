@@ -1,6 +1,7 @@
 import type { Thread } from '../types'
 import { formatTime } from '../lib/storage'
 import { useState } from 'react'
+import type { MemberInfo } from './LoginModal'
 
 type SidebarProps = {
   sortedThreads: Thread[]
@@ -22,6 +23,10 @@ type SidebarProps = {
   isCompleted: (threadId: string) => boolean
   /** 当前会话上下文窗口占用百分比 */
   contextPercent: number
+  /** 登录状态 */
+  memberInfo: MemberInfo | null
+  onLoginClick: () => void
+  onLogoutClick: () => void
 }
 
 export function Sidebar({
@@ -41,6 +46,9 @@ export function Sidebar({
   isSending,
   isCompleted,
   contextPercent,
+  memberInfo,
+  onLoginClick,
+  onLogoutClick,
 }: Readonly<SidebarProps>) {
   const [draggingThreadId, setDraggingThreadId] = useState<string | null>(null)
   const [dragOverThreadId, setDragOverThreadId] = useState<string | null>(null)
@@ -164,9 +172,36 @@ export function Sidebar({
           </div>
         </div>
         <div className="sidebar-footer-divider" />
-        <button className="ghost-btn sidebar-settings-btn" type="button" onClick={onOpenSettings}>
-          Settings
-        </button>
+        <div className="sidebar-footer-actions">
+          {memberInfo ? (
+            <div className="sidebar-user-area">
+              <div className="sidebar-user-avatar" title={memberInfo.nickname || memberInfo.username}>
+                {memberInfo.avatar ? (
+                  <img src={memberInfo.avatar} alt="" />
+                ) : (
+                  <span>{(memberInfo.nickname || memberInfo.username).charAt(0).toUpperCase()}</span>
+                )}
+              </div>
+              <div className="sidebar-user-popover">
+                <button
+                  className="ghost-btn sidebar-logout-btn"
+                  type="button"
+                  onClick={onLogoutClick}
+                  title="退出登录"
+                >
+                  退出登录
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button className="ghost-btn sidebar-login-btn" type="button" onClick={onLoginClick}>
+              登录
+            </button>
+          )}
+          <span className="sidebar-settings-btn" role="button" tabIndex={0} onClick={onOpenSettings} onKeyDown={(e) => { if (e.key === 'Enter') onOpenSettings() }}>
+            Settings
+          </span>
+        </div>
       </div>
     </aside>
   )

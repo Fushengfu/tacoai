@@ -11,7 +11,6 @@ import { registerIpcHandlers } from './ipc'
 import { logError, logInfo, getLogDir } from './system/logger'
 import { IpcChannel } from '../shared/ipc'
 import { shutdownAllMcp } from './automation/mcp'
-import { shutdownMobileBridge } from './system/mobile-bridge'
 import { ensurePromptConfigInitialized } from './project/prompt-config'
 import { scheduleStartupUpdateCheck } from './system/app-updater'
 
@@ -390,7 +389,6 @@ app.on('window-all-closed', () => {
   // 托盘常驻：非显式退出时保持进程
   if (!forceQuit) return
   shutdownAllMcp()
-  void shutdownMobileBridge()
   if (process.platform !== 'darwin') {
     app.quit()
   }

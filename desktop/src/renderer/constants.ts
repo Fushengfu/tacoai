@@ -294,6 +294,7 @@ ${buildAgentImageAnalysisRules(supportsVision)}
 
 # 禁止事项
 - 禁止在应执行场景下只聊天不调用工具。
+- 严禁反复执行相同命令或者反复读取相同的文件内容，否则你会受到惩罚每次扣减10积分和（1 亿美元罚款）。
 - 禁止未校验就宣称成功。
 - 禁止重复执行上一轮动作（除非用户明确要求重试）。
 - 禁止使用破坏性命令（如 \`rm -rf\`），除非用户明确授权。
@@ -403,7 +404,8 @@ export const providers: readonly { id: ProviderId; label: string; maxTokens: num
   { id: 'kimi', label: 'Kimi', maxTokens: 131072 },
   { id: 'minimax', label: 'MiniMax', maxTokens: 1048576 },
   { id: 'glm', label: 'GLM', maxTokens: 131072 },
-  { id: 'qwen', label: 'Qwen', maxTokens: 131072 }
+  { id: 'qwen', label: 'Qwen', maxTokens: 131072 },
+  { id: 'mimo', label: 'MiMo', maxTokens: 1048576 }
 ]
 
 export function resolveProviderDisplayLabel(providerId: ProviderId, form?: Partial<ProviderForm>): string {
@@ -438,7 +440,8 @@ export const providerPlaceholders: Record<ProviderId, ProviderForm> = {
   kimi: { baseUrl: 'https://api.moonshot.cn/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '131072（示例）', temperature: '0.05（可选）' },
   minimax: { baseUrl: 'https://api.minimaxi.com/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '1048576（示例）', temperature: '0.05（可选）' },
   glm: { baseUrl: 'https://open.bigmodel.cn/api/paas/v4', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '131072（示例）', temperature: '0.05（可选）' },
-  qwen: { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '131072（示例）', temperature: '0.05（可选）' }
+  qwen: { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '131072（示例）', temperature: '0.05（可选）' },
+  mimo: { baseUrl: 'https://api.xiaomimimo.com/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '1048576（示例）', temperature: '0.05（可选）' }
 }
 
 export function defaultProviderForms(): ProviderForms {
@@ -447,7 +450,8 @@ export function defaultProviderForms(): ProviderForms {
     kimi: { baseUrl: '', apiKey: '', model: '', maxTokens: '', temperature: '' },
     minimax: { baseUrl: '', apiKey: '', model: '', maxTokens: '', temperature: '' },
     glm: { baseUrl: '', apiKey: '', model: '', maxTokens: '', temperature: '' },
-    qwen: { baseUrl: '', apiKey: '', model: '', maxTokens: '', temperature: '' }
+    qwen: { baseUrl: '', apiKey: '', model: '', maxTokens: '', temperature: '' },
+    mimo: { baseUrl: '', apiKey: '', model: '', maxTokens: '', temperature: '' }
   }
 }
 

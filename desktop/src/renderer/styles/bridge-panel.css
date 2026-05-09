@@ -1,0 +1,221 @@
+/**
+ * BridgePanel 样式
+ */
+
+.bridge-panel {
+  position: absolute;
+  top: 56px;
+  right: 16px;
+  width: 340px;
+  max-height: calc(100vh - 80px);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  z-index: 100;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.bridge-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.bridge-panel-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.bridge-panel-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+}
+
+.bridge-panel-close:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.bridge-panel-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* 状态行 */
+.bridge-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bridge-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.bridge-status-dot.disconnected {
+  background: #6b7280;
+}
+
+.bridge-status-dot.connecting,
+.bridge-status-dot.reconnecting {
+  background: #f59e0b;
+  animation: bridge-pulse 1.2s ease-in-out infinite;
+}
+
+.bridge-status-dot.connected {
+  background: #10b981;
+}
+
+@keyframes bridge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.bridge-status-text {
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.bridge-peer-badge {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--accent);
+  background: rgba(86, 217, 197, 0.1);
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+/* 未登录提示 */
+.bridge-not-logged-in {
+  text-align: center;
+  padding: 16px 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* 连接区域 */
+.bridge-connect-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.bridge-connecting {
+  text-align: center;
+  padding: 16px 0;
+  color: var(--muted);
+}
+
+/* 配对区域 */
+.bridge-pairing-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.bridge-pairing-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.bridge-pairing-code {
+  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--text);
+  background: var(--panel);
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  user-select: all;
+}
+
+.bridge-qr-code {
+  padding: 8px;
+  background: #fff;
+  border-radius: 12px;
+}
+
+.bridge-pairing-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.5;
+}
+
+.bridge-input:disabled {
+  opacity: 0.5;
+}
+
+/* 按钮 */
+.bridge-btn {
+  width: 100%;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.bridge-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.bridge-btn-primary {
+  background: var(--accent-2);
+  color: #fff;
+}
+
+.bridge-btn-primary:hover:not(:disabled) {
+  background: #3b6ef7;
+}
+
+.bridge-btn-danger {
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+.bridge-btn-danger:hover {
+  background: rgba(239, 68, 68, 0.2);
+}
+
+/* 错误信息 */
+.bridge-error {
+  margin: 0;
+  font-size: 12px;
+  color: #ef4444;
+  padding: 8px 12px;
+  background: rgba(239, 68, 68, 0.08);
+  border-radius: 8px;
+}

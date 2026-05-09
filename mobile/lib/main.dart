@@ -5,5 +5,5 @@ import 'app.dart';
 export 'app.dart';
 
 void main() {
-  runApp(const MobileBridgeApp());
+  runApp(const TacoApp());
 }

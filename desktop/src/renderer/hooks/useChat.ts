@@ -985,10 +985,22 @@ export function useChat() {
       if (savedParams) {
         // 下一轮宏任务执行，确保 React state 已提交
         setTimeout(() => {
-          sendMessageRef.current?.({ ...savedParams, content: next.content })
+          // 再次检查是否已有在途请求，避免重复发送
+          if (!inFlightThreadsRef.current.has(threadId)) {
+            sendMessageRef.current?.({ ...savedParams, content: next.content })
+          }
         }, 0)
       }
       return { ...prev, [threadId]: rest }
+    })
+  }
+
+  /** 清空指定 thread 的队列 */
+  function clearQueue(threadId: string) {
+    setQueues((prev) => {
+      const next = { ...prev }
+      delete next[threadId]
+      return next
     })
   }
 

@@ -1380,11 +1380,18 @@ export async function runAgent(
         if (event.type === 'text') {
           rawTextContent += event.content
           const sanitizedFull = sanitizeUserFacingText(rawTextContent)
-          const safeLen = Math.max(0, sanitizedFull.length - STREAM_SANITIZE_HOLD_BACK)
-          const visibleText = sanitizedFull.slice(0, safeLen)
-          const delta = visibleText.slice(emittedSanitizedText.length)
-          emittedSanitizedText = visibleText
-          textContent = visibleText
+          // 防回退：若 sanitized 因标签剥离而变短，重置已发送指针
+          if (sanitizedFull.length < emittedSanitizedText.length) {
+            emittedSanitizedText = sanitizedFull
+          }
+          // 基于 raw 文本做安全裁剪：避免 sanitize 结果长度波动破坏 delta 连续性
+          const safeRawLen = Math.max(0, rawTextContent.length - STREAM_SANITIZE_HOLD_BACK)
+          const safeRaw = rawTextContent.slice(0, safeRawLen)
+          const sanitizedSafe = sanitizeUserFacingText(safeRaw)
+          const delta = sanitizedSafe.slice(emittedSanitizedText.length)
+          emittedSanitizedText = sanitizedSafe
+          // 上下文仍用完整 sanitized 文本（不回退）
+          textContent = sanitizedFull
           lastAssistantText = textContent
           if (delta) onEvent?.({ type: 'text', content: delta })
         } else if (event.type === 'reasoning') {
@@ -1406,7 +1413,9 @@ export async function runAgent(
       }
 
       const finalSanitizedText = sanitizeUserFacingText(rawTextContent)
-      const tailDelta = finalSanitizedText.slice(emittedSanitizedText.length)
+      // 防回退后重新对齐：发送 emitted 指针之后且在 final 范围内的任意剩余文本
+      const tailStart = Math.min(emittedSanitizedText.length, finalSanitizedText.length)
+      const tailDelta = finalSanitizedText.slice(tailStart)
       if (tailDelta) onEvent?.({ type: 'text', content: tailDelta })
       const finalSanitizedReasoning = sanitizeReasoningForContext(rawReasoningContent)
       const reasoningTailDelta = finalSanitizedReasoning.slice(emittedSanitizedReasoning.length)

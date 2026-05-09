@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import QRCode from 'qrcode'
 import type { GuiPlusForm, ModelConfig, ThemeMode } from '../types'
-import type { SkillInfo, ProjectNote, ProjectTaskMemory, NoteCategory, McpServerInfo, MobileBridgeConfig, MemoryScopeStats, AppUpdateCheckResult } from '../../shared/ipc'
+import type { SkillInfo, ProjectNote, ProjectTaskMemory, NoteCategory, McpServerInfo, MemoryScopeStats, AppUpdateCheckResult } from '../../shared/ipc'
 import { providers } from '../constants'
 import {
   loadUploadSettings,
@@ -17,12 +16,6 @@ const NOTE_CATEGORIES: { value: NoteCategory; label: string }[] = [
   { value: 'config', label: '配置信息' },
   { value: 'other', label: '其他' },
 ]
-
-const DEFAULT_MOBILE_BRIDGE_CONFIG: MobileBridgeConfig = {
-  enabled: false,
-  port: 18400,
-  token: 'taco-mobile',
-}
 
 type SettingsPageProps = {
   modelConfigs: ModelConfig[]
@@ -40,6 +33,8 @@ type SettingsPageProps = {
   onClose: () => void
   workspace?: string | null
   projectId?: string
+  memberInfo?: { username: string } | null
+  memberToken?: string
 }
 
 type SettingsTab = 'general' | 'models' | 'gui_plus' | 'skills' | 'notes' | 'mcp'
@@ -73,6 +68,8 @@ export function SettingsPage({
   onClose,
   workspace,
   projectId,
+  memberInfo,
+  memberToken,
 }: Readonly<SettingsPageProps>) {
   const [tab, setTab] = useState<SettingsTab>('general')
   const [revealApiKey, setRevealApiKey] = useState<Record<string, boolean>>({})
@@ -144,13 +141,6 @@ export function SettingsPage({
   const [mcpLoading, setMcpLoading] = useState(false)
   const [mcpEditing, setMcpEditing] = useState<Partial<McpServerInfo> | null>(null)
   const [mcpSaving, setMcpSaving] = useState(false)
-  const [mobileBridge, setMobileBridge] = useState<MobileBridgeConfig>(DEFAULT_MOBILE_BRIDGE_CONFIG)
-  const [mobileBridgeSaving, setMobileBridgeSaving] = useState(false)
-  const [mobileBridgeConnectHost, setMobileBridgeConnectHost] = useState(() =>
-    localStorage.getItem('taco.mobileBridgeConnectHost') ?? ''
-  )
-  const [mobileBridgeQrDataUrl, setMobileBridgeQrDataUrl] = useState('')
-  const [mobileBridgeQrPayload, setMobileBridgeQrPayload] = useState('')
   const [projectRulesDraft, setProjectRulesDraft] = useState(projectRules ?? '')
 
   useEffect(() => {
@@ -194,72 +184,6 @@ export function SettingsPage({
   const notesProjectId = (projectId ?? '').trim()
   const hasNotesScope = Boolean(notesWorkspace || notesProjectId)
 
-  useEffect(() => {
-    let cancelled = false
-    window.taco.mobileBridge.getConfig()
-      .then((cfg) => {
-        if (!cancelled) setMobileBridge(cfg)
-      })
-      .catch((err) => {
-        console.error('加载移动端桥接配置失败:', err)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  useEffect(() => {
-    let cancelled = false
-    const host = mobileBridgeConnectHost.trim()
-    const token = mobileBridge.token.trim() || DEFAULT_MOBILE_BRIDGE_CONFIG.token
-    if (!host || !mobileBridge.enabled) {
-      setMobileBridgeQrDataUrl('')
-      setMobileBridgeQrPayload('')
-      return () => {
-        cancelled = true
-      }
-    }
-
-    const payload = `taco-mobile://bridge/connect?host=${encodeURIComponent(host)}&port=${mobileBridge.port}&token=${encodeURIComponent(token)}`
-    setMobileBridgeQrPayload(payload)
-
-    QRCode.toDataURL(payload, {
-      margin: 1,
-      width: 220,
-      color: {
-        dark: '#EAF0FF',
-        light: '#00000000',
-      },
-    }).then((dataUrl: string) => {
-      if (!cancelled) setMobileBridgeQrDataUrl(dataUrl)
-    }).catch((err: unknown) => {
-      console.error('生成移动端连接二维码失败:', err)
-      if (!cancelled) setMobileBridgeQrDataUrl('')
-    })
-
-    return () => {
-      cancelled = true
-    }
-  }, [mobileBridge.enabled, mobileBridge.port, mobileBridge.token, mobileBridgeConnectHost])
-
-  const saveMobileBridge = useCallback(async (next: MobileBridgeConfig) => {
-    setMobileBridgeSaving(true)
-    try {
-      const safePort = Number.isFinite(next.port) ? Math.max(1, Math.min(65535, Math.round(next.port))) : DEFAULT_MOBILE_BRIDGE_CONFIG.port
-      const safeConfig: MobileBridgeConfig = {
-        enabled: Boolean(next.enabled),
-        port: safePort,
-        token: next.token.trim() || DEFAULT_MOBILE_BRIDGE_CONFIG.token,
-      }
-      const saved = await window.taco.mobileBridge.setConfig(safeConfig)
-      setMobileBridge(saved)
-    } catch (err) {
-      console.error('保存移动端桥接配置失败:', err)
-    } finally {
-      setMobileBridgeSaving(false)
-    }
-  }, [])
-
   const loadSkills = useCallback(async () => {
     setSkillsLoading(true)
     try {
@@ -271,6 +195,10 @@ export function SettingsPage({
       setSkillsLoading(false)
     }
   }, [workspace])
+
+  useEffect(() => {
+    loadSkills()
+  }, [loadSkills])
 
   useEffect(() => {
     if (tab === 'skills') loadSkills()
@@ -909,103 +837,6 @@ export function SettingsPage({
                   disabled={!onProjectRulesChange}
                 >
                   保存项目规则
-                </button>
-              </div>
-            </div>
-
-            <div className="settings-card" style={{ marginTop: 16 }}>
-              <div className="settings-card-title">移动端桥接（手机 -&gt; 桌面）</div>
-              <div className="settings-card-desc">
-                手机端通过 HTTP 调用桌面端，将输入的文本指令注入当前会话并执行。
-              </div>
-              <label className="settings-toggle-row">
-                <span className="settings-toggle-label">
-                  <strong>启用移动端桥接</strong>
-                  <small>开启后监听本机端口，接收手机端下发的指令。</small>
-                </span>
-                <input
-                  type="checkbox"
-                  className="settings-toggle"
-                  checked={mobileBridge.enabled}
-                  onChange={(e) => {
-                    const next = { ...mobileBridge, enabled: e.target.checked }
-                    setMobileBridge(next)
-                    void saveMobileBridge(next)
-                  }}
-                />
-              </label>
-              <div className="settings-grid">
-                <label className="settings-field">
-                  <span>监听端口</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={65535}
-                    value={mobileBridge.port}
-                    onChange={(e) => setMobileBridge((prev) => ({ ...prev, port: Number(e.target.value || DEFAULT_MOBILE_BRIDGE_CONFIG.port) }))}
-                  />
-                </label>
-                <label className="settings-field">
-                  <span>访问令牌（Token）</span>
-                  <input
-                    value={mobileBridge.token}
-                    onChange={(e) => setMobileBridge((prev) => ({ ...prev, token: e.target.value }))}
-                    placeholder="taco-mobile"
-                  />
-                </label>
-                <label className="settings-field">
-                  <span>扫码连接地址（IP / 域名 / 穿透地址）</span>
-                  <input
-                    value={mobileBridgeConnectHost}
-                    onChange={(e) => {
-                      const next = e.target.value
-                      setMobileBridgeConnectHost(next)
-                      localStorage.setItem('taco.mobileBridgeConnectHost', next)
-                    }}
-                    placeholder="例如 192.168.1.100 或 https://xxx.ngrok.app"
-                  />
-                </label>
-              </div>
-              <div className="mobile-bridge-qr-wrap">
-                <div className="mobile-bridge-qr-title">手机扫码自动导入连接配置</div>
-                {!mobileBridge.enabled && (
-                  <div className="mobile-bridge-qr-hint">请先开启移动端桥接。</div>
-                )}
-                {mobileBridge.enabled && !mobileBridgeConnectHost.trim() && (
-                  <div className="mobile-bridge-qr-hint">请先填写“扫码连接地址”。</div>
-                )}
-                {mobileBridge.enabled && mobileBridgeConnectHost.trim() && mobileBridgeQrDataUrl && (
-                  <div className="mobile-bridge-qr-content">
-                    <img src={mobileBridgeQrDataUrl} alt="mobile-bridge-qr" className="mobile-bridge-qr-image" />
-                    <div className="mobile-bridge-qr-meta">
-                      <small>手机端「连接配置」页面点击“扫码导入”即可自动填充。</small>
-                      <small>二维码内容：{mobileBridgeQrPayload}</small>
-                      <button
-                        type="button"
-                        className="settings-action-btn"
-                        onClick={() => {
-                          void navigator.clipboard.writeText(mobileBridgeQrPayload).catch((err) => {
-                            console.error('复制扫码配置失败:', err)
-                          })
-                        }}
-                      >
-                        复制配置串
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-              <div className="settings-action-row" style={{ marginTop: 8 }}>
-                <div className="settings-action-info">
-                  <small>接口：GET /context、POST /select、POST /command、POST /abort，Header：X-Taco-Token</small>
-                </div>
-                <button
-                  type="button"
-                  className="settings-action-btn"
-                  onClick={() => void saveMobileBridge(mobileBridge)}
-                  disabled={mobileBridgeSaving}
-                >
-                  {mobileBridgeSaving ? '保存中...' : '保存配置'}
                 </button>
               </div>
             </div>

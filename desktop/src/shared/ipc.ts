@@ -141,24 +141,22 @@ export const IpcChannel = {
   APP_NOTIFY: 'app:notify',
   /** renderer → main, 上报渲染层异常诊断 */
   APP_RENDERER_ERROR: 'app:renderer-error',
-  /** renderer → main, 获取移动端桥接配置 */
-  MOBILE_BRIDGE_GET: 'mobile-bridge:get',
-  /** renderer → main, 保存移动端桥接配置 */
-  MOBILE_BRIDGE_SET: 'mobile-bridge:set',
-  /** renderer → main, 同步当前会话上下文到移动端桥接缓存 */
-  MOBILE_BRIDGE_SYNC_CONTEXT: 'mobile-bridge:sync-context',
-  /** main → renderer, 移动端下发指令 */
-  MOBILE_BRIDGE_COMMAND: 'mobile-bridge:command',
-  /** main → renderer, 移动端下发会话/模型选择 */
-  MOBILE_BRIDGE_SELECT: 'mobile-bridge:select',
-  /** main → renderer, 移动端下发停止请求 */
-  MOBILE_BRIDGE_ABORT: 'mobile-bridge:abort',
-  /** main → renderer, 移动端下发确认响应 */
-  MOBILE_BRIDGE_CONFIRM: 'mobile-bridge:confirm',
-  /** main → renderer, 移动端请求在当前项目新建会话 */
-  MOBILE_BRIDGE_NEW_SESSION: 'mobile-bridge:new-session',
-  /** main → renderer, 移动端请求清空会话记录 */
-  MOBILE_BRIDGE_CLEAR_SESSION: 'mobile-bridge:clear-session',
+  /** renderer → main, 用户登录（通过主进程代理，避免 CORS） */
+  MEMBER_LOGIN: 'member:login',
+
+  /** renderer → main, 会员登录桥接（使用 token 连接 Relay） */
+  BRIDGE_CONNECT: 'bridge:connect',
+  /** renderer → main, 断开桥接连接 */
+  BRIDGE_DISCONNECT: 'bridge:disconnect',
+  /** renderer → main, 获取当前桥接状态 */
+  BRIDGE_GET_STATUS: 'bridge:get-status',
+  /** main → renderer, 桥接状态变更推送 */
+  BRIDGE_STATUS_CHANGED: 'bridge:status-changed',
+  /** main → renderer, 配对码更新 */
+  BRIDGE_PAIRING_CODE: 'bridge:pairing-code',
+  /** main → renderer, 移动端发来的消息（chat-send / agent-confirm / agent-abort） */
+  BRIDGE_CLIENT_MESSAGE: 'bridge:client-message',
+
 
   /** GUI-Plus 配置 */
   GUI_PLUS_GET: 'gui-plus:get',
@@ -378,6 +376,17 @@ export type PlanStepStatus = 'pending' | 'in_progress' | 'done' | 'failed'
 export type AgentConfirmPayload = {
   confirmId: string
   approved: boolean
+}
+
+/** 桥接连接状态 */
+export type BridgeConnectionStatusType = 'disconnected' | 'connecting' | 'connected' | 'reconnecting'
+
+/** main → renderer 桥接状态推送 */
+export type BridgeStatusPayload = {
+  status: BridgeConnectionStatusType
+  pairingCode?: string
+  clientCount: number
+  error?: string
 }
 
 /* ------------------------------------------------------------------ */
@@ -703,162 +712,7 @@ export type ChatStoreSessionPatch = {
   messages: unknown[]
 }
 
-export type MobileBridgeConfig = {
-  enabled: boolean
-  port: number
-  token: string
-}
 
-export type MobileBridgeCommandData = {
-  id: string
-  text: string
-  receivedAt: number
-  remoteAddr?: string
-  threadId?: string
-  sessionId?: string
-  provider?: string
-  mode?: 'chat' | 'agent'
-}
-
-export type MobileBridgeSelectData = {
-  id: string
-  receivedAt: number
-  remoteAddr?: string
-  threadId?: string
-  sessionId?: string
-  provider?: string
-  mode?: 'chat' | 'agent'
-}
-
-export type MobileBridgeAbortData = {
-  id: string
-  receivedAt: number
-  remoteAddr?: string
-  threadId?: string
-  sessionId?: string
-}
-
-export type MobileBridgeConfirmData = {
-  id: string
-  receivedAt: number
-  remoteAddr?: string
-  threadId?: string
-  sessionId?: string
-  confirmId: string
-  approved: boolean
-}
-
-export type MobileBridgeNewSessionData = {
-  id: string
-  receivedAt: number
-  remoteAddr?: string
-  threadId?: string
-}
-
-export type MobileBridgeClearSessionData = {
-  id: string
-  receivedAt: number
-  remoteAddr?: string
-  threadId?: string
-  sessionId?: string
-}
-
-export type MobileBridgeRiskInfo = {
-  toolName: string
-  reason: string
-  detail: string
-  level?: 'safe' | 'warning' | 'danger'
-}
-
-export type MobileBridgeFileChange = {
-  filePath: string
-  oldContent: string | null
-  newContent: string | null
-}
-
-export type MobileBridgeMessage = {
-  id?: string
-  role: ChatRole
-  content: string
-  screenshotPaths?: string[]
-  agentSteps?: MobileBridgeAgentStep[]
-  activePlan?: MobileBridgeActivePlan
-}
-
-export type MobileBridgeProviderOption = {
-  id: string
-  label: string
-}
-
-export type MobileBridgeToolCall = {
-  id: string
-  name: string
-  arguments: string
-}
-
-export type MobileBridgeToolResult = {
-  tool_call_id: string
-  name: string
-  content: string
-  success: boolean
-  fileChange?: MobileBridgeFileChange
-}
-
-export type MobileBridgeAgentStep = {
-  round: number
-  thinking: string
-  toolCalls: MobileBridgeToolCall[]
-  toolResults: MobileBridgeToolResult[]
-  status: 'calling' | 'running' | 'confirm' | 'done'
-  risks?: MobileBridgeRiskInfo[]
-  confirmId?: string
-}
-
-export type MobileBridgePlanStep = {
-  text: string
-  status: 'pending' | 'in_progress' | 'done' | 'failed'
-  note?: string
-}
-
-export type MobileBridgeActivePlan = {
-  summary: string
-  reasoning?: string
-  steps: MobileBridgePlanStep[]
-}
-
-export type MobileBridgeSessionContext = {
-  sessionId: string
-  title: string
-  messageCount: number
-  /**
-   * full: 该会话带完整消息体；meta: 仅同步会话元信息（用于降低移动端实时同步负载）
-   */
-  detailLevel?: 'full' | 'meta'
-  messages: MobileBridgeMessage[]
-  sending: boolean
-  queue: string[]
-  streamingContent?: string
-}
-
-export type MobileBridgeThreadContext = {
-  threadId: string
-  title: string
-  updatedAt: number
-  provider?: string
-  mode?: string
-  workspace?: string
-  activeSessionId: string
-  sessions: MobileBridgeSessionContext[]
-}
-
-export type MobileBridgeContextSnapshot = {
-  updatedAt: number
-  activeThreadId?: string
-  activeSessionId?: string
-  activeProvider?: string
-  providers?: MobileBridgeProviderOption[]
-  threads: MobileBridgeThreadContext[]
-}
 
 export type AppStateProviderId = 'deepseek' | 'kimi' | 'minimax' | 'glm' | 'qwen'
 
@@ -920,6 +774,10 @@ export type AppStateSnapshot = {
 export type TacoApi = {
   version: string
   system: SystemInfo
+  auth: {
+    /** 通过主进程代理登录请求，避免 CORS 问题 */
+    login: (username: string, password: string) => Promise<{ token: string; member: Record<string, unknown> }>
+  }
   shell: {
     /** 用指定编辑器打开文件 */
     openInEditor: (filePath: string, editor: EditorId) => Promise<void>
@@ -935,26 +793,6 @@ export type TacoApi = {
     check: (manual?: boolean) => Promise<AppUpdateCheckResult>
     /** 读取最近一次版本检查结果（可能为 null） */
     getStatus: () => Promise<AppUpdateCheckResult | null>
-  }
-  mobileBridge: {
-    /** 获取移动端桥接配置 */
-    getConfig: () => Promise<MobileBridgeConfig>
-    /** 保存移动端桥接配置（保存后自动重启监听） */
-    setConfig: (config: MobileBridgeConfig) => Promise<MobileBridgeConfig>
-    /** 同步当前桌面端会话上下文到主进程桥接缓存 */
-    syncContext: (snapshot: MobileBridgeContextSnapshot) => void
-    /** 监听移动端下发的文本指令 */
-    onCommand: (callback: (data: MobileBridgeCommandData) => void) => () => void
-    /** 监听移动端下发的会话/模型选择 */
-    onSelect: (callback: (data: MobileBridgeSelectData) => void) => () => void
-    /** 监听移动端下发的停止请求 */
-    onAbort: (callback: (data: MobileBridgeAbortData) => void) => () => void
-    /** 监听移动端下发的确认响应 */
-    onConfirm: (callback: (data: MobileBridgeConfirmData) => void) => () => void
-    /** 监听移动端下发的新建会话请求 */
-    onNewSession: (callback: (data: MobileBridgeNewSessionData) => void) => () => void
-    /** 监听移动端下发的清空会话请求 */
-    onClearSession: (callback: (data: MobileBridgeClearSessionData) => void) => () => void
   }
   chat: {
     /** 非流式请求，返回完整回复 */
@@ -1132,6 +970,40 @@ export type TacoApi = {
     getConfig: () => Promise<PromptConfig>
     /** 保存 prompt 配置 */
     saveConfig: (config: PromptConfig) => Promise<PromptConfig>
+  }
+  bridge: {
+    /** 使用会员 token 连接 Relay */
+    connect: (token: string) => void
+    /** 断开桥接连接 */
+    disconnect: () => void
+    /** 监听桥接状态变更 */
+    onStatusChange: (callback: (status: BridgeStatusPayload) => void) => () => void
+    /** 监听配对码变更 */
+    onPairingCode: (callback: (code: string) => void) => () => void
+    /** 获取当前桥接状态 */
+    getStatus: () => Promise<BridgeStatusPayload>
+    /** 监听移动端请求切换项目 */
+    onSwitchProject: (callback: (data: { projectId: string; sessionId?: string }) => void) => () => void
+    /** 监听移动端发来的消息（chat-send / agent-confirm / agent-abort 等） */
+    onClientMessage: (callback: (msg: Record<string, unknown>) => void) => () => void
+    /** 发送状态快照响应给主进程 */
+    sendStateSnapshotResponse: (payload: {
+      messages: Array<{ id: string; role: string; content: string; hasImages: boolean; streaming: boolean }>
+      threadId: string
+      sessionId?: string
+      workspace?: string
+      modelLabel?: string
+      threadTitle?: string
+      activeAgentRequestId?: string
+    }) => void
+    /** 监听主进程请求状态快照 */
+    onRequestStateSnapshot: (callback: (payload: {
+      threadId: string
+      sessionId?: string
+      workspace?: string
+      modelConfigId?: string
+      threadTitle?: string
+    }) => void) => () => void
   }
 }
 

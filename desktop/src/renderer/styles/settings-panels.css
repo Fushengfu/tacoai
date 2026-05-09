@@ -450,49 +450,6 @@
   border-color: rgba(76, 123, 255, 0.72);
 }
 
-.mobile-bridge-qr-wrap {
-  margin-top: 6px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  border: 1px dashed rgba(76, 123, 255, 0.35);
-  background: rgba(76, 123, 255, 0.05);
-  display: grid;
-  gap: 8px;
-}
-.mobile-bridge-qr-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.84);
-}
-.mobile-bridge-qr-hint {
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.55);
-}
-.mobile-bridge-qr-content {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
-.mobile-bridge-qr-image {
-  width: 132px;
-  height: 132px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(0, 0, 0, 0.2);
-  flex-shrink: 0;
-}
-.mobile-bridge-qr-meta {
-  min-width: 0;
-  display: grid;
-  gap: 6px;
-}
-.mobile-bridge-qr-meta small {
-  display: block;
-  color: rgba(255, 255, 255, 0.62);
-  line-height: 1.45;
-  word-break: break-all;
-}
-
 /* ── Settings Toggle ── */
 .settings-toggle-row {
   display: flex;

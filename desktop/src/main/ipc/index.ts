@@ -4,7 +4,7 @@
  * 将所有 ipcMain handler 集中管理，main.ts 只需调用 registerIpcHandlers() 即可。
  */
 
-import { app, BrowserWindow, Notification, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, Notification, dialog, ipcMain, shell, net } from 'electron'
 import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron'
 import { exec } from 'node:child_process'
 import * as fs from 'node:fs/promises'
@@ -25,8 +25,6 @@ import type {
   ProjectNote,
   McpServerInfo,
   GuiPlusConfig,
-  MobileBridgeConfig,
-  MobileBridgeContextSnapshot,
   PromptConfig,
   AgentEventData,
   AgentEventChunkData,
@@ -51,13 +49,46 @@ import { log, logError } from '../system/logger'
 import { applyRewardScore } from '../agent/reward-score'
 import { handleTerminalSpawn, handleTerminalInput, handleTerminalResize, handleTerminalKill } from '../system/terminal'
 import { openExternalBrowser, closeExternalBrowser, navigateExternalBrowser, focusExternalBrowser } from '../automation/browser'
-import { getMobileBridgeConfig, initMobileBridge, setMobileBridgeConfig, updateMobileBridgeContext } from '../system/mobile-bridge'
 import { listChatStoreSessions, loadChatStoreSessionPage, saveChatStoreSessionPatch, deleteChatStoreSession, initMemoryDb } from '../data/memory-db'
 import { checkAndPromptForUpdate, getLastUpdateCheckResult } from '../system/app-updater'
+import { getBridgeManager } from '../bridge/bridge-manager'
+import type { BridgeChatMessage } from '../bridge/bridge-protocol'
+import type { BridgeStatusPayload } from '../../shared/ipc'
 
 /* ------------------------------------------------------------------ */
 /*  Handlers                                                           */
 /* ------------------------------------------------------------------ */
+
+/** 登录请求通过主进程代理，避免渲染进程直接 fetch 时的 CORS 问题 */
+async function handleMemberLogin(_event: IpcMainInvokeEvent, payload: { username: string; password: string }) {
+  const LOGIN_URL = 'https://agent.bjctykj.com/api/member/login'
+  return new Promise((resolve, reject) => {
+    const request = net.request({
+      method: 'POST',
+      url: LOGIN_URL,
+    })
+    request.setHeader('Content-Type', 'application/json')
+    request.on('response', (response) => {
+      let body = ''
+      response.on('data', (chunk: Buffer) => { body += chunk.toString() })
+      response.on('end', () => {
+        try {
+          const json = JSON.parse(body)
+          if (response.statusCode >= 200 && response.statusCode < 300 && json.data) {
+            resolve(json.data)
+          } else {
+            reject(new Error(json.message || json.error || `登录失败 (${response.statusCode})`))
+          }
+        } catch {
+          reject(new Error(`登录失败 (${response.statusCode})`))
+        }
+      })
+    })
+    request.on('error', (err) => reject(err))
+    request.write(JSON.stringify(payload))
+    request.end()
+  })
+}
 
 const AGENT_EVENT_CHUNK_THRESHOLD_BYTES = 180 * 1024
 const AGENT_EVENT_CHUNK_SIZE_CHARS = 48 * 1024
@@ -426,24 +457,58 @@ async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload)
     )) {
       rawAssistantFullText += chunk
       const sanitizedFull = sanitizeUserFacingText(rawAssistantFullText)
-      const safeLen = Math.max(0, sanitizedFull.length - STREAM_SANITIZE_HOLD_BACK)
-      const visibleText = sanitizedFull.slice(0, safeLen)
-      const delta = visibleText.slice(emittedSanitizedText.length)
-      emittedSanitizedText = visibleText
-      assistantFullText = visibleText
+      // 防回退：若 sanitized 因标签剥离而变短，重置已发送指针
+      if (sanitizedFull.length < emittedSanitizedText.length) {
+        emittedSanitizedText = sanitizedFull
+      }
+      // 基于 raw 文本做安全裁剪：避免 sanitize 结果长度波动破坏 delta 连续性
+      const safeRawLen = Math.max(0, rawAssistantFullText.length - STREAM_SANITIZE_HOLD_BACK)
+      const safeRaw = rawAssistantFullText.slice(0, safeRawLen)
+      const sanitizedSafe = sanitizeUserFacingText(safeRaw)
+      const delta = sanitizedSafe.slice(emittedSanitizedText.length)
+      emittedSanitizedText = sanitizedSafe
+      assistantFullText = sanitizedFull
       if (event.sender.isDestroyed()) return
       if (delta) {
         event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk: delta, done: false })
+        // Bridge: forward chat delta to mobile clients
+        try {
+          getBridgeManager().sendHostMessage({
+            type: 'bridge:chat-delta',
+            messageId: sourceAssistantMessageId || requestId,
+            delta,
+            done: false,
+          })
+        } catch (_) { /* ignore bridge errors */ }
       }
     }
     const finalSanitized = sanitizeUserFacingText(rawAssistantFullText)
-    const tailDelta = finalSanitized.slice(emittedSanitizedText.length)
+    const tailStart = Math.min(emittedSanitizedText.length, finalSanitized.length)
+    const tailDelta = finalSanitized.slice(tailStart)
     assistantFullText = finalSanitized
     if (tailDelta && !event.sender.isDestroyed()) {
       event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk: tailDelta, done: false })
+      // Bridge: forward tail delta
+      try {
+        getBridgeManager().sendHostMessage({
+          type: 'bridge:chat-delta',
+          messageId: sourceAssistantMessageId || requestId,
+          delta: tailDelta,
+          done: false,
+        })
+      } catch (_) { /* ignore bridge errors */ }
     }
     if (!event.sender.isDestroyed()) {
       event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk: '', done: true, usage: lastUsage })
+      // Bridge: mark chat delta as done
+      try {
+        getBridgeManager().sendHostMessage({
+          type: 'bridge:chat-delta',
+          messageId: sourceAssistantMessageId || requestId,
+          delta: '',
+          done: true,
+        })
+      } catch (_) { /* ignore bridge errors */ }
     }
     await persistChatTurnMemory('success', assistantFullText)
   } catch (error) {
@@ -452,6 +517,15 @@ async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload)
       if (!event.sender.isDestroyed()) {
         event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk: '', done: true, usage: lastUsage })
       }
+      // Bridge: mark chat delta as done (aborted)
+      try {
+        getBridgeManager().sendHostMessage({
+          type: 'bridge:chat-delta',
+          messageId: sourceAssistantMessageId || requestId,
+          delta: '',
+          done: true,
+        })
+      } catch (_) { /* ignore bridge errors */ }
       await persistChatTurnMemory('aborted', assistantFullText)
       return
     }
@@ -463,6 +537,15 @@ async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload)
         error: error instanceof Error ? error.message : 'Stream failed'
       })
     }
+    // Bridge: mark chat delta as done (error)
+    try {
+      getBridgeManager().sendHostMessage({
+        type: 'bridge:chat-delta',
+        messageId: sourceAssistantMessageId || requestId,
+        delta: '',
+        done: true,
+      })
+    } catch (_) { /* ignore bridge errors */ }
     await persistChatTurnMemory('error', assistantFullText, error instanceof Error ? error.message : 'Stream failed')
   } finally {
     chatAbortControllers.delete(requestId)
@@ -517,18 +600,6 @@ async function handleAppNotify(_event: IpcMainInvokeEvent, payload: AppNotifyPay
   return true
 }
 
-async function handleMobileBridgeGet(): Promise<MobileBridgeConfig> {
-  return await getMobileBridgeConfig()
-}
-
-async function handleMobileBridgeSet(_event: IpcMainInvokeEvent, config: MobileBridgeConfig): Promise<MobileBridgeConfig> {
-  return await setMobileBridgeConfig(config)
-}
-
-function handleMobileBridgeSyncContext(_event: IpcMainEvent, snapshot: MobileBridgeContextSnapshot): void {
-  updateMobileBridgeContext(snapshot)
-}
-
 /* ── Chat abort 管理 ── */
 /** 当前正在运行的 chat 流式 AbortController 集合：requestId → AbortController */
 const chatAbortControllers = new Map<string, AbortController>()
@@ -537,8 +608,7 @@ const chatAbortControllers = new Map<string, AbortController>()
 /** 当前正在运行的 agent AbortController 集合：requestId → AbortController */
 const agentAbortControllers = new Map<string, AbortController>()
 
-/** Agent 流式：renderer send → main on → 多轮工具调用循环 → 逐事件推送 */
-async function handleAgentStream(event: IpcMainEvent, payload: AgentStreamPayload) {
+async function handleAgentStream(event: IpcMainEvent, payload: AgentStreamPayload): Promise<void> {
   const {
     requestId,
     provider,
@@ -601,6 +671,14 @@ async function handleAgentStream(event: IpcMainEvent, payload: AgentStreamPayloa
       (agentEvent) => {
         if (event.sender.isDestroyed()) return
         sendAgentEventSafely(event.sender, { requestId, ...agentEvent }, logScope)
+        // Bridge: forward agent event to mobile clients
+        try {
+          getBridgeManager().sendHostMessage({
+            type: 'bridge:agent-event',
+            requestId,
+            event: agentEvent,
+          } as any)
+        } catch (_) { /* ignore bridge errors */ }
       },
       maxTokens,
       abortController.signal,
@@ -1101,11 +1179,248 @@ function handleWindowClose(event: IpcMainEvent) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Bridge handlers                                                      */
+/* ------------------------------------------------------------------ */
+
+/** 使用会员 token 连接 Relay */
+function handleBridgeConnect(_event: IpcMainEvent, token: string): void {
+  const mgr = getBridgeManager()
+  mgr.connect(token)
+}
+
+/** 断开桥接连接 */
+function handleBridgeDisconnect(): void {
+  getBridgeManager().disconnect()
+}
+
+/** 获取当前桥接状态 */
+async function handleBridgeGetStatus(): Promise<BridgeStatusPayload> {
+  return getBridgeManager().getStatus()
+}
+
+/** 注册桥接状态转发：BridgeManager 状态变化时推送给所有 renderer */
+function setupBridgeStatusForwarding(): void {
+  const mgr = getBridgeManager()
+  mgr.onStatusChange((status) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send(IpcChannel.BRIDGE_STATUS_CHANGED, status)
+      }
+    }
+  })
+  // 配对码变更转发
+  mgr.onPairingCode((code) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send(IpcChannel.BRIDGE_PAIRING_CODE, code)
+      }
+    }
+  })
+  // 移动端消息转发到渲染进程
+  mgr.onClientMessage((msg) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send(IpcChannel.BRIDGE_CLIENT_MESSAGE, msg)
+      }
+    }
+  })
+}
+
+/** 注册移动端连接成功回调：主动推送 bridge:state 状态快照 */
+function setupBridgeClientConnectedHandler(): void {
+  const mgr = getBridgeManager()
+
+  mgr.onClientConnected(async () => {
+    log('BRIDGE_CLIENT_CONNECTED', {}, 'bridge')
+    try {
+      const state = await getAppState()
+      const activeThread = state.threadsState.threads.find(
+        (t) => t.id === state.threadsState.activeThreadId,
+      )
+      if (!activeThread) {
+        log('BRIDGE_NO_ACTIVE_THREAD', {}, 'bridge')
+        return
+      }
+
+      const activeSession = activeThread.sessions.find(
+        (s) => s.id === activeThread.activeSessionId,
+      )
+
+      // 向渲染进程请求当前会话的消息列表
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) {
+          win.webContents.send('bridge:request-state-snapshot', {
+            threadId: activeThread.id,
+            sessionId: activeThread.activeSessionId,
+            workspace: activeThread.workspace,
+            modelConfigId: activeThread.modelConfigId,
+            threadTitle: activeThread.title,
+          })
+        }
+      }
+    } catch (err) {
+      logError('bridge', 'setupBridgeClientConnectedHandler 失败', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  })
+}
+
+/** 接收渲染进程返回的状态快照并转发给移动端 */
+function setupBridgeStateSnapshotResponse(): void {
+  ipcMain.on('bridge:state-snapshot-response', (_event, payload: {
+    messages: Array<{ id: string; role: string; content: string; hasImages?: boolean; streaming?: boolean }>
+    threadId: string
+    sessionId?: string
+    workspace?: string
+    modelLabel?: string
+    threadTitle?: string
+    activeAgentRequestId?: string
+  }) => {
+    try {
+      const mgr = getBridgeManager()
+      mgr.sendHostMessage({
+        type: 'bridge:state',
+        messages: payload.messages as BridgeChatMessage[],
+        activeAgentRequestId: payload.activeAgentRequestId,
+        workspace: payload.workspace,
+        modelLabel: payload.modelLabel,
+        threadTitle: payload.threadTitle,
+      })
+      log('BRIDGE_STATE_PUSHED', {
+        threadId: payload.threadId,
+        messageCount: payload.messages.length,
+      }, 'bridge')
+    } catch (err) {
+      logError('bridge', '转发 bridge:state 失败', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  })
+}
+
+/** 注册移动端数据查询处理器：处理移动端发送的项目列表、目录树、文件读写等请求 */
+function setupBridgeDataHandler(): void {
+  const mgr = getBridgeManager()
+
+  mgr.setDataHandler(async (msg, respond) => {
+    const type = String(msg.type || '')
+    const requestId = String(msg.requestId || '')
+
+    try {
+      switch (type) {
+        /* ---- 项目列表 ---- */
+        case 'bridge:get-projects': {
+          const state = await getAppState()
+          const projects = state.threadsState.threads.map((t) => ({
+            id: t.id,
+            title: t.title,
+            workspace: t.workspace,
+            sessions: t.sessions.map((s) => ({
+              id: s.id,
+              title: s.title,
+              createdAt: s.createdAt,
+            })),
+            activeSessionId: t.activeSessionId,
+            modelConfigId: t.modelConfigId,
+          }))
+          respond({
+            type: 'bridge:projects',
+            requestId,
+            projects,
+          })
+          break
+        }
+
+        /* ---- 目录树 ---- */
+        case 'bridge:get-workspace-tree': {
+          const cwd = String(msg.path || '')
+          if (!cwd) {
+            respond({ type: 'bridge:workspace-tree', requestId, tree: [], error: 'path required' })
+            break
+          }
+          const tree = await getWorkspaceTree(cwd)
+          respond({ type: 'bridge:workspace-tree', requestId, tree })
+          break
+        }
+
+        /* ---- 文件读取 ---- */
+        case 'bridge:file-read': {
+          const filePath = String(msg.path || '')
+          if (!filePath) {
+            respond({ type: 'bridge:file-content', requestId, content: null, size: 0, isBinary: true, error: 'path required' })
+            break
+          }
+          // 复用现有的文件读取逻辑（_event 参数不会被使用）
+          const result = await handleFileRead(null as unknown as IpcMainInvokeEvent, filePath)
+          respond({
+            type: 'bridge:file-content',
+            requestId,
+            content: result.content,
+            size: result.size,
+            isBinary: result.isBinary,
+            dataUrl: result.dataUrl,
+            truncated: result.truncated,
+          })
+          break
+        }
+
+        /* ---- 文件写入 ---- */
+        case 'bridge:file-write': {
+          const filePath = String(msg.path || '')
+          const content = String(msg.content || '')
+          if (!filePath) {
+            respond({ type: 'bridge:file-written', requestId, success: false, error: 'path required' })
+            break
+          }
+          await handleFileWrite(null as unknown as IpcMainInvokeEvent, filePath, content)
+          respond({ type: 'bridge:file-written', requestId, success: true })
+          break
+        }
+
+        /* ---- 切换项目 ---- */
+        case 'bridge:switch-project': {
+          const projectId = String(msg.projectId || '')
+          const sessionId = String(msg.sessionId || '').trim() || undefined
+          if (!projectId) {
+            respond({ type: 'bridge:project-switched', requestId, success: false, error: 'projectId required' })
+            break
+          }
+          // 通知所有 renderer 切换项目
+          for (const win of BrowserWindow.getAllWindows()) {
+            if (!win.isDestroyed()) {
+              win.webContents.send('bridge:switch-project-from-mobile', { projectId, sessionId })
+            }
+          }
+          respond({ type: 'bridge:project-switched', requestId, success: true })
+          break
+        }
+
+        default:
+          respond({ type: 'error', requestId, message: `Unknown request type: ${type}` })
+          break
+      }
+    } catch (err) {
+      logError('bridge-data-handler', `处理移动端请求 ${type} 失败`, {
+        error: err instanceof Error ? err.message : String(err),
+        requestId,
+      }, undefined)
+      respond({
+        type: type.replace(/^bridge:get-/, 'bridge:').replace(/^bridge:file-/, 'bridge:file-'),
+        requestId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  })
+}
+
+/* ------------------------------------------------------------------ */
 /*  Registration                                                       */
 /* ------------------------------------------------------------------ */
 
 /** 注册全部 IPC handler，应在 app.whenReady() 之后调用一次 */
 export function registerIpcHandlers() {
+  ipcMain.handle(IpcChannel.MEMBER_LOGIN, handleMemberLogin)
   ipcMain.handle(IpcChannel.CHAT_SEND, handleChatSend)
   ipcMain.handle(IpcChannel.CHAT_STORE_LIST, handleChatStoreList)
   ipcMain.handle(IpcChannel.CHAT_STORE_LOAD_PAGE, handleChatStoreLoadPage)
@@ -1128,9 +1443,6 @@ export function registerIpcHandlers() {
   ipcMain.handle(IpcChannel.APP_GET_UPDATE_STATUS, () => getLastUpdateCheckResult())
   ipcMain.handle(IpcChannel.APP_NOTIFY, handleAppNotify)
   ipcMain.handle(IpcChannel.APP_RENDERER_ERROR, handleRendererError)
-  ipcMain.handle(IpcChannel.MOBILE_BRIDGE_GET, handleMobileBridgeGet)
-  ipcMain.handle(IpcChannel.MOBILE_BRIDGE_SET, handleMobileBridgeSet)
-  ipcMain.on(IpcChannel.MOBILE_BRIDGE_SYNC_CONTEXT, handleMobileBridgeSyncContext)
   ipcMain.handle(IpcChannel.GUI_PLUS_GET, handleGuiPlusGet)
   ipcMain.handle(IpcChannel.GUI_PLUS_SAVE, handleGuiPlusSave)
   ipcMain.handle(IpcChannel.APP_STATE_GET, handleAppStateGet)
@@ -1241,51 +1553,12 @@ export function registerIpcHandlers() {
   // 浏览器模式同步（保留 IPC 监听以防旧版渲染进程发送，不做处理）
   ipcMain.on(IpcChannel.BROWSER_MODE, () => { /* 已统一使用外部浏览器 */ })
 
-  // 移动端桥接：手机端输入指令 -> 推送到渲染进程按当前会话执行
-  initMobileBridge(
-    (command) => {
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (!win.isDestroyed()) {
-          win.webContents.send(IpcChannel.MOBILE_BRIDGE_COMMAND, command)
-        }
-      }
-    },
-    (selection) => {
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (!win.isDestroyed()) {
-          win.webContents.send(IpcChannel.MOBILE_BRIDGE_SELECT, selection)
-        }
-      }
-    },
-    (abort) => {
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (!win.isDestroyed()) {
-          win.webContents.send(IpcChannel.MOBILE_BRIDGE_ABORT, abort)
-        }
-      }
-    },
-    (confirm) => {
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (!win.isDestroyed()) {
-          win.webContents.send(IpcChannel.MOBILE_BRIDGE_CONFIRM, confirm)
-        }
-      }
-    },
-    (newSession) => {
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (!win.isDestroyed()) {
-          win.webContents.send(IpcChannel.MOBILE_BRIDGE_NEW_SESSION, newSession)
-        }
-      }
-    },
-    (clearSession) => {
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (!win.isDestroyed()) {
-          win.webContents.send(IpcChannel.MOBILE_BRIDGE_CLEAR_SESSION, clearSession)
-        }
-      }
-    },
-  ).catch((err) => {
-    console.error('移动端桥接初始化失败:', err)
-  })
+  // ── Bridge 跨端桥接 ──
+  ipcMain.on(IpcChannel.BRIDGE_CONNECT, handleBridgeConnect)
+  ipcMain.on(IpcChannel.BRIDGE_DISCONNECT, handleBridgeDisconnect)
+  ipcMain.handle(IpcChannel.BRIDGE_GET_STATUS, handleBridgeGetStatus)
+  setupBridgeStatusForwarding()
+  setupBridgeClientConnectedHandler()
+  setupBridgeStateSnapshotResponse()
+  setupBridgeDataHandler()
 }

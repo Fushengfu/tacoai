@@ -2,7 +2,7 @@ import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs'
 import { createHash } from 'node:crypto'
-import { DatabaseSync } from 'node:sqlite'
+import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 import { app } from 'electron'
 import type {
   AppStateModelConfig,
@@ -125,7 +125,7 @@ function normalizeScope(scope: MemoryScope): { workspace: string; projectId: str
 
 function buildScopeWhere(scope: MemoryScope): {
   sql: string
-  params: unknown[]
+  params: SQLInputValue[]
   normalized: { workspace: string; projectId: string; scopeKey: string }
 } {
   const normalized = normalizeScope(scope)
@@ -1228,14 +1228,14 @@ function ensureAppStateRecordMigration(database: DatabaseSync): void {
           model.id,
           model.provider,
           model.name,
-          model.baseUrl,
-          model.apiKey,
-          model.model,
-          model.maxTokens,
-          model.temperature,
+          model.baseUrl ?? null,
+          model.apiKey ?? null,
+          model.model ?? null,
+          model.maxTokens ?? null,
+          model.temperature ?? null,
           model.supportsVision ? 1 : 0,
-          parseOptionalTimestamp(model.createdAt),
-          parseOptionalTimestamp(model.updatedAt),
+          parseOptionalTimestamp(model.createdAt) ?? null,
+          parseOptionalTimestamp(model.updatedAt) ?? null,
         )
       }
       if (!activeModelMeta?.value) {
@@ -1493,14 +1493,14 @@ export function saveAppProvidersStateToDb(payload: AppStateProvidersPayload): Ap
         model.id,
         model.provider,
         model.name,
-        model.baseUrl,
-        model.apiKey,
-        model.model,
-        model.maxTokens,
-        model.temperature,
+        model.baseUrl ?? null,
+        model.apiKey ?? null,
+        model.model ?? null,
+        model.maxTokens ?? null,
+        model.temperature ?? null,
         model.supportsVision ? 1 : 0,
-        parseOptionalTimestamp(model.createdAt),
-        parseOptionalTimestamp(model.updatedAt),
+        parseOptionalTimestamp(model.createdAt) ?? null,
+        parseOptionalTimestamp(model.updatedAt) ?? null,
       )
     }
     writeAppStateMetaRaw('active_model_config_id', activeModelConfigId, database, updatedAt)
@@ -1598,7 +1598,7 @@ export function loadChatStoreSessionPage(
         WHERE session_id = ? AND seq < ?
         ORDER BY seq DESC
         LIMIT ?
-      `).all(normalizedSessionId, beforeSeq, limit) as Array<Record<string, unknown>>
+      `).all(normalizedSessionId, beforeSeq!, limit) as Array<Record<string, unknown>>
     : database.prepare(`
         SELECT seq, message_json
         FROM chat_messages

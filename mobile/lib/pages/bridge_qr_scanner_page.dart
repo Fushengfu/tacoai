@@ -1,12 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
-import '../models/bridge_models.dart';
-
+/// 二维码扫描页面 - 扫描桌面端配对码
 class BridgeQrScannerPage extends StatefulWidget {
-  const BridgeQrScannerPage({super.key, required this.fallbackConfig});
-
-  final BridgeConfig fallbackConfig;
+  const BridgeQrScannerPage({super.key});
 
   @override
   State<BridgeQrScannerPage> createState() => _BridgeQrScannerPageState();
@@ -15,9 +12,10 @@ class BridgeQrScannerPage extends StatefulWidget {
 class _BridgeQrScannerPageState extends State<BridgeQrScannerPage> {
   final MobileScannerController _controller = MobileScannerController(
     detectionSpeed: DetectionSpeed.noDuplicates,
+    formats: const [BarcodeFormat.qrCode],
   );
-  bool _handled = false;
-  String _hint = '请扫描桌面端设置中的连接二维码';
+
+  bool _hasScanned = false;
 
   @override
   void dispose() {
@@ -25,46 +23,58 @@ class _BridgeQrScannerPageState extends State<BridgeQrScannerPage> {
     super.dispose();
   }
 
-  void _onDetect(BarcodeCapture capture) {
-    if (_handled) return;
-    final barcode = capture.barcodes.isNotEmpty ? capture.barcodes.first : null;
-    final raw = barcode?.rawValue?.trim() ?? '';
-    if (raw.isEmpty) return;
-    final parsed = _parseBridgeConfig(raw, widget.fallbackConfig);
-    if (parsed == null) {
-      setState(() {
-        _hint = '二维码内容无效，请重新扫描';
-      });
-      return;
-    }
-    _handled = true;
-    Navigator.of(context).pop(parsed);
+  void _handleBarcode(BarcodeCapture capture) {
+    if (_hasScanned) return;
+    final barcode = capture.barcodes.firstOrNull;
+    if (barcode == null || barcode.rawValue == null) return;
+
+    _hasScanned = true;
+    _controller.stop();
+
+    if (!mounted) return;
+    // 直接返回原始二维码字符串，由 BridgeConnectPage 的 _ScanResult.parse 解析
+    Navigator.pop(context, barcode.rawValue!);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('扫码导入配置')),
+      appBar: AppBar(
+        title: const Text('扫描二维码'),
+      ),
       body: Stack(
         children: [
           MobileScanner(
             controller: _controller,
-            onDetect: _onDetect,
+            onDetect: _handleBarcode,
           ),
-          Positioned(
-            left: 16,
-            right: 16,
-            bottom: 24,
+          // 扫描框覆盖层
+          Center(
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              width: 250,
+              height: 250,
               decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.55),
-                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.white, width: 3),
+                borderRadius: BorderRadius.circular(16),
               ),
-              child: Text(
-                _hint,
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white, fontSize: 13),
+            ),
+          ),
+          // 底部提示
+          Positioned(
+            bottom: 40,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: const Text(
+                  '将二维码放入框内即可自动扫描',
+                  style: TextStyle(color: Colors.white, fontSize: 14),
+                ),
               ),
             ),
           ),
@@ -72,60 +82,4 @@ class _BridgeQrScannerPageState extends State<BridgeQrScannerPage> {
       ),
     );
   }
-}
-
-BridgeConfig? _parseBridgeConfig(String raw, BridgeConfig fallback) {
-  final value = raw.trim();
-  if (value.isEmpty) return null;
-
-  try {
-    final uri = Uri.parse(value);
-    final host = uri.queryParameters['host']?.trim() ?? '';
-    if (uri.scheme == 'taco-mobile' && host.isNotEmpty) {
-      final port =
-          int.tryParse(uri.queryParameters['port'] ?? '') ?? fallback.port;
-      final token = (uri.queryParameters['token'] ?? fallback.token).trim();
-      return BridgeConfig(
-        host: host,
-        port: _safePort(port, fallback.port),
-        token: token.isEmpty ? fallback.token : token,
-      );
-    }
-  } catch (_) {
-    // ignore and try legacy format
-  }
-
-  // 兼容旧格式: taco-mobile://connect?...
-  if (value.startsWith('taco-mobile://')) {
-    final queryIndex = value.indexOf('?');
-    if (queryIndex > 0 && queryIndex < value.length - 1) {
-      final query = value.substring(queryIndex + 1);
-      final pairs = query.split('&');
-      final map = <String, String>{};
-      for (final pair in pairs) {
-        final eq = pair.indexOf('=');
-        if (eq <= 0) continue;
-        final k = Uri.decodeComponent(pair.substring(0, eq));
-        final v = Uri.decodeComponent(pair.substring(eq + 1));
-        map[k] = v;
-      }
-      final host = (map['host'] ?? '').trim();
-      if (host.isNotEmpty) {
-        final port = int.tryParse(map['port'] ?? '') ?? fallback.port;
-        final token = (map['token'] ?? fallback.token).trim();
-        return BridgeConfig(
-          host: host,
-          port: _safePort(port, fallback.port),
-          token: token.isEmpty ? fallback.token : token,
-        );
-      }
-    }
-  }
-
-  return null;
-}
-
-int _safePort(int value, int fallback) {
-  if (value < 1 || value > 65535) return fallback;
-  return value;
 }
