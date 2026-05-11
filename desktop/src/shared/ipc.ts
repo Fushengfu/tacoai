@@ -154,8 +154,16 @@ export const IpcChannel = {
   BRIDGE_STATUS_CHANGED: 'bridge:status-changed',
   /** main → renderer, 配对码更新 */
   BRIDGE_PAIRING_CODE: 'bridge:pairing-code',
+  /** renderer → main, 手动刷新配对码 */
+  BRIDGE_REFRESH_PAIRING: 'bridge:refresh-pairing',
+  /** renderer → main, 刷新 Token（用于 Token 过期时自动续期） */
+  BRIDGE_REFRESH_TOKEN: 'bridge:refresh-token',
   /** main → renderer, 移动端发来的消息（chat-send / agent-confirm / agent-abort） */
   BRIDGE_CLIENT_MESSAGE: 'bridge:client-message',
+  /** renderer → main, 获取配对码策略模式 */
+  BRIDGE_GET_PAIRING_MODE: 'bridge:get-pairing-mode',
+  /** renderer → main, 设置配对码策略模式 */
+  BRIDGE_SET_PAIRING_MODE: 'bridge:set-pairing-mode',
 
 
   /** GUI-Plus 配置 */
@@ -384,9 +392,9 @@ export type BridgeConnectionStatusType = 'disconnected' | 'connecting' | 'connec
 /** main → renderer 桥接状态推送 */
 export type BridgeStatusPayload = {
   status: BridgeConnectionStatusType
-  pairingCode?: string
   clientCount: number
   error?: string
+  tokenExpired?: boolean
 }
 
 /* ------------------------------------------------------------------ */
@@ -978,12 +986,14 @@ export type TacoApi = {
     disconnect: () => void
     /** 监听桥接状态变更 */
     onStatusChange: (callback: (status: BridgeStatusPayload) => void) => () => void
-    /** 监听配对码变更 */
-    onPairingCode: (callback: (code: string) => void) => () => void
     /** 获取当前桥接状态 */
     getStatus: () => Promise<BridgeStatusPayload>
+    /** 刷新 Token（用于 Token 过期时自动续期） */
+    refreshToken: (newToken: string) => void
     /** 监听移动端请求切换项目 */
     onSwitchProject: (callback: (data: { projectId: string; sessionId?: string }) => void) => () => void
+    /** 监听移动端请求切换模型 */
+    onSwitchModel: (callback: (data: { modelConfigId: string }) => void) => () => void
     /** 监听移动端发来的消息（chat-send / agent-confirm / agent-abort 等） */
     onClientMessage: (callback: (msg: Record<string, unknown>) => void) => () => void
     /** 发送状态快照响应给主进程 */
@@ -993,8 +1003,15 @@ export type TacoApi = {
       sessionId?: string
       workspace?: string
       modelLabel?: string
+      modelConfigId?: string
       threadTitle?: string
       activeAgentRequestId?: string
+      tokenUsage?: {
+        promptTokens?: number
+        completionTokens?: number
+        totalTokens?: number
+        cachedTokens?: number
+      }
     }) => void
     /** 监听主进程请求状态快照 */
     onRequestStateSnapshot: (callback: (payload: {

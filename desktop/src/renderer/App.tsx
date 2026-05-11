@@ -195,6 +195,7 @@ export default function App() {
   /** doSend 的 ref，避免 useEffect 闭包捕获旧引用 */
   type MobileTarget = { threadId?: string; sessionId?: string; modelConfigId?: string }
   const doSendRef = useRef<(content: string, images?: AttachedImage[], attachments?: AttachedAsset[], target?: MobileTarget) => void>(() => {})
+  const handleProviderChangeRef = useRef<(id: string) => void>(() => {})
   /** 中间区域当前视图：chat / settings */
   type MiddleView = 'chat' | 'settings'
   const [middleView, setMiddleView] = useState<MiddleView>('chat')
@@ -343,6 +344,7 @@ export default function App() {
     chatRef.current = chat
     activeThreadIdRef.current = tid
     activeSessionIdRef.current = sessionId
+    handleProviderChangeRef.current = handleProviderChange
   }, [threadStore, providerSettings, chat, tid, sessionId])
 
   // 上下文窗口使用量：优先使用模型真实 usage.total_tokens，缺失时回退本地估算
@@ -994,6 +996,8 @@ export default function App() {
   }, [])
 
   const handleLoginSuccess = useCallback((token: string, member: MemberInfo) => {
+    localStorage.setItem('taco.memberToken', token)
+    localStorage.setItem('taco.memberInfo', JSON.stringify(member))
     setMemberInfo(member)
     setMemberToken(token)
     setShowLoginModal(false)
@@ -1004,6 +1008,19 @@ export default function App() {
     localStorage.removeItem('taco.memberInfo')
     setMemberInfo(null)
     setMemberToken(null)
+  }, [])
+
+  // 监听 Token 过期事件，弹出登录框
+  useEffect(() => {
+    const unsub = window.taco.bridge.onStatusChange((s) => {
+      if (s.tokenExpired) {
+        // Token 过期，清除本地 token，弹出登录框
+        setMemberToken(null)
+        setMemberInfo(null)
+        setShowLoginModal(true)
+      }
+    })
+    return unsub
   }, [])
 
   // （浏览器模式已统一为外部 BrowserWindow，不再需要模式切换）
@@ -1027,6 +1044,18 @@ export default function App() {
       return next
     })
   }, [])
+
+  // 已登录时自动连接桥接服务
+  useEffect(() => {
+    if (!memberToken) return
+    let mounted = true
+    window.taco.bridge.getStatus().then((s) => {
+      if (mounted && s.status === 'disconnected') {
+        window.taco.bridge.connect(memberToken)
+      }
+    })
+    return () => { mounted = false }
+  }, [memberToken])
 
   // 监听主进程发来的打开 URL 事件（模式感知）
   useEffect(() => {
@@ -1118,6 +1147,16 @@ export default function App() {
     return unsubscribe
   }, [])
 
+  // 监听移动端请求切换模型
+  useEffect(() => {
+    const unsubscribe = window.taco.bridge.onSwitchModel((data) => {
+      const modelId = String(data.modelConfigId || '').trim()
+      if (!modelId) return
+      handleProviderChangeRef.current?.(modelId)
+    })
+    return unsubscribe
+  }, [])
+
   // 监听移动端发来的消息（chat-send / agent-confirm / agent-abort）
   useEffect(() => {
     const unsubscribe = window.taco.bridge.onClientMessage((msg) => {
@@ -1128,8 +1167,10 @@ export default function App() {
       switch (type) {
         case 'bridge:chat-send': {
           const content = String(msg.content || '')
+          const threadId = String(msg.threadId || '')
           if (content.trim()) {
-            doSend(content, undefined)
+            const target = threadId ? { threadId } : undefined
+            doSend(content, undefined, undefined, target)
           }
           break
         }
@@ -1138,13 +1179,15 @@ export default function App() {
           const approved = Boolean(msg.approved)
           if (confirmId) {
             window.taco.agent.confirmResponse(confirmId, approved)
+            // 通知 ChatPanel 更新确认状态 UI（移动端用户的操作需要同步到桌面端）
+            window.dispatchEvent(new CustomEvent('taco:confirm-response', { detail: { confirmId, approved } }))
           }
           break
         }
         case 'bridge:agent-abort': {
-          const requestId = String(msg.requestId || '')
+          const requestId = String(msg.originalRequestId || msg.requestId || '')
           if (requestId) {
-            window.taco.chat.abort(requestId)
+            window.taco.agent.abort(requestId)
           }
           break
         }
@@ -1186,6 +1229,10 @@ export default function App() {
       // 获取当前活跃的 Agent 请求 ID
       const activeAgentRequestId = chatState.getActiveTaskStartedAt(sessionId) ? `agent-${sessionId}` : undefined
 
+      // 获取 token 统计数据
+      const projectStats = chatState.getProjectTokenStats(payload.threadId)
+      const usageTotal = chatState.getUsageTotalTokens(payload.threadId)
+
       window.taco.bridge.sendStateSnapshotResponse({
         messages: messages.map((m) => ({
           id: m.id,
@@ -1193,13 +1240,23 @@ export default function App() {
           content: m.content,
           hasImages: (m.images && m.images.length > 0) ?? false,
           streaming: false,
+          agentSteps: m.agentSteps,
+          activePlan: m.activePlan,
+          taskTiming: m.taskTiming,
         })),
         threadId: payload.threadId,
         sessionId,
         workspace: payload.workspace || thread.workspace,
         modelLabel,
+        modelConfigId: modelConfigId || undefined,
         threadTitle: payload.threadTitle || thread.title,
         activeAgentRequestId,
+        tokenUsage: {
+          promptTokens: projectStats.inputTokens,
+          completionTokens: projectStats.outputTokens,
+          totalTokens: usageTotal ?? projectStats.totalTokens,
+          cachedTokens: projectStats.hitTokens,
+        },
       })
     }
 

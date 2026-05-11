@@ -389,6 +389,21 @@ export function ChatPanel({
   // 已响应的确认请求（防止重复点击）
   const [respondedConfirms, setRespondedConfirms] = useState<Map<string, boolean>>(new Map())
 
+  // 监听移动端用户的确认响应，同步到桌面端 UI
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { confirmId: string; approved: boolean }
+      if (detail?.confirmId) {
+        setRespondedConfirms((prev) => {
+          if (prev.has(detail.confirmId)) return prev
+          return new Map(prev).set(detail.confirmId, detail.approved)
+        })
+      }
+    }
+    window.addEventListener('taco:confirm-response', handler as EventListener)
+    return () => window.removeEventListener('taco:confirm-response', handler as EventListener)
+  }, [])
+
   // 回滚中的 commit hash
   const [rollingBackHash, setRollingBackHash] = useState<string | null>(null)
 

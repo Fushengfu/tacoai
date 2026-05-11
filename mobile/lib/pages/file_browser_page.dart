@@ -34,11 +34,9 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   @override
   void initState() {
     super.initState();
-    // 监听连接状态变化
     widget.client.onStatusChange(_onStatusChange);
     _connectionStatus = widget.client.status.status;
-    
-    // 如果已连接，立即加载项目列表
+
     if (_connectionStatus == BridgeConnectionStatus.connected) {
       _loadProjects();
     }
@@ -56,8 +54,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     setState(() {
       _connectionStatus = status.status;
     });
-    
-    // 连接成功时自动加载项目列表
+
     if (status.status == BridgeConnectionStatus.connected && _projects.isEmpty) {
       _loadProjects();
     }
@@ -66,14 +63,20 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   Future<void> _loadProjects() async {
     setState(() => _loadingProjects = true);
     try {
-      final projects = await widget.client.requestProjects();
+      final result = await widget.client.requestProjects();
+      final projects = result.projects;
+      final activeThreadId = result.activeThreadId;
       if (!mounted) return;
       setState(() {
         _projects = projects;
         _loadingProjects = false;
-        // 自动选择第一个有 workspace 的项目
         if (_selectedProject == null && projects.isNotEmpty) {
-          final firstWithWs = projects.where((p) => p.workspace != null && p.workspace!.isNotEmpty).firstOrNull;
+          // 优先选中桌面端当前激活的项目
+          BridgeProjectInfo? firstWithWs;
+          if (activeThreadId != null) {
+            firstWithWs = projects.where((p) => p.id == activeThreadId && p.workspace != null && p.workspace!.isNotEmpty).firstOrNull;
+          }
+          firstWithWs ??= projects.where((p) => p.workspace != null && p.workspace!.isNotEmpty).firstOrNull;
           if (firstWithWs != null) {
             _selectProject(firstWithWs);
           }
@@ -147,47 +150,68 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('文件浏览'),
+        title: Text(
+          '文件浏览',
+          style: TextStyle(fontWeight: FontWeight.w700, color: colorScheme.primary),
+        ),
+        elevation: 0,
+        backgroundColor: colorScheme.surface,
         actions: [
-          // 连接状态指示器
           Padding(
             padding: const EdgeInsets.only(right: 8),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 8,
-                  height: 8,
-                  decoration: BoxDecoration(
-                    color: _connectionStatus == BridgeConnectionStatus.connected
-                        ? Colors.green
-                        : Colors.red,
-                    shape: BoxShape.circle,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: _connectionStatus == BridgeConnectionStatus.connected
+                    ? Colors.green.withValues(alpha: 0.1)
+                    : Colors.red.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: _connectionStatus == BridgeConnectionStatus.connected
+                          ? Colors.green
+                          : Colors.red,
+                      shape: BoxShape.circle,
+                    ),
                   ),
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  _connectionStatus == BridgeConnectionStatus.connected ? '已连接' : '未连接',
-                  style: const TextStyle(fontSize: 12),
-                ),
-              ],
+                  const SizedBox(width: 6),
+                  Text(
+                    _connectionStatus == BridgeConnectionStatus.connected ? '已连接' : '未连接',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: _connectionStatus == BridgeConnectionStatus.connected
+                          ? Colors.green.shade700
+                          : Colors.red.shade700,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
           IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: (_loadingTree || _connectionStatus != BridgeConnectionStatus.connected) ? null : () {
-              if (_workspace != null) _loadTree(_workspace!);
-            },
+            icon: Icon(Icons.refresh, color: colorScheme.onSurfaceVariant),
+            onPressed: (_loadingTree || _connectionStatus != BridgeConnectionStatus.connected)
+                ? null
+                : () {
+                    if (_workspace != null) _loadTree(_workspace!);
+                  },
           ),
         ],
       ),
       body: Column(
         children: [
-          // 项目选择器
           _buildProjectSelector(),
-          // 目录树
           Expanded(child: _buildTreeContent()),
         ],
       ),
@@ -195,12 +219,15 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   }
 
   Widget _buildProjectSelector() {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
         border: Border(
-          bottom: BorderSide(color: Theme.of(context).dividerColor),
+          bottom: BorderSide(color: colorScheme.outline.withValues(alpha: 0.1)),
         ),
       ),
       child: Column(
@@ -208,13 +235,18 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         children: [
           Row(
             children: [
-              const Text('工作区: ', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+              Icon(Icons.workspaces, size: 18, color: colorScheme.primary),
+              const SizedBox(width: 8),
+              Text(
+                '工作区: ',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: colorScheme.onSurface),
+              ),
               Expanded(
                 child: DropdownButtonHideUnderline(
                   child: DropdownButton<BridgeProjectInfo>(
                     value: _selectedProject,
                     isExpanded: true,
-                    hint: const Text('选择项目', style: TextStyle(fontSize: 13)),
+                    hint: Text('选择项目', style: TextStyle(fontSize: 13, color: colorScheme.onSurfaceVariant)),
                     items: _projects.map((p) {
                       return DropdownMenuItem(
                         value: p,
@@ -232,35 +264,44 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
                 ),
               ),
               if (_loadingProjects)
-                const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: colorScheme.primary),
+                  ),
+                ),
             ],
           ),
-          if (_workspace != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text(
-                _workspace!,
-                style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.onSurfaceVariant),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
+          if (_workspace != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              _workspace!,
+              style: TextStyle(fontSize: 11, color: colorScheme.onSurfaceVariant),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
+          ],
         ],
       ),
     );
   }
 
   Widget _buildTreeContent() {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
     if (_connectionStatus != BridgeConnectionStatus.connected) {
-      return const Center(
+      return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.cloud_off, size: 64, color: Colors.grey),
-            SizedBox(height: 16),
+            Icon(Icons.cloud_off, size: 64, color: colorScheme.onSurfaceVariant.withValues(alpha: 0.3)),
+            const SizedBox(height: 16),
             Text(
               '请先连接桌面端',
-              style: TextStyle(fontSize: 16, color: Colors.grey),
+              style: TextStyle(fontSize: 16, color: colorScheme.onSurfaceVariant),
             ),
           ],
         ),
@@ -268,7 +309,19 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     }
 
     if (_loadingTree && _tree.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(color: colorScheme.primary),
+            const SizedBox(height: 16),
+            Text(
+              '加载目录中...',
+              style: TextStyle(color: colorScheme.onSurfaceVariant),
+            ),
+          ],
+        ),
+      );
     }
 
     if (_error != null && _tree.isEmpty) {
@@ -276,9 +329,9 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.error_outline, size: 48, color: Colors.red),
+            Icon(Icons.error_outline, size: 48, color: colorScheme.error),
             const SizedBox(height: 12),
-            Text(_error!, style: const TextStyle(color: Colors.red)),
+            Text(_error!, style: TextStyle(color: colorScheme.error)),
             const SizedBox(height: 16),
             FilledButton(
               onPressed: () {
@@ -292,15 +345,15 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     }
 
     if (_tree.isEmpty && _workspace == null) {
-      return const Center(
+      return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.folder_open, size: 64, color: Colors.grey),
-            SizedBox(height: 16),
+            Icon(Icons.folder_open, size: 64, color: colorScheme.onSurfaceVariant.withValues(alpha: 0.3)),
+            const SizedBox(height: 16),
             Text(
               '请先选择一个项目',
-              style: TextStyle(fontSize: 16, color: Colors.grey),
+              style: TextStyle(fontSize: 16, color: colorScheme.onSurfaceVariant),
             ),
           ],
         ),
@@ -308,8 +361,8 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     }
 
     if (_tree.isEmpty && !_loadingTree) {
-      return const Center(
-        child: Text('目录为空', style: TextStyle(color: Colors.grey)),
+      return Center(
+        child: Text('目录为空', style: TextStyle(color: colorScheme.onSurfaceVariant)),
       );
     }
 
@@ -321,53 +374,96 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   }
 
   Widget _buildTreeEntry(BridgeFileTreeEntry entry, int depth) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
     final isExpanded = _expandedPaths.contains(entry.path);
     final isDir = entry.isDirectory;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        InkWell(
-          onTap: () {
-            if (isDir) {
-              _toggleExpand(entry.path);
-            } else {
-              _openFile(entry.path);
-            }
-          },
-          child: Padding(
-            padding: EdgeInsets.only(left: depth * 16.0, right: 8, top: 2, bottom: 2),
-            child: Row(
-              children: [
-                Icon(
-                  isDir
-                      ? (isExpanded ? Icons.folder_open : Icons.folder)
-                      : Icons.description,
-                  size: 18,
-                  color: isDir ? Colors.amber : Colors.grey,
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    entry.name,
-                    style: const TextStyle(fontSize: 13),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                if (isDir && entry.children.isNotEmpty)
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 1),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            onTap: () {
+              if (isDir) {
+                _toggleExpand(entry.path);
+              } else {
+                _openFile(entry.path);
+              }
+            },
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
+              padding: EdgeInsets.only(left: depth * 16.0 + 8, right: 8, top: 6, bottom: 6),
+              child: Row(
+                children: [
                   Icon(
-                    isExpanded ? Icons.expand_less : Icons.expand_more,
+                    isDir
+                        ? (isExpanded ? Icons.folder_open : Icons.folder)
+                        : _getFileIcon(entry.name),
                     size: 18,
+                    color: isDir
+                        ? Colors.amber.shade700
+                        : colorScheme.onSurfaceVariant,
                   ),
-              ],
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      entry.name,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: isDir ? FontWeight.w500 : FontWeight.normal,
+                        color: colorScheme.onSurface,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (isDir && entry.children.isNotEmpty)
+                    Icon(
+                      isExpanded ? Icons.expand_less : Icons.expand_more,
+                      size: 18,
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                ],
+              ),
             ),
           ),
-        ),
-        // 展开子节点
-        if (isDir && isExpanded)
-          ...entry.children.map((child) => _buildTreeEntry(child, depth + 1)),
-      ],
+          if (isDir && isExpanded)
+            ...entry.children.map((child) => _buildTreeEntry(child, depth + 1)),
+        ],
+      ),
     );
+  }
+
+  IconData _getFileIcon(String fileName) {
+    final ext = fileName.split('.').last.toLowerCase();
+    switch (ext) {
+      case 'dart':
+        return Icons.code;
+      case 'ts':
+      case 'tsx':
+      case 'js':
+      case 'jsx':
+        return Icons.javascript;
+      case 'py':
+        return Icons.terminal;
+      case 'json':
+      case 'yaml':
+      case 'yml':
+      case 'toml':
+        return Icons.settings;
+      case 'md':
+      case 'txt':
+        return Icons.description;
+      case 'png':
+      case 'jpg':
+      case 'jpeg':
+      case 'gif':
+      case 'svg':
+        return Icons.image;
+      default:
+        return Icons.insert_drive_file;
+    }
   }
 }

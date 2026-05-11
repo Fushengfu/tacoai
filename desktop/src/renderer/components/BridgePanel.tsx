@@ -1,10 +1,10 @@
 /**
- * BridgePanel — 桌面端桥接面板
+ * BridgePanel — 桌面端桥接面板（新版：扫码登录模式）
  *
  * 流程：
  * 1. 使用全局会员 token 连接桥接服务
- * 2. 连接成功后显示配对码（二维码）
- * 3. 移动端扫码配对码即可连接（二维码包含 token + code + relayUrl）
+ * 2. 连接成功后显示连接状态
+ * 3. 二维码用于扫码登录（包含临时授权链接，手机端扫码后自动填充账号密码）
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react'
@@ -27,7 +27,6 @@ function statusLabel(status: BridgeConnectionStatusType): string {
 
 export function BridgePanel({ onClose, memberToken }: Readonly<BridgePanelProps>) {
   const [status, setStatus] = useState<BridgeStatusPayload>(() => ({ status: 'disconnected', clientCount: 0 }))
-  const [pairingCode, setPairingCode] = useState<string | null>(null)
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState('')
 
@@ -39,8 +38,7 @@ export function BridgePanel({ onClose, memberToken }: Readonly<BridgePanelProps>
     window.taco.bridge.getStatus().then((s) => {
       if (mounted) {
         setStatus(s)
-        if (s.pairingCode) {
-          setPairingCode(s.pairingCode)
+        if (s.status === 'connected' || s.status === 'connecting') {
           hasConnectedRef.current = true
         }
       }
@@ -49,15 +47,11 @@ export function BridgePanel({ onClose, memberToken }: Readonly<BridgePanelProps>
     const unsubStatus = window.taco.bridge.onStatusChange((s) => {
       if (mounted) {
         setStatus(s)
-        if (s.pairingCode) {
-          setPairingCode(s.pairingCode)
-          if (!hasConnectedRef.current) {
-            hasConnectedRef.current = true
-            setConnecting(false)
-          }
+        if (s.status === 'connected') {
+          hasConnectedRef.current = true
+          setConnecting(false)
         }
-        if (s.status === 'disconnected' && !s.pairingCode) {
-          setPairingCode(null)
+        if (s.status === 'disconnected') {
           hasConnectedRef.current = false
         }
         if (s.error) {
@@ -67,14 +61,7 @@ export function BridgePanel({ onClose, memberToken }: Readonly<BridgePanelProps>
       }
     })
 
-    const unsubCode = window.taco.bridge.onPairingCode((code) => {
-      if (mounted) {
-        setPairingCode(code)
-        setConnecting(false)
-      }
-    })
-
-    return () => { mounted = false; unsubStatus(); unsubCode() }
+    return () => { mounted = false; unsubStatus() }
   }, [])
 
   const handleConnect = useCallback(() => {
@@ -86,23 +73,21 @@ export function BridgePanel({ onClose, memberToken }: Readonly<BridgePanelProps>
 
   const handleDisconnect = useCallback(() => {
     window.taco.bridge.disconnect()
-    setPairingCode(null)
     hasConnectedRef.current = false
   }, [])
 
-  // 生成二维码 URL（使用 QRCode API）
-  // 二维码内容格式：taco-bridge://base64(json)
-  // json: {"token":"...","code":"...","url":"..."}
-  const qrCodeUrl = pairingCode && memberToken
+  // 生成扫码登录二维码 URL
+  // 二维码内容格式：taco-login://base64(json)
+  // json: {"token":"...","url":"..."}
+  const loginQrCodeUrl = memberToken
     ? (() => {
         const payload = JSON.stringify({
           token: memberToken,
-          code: pairingCode,
           url: 'wss://aisocket.bjctykj.com',
         })
         // 使用浏览器原生 btoa，支持 UTF-8
         const base64 = btoa(unescape(encodeURIComponent(payload)))
-        const qrData = `taco-bridge://${base64}`
+        const qrData = `taco-login://${base64}`
         return `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrData)}`
       })()
     : null
@@ -141,7 +126,7 @@ export function BridgePanel({ onClose, memberToken }: Readonly<BridgePanelProps>
         )}
 
         {/* 已登录但未连接 */}
-        {memberToken && !pairingCode && !connecting && (
+        {memberToken && !hasConnectedRef.current && !connecting && status.status === 'disconnected' && (
           <div className="bridge-connect-section">
             <button
               type="button"
@@ -160,20 +145,19 @@ export function BridgePanel({ onClose, memberToken }: Readonly<BridgePanelProps>
           </div>
         )}
 
-        {/* 已连接：显示配对码和二维码 */}
-        {pairingCode && (
+        {/* 已连接：显示扫码登录二维码 */}
+        {(status.status === 'connected' || hasConnectedRef.current) && (
           <div className="bridge-pairing-section">
-            <div className="bridge-pairing-label">配对码</div>
-            <code className="bridge-pairing-code">{pairingCode}</code>
+            <div className="bridge-pairing-label">扫码登录</div>
 
-            {qrCodeUrl && (
+            {loginQrCodeUrl && (
               <div className="bridge-qr-code">
-                <img src={qrCodeUrl} alt="配对二维码" width={200} height={200} />
+                <img src={loginQrCodeUrl} alt="扫码登录二维码" width={200} height={200} />
               </div>
             )}
 
             <p className="bridge-pairing-hint">
-              打开手机端 Taco AI App，扫描上方二维码即可连接
+              打开手机端 Taco AI App，扫描上方二维码自动登录并连接
             </p>
 
             <button

@@ -112,21 +112,53 @@ class BridgePing {
 /*  Host → Client 桥接消息（通过 Relay 转发）                           */
 /* ------------------------------------------------------------------ */
 
+/// Token 使用统计
+class BridgeTokenUsage {
+  final int? promptTokens;
+  final int? completionTokens;
+  final int? totalTokens;
+  final int? cachedTokens;
+
+  BridgeTokenUsage({
+    this.promptTokens,
+    this.completionTokens,
+    this.totalTokens,
+    this.cachedTokens,
+  });
+
+  factory BridgeTokenUsage.fromJson(Map<String, dynamic> json) {
+    return BridgeTokenUsage(
+      promptTokens: json['promptTokens'] as int?,
+      completionTokens: json['completionTokens'] as int?,
+      totalTokens: json['totalTokens'] as int?,
+      cachedTokens: json['cachedTokens'] as int?,
+    );
+  }
+}
+
 /// 完整会话状态快照
 class BridgeState {
   final String type = 'bridge:state';
   final List<BridgeChatMessage> messages;
+  final String? threadId;
   final String? activeAgentRequestId;
   final String? workspace;
   final String? modelLabel;
+  final String? modelConfigId;
   final String? threadTitle;
+  final String? projectTitle;
+  final BridgeTokenUsage? tokenUsage;
 
   BridgeState({
     required this.messages,
+    this.threadId,
     this.activeAgentRequestId,
     this.workspace,
     this.modelLabel,
+    this.modelConfigId,
     this.threadTitle,
+    this.projectTitle,
+    this.tokenUsage,
   });
 
   factory BridgeState.fromJson(Map<String, dynamic> json) {
@@ -134,12 +166,265 @@ class BridgeState {
             ?.map((m) => BridgeChatMessage.fromJson(m as Map<String, dynamic>))
             .toList() ??
         [];
+    final tokenUsageJson = json['tokenUsage'] as Map<String, dynamic>?;
     return BridgeState(
       messages: msgs,
+      threadId: json['threadId'] as String?,
       activeAgentRequestId: json['activeAgentRequestId'] as String?,
       workspace: json['workspace'] as String?,
       modelLabel: json['modelLabel'] as String?,
+      modelConfigId: json['modelConfigId'] as String?,
       threadTitle: json['threadTitle'] as String?,
+      projectTitle: json['projectTitle'] as String?,
+      tokenUsage: tokenUsageJson != null ? BridgeTokenUsage.fromJson(tokenUsageJson) : null,
+    );
+  }
+}
+
+/// Agent 步骤信息
+class BridgeAgentStep {
+  final int round;
+  final String? systemTitle;
+  final String? systemDetail;
+  final String thinking;
+  final List<BridgeToolCall> toolCalls;
+  final List<BridgeToolResult> toolResults;
+  final String status; // 'calling' | 'running' | 'confirm' | 'done'
+  final List<BridgeRiskInfo>? risks;
+  final String? confirmId;
+
+  BridgeAgentStep({
+    required this.round,
+    this.systemTitle,
+    this.systemDetail,
+    this.thinking = '',
+    this.toolCalls = const [],
+    this.toolResults = const [],
+    this.status = 'done',
+    this.risks,
+    this.confirmId,
+  });
+
+  factory BridgeAgentStep.fromJson(Map<String, dynamic> json) {
+    return BridgeAgentStep(
+      round: json['round'] as int? ?? 0,
+      systemTitle: json['systemTitle'] as String?,
+      systemDetail: json['systemDetail'] as String?,
+      thinking: json['thinking'] as String? ?? '',
+      toolCalls: (json['toolCalls'] as List<dynamic>?)
+              ?.map((t) => BridgeToolCall.fromJson(t as Map<String, dynamic>))
+              .toList() ??
+          [],
+      toolResults: (json['toolResults'] as List<dynamic>?)
+              ?.map((r) => BridgeToolResult.fromJson(r as Map<String, dynamic>))
+              .toList() ??
+          [],
+      status: json['status'] as String? ?? 'done',
+      risks: (json['risks'] as List<dynamic>?)
+              ?.map((r) => BridgeRiskInfo.fromJson(r as Map<String, dynamic>))
+              .toList(),
+      confirmId: json['confirmId'] as String?,
+    );
+  }
+}
+
+/// 工具调用信息
+class BridgeToolCall {
+  final String id;
+  final String type;
+  final BridgeToolCallFunction function;
+
+  BridgeToolCall({
+    required this.id,
+    required this.type,
+    required this.function,
+  });
+
+  factory BridgeToolCall.fromJson(Map<String, dynamic> json) {
+    final func = json['function'] as Map<String, dynamic>?;
+    if (func != null) {
+      // OpenAI nested format (from agent events via bridge:agent-event)
+      return BridgeToolCall(
+        id: json['id'] as String? ?? '',
+        type: json['type'] as String? ?? 'function',
+        function: BridgeToolCallFunction.fromJson(func),
+      );
+    } else {
+      // Flat format (from state snapshot: bridge:state / ChatMsg store)
+      return BridgeToolCall(
+        id: json['id'] as String? ?? '',
+        type: 'function',
+        function: BridgeToolCallFunction(
+          name: json['name'] as String? ?? '',
+          arguments: json['arguments'] as String? ?? '',
+        ),
+      );
+    }
+  }
+}
+
+class BridgeToolCallFunction {
+  final String name;
+  final String arguments;
+
+  BridgeToolCallFunction({
+    required this.name,
+    required this.arguments,
+  });
+
+  factory BridgeToolCallFunction.fromJson(Map<String, dynamic> json) {
+    return BridgeToolCallFunction(
+      name: json['name'] as String? ?? '',
+      arguments: json['arguments'] as String? ?? '',
+    );
+  }
+}
+
+/// 工具执行结果
+/// 文件变更信息（write_file / edit_file / delete_file 时携带）
+class BridgeFileChange {
+  final String filePath;
+  final String? oldContent; // null 表示新建文件
+  final String? newContent; // null 表示文件被删除
+
+  BridgeFileChange({
+    required this.filePath,
+    this.oldContent,
+    this.newContent,
+  });
+
+  factory BridgeFileChange.fromJson(Map<String, dynamic> json) {
+    return BridgeFileChange(
+      filePath: json['filePath'] as String? ?? '',
+      oldContent: json['oldContent'] as String?,
+      newContent: json['newContent'] as String?,
+    );
+  }
+}
+
+class BridgeToolResult {
+  final String toolCallId;
+  final String name;
+  final String content;
+  final bool success;
+  final BridgeFileChange? fileChange;
+
+  BridgeToolResult({
+    required this.toolCallId,
+    required this.name,
+    required this.content,
+    required this.success,
+    this.fileChange,
+  });
+
+  factory BridgeToolResult.fromJson(Map<String, dynamic> json) {
+    return BridgeToolResult(
+      toolCallId: json['tool_call_id'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      content: json['content'] as String? ?? '',
+      success: json['success'] as bool? ?? false,
+      fileChange: json['fileChange'] != null
+          ? BridgeFileChange.fromJson(json['fileChange'] as Map<String, dynamic>)
+          : null,
+    );
+  }
+}
+
+/// 风险信息
+class BridgeRiskInfo {
+  final String toolCallId;
+  final String toolName;
+  final String level; // 'safe' | 'warning' | 'danger'
+  final String reason;
+  final String detail;
+
+  BridgeRiskInfo({
+    required this.toolCallId,
+    required this.toolName,
+    required this.level,
+    required this.reason,
+    required this.detail,
+  });
+
+  factory BridgeRiskInfo.fromJson(Map<String, dynamic> json) {
+    return BridgeRiskInfo(
+      toolCallId: json['toolCallId'] as String? ?? '',
+      toolName: json['toolName'] as String? ?? '',
+      level: json['level'] as String? ?? 'safe',
+      reason: json['reason'] as String? ?? '',
+      detail: json['detail'] as String? ?? '',
+    );
+  }
+}
+
+/// 计划步骤信息
+class BridgePlanStepInfo {
+  final String text;
+  final String status; // 'pending' | 'in_progress' | 'done' | 'failed'
+  final String? note;
+
+  BridgePlanStepInfo({
+    required this.text,
+    required this.status,
+    this.note,
+  });
+
+  factory BridgePlanStepInfo.fromJson(Map<String, dynamic> json) {
+    return BridgePlanStepInfo(
+      text: json['text'] as String? ?? '',
+      status: json['status'] as String? ?? 'pending',
+      note: json['note'] as String?,
+    );
+  }
+}
+
+/// 活跃的执行计划
+class BridgeActivePlan {
+  final String summary;
+  final String? reasoning;
+  final List<BridgePlanStepInfo> steps;
+  final int? startedAt;
+  final int? endedAt;
+
+  BridgeActivePlan({
+    required this.summary,
+    this.reasoning,
+    required this.steps,
+    this.startedAt,
+    this.endedAt,
+  });
+
+  factory BridgeActivePlan.fromJson(Map<String, dynamic> json) {
+    return BridgeActivePlan(
+      summary: json['summary'] as String? ?? '',
+      reasoning: json['reasoning'] as String?,
+      steps: (json['steps'] as List<dynamic>?)
+              ?.map((s) => BridgePlanStepInfo.fromJson(s as Map<String, dynamic>))
+              .toList() ??
+          [],
+      startedAt: json['startedAt'] as int?,
+      endedAt: json['endedAt'] as int?,
+    );
+  }
+}
+
+/// 单轮任务耗时
+class BridgeTaskTiming {
+  final int startedAt;
+  final int? endedAt;
+  final int? durationMs;
+
+  BridgeTaskTiming({
+    required this.startedAt,
+    this.endedAt,
+    this.durationMs,
+  });
+
+  factory BridgeTaskTiming.fromJson(Map<String, dynamic> json) {
+    return BridgeTaskTiming(
+      startedAt: json['startedAt'] as int? ?? 0,
+      endedAt: json['endedAt'] as int?,
+      durationMs: json['durationMs'] as int?,
     );
   }
 }
@@ -151,6 +436,9 @@ class BridgeChatMessage {
   final String content;
   final bool hasImages;
   final bool streaming;
+  final List<BridgeAgentStep>? agentSteps;
+  final BridgeActivePlan? activePlan;
+  final BridgeTaskTiming? taskTiming;
 
   BridgeChatMessage({
     required this.id,
@@ -158,6 +446,9 @@ class BridgeChatMessage {
     required this.content,
     this.hasImages = false,
     this.streaming = false,
+    this.agentSteps,
+    this.activePlan,
+    this.taskTiming,
   });
 
   factory BridgeChatMessage.fromJson(Map<String, dynamic> json) {
@@ -167,6 +458,38 @@ class BridgeChatMessage {
       content: json['content'] as String? ?? '',
       hasImages: json['hasImages'] as bool? ?? false,
       streaming: json['streaming'] as bool? ?? false,
+      agentSteps: (json['agentSteps'] as List<dynamic>?)
+          ?.map((s) => BridgeAgentStep.fromJson(s as Map<String, dynamic>))
+          .toList(),
+      activePlan: json['activePlan'] != null
+          ? BridgeActivePlan.fromJson(json['activePlan'] as Map<String, dynamic>)
+          : null,
+      taskTiming: json['taskTiming'] != null
+          ? BridgeTaskTiming.fromJson(json['taskTiming'] as Map<String, dynamic>)
+          : null,
+    );
+  }
+
+  /// 创建副本并替换指定字段（用于原地更新，减少对象重建开销）
+  BridgeChatMessage copyWith({
+    String? id,
+    String? role,
+    String? content,
+    bool? hasImages,
+    bool? streaming,
+    List<BridgeAgentStep>? agentSteps,
+    BridgeActivePlan? activePlan,
+    BridgeTaskTiming? taskTiming,
+  }) {
+    return BridgeChatMessage(
+      id: id ?? this.id,
+      role: role ?? this.role,
+      content: content ?? this.content,
+      hasImages: hasImages ?? this.hasImages,
+      streaming: streaming ?? this.streaming,
+      agentSteps: agentSteps ?? this.agentSteps,
+      activePlan: activePlan ?? this.activePlan,
+      taskTiming: taskTiming ?? this.taskTiming,
     );
   }
 }
@@ -177,11 +500,13 @@ class BridgeChatDelta {
   final String messageId;
   final String delta;
   final bool done;
+  final String? threadId;
 
   BridgeChatDelta({
     required this.messageId,
     required this.delta,
     this.done = false,
+    this.threadId,
   });
 
   factory BridgeChatDelta.fromJson(Map<String, dynamic> json) {
@@ -189,6 +514,7 @@ class BridgeChatDelta {
       messageId: json['messageId'] as String? ?? '',
       delta: json['delta'] as String? ?? '',
       done: json['done'] as bool? ?? false,
+      threadId: json['threadId'] as String?,
     );
   }
 }
@@ -197,13 +523,17 @@ class BridgeChatDelta {
 class BridgeAgentEvent {
   final String type = 'bridge:agent-event';
   final String requestId;
+  final String? originalRequestId;
+  final String? threadId;
   final Map<String, dynamic> event;
 
-  BridgeAgentEvent({required this.requestId, required this.event});
+  BridgeAgentEvent({required this.requestId, this.originalRequestId, this.threadId, required this.event});
 
   factory BridgeAgentEvent.fromJson(Map<String, dynamic> json) {
     return BridgeAgentEvent(
       requestId: json['requestId'] as String? ?? '',
+      originalRequestId: json['originalRequestId'] as String?,
+      threadId: json['threadId'] as String?,
       event: json['event'] as Map<String, dynamic>? ?? {},
     );
   }
@@ -259,6 +589,25 @@ class BridgeChatSend {
       if (images != null) 'images': images,
     };
   }
+}
+
+/// 待确认项（用于顶部弹窗确认）
+class BridgePendingConfirm {
+  final String confirmId;
+  final bool isPlanConfirm; // true=执行计划确认，false=授权确认
+  final String summary; // 确认摘要
+  final List<BridgeRiskInfo> risks;
+  final List<BridgeToolCall> toolCalls;
+  final String? thinking; // 确认前的思考内容
+
+  BridgePendingConfirm({
+    required this.confirmId,
+    required this.isPlanConfirm,
+    required this.summary,
+    required this.risks,
+    required this.toolCalls,
+    this.thinking,
+  });
 }
 
 /// Agent 确认/拒绝响应
@@ -338,6 +687,17 @@ class BridgeProjectInfo {
       modelConfigId: json['modelConfigId'] as String?,
     );
   }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'title': title,
+      'workspace': workspace,
+      'sessions': sessions.map((s) => s.toJson()).toList(),
+      'activeSessionId': activeSessionId,
+      'modelConfigId': modelConfigId,
+    };
+  }
 }
 
 /// 会话信息
@@ -359,14 +719,23 @@ class BridgeSessionInfo {
       createdAt: json['createdAt'] as int? ?? 0,
     );
   }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'title': title,
+      'createdAt': createdAt,
+    };
+  }
 }
 
 /// 项目列表响应
 class BridgeProjectsResponse {
   final String requestId;
   final List<BridgeProjectInfo> projects;
+  final String? activeThreadId;
 
-  BridgeProjectsResponse({required this.requestId, required this.projects});
+  BridgeProjectsResponse({this.requestId = '', required this.projects, this.activeThreadId});
 
   factory BridgeProjectsResponse.fromJson(Map<String, dynamic> json) {
     return BridgeProjectsResponse(
@@ -375,6 +744,7 @@ class BridgeProjectsResponse {
               ?.map((p) => BridgeProjectInfo.fromJson(p as Map<String, dynamic>))
               .toList() ??
           [],
+      activeThreadId: json['activeThreadId'] as String?,
     );
   }
 }
@@ -540,6 +910,141 @@ class BridgeProjectSwitchedResponse {
       requestId: json['requestId'] as String? ?? '',
       success: json['success'] as bool? ?? false,
       error: json['error'] as String?,
+    );
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  模型切换                                                           */
+/* ------------------------------------------------------------------ */
+
+/// 模型配置（从桌面端获取）
+class BridgeModelConfig {
+  final String id;
+  final String provider;
+  final String name;
+  final String model;
+  final bool supportsVision;
+
+  BridgeModelConfig({
+    required this.id,
+    required this.provider,
+    required this.name,
+    required this.model,
+    this.supportsVision = false,
+  });
+
+  /// 显示标签：优先使用 model 名称
+  String get displayLabel => model.isNotEmpty ? model : name;
+
+  factory BridgeModelConfig.fromJson(Map<String, dynamic> json) {
+    return BridgeModelConfig(
+      id: json['id'] as String? ?? '',
+      provider: json['provider'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      model: json['model'] as String? ?? '',
+      supportsVision: json['supportsVision'] as bool? ?? false,
+    );
+  }
+}
+
+/// bridge:models 响应
+class BridgeModelsList {
+  final String type = 'bridge:models';
+  final String requestId;
+  final List<BridgeModelConfig> models;
+  final String? activeModelConfigId;
+
+  BridgeModelsList({
+    required this.requestId,
+    required this.models,
+    this.activeModelConfigId,
+  });
+
+  factory BridgeModelsList.fromJson(Map<String, dynamic> json) {
+    return BridgeModelsList(
+      requestId: json['requestId'] as String? ?? '',
+      models: (json['models'] as List<dynamic>?)
+              ?.map((m) => BridgeModelConfig.fromJson(m as Map<String, dynamic>))
+              .toList() ??
+          [],
+      activeModelConfigId: json['activeModelConfigId'] as String?,
+    );
+  }
+}
+
+/// bridge:model-switched 响应
+class BridgeModelSwitchedResponse {
+  final String type = 'bridge:model-switched';
+  final String requestId;
+  final bool success;
+  final String? error;
+
+  BridgeModelSwitchedResponse({
+    required this.requestId,
+    required this.success,
+    this.error,
+  });
+
+  factory BridgeModelSwitchedResponse.fromJson(Map<String, dynamic> json) {
+    return BridgeModelSwitchedResponse(
+      requestId: json['requestId'] as String? ?? '',
+      success: json['success'] as bool? ?? false,
+      error: json['error'] as String?,
+    );
+  }
+}
+
+/// 请求更早的消息（分页加载）
+class BridgeLoadOlderMessages {
+  final String type = 'bridge:load-older-messages';
+  final String requestId;
+  final String sessionId;
+  final int beforeSeq;
+  final int limit;
+
+  BridgeLoadOlderMessages({
+    required this.requestId,
+    required this.sessionId,
+    required this.beforeSeq,
+    this.limit = 50,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'type': type,
+    'requestId': requestId,
+    'sessionId': sessionId,
+    'beforeSeq': beforeSeq,
+    'limit': limit,
+  };
+}
+
+/// 更早的消息响应
+class BridgeOlderMessagesResponse {
+  final String requestId;
+  final List<BridgeChatMessage> messages;
+  final int totalCount;
+  final int? startSeq;
+  final int? endSeq;
+
+  BridgeOlderMessagesResponse({
+    required this.requestId,
+    required this.messages,
+    required this.totalCount,
+    this.startSeq,
+    this.endSeq,
+  });
+
+  factory BridgeOlderMessagesResponse.fromJson(Map<String, dynamic> json) {
+    return BridgeOlderMessagesResponse(
+      requestId: json['requestId'] as String? ?? '',
+      messages: (json['messages'] as List<dynamic>?)
+              ?.map((m) => BridgeChatMessage.fromJson(m as Map<String, dynamic>))
+              .toList() ??
+          [],
+      totalCount: json['totalCount'] as int? ?? 0,
+      startSeq: json['startSeq'] as int?,
+      endSeq: json['endSeq'] as int?,
     );
   }
 }

@@ -40,10 +40,38 @@ class _BridgeViewPageState extends State<BridgeViewPage> {
     });
 
     if (status.status == BridgeConnectionStatus.disconnected && status.error != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(status.error!)),
-      );
+      _showToast(status.error!);
     }
+  }
+
+  void _showToast(String message) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        Future.delayed(const Duration(seconds: 1), () {
+          if (Navigator.canPop(ctx)) Navigator.pop(ctx);
+        });
+        return Material(
+          color: Colors.transparent,
+          child: Center(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+              decoration: BoxDecoration(
+                color: Colors.black87,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                message,
+                style: const TextStyle(color: Colors.white, fontSize: 14),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 
   void _onMessage(dynamic data) {

@@ -60,10 +60,24 @@ class _FileEditorPageState extends State<FileEditorPage> {
       final result = await widget.client.readFile(widget.filePath);
       if (!mounted) return;
 
+      String? displayDataUrl = result.dataUrl;
+      // 如果是二进制文件且有 dataUrl（十六进制预览），需要解码
+      if (result.isBinary && result.dataUrl != null) {
+        try {
+          final uri = Uri.parse(result.dataUrl!);
+          final mimeType = uri.data!.mimeType;
+          if (mimeType == 'text/plain') {
+            displayDataUrl = utf8.decode(uri.data!.contentAsBytes());
+          }
+        } catch (_) {
+          // 解码失败则保持原样
+        }
+      }
+
       setState(() {
         _fileData = result;
         _loading = false;
-        _dataUrl = result.dataUrl;
+        _dataUrl = displayDataUrl;
         _originalContent = result.content;
 
         if (!result.isBinary && result.content != null) {
@@ -86,9 +100,7 @@ class _FileEditorPageState extends State<FileEditorPage> {
     
     // 检查内容是否有变化
     if (content == _originalContent) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('内容未修改，无需保存')),
-      );
+      _showToast('内容未修改，无需保存');
       return;
     }
 
@@ -105,22 +117,46 @@ class _FileEditorPageState extends State<FileEditorPage> {
       });
 
       if (result.success) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('文件已保存')),
-        );
+        _showToast('文件已保存');
         Navigator.pop(context);
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('保存失败: ${result.error ?? "未知错误"}')),
-        );
+        _showToast('保存失败: ${result.error ?? "未知错误"}');
       }
     } catch (e) {
       if (!mounted) return;
       setState(() => _saving = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('保存异常: $e')),
-      );
+      _showToast('保存异常: $e');
     }
+  }
+
+  void _showToast(String message) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        Future.delayed(const Duration(seconds: 1), () {
+          if (Navigator.canPop(ctx)) Navigator.pop(ctx);
+        });
+        return Material(
+          color: Colors.transparent,
+          child: Center(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+              decoration: BoxDecoration(
+                color: Colors.black87,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                message,
+                style: const TextStyle(color: Colors.white, fontSize: 14),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 
   String _formatSize(int bytes) {
@@ -222,7 +258,7 @@ class _FileEditorPageState extends State<FileEditorPage> {
       );
     }
 
-    // 二进制文件
+    // 二进制文件（含十六进制预览）
     if (_fileData!.isBinary && _dataUrl == null) {
       return Center(
         child: Column(
@@ -241,6 +277,46 @@ class _FileEditorPageState extends State<FileEditorPage> {
             ),
           ],
         ),
+      );
+    }
+
+    // 二进制文件十六进制预览
+    if (_fileData!.isBinary && _dataUrl != null) {
+      return Column(
+        children: [
+          // 文件信息条
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            width: double.infinity,
+            child: Row(
+              children: [
+                const Icon(Icons.hexagon, size: 16, color: Colors.orange),
+                const SizedBox(width: 8),
+                Text(
+                  '二进制文件 (${_formatSize(_fileData!.size)})',
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+                ),
+                const Spacer(),
+                const Text('仅预览前 8KB', style: TextStyle(fontSize: 11, color: Colors.grey)),
+              ],
+            ),
+          ),
+          // 十六进制内容区
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(12),
+              child: SelectableText(
+                _dataUrl!,
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontFamily: 'monospace',
+                  height: 1.4,
+                ),
+              ),
+            ),
+          ),
+        ],
       );
     }
 

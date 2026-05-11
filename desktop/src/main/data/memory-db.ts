@@ -436,6 +436,13 @@ function ensureDb(): DatabaseSync {
       payload_json TEXT NOT NULL DEFAULT '{}',
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS bridge_settings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      setting_key TEXT UNIQUE NOT NULL,
+      setting_value TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL
+    );
   `)
   ensureColumn(next, 'task_memories', 'scope_key', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(next, 'task_memories', 'evidence_facts_json', "TEXT NOT NULL DEFAULT '[]'")
@@ -1711,4 +1718,31 @@ export function isMemoryDbEmpty(): boolean {
 
 export function initMemoryDb(): void {
   ensureDb()
+}
+
+/* ------------------------------------------------------------------ */
+/*  Bridge Settings — 配对码策略配置                                     */
+/* ------------------------------------------------------------------ */
+
+export type BridgeSettingKey = 'pairingCodeMode'
+export type BridgeSettingValue = 'permanent' | 'auto-refresh'
+
+export function getBridgeSetting(key: BridgeSettingKey): BridgeSettingValue | null {
+  const database = ensureDb()
+  const row = database.prepare(
+    `SELECT setting_value FROM bridge_settings WHERE setting_key = ?`
+  ).get(key) as Record<string, unknown> | undefined
+  const val = row?.setting_value as string | undefined
+  if (!val) return null
+  return val as BridgeSettingValue
+}
+
+export function setBridgeSetting(key: BridgeSettingKey, value: BridgeSettingValue): void {
+  const database = ensureDb()
+  const now = new Date().toISOString()
+  database.prepare(
+    `INSERT INTO bridge_settings (setting_key, setting_value, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(setting_key) DO UPDATE SET setting_value = ?, updated_at = ?`
+  ).run(key, value, now, value, now)
 }

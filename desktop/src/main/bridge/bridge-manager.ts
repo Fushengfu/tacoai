@@ -1,12 +1,11 @@
 /**
- * BridgeManager — WebSocket 连接管理与消息收发（新版：会员登录 + 扫码配对）
+ * BridgeManager — WebSocket 连接管理与消息收发（新版：会员登录 + 扫码登录）
  *
  * 作为 Host（桌面端），负责：
  * - 使用会员 token 连接 Relay
- * - 接收配对码（用于生成二维码）
  * - 维持 WebSocket 长连接与心跳
  * - 广播桥接消息（对话、Agent 事件、文件变更）
- * - 接收 Client 指令（发送消息、确认/终止）
+ * - 接收 Client 指令（发送消息、确认、终止）
  * - 自动重连与状态恢复
  */
 
@@ -30,11 +29,20 @@ import {
 
 export type BridgeStatusCallback = (status: BridgeStatus) => void
 export type BridgeClientMessageCallback = (msg: BridgeClientMessage) => void
-export type BridgePairingCodeCallback = (code: string) => void
 export type BridgeClientConnectedCallback = () => void
 
 /** 数据请求处理器 — 由 IPC 注册，处理移动端数据查询指令 */
 export type BridgeDataRequestHandler = (msg: Record<string, unknown>, respond: (data: Record<string, unknown>) => void) => void
+
+/** 项目状态信息 */
+export interface ProjectStateInfo {
+  id: string
+  title: string
+  workspace?: string
+  isProcessing: boolean
+  activeTaskId?: string
+  lastActivityAt: number
+}
 
 /* ------------------------------------------------------------------ */
 /*  BridgeManager                                                      */
@@ -48,7 +56,6 @@ export class BridgeManager {
   /* state */
   private ws: WebSocket | null = null
   private status: BridgeConnectionStatus = 'disconnected'
-  private pairingCode: string | null = null
   private clientCount = 0
   private error: string | undefined
 
@@ -63,10 +70,20 @@ export class BridgeManager {
   private pendingMessages: BridgeHostMessage[] = []
   private readonly maxPendingMessages = 200
 
+  /* token refresh */
+  private tokenExpiresAt = 0
+  private tokenRefreshTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly TOKEN_REFRESH_BEFORE_MS = 5 * 60 * 1000 // 到期前 5 分钟刷新
+  private readonly DEFAULT_TOKEN_LIFETIME_MS = 24 * 60 * 60 * 1000 // 默认 24 小时
+
+  /* project state cache */
+  private projectStates = new Map<string, ProjectStateInfo>()
+  private stateReportTimer: ReturnType<typeof setInterval> | null = null
+  private readonly STATE_REPORT_INTERVAL_MS = 5000 // 每 5 秒上报一次项目状态
+
   /* callbacks */
   private statusCallbacks = new Set<BridgeStatusCallback>()
   private clientMessageCallbacks = new Set<BridgeClientMessageCallback>()
-  private pairingCodeCallbacks = new Set<BridgePairingCodeCallback>()
   private clientConnectedCallbacks = new Set<BridgeClientConnectedCallback>()
   private dataHandler: BridgeDataRequestHandler | null = null
 
@@ -79,8 +96,15 @@ export class BridgeManager {
   /* ------------------------------------------------------------------ */
 
   /** 设置会员 Token 并连接 Relay */
-  connect(token: string): void {
+  connect(token: string, expiresAt?: number): void {
     this.token = token
+    // 从 JWT 中解析过期时间，或使用传入的 expiresAt，或默认 24h
+    if (expiresAt && expiresAt > 0) {
+      this.tokenExpiresAt = expiresAt
+    } else {
+      const parsed = this.parseJwtExpiry(token)
+      this.tokenExpiresAt = parsed || Date.now() + this.DEFAULT_TOKEN_LIFETIME_MS
+    }
     if (this.status === 'connected' || this.status === 'connecting') {
       this.disconnect()
     }
@@ -93,7 +117,6 @@ export class BridgeManager {
   getStatus(): BridgeStatus {
     return {
       status: this.status,
-      pairingCode: this.pairingCode ?? undefined,
       clientCount: this.clientCount,
       error: this.error,
     }
@@ -119,11 +142,24 @@ export class BridgeManager {
       this.ws = null
     }
     this.pendingMessages = []
-    this.pairingCode = null
     this.token = null
     this.clientCount = 0
     this.reconnectAttempts = 0
     this.setStatus('disconnected')
+  }
+
+  /** 刷新 Token（由外部调用，用于 Token 过期时自动续期） */
+  refreshToken(newToken: string): void {
+    logBridge('Token refresh requested')
+    this.token = newToken
+    // 断开当前连接，使用新 Token 重连
+    this.clearTimers()
+    if (this.ws) {
+      this.ws.close()
+      this.ws = null
+    }
+    this.reconnectAttempts = 0
+    this.connectToRelay()
   }
 
   /** 监听状态变更 返回取消订阅函数 */
@@ -136,12 +172,6 @@ export class BridgeManager {
   onClientMessage(cb: BridgeClientMessageCallback): () => void {
     this.clientMessageCallbacks.add(cb)
     return () => { this.clientMessageCallbacks.delete(cb) }
-  }
-
-  /** 监听配对码变更 返回取消订阅函数 */
-  onPairingCode(cb: BridgePairingCodeCallback): () => void {
-    this.pairingCodeCallbacks.add(cb)
-    return () => { this.pairingCodeCallbacks.delete(cb) }
   }
 
   /** 监听移动端连接成功事件 返回取消订阅函数 */
@@ -169,6 +199,92 @@ export class BridgeManager {
     }
   }
 
+  /** 更新项目状态（由 IPC 层调用，当 Agent 开始/结束任务时） */
+  updateProjectState(projectId: string, updates: Partial<Pick<ProjectStateInfo, 'title' | 'workspace' | 'isProcessing' | 'activeTaskId'>>): void {
+    const existing = this.projectStates.get(projectId)
+    const now = Date.now()
+    if (existing) {
+      this.projectStates.set(projectId, {
+        ...existing,
+        ...updates,
+        lastActivityAt: now,
+      })
+    } else {
+      this.projectStates.set(projectId, {
+        id: projectId,
+        title: updates.title || '',
+        workspace: updates.workspace,
+        isProcessing: updates.isProcessing ?? false,
+        activeTaskId: updates.activeTaskId,
+        lastActivityAt: now,
+      })
+    }
+    logBridge(`Project state updated: ${projectId} (processing: ${updates.isProcessing})`)
+  }
+
+  /** 获取所有项目状态列表 */
+  getProjectStates(): ProjectStateInfo[] {
+    return Array.from(this.projectStates.values())
+  }
+
+  /** 获取单个项目状态 */
+  getProjectState(projectId: string): ProjectStateInfo | undefined {
+    return this.projectStates.get(projectId)
+  }
+
+  /** 启动定期状态上报定时器 */
+  startStateReportTimer(): void {
+    this.stopStateReportTimer()
+    this.stateReportTimer = setInterval(() => {
+      this.reportProjectStates()
+    }, this.STATE_REPORT_INTERVAL_MS)
+  }
+
+  /** 停止定期状态上报定时器 */
+  stopStateReportTimer(): void {
+    if (this.stateReportTimer) {
+      clearInterval(this.stateReportTimer)
+      this.stateReportTimer = null
+    }
+  }
+
+  /** 向移动端推送当前所有项目状态 */
+  private reportProjectStates(): void {
+    if (this.projectStates.size === 0) return
+    const states = Array.from(this.projectStates.values()).map((s) => ({
+      id: s.id,
+      title: s.title,
+      workspace: s.workspace,
+      isProcessing: s.isProcessing,
+      activeTaskId: s.activeTaskId,
+      lastActivityAt: s.lastActivityAt,
+    }))
+    this.sendHostMessage({
+      type: 'bridge:project-states',
+      states,
+      timestamp: Date.now(),
+    } as any)
+  }
+
+  /** 按需立即推送项目列表（不等定时器），用于项目变更时即时通知移动端 */
+  pushProjectsOnDemand(): void {
+    if (this.projectStates.size === 0) return
+    const states = Array.from(this.projectStates.values()).map((s) => ({
+      id: s.id,
+      title: s.title,
+      workspace: s.workspace,
+      isProcessing: s.isProcessing,
+      activeTaskId: s.activeTaskId,
+      lastActivityAt: s.lastActivityAt,
+    }))
+    this.sendHostMessage({
+      type: 'bridge:project-states',
+      states,
+      timestamp: Date.now(),
+    } as any)
+    logBridge(`Pushed project states on demand (${states.length} projects)`)
+  }
+
   /* ------------------------------------------------------------------ */
   /*  Private: connection                                                */
   /* ------------------------------------------------------------------ */
@@ -193,12 +309,20 @@ export class BridgeManager {
       logBridge('WebSocket connected')
       this.reconnectAttempts = 0
       this.startHeartbeat()
+      // 连接成功后立即更新状态，避免 UI 显示"未连接"但实际已连接
+      this.setStatus('connected')
 
       // 发送缓存的消息
       for (const msg of this.pendingMessages) {
         this.ws!.send(JSON.stringify(msg))
       }
       this.pendingMessages = []
+
+      // 启动 Token 自动刷新定时器
+      this.startTokenRefreshTimer()
+
+      // 启动项目状态定期上报
+      this.startStateReportTimer()
     })
 
     this.ws.on('message', (raw: WebSocket.Data) => {
@@ -233,14 +357,9 @@ export class BridgeManager {
     if (!msg || typeof (msg as any).type !== 'string') return
 
     switch ((msg as any).type) {
-      /* ---- pairing code ---- */
-      case 'pairing_code': {
-        this.pairingCode = (msg as any).code
+      /* ---- connection established ---- */
+      case 'connected': {
         this.setStatus('connected')
-        for (const cb of this.pairingCodeCallbacks) {
-          try { cb(this.pairingCode!) } catch (err) { logBridgeError('pairingCode callback error', err) }
-        }
-        logBridge(`Pairing code received: ${this.pairingCode}`)
         break
       }
 
@@ -282,7 +401,9 @@ export class BridgeManager {
       case 'bridge:get-workspace-tree':
       case 'bridge:file-read':
       case 'bridge:file-write':
-      case 'bridge:switch-project': {
+      case 'bridge:switch-project':
+      case 'bridge:get-models':
+      case 'bridge:switch-model': {
         this.lastHeartbeatReceived = Date.now()
         if (this.dataHandler) {
           const respond = (data: Record<string, unknown>) => {
@@ -310,8 +431,20 @@ export class BridgeManager {
 
       /* ---- error ---- */
       case 'error': {
-        this.error = (msg as any).message
-        logBridge(`Relay error: ${(msg as any).message}`)
+        const errMsg = (msg as any).message || ''
+        this.error = errMsg
+        logBridge(`Relay error: ${errMsg}`)
+        // 401 错误：Token 过期，停止重连，上报 token 失效事件
+        if (errMsg.includes('401') || errMsg.includes('unauthorized') || errMsg.includes('invalid token')) {
+          logBridge('Token expired, stopping reconnect')
+          this.reconnectAttempts = MAX_RECONNECT_ATTEMPTS // 阻止重连
+          this.setStatus('disconnected')
+          // 通知渲染进程 Token 失效
+          const status = this.getStatus()
+          for (const cb of this.statusCallbacks) {
+            try { cb({ ...status, tokenExpired: true } as any) } catch (err) { logBridgeError('status callback error', err) }
+          }
+        }
         break
       }
 
@@ -369,12 +502,156 @@ export class BridgeManager {
   }
 
   /* ------------------------------------------------------------------ */
+  /*  Private: token refresh                                             */
+  /* ------------------------------------------------------------------ */
+
+  /** 启动 Token 自动刷新定时器，在过期前 TOKEN_REFRESH_BEFORE_MS 触发 */
+  private startTokenRefreshTimer(): void {
+    if (this.tokenRefreshTimer) {
+      clearTimeout(this.tokenRefreshTimer)
+      this.tokenRefreshTimer = null
+    }
+
+    if (!this.tokenExpiresAt || this.tokenExpiresAt <= 0) return
+
+    const now = Date.now()
+    const refreshAt = this.tokenExpiresAt - this.TOKEN_REFRESH_BEFORE_MS
+    const delay = Math.max(0, refreshAt - now)
+
+    logBridge(`Token refresh scheduled in ${Math.round(delay / 1000)}s (expires at ${new Date(this.tokenExpiresAt).toISOString()})`)
+
+    this.tokenRefreshTimer = setTimeout(() => {
+      this.doTokenRefresh()
+    }, delay)
+  }
+
+  /** 调用 /api/bridge/refresh_token 获取新 Token */
+  private async doTokenRefresh(): Promise<void> {
+    if (!this.token) {
+      logBridge('Token refresh skipped: no token')
+      return
+    }
+
+    // 将 ws/wss URL 转换为 http/https URL
+    const apiBase = this.relayUrl
+      .replace(/^ws:/, 'http:')
+      .replace(/^wss:/, 'https:')
+      .replace(/\/ws\/?$/, '') // 移除 /ws 路径后缀
+    const refreshUrl = `${apiBase}/api/bridge/refresh_token`
+
+    logBridge(`Refreshing token via ${refreshUrl}`)
+
+    try {
+      const https = await import('https')
+      const http = await import('http')
+      const isHttps = refreshUrl.startsWith('https:')
+      const lib = isHttps ? https : http
+
+      const urlObj = new URL(refreshUrl)
+      const response = await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
+        const req = lib.request({
+          hostname: urlObj.hostname,
+          port: urlObj.port || (isHttps ? 443 : 80),
+          path: urlObj.pathname + urlObj.search,
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${this.token}`,
+            'Content-Type': 'application/json',
+          },
+        }, (res) => {
+          let body = ''
+          res.on('data', (chunk: Buffer) => { body += chunk.toString() })
+          res.on('end', () => resolve({ statusCode: res.statusCode || 0, body }))
+        })
+        req.on('error', reject)
+        req.setTimeout(10_000, () => { req.destroy(); reject(new Error('timeout')) })
+        req.end()
+      })
+
+      if (response.statusCode !== 200) {
+        logBridgeError(`Token refresh failed: HTTP ${response.statusCode}`, response.body)
+        // 如果 Token 已过期（401），不重试；否则 30 分钟后重试
+        if (response.statusCode === 401) {
+          this.handleTokenExpired()
+          return
+        }
+        this.scheduleRetryRefresh(30 * 60 * 1000)
+        return
+      }
+
+      const data = JSON.parse(response.body)
+      const newToken = data.token as string
+      if (!newToken) {
+        logBridgeError('Token refresh: no token in response', data)
+        this.scheduleRetryRefresh(30 * 60 * 1000)
+        return
+      }
+
+      // 更新过期时间
+      if (data.expires_at) {
+        this.tokenExpiresAt = (data.expires_at as number) * 1000
+      } else if (data.expires_in) {
+        this.tokenExpiresAt = Date.now() + (data.expires_in as number) * 1000
+      } else {
+        this.tokenExpiresAt = Date.now() + this.DEFAULT_TOKEN_LIFETIME_MS
+      }
+
+      logBridge(`Token refreshed successfully, new expiry: ${new Date(this.tokenExpiresAt).toISOString()}`)
+
+      // 使用新 Token 重连
+      this.refreshToken(newToken)
+    } catch (err) {
+      logBridgeError('Token refresh error', err)
+      this.scheduleRetryRefresh(30 * 60 * 1000)
+    }
+  }
+
+  /** Token 刷新失败后的重试调度 */
+  private scheduleRetryRefresh(delayMs: number): void {
+    if (this.tokenRefreshTimer) clearTimeout(this.tokenRefreshTimer)
+    this.tokenRefreshTimer = setTimeout(() => {
+      this.doTokenRefresh()
+    }, delayMs)
+  }
+
+  /** 处理 Token 过期：通知渲染进程，停止自动重连 */
+  private handleTokenExpired(): void {
+    logBridge('Token expired, notifying renderer')
+    this.token = null
+    this.tokenExpiresAt = 0
+    this.reconnectAttempts = MAX_RECONNECT_ATTEMPTS // 阻止自动重连
+    this.setStatus('disconnected')
+    // 通知渲染进程弹出登录框
+    const status = this.getStatus()
+    for (const cb of this.statusCallbacks) {
+      try { cb({ ...status, tokenExpired: true } as any) } catch (err) { logBridgeError('status callback error', err) }
+    }
+  }
+
+  /** 从 JWT Token 中解析过期时间（不验证签名） */
+  private parseJwtExpiry(token: string): number | null {
+    try {
+      const parts = token.split('.')
+      if (parts.length !== 3) return null
+      const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'))
+      if (payload.exp && typeof payload.exp === 'number') {
+        return payload.exp * 1000 // JWT exp 是秒，转为毫秒
+      }
+      return null
+    } catch {
+      return null
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
   /*  Private: utils                                                     */
   /* ------------------------------------------------------------------ */
 
   private clearTimers(): void {
     this.stopHeartbeat()
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null }
+    if (this.tokenRefreshTimer) { clearTimeout(this.tokenRefreshTimer); this.tokenRefreshTimer = null }
+    this.stopStateReportTimer()
   }
 
   private setStatus(status: BridgeConnectionStatus): void {

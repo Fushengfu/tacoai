@@ -65,9 +65,49 @@ export interface BridgeState {
   type: 'bridge:state'
   messages: BridgeChatMessage[]
   activeAgentRequestId?: string
+  threadId?: string
   workspace?: string
   modelLabel?: string
+  modelConfigId?: string
   threadTitle?: string
+  projectTitle?: string
+  tokenUsage?: BridgeTokenUsage
+}
+
+/** Agent 步骤信息 */
+export interface BridgeAgentStep {
+  round: number
+  systemTitle?: string
+  systemDetail?: string
+  thinking: string
+  toolCalls: BridgeToolCall[]
+  toolResults: BridgeToolResult[]
+  status: 'calling' | 'running' | 'confirm' | 'done'
+  risks?: BridgeRiskInfo[]
+  confirmId?: string
+}
+
+/** 计划步骤信息 */
+export interface BridgePlanStepInfo {
+  text: string
+  status: 'pending' | 'in_progress' | 'done' | 'failed'
+  note?: string
+}
+
+/** 活跃的执行计划 */
+export interface BridgeActivePlan {
+  summary: string
+  reasoning?: string
+  steps: BridgePlanStepInfo[]
+  startedAt?: number
+  endedAt?: number
+}
+
+/** 单轮任务耗时 */
+export interface BridgeTaskTiming {
+  startedAt: number
+  endedAt?: number
+  durationMs?: number
 }
 
 /** 对话消息 */
@@ -77,6 +117,12 @@ export interface BridgeChatMessage {
   content: string
   hasImages?: boolean
   streaming?: boolean
+  /** Agent 执行步骤 */
+  agentSteps?: BridgeAgentStep[]
+  /** 活跃的执行计划 */
+  activePlan?: BridgeActivePlan
+  /** 单轮任务耗时 */
+  taskTiming?: BridgeTaskTiming
 }
 
 /** 流式文本增量 */
@@ -85,6 +131,7 @@ export interface BridgeChatDelta {
   messageId: string
   delta: string
   done: boolean
+  threadId?: string
 }
 
 /** Agent 执行事件 */
@@ -121,11 +168,22 @@ export interface BridgeRiskInfo {
   detail: string
 }
 
+/** 文件变更信息（write_file / edit_file / delete_file 时携带） */
+export interface BridgeFileChange {
+  filePath: string
+  /** null 表示新建文件 */
+  oldContent: string | null
+  /** null 表示文件被删除 */
+  newContent: string | null
+}
+
 export interface BridgeToolResult {
   tool_call_id: string
   name: string
   content: string
   success: boolean
+  /** 文件变更（write_file / edit_file / delete_file 时携带） */
+  fileChange?: BridgeFileChange
 }
 
 export interface BridgeTokenUsage {
@@ -187,6 +245,7 @@ export interface BridgeProjects {
   type: 'bridge:projects'
   requestId: string
   projects: BridgeProjectInfo[]
+  activeThreadId?: string
 }
 
 export interface BridgeProjectInfo {
@@ -287,6 +346,7 @@ export type BridgeHostMessage =
   | BridgeFileContent
   | BridgeFileWritten
   | BridgeProjectSwitched
+  | BridgeProjectStates
 
 /** Client → Host 的所有消息 */
 export type BridgeClientMessage =
@@ -317,6 +377,22 @@ export interface BridgeProjectSwitched {
   threadTitle?: string
 }
 
+/** 项目状态推送（Host 主动推送，无需 Client 请求） */
+export interface BridgeProjectStates {
+  type: 'bridge:project-states'
+  states: BridgeProjectState[]
+  timestamp: number
+}
+
+export interface BridgeProjectState {
+  id: string
+  title: string
+  workspace?: string
+  isProcessing: boolean
+  activeTaskId?: string
+  lastActivityAt: number
+}
+
 /** 所有 WebSocket 消息 */
 export type BridgeMessage = BridgeControlMessage | BridgeHostMessage | BridgeClientMessage
 
@@ -332,7 +408,6 @@ export type BridgeConnectionStatus =
 
 export interface BridgeStatus {
   status: BridgeConnectionStatus
-  pairingCode?: string
   clientCount: number
   error?: string
 }

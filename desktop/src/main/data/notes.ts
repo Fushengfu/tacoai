@@ -1801,9 +1801,9 @@ function estimateBudgetChars(maxTokens?: number, usageTotalTokens?: number): { b
   if (!usage) return { budgetChars: 12000, mode: 'normal' }
 
   const ratio = usage / maxTokens
-  if (ratio >= 0.8) return { budgetChars: 4500, mode: 'high_pressure', ratio }
-  if (ratio >= 0.6) return { budgetChars: 8000, mode: 'normal', ratio }
-  return { budgetChars: 12000, mode: 'normal', ratio }
+  if (ratio >= 0.8) return { budgetChars: 8000, mode: 'high_pressure', ratio }
+  if (ratio >= 0.6) return { budgetChars: 12000, mode: 'normal', ratio }
+  return { budgetChars: 18000, mode: 'normal', ratio }
 }
 
 function toCandidateKey(source: RecallSource, id: string): string {
@@ -2343,7 +2343,7 @@ async function recallBackgroundContext(
     selected.push(item)
     selectedKeys.add(key)
     usedChars += size
-    if (selected.length >= 12) break
+    if (selected.length >= 24) break
   }
 
   // 注入给模型的背景记忆按时间正序（旧 -> 新）排列，避免倒序造成上下文理解偏差。
@@ -2486,7 +2486,7 @@ export async function buildBackgroundContextConversationMessages(
   const selectedSnapshotsFromEnd: MemorySnapshotEntry[] = []
   let droppedSnapshotReplayCount = 0
   let usedChars = safeUserQuery.length + (userAssetsBlock ? userAssetsBlock.length + 32 : 0)
-  const snapshotLimit = 2
+  const snapshotLimit = 3
   for (let i = snapshotCandidates.length - 1; i >= 0; i--) {
     if (selectedSnapshotsFromEnd.length >= snapshotLimit) {
       droppedSnapshotReplayCount++
@@ -2509,7 +2509,7 @@ export async function buildBackgroundContextConversationMessages(
   let droppedReplayByLimitCount = 0
   let droppedReplayByBudgetCount = 0
 
-  const compactLimit = replayMode === 'compact' ? 8 : 20
+  const compactLimit = replayMode === 'compact' ? 12 : 30
 
   for (let i = taskCandidates.length - 1; i >= 0; i--) {
     if (selectedFromEnd.length >= compactLimit) {

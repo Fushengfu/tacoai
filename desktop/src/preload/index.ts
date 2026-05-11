@@ -401,22 +401,25 @@ const tacoApi: TacoApi = {
       }
     },
 
-    onPairingCode: (callback: (code: string) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, code: string) => callback(code)
-      ipcRenderer.on(IpcChannel.BRIDGE_PAIRING_CODE, handler)
-      return () => {
-        ipcRenderer.removeListener(IpcChannel.BRIDGE_PAIRING_CODE, handler)
-      }
-    },
-
     getStatus: (): Promise<BridgeStatusPayload> =>
       ipcRenderer.invoke(IpcChannel.BRIDGE_GET_STATUS),
+
+    refreshToken: (newToken: string) =>
+      ipcRenderer.send(IpcChannel.BRIDGE_REFRESH_TOKEN, newToken),
 
     onSwitchProject: (callback: (data: { projectId: string; sessionId?: string }) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, data: { projectId: string; sessionId?: string }) => callback(data)
       ipcRenderer.on('bridge:switch-project-from-mobile', handler)
       return () => {
         ipcRenderer.removeListener('bridge:switch-project-from-mobile', handler)
+      }
+    },
+
+    onSwitchModel: (callback: (data: { modelConfigId: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: { modelConfigId: string }) => callback(data)
+      ipcRenderer.on('bridge:switch-model-from-mobile', handler)
+      return () => {
+        ipcRenderer.removeListener('bridge:switch-model-from-mobile', handler)
       }
     },
 
@@ -429,13 +432,28 @@ const tacoApi: TacoApi = {
     },
 
     sendStateSnapshotResponse: (payload: {
-      messages: Array<{ id: string; role: string; content: string; hasImages: boolean; streaming: boolean }>
+      messages: Array<{
+        id: string
+        role: string
+        content: string
+        hasImages: boolean
+        streaming: boolean
+        agentSteps?: any[]
+        activePlan?: any
+        taskTiming?: any
+      }>
       threadId: string
       sessionId?: string
       workspace?: string
       modelLabel?: string
       threadTitle?: string
       activeAgentRequestId?: string
+      tokenUsage?: {
+        promptTokens?: number
+        completionTokens?: number
+        totalTokens?: number
+        cachedTokens?: number
+      }
     }) => {
       ipcRenderer.send('bridge:state-snapshot-response', payload)
     },
