@@ -206,6 +206,9 @@ class _MobileChatPageState extends State<MobileChatPage> {
           _messagesNotifier.value = List.from(widget.client.messages);
         }
       });
+    } else if (type == 'bridge:chat-user-message') {
+      // 用户消息：立即更新消息列表
+      _messagesNotifier.value = List.from(widget.client.messages);
     } else if (type == 'bridge:project-cleared' || type == 'bridge:messages-cleared') {
       // 切换项目时清空消息列表，显示加载状态
       _messagesNotifier.value = [];

@@ -76,7 +76,15 @@ type MemoryScope = {
   scopeKey?: string
 }
 
-const APP_PROVIDER_IDS: readonly AppStateProviderId[] = ['deepseek', 'kimi', 'minimax', 'glm', 'qwen']
+const APP_PROVIDER_IDS: readonly AppStateProviderId[] = ['deepseek', 'kimi', 'minimax', 'glm', 'qwen', 'mimo']
+const APP_PROVIDER_LABELS: Readonly<Record<AppStateProviderId, string>> = {
+  deepseek: 'DeepSeek',
+  kimi: 'Kimi',
+  minimax: 'MiniMax',
+  glm: 'GLM',
+  qwen: 'Qwen',
+  mimo: 'MiMo',
+}
 
 function resolveHomeDir(): string {
   try {
@@ -1096,7 +1104,13 @@ function normalizeModelConfigForStorage(raw: unknown, index: number, nowTs: numb
   if (!id) return null
   const provider = normalizeProviderId(item.provider, 'deepseek')
   const model = asTrimmedString(item.model)
-  const name = asTrimmedString(item.name) || model || provider
+  const rawName = asTrimmedString(item.name)
+  const isNameKnownProvider = rawName && APP_PROVIDER_IDS.some(
+    (pid) => rawName === pid || rawName === APP_PROVIDER_LABELS[pid],
+  )
+  const name = isNameKnownProvider
+    ? (APP_PROVIDER_LABELS[provider] ?? provider)
+    : (rawName || model || provider)
   return {
     id,
     provider,

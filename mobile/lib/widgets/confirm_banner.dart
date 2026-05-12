@@ -163,6 +163,16 @@ class _ConfirmCardState extends State<_ConfirmCard> {
   bool _expanded = false;
 
   @override
+  void initState() {
+    super.initState();
+    // 高危权限确认默认自动展开，让用户立即看到确认按钮
+    final hasDangerRisks = widget.confirm.risks.any((r) => r.level == 'danger');
+    if (hasDangerRisks && !widget.confirm.isPlanConfirm) {
+      _expanded = true;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final confirm = widget.confirm;
     final colorScheme = widget.colorScheme;

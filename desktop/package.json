@@ -16,7 +16,7 @@
     "build": "npm run build:main && npm run build:preload && npm run build:renderer && npm run build:obfuscate:optional",
     "build:secure": "cross-env TACO_OBFUSCATE=1 npm run build",
     "preview": "vite preview",
-    "start": "npm run build:main && npm run build:preload && electron dist-main/main.cjs",
+    "start": "npm run build:main && npm run build:preload && npm run build:renderer && electron dist-main/main.cjs",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
     "dist:mac": "npm run build && electron-builder --mac",

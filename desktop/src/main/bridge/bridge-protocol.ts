@@ -125,6 +125,16 @@ export interface BridgeChatMessage {
   taskTiming?: BridgeTaskTiming
 }
 
+/** 用户消息同步 */
+export interface BridgeChatUserMessage {
+  type: 'bridge:chat-user-message'
+  messageId: string
+  content: string
+  images?: string[]
+  threadId?: string
+  timestamp: number
+}
+
 /** 流式文本增量 */
 export interface BridgeChatDelta {
   type: 'bridge:chat-delta'
@@ -198,6 +208,13 @@ export interface BridgeFilesChanged {
   type: 'bridge:files-changed'
   files: string[]
   timestamp: number
+}
+
+/** 确认已处理通知（Host → Client，桌面端确认/拒绝后通知移动端清除弹窗） */
+export interface BridgeAgentConfirmResolved {
+  type: 'bridge:agent-confirm-resolved'
+  confirmId: string
+  approved: boolean
 }
 
 /** 心跳 */
@@ -337,8 +354,10 @@ export type BridgeControlMessage =
 /** Host → Client 的所有消息 */
 export type BridgeHostMessage =
   | BridgeState
+  | BridgeChatUserMessage
   | BridgeChatDelta
   | BridgeAgentEvent
+  | BridgeAgentConfirmResolved
   | BridgeFilesChanged
   | BridgeHeartbeat
   | BridgeProjects
@@ -359,6 +378,14 @@ export type BridgeClientMessage =
   | BridgeFileRead
   | BridgeFileWrite
   | BridgeSwitchProject
+  | BridgeRequestState
+
+/** 移动端主动请求当前状态快照（连接/重连后使用） */
+export interface BridgeRequestState {
+  type: 'bridge:request-state'
+  /** 请求 ID，用于匹配响应 */
+  requestId: string
+}
 
 /** 请求切换项目 */
 export interface BridgeSwitchProject {

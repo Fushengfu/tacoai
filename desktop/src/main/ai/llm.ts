@@ -948,20 +948,26 @@ async function resolveQwenMediaUrl(
   raw: string,
   config: ProviderConfig,
   state: QwenMessageBuildState,
+  provider: ProviderKey,
   signal?: AbortSignal,
   logScope?: string,
 ): Promise<string> {
   const value = String(raw ?? '').trim()
   if (!value) return ''
   if (/^oss:\/\//i.test(value)) {
+    // oss:// 只有qwen支持
+    if (provider === 'mimo') return ''
     state.requiresOssResolveHeader = true
     return value
   }
+  // http:// https:// data: 直接返回（所有provider都支持）
   if (/^(?:https?:\/\/|data:)/i.test(value)) return value
 
   const localPathFromFileUrl = toLocalPathIfFileUrl(value)
   const localPath = localPathFromFileUrl || (isLikelyLocalPath(value) ? value : '')
   if (!localPath) return normalizeMediaUrl(value)
+  
+  // 对于mimo，尝试使用通用上传配置
   const uploadConfig = resolveUploadConfig(config)
   if (uploadConfig) {
     const cacheKey = `${uploadConfig.provider}:${localPath}`
@@ -969,44 +975,52 @@ async function resolveQwenMediaUrl(
     if (cached) return cached
     const publicUrl = await uploadLocalFileToPublicStorage(uploadConfig, localPath, signal)
     state.uploadedUrlByPath.set(cacheKey, publicUrl)
-    log('QWEN_MEDIA_UPLOADED_PUBLIC', {
+    log('MEDIA_UPLOADED_PUBLIC', {
       provider: uploadConfig.provider,
       filePath: localPath,
       publicUrl,
     }, logScope)
     return publicUrl
   }
-  if (isTokenPlanBaseUrl(config.baseUrl)) {
-    throw new Error(
-      `Current Qwen endpoint does not support local-file upload policy with this API key. ` +
-      `Please use a public https:// media URL instead of local path: ${localPath}`,
-    )
-  }
+  
+  // qwen特有的OSS上传逻辑
+  if (provider === 'qwen') {
+    if (isTokenPlanBaseUrl(config.baseUrl)) {
+      throw new Error(
+        `Current Qwen endpoint does not support local-file upload policy with this API key. ` +
+        `Please use a public https:// media URL instead of local path: ${localPath}`,
+      )
+    }
 
-  const cacheKey = localPath
-  const cached = state.uploadedUrlByPath.get(cacheKey)
-  if (cached) {
+    const cacheKey = localPath
+    const cached = state.uploadedUrlByPath.get(cacheKey)
+    if (cached) {
+      state.requiresOssResolveHeader = true
+      return cached
+    }
+    if (!state.uploadPolicyPromise) {
+      state.uploadPolicyPromise = getDashScopeUploadPolicy(config, signal, logScope)
+    }
+    const policy = await state.uploadPolicyPromise
+    const ossUrl = await uploadLocalFileToDashScopeOss(policy, localPath, signal)
+    state.uploadedUrlByPath.set(cacheKey, ossUrl)
     state.requiresOssResolveHeader = true
-    return cached
+    log('QWEN_MEDIA_UPLOADED', {
+      filePath: localPath,
+      ossUrl,
+    }, logScope)
+    return ossUrl
   }
-  if (!state.uploadPolicyPromise) {
-    state.uploadPolicyPromise = getDashScopeUploadPolicy(config, signal, logScope)
-  }
-  const policy = await state.uploadPolicyPromise
-  const ossUrl = await uploadLocalFileToDashScopeOss(policy, localPath, signal)
-  state.uploadedUrlByPath.set(cacheKey, ossUrl)
-  state.requiresOssResolveHeader = true
-  log('QWEN_MEDIA_UPLOADED', {
-    filePath: localPath,
-    ossUrl,
-  }, logScope)
-  return ossUrl
+  
+  // 其他provider（包括mimo）如果没有通用上传配置，返回原始值
+  return normalizeMediaUrl(value)
 }
 
 async function buildQwenUserContent(
   message: ChatMessage,
   config: ProviderConfig,
   state: QwenMessageBuildState,
+  provider: ProviderKey,
   signal?: AbortSignal,
   logScope?: string,
 ): Promise<string | QwenContentPart[]> {
@@ -1016,7 +1030,7 @@ async function buildQwenUserContent(
   const explicitCacheEnabled = hasQwenExplicitCacheHint(message, config, rawContent)
   const imageUrls: string[] = []
   for (const item of message.images ?? []) {
-    const resolved = await resolveQwenMediaUrl(item, config, state, signal, logScope)
+    const resolved = await resolveQwenMediaUrl(item, config, state, provider, signal, logScope)
     if (resolved) imageUrls.push(resolved)
   }
   const entryImageUrls: string[] = []
@@ -1024,7 +1038,7 @@ async function buildQwenUserContent(
   const nonMediaEntries: UserAssetEntry[] = []
 
   for (const entry of entries) {
-    const normalizedPath = await resolveQwenMediaUrl(entry.path, config, state, signal, logScope)
+    const normalizedPath = await resolveQwenMediaUrl(entry.path, config, state, provider, signal, logScope)
     if (!normalizedPath) continue
     const kind = inferAssetKind(entry)
     if (kind === 'image') {
@@ -1089,7 +1103,8 @@ async function buildProviderMessages(
   signal?: AbortSignal,
   logScope?: string,
 ): Promise<{ messages: unknown[]; requiresOssResolveHeader: boolean }> {
-  if (provider !== 'qwen') {
+  // qwen和mimo都需要处理图片格式
+  if (provider !== 'qwen' && provider !== 'mimo') {
     return { messages, requiresOssResolveHeader: false }
   }
   const state: QwenMessageBuildState = {
@@ -1105,12 +1120,12 @@ async function buildProviderMessages(
     }
     out.push({
       ...rest,
-      content: await buildQwenUserContent(message, config, state, signal, logScope),
+      content: await buildQwenUserContent(message, config, state, provider, signal, logScope),
     })
   }
   return {
     messages: out,
-    requiresOssResolveHeader: state.requiresOssResolveHeader,
+    requiresOssResolveHeader: provider === 'qwen' ? state.requiresOssResolveHeader : false,
   }
 }
 
@@ -1178,6 +1193,9 @@ async function buildRequest(
 
   if (provider === 'deepseek') {
     body.reasoning_effort = 'max'
+  } else if (provider === 'mimo') {
+    // Mimo只支持 'low', 'medium', 'high'
+    body.reasoning_effort = 'high'
   }
 
   // console.log('REQUEST_BUILD', {

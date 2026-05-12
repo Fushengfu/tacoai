@@ -711,7 +711,30 @@ export async function runAgent(
       }
     }
     if (lastUserIdx >= 0) {
-      const rawUserQuery = String(workingMessages[lastUserIdx].content ?? '')
+      // 提取用户原始查询文本,支持 content 为字符串或数组类型
+      const userContent: unknown = workingMessages[lastUserIdx].content
+      let rawUserQuery = ''
+      
+      if (typeof userContent === 'string') {
+        rawUserQuery = userContent
+      } else if (Array.isArray(userContent)) {
+        // content 是数组时,提取所有 text 类型的部分
+        rawUserQuery = (userContent as Array<{type?: string; text?: string}>)
+          .filter((part) => part.type === 'text')
+          .map((part) => part.text || '')
+          .join('\n')
+      } else {
+        rawUserQuery = String(userContent ?? '')
+      }
+      
+      // 如果已经被包装过,提取原始内容,避免重复包装
+      if (rawUserQuery.includes('[USER_QUERY]')) {
+        const match = rawUserQuery.match(/\[USER_QUERY\]([\s\S]*?)\[\/USER_QUERY\]/i)
+        if (match && match[1]) {
+          rawUserQuery = match[1].trim()
+        }
+      }
+      
       const injected = await buildBackgroundContextConversationMessages(
         workspace,
         rawUserQuery,
@@ -726,6 +749,16 @@ export async function runAgent(
           logScope,
         },
       )
+
+      // 项目笔记注入：紧接系统提示之后（索引 1），在任务记忆回放之前
+      if (injected.noteMessages.length > 0) {
+        const insertIdx = workingMessages.length > 0 && workingMessages[0].role === 'system' ? 1 : 0
+        workingMessages.splice(insertIdx, 0, ...injected.noteMessages)
+        // lastUserIdx 需要偏移笔记插入的数量
+        lastUserIdx += injected.noteMessages.length
+      }
+
+      // 任务记忆回放：替换最后一条用户消息
       workingMessages.splice(lastUserIdx, 1, ...injected.messages)
       currentTaskStartIndex = lastUserIdx + Math.max(0, injected.messages.length - 1)
       latestRecallMeta = {
@@ -743,6 +776,7 @@ export async function runAgent(
         droppedReplayByLimitCount: injected.droppedReplayByLimitCount,
         droppedReplayByBudgetCount: injected.droppedReplayByBudgetCount,
         notesCount: injected.notes.length,
+        noteMessagesCount: injected.noteMessages.length,
         recalledCount: injected.recalled.length,
         recallMeta: injected.recallMeta,
         rawUserQuery,

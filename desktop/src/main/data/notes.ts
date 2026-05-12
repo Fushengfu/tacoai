@@ -672,10 +672,12 @@ async function saveTaskMemoryArchive(workspace: string, items: TaskMemoryEntry[]
 }
 
 function taskMemoryTs(item: TaskMemoryEntry): number {
-  const updated = Date.parse(item.updatedAt || '')
-  if (Number.isFinite(updated)) return updated
+  // 优先使用 createdAt（创建时间不可变，代表用户实际操作时间）
+  // updatedAt 会被合并/整理操作修改，导致排序不稳定
   const created = Date.parse(item.createdAt || '')
   if (Number.isFinite(created)) return created
+  const updated = Date.parse(item.updatedAt || '')
+  if (Number.isFinite(updated)) return updated
   return 0
 }
 
@@ -2074,17 +2076,14 @@ async function recallBackgroundContext(
 
   const candidates: RecallCandidate[] = []
   const allCandidates = new Map<string, RecallCandidate>()
-  const noteFallbackCandidates: RecallCandidate[] = []
-  const taskFallbackCandidates: RecallCandidate[] = []
-  const snapshotFallbackCandidates: RecallCandidate[] = []
   let intentSource: 'llm' | 'heuristic' = 'heuristic'
   let intentType = inferIntentTypeByQuery(query)
   let intentSummary = shortText(query, 220)
   let intentGoal = shortText(query, 220)
 
+  // 笔记：直接使用所有笔记，按时间排序，不再使用评分机制
   for (const note of manualNotes) {
     const noteText = `${note.title}\n${note.content}\n${note.category}`.toLowerCase()
-    const overlap = scoreByTokenOverlap(queryTokens, noteText)
     const timestamp = Date.parse(note.updatedAt || note.createdAt || '')
     const candidate: RecallCandidate = {
       source: 'note',
@@ -2093,40 +2092,17 @@ async function recallBackgroundContext(
       text: noteText,
       timestamp,
       data: note,
-      score: 36 + overlap.score + daysAgoScore(timestamp),
-      reason: overlap.hits.length > 0 ? [`命中关键词: ${overlap.hits.join(', ')}`] : ['兜底候选：项目基础笔记'],
+      score: 0,  // 不再使用评分
+      reason: ['项目笔记'],
     }
     allCandidates.set(toCandidateKey(candidate.source, candidate.id), candidate)
-    if (hasQueryTokens && overlap.hits.length > 0) {
-      candidates.push(candidate)
-    } else {
-      noteFallbackCandidates.push(candidate)
-    }
+    candidates.push(candidate)
   }
 
+  // 任务记忆：直接使用所有记忆，按时间排序，不再使用评分机制
   for (const task of taskMemories) {
     const taskText = `${task.userQuery || ''}\n${task.userAssetsBlock || ''}\n${task.intentType || ''}\n${task.intentSummary || ''}\n${task.intentGoal || ''}\n${task.goal}\n${task.assistantResult || ''}\n${task.summary}\n${task.tools.join('\n')}\n${task.changedFiles.join('\n')}\n${task.identifiers.join('\n')}\n${task.failures.join('\n')}`.toLowerCase()
-    const overlap = scoreByTokenOverlap(queryTokens, taskText)
     const timestamp = Date.parse(task.updatedAt || task.createdAt || '')
-    // 任务记忆仅在命中当前问题关键词时参与注入，避免无关历史污染本轮上下文。
-    if (!hasQueryTokens || overlap.hits.length === 0) {
-      const candidate: RecallCandidate = {
-        source: 'task',
-        id: task.id,
-        title: shortText(task.goal, 120),
-        text: taskText,
-        timestamp,
-        data: task,
-        score: 14 + daysAgoScore(timestamp),
-        reason: ['兜底候选：最近任务记忆（未命中关键词）'],
-      }
-      allCandidates.set(toCandidateKey(candidate.source, candidate.id), candidate)
-      taskFallbackCandidates.push(candidate)
-      continue
-    }
-    const evidenceBonus = Math.min(18, task.changedFiles.length * 2 + task.tools.length)
-    const score = 18 + overlap.score + evidenceBonus + daysAgoScore(timestamp)
-    const reason = [`命中关键词: ${overlap.hits.join(', ')}`, `执行证据: ${task.tools.length}个工具/${task.changedFiles.length}个文件`]
     const candidate: RecallCandidate = {
       source: 'task',
       id: task.id,
@@ -2134,18 +2110,17 @@ async function recallBackgroundContext(
       text: taskText,
       timestamp,
       data: task,
-      score,
-      reason,
+      score: 0,  // 不再使用评分
+      reason: ['任务记忆'],
     }
     allCandidates.set(toCandidateKey(candidate.source, candidate.id), candidate)
     candidates.push(candidate)
   }
 
+  // 快照：直接使用所有快照，按时间排序，不再使用评分机制
   for (const snapshot of snapshots) {
     const snapshotText = `${snapshot.summary}`.toLowerCase()
-    const overlap = scoreByTokenOverlap(queryTokens, snapshotText)
     const timestamp = Date.parse(snapshot.updatedAt || snapshot.createdAt || '')
-    const baseScore = 20 + daysAgoScore(timestamp)
     const candidate: RecallCandidate = {
       source: 'snapshot',
       id: snapshot.id,
@@ -2153,17 +2128,11 @@ async function recallBackgroundContext(
       text: snapshotText,
       timestamp,
       data: snapshot,
-      score: baseScore + overlap.score,
-      reason: overlap.hits.length > 0
-        ? [`命中关键词: ${overlap.hits.join(', ')}`]
-        : ['兜底候选：历史上下文压缩快照'],
+      score: 0,  // 不再使用评分
+      reason: ['上下文压缩快照'],
     }
     allCandidates.set(toCandidateKey(candidate.source, candidate.id), candidate)
-    if (hasQueryTokens && overlap.hits.length > 0) {
-      candidates.push(candidate)
-    } else {
-      snapshotFallbackCandidates.push(candidate)
-    }
+    candidates.push(candidate)
   }
 
   // 不再为每轮提问额外发起“意图理解请求”；仅保留本地启发式意图继承。
@@ -2191,78 +2160,23 @@ async function recallBackgroundContext(
       if (inheritedGoal && (isLikelyFollowUpQuery(query) || !intentGoal)) {
         intentGoal = inheritedGoal
       }
-
-      const recentCandidate = allCandidates.get(toCandidateKey('task', recent.id))
-      if (recentCandidate) {
-        candidates.push({
-          ...recentCandidate,
-          score: recentCandidate.score + 48,
-          reason: ['延续最近任务记忆的上下文意图'],
-        })
-      }
+      // 不再对最近任务记忆额外加分
     }
   }
 
-  // 若没有命中候选，优先兜底注入最近任务记忆，避免 BACKGROUND_CONTEXT 为空。
-  if (candidates.length === 0 && taskFallbackCandidates.length > 0) {
-    taskFallbackCandidates.sort((a, b) => {
-      const ta = Number.isFinite(a.timestamp) ? a.timestamp : 0
-      const tb = Number.isFinite(b.timestamp) ? b.timestamp : 0
-      if (tb !== ta) return tb - ta
-      return b.score - a.score
-    })
-    for (const candidate of taskFallbackCandidates.slice(0, 2)) {
-      candidates.push({
-        ...candidate,
-        score: Math.min(candidate.score, 22),
-        reason: ['兜底注入：最近任务记忆（未命中关键词）'],
-      })
-    }
-  }
-
-  // 若仍没有命中候选，再兜底注入最近基础笔记。
-  if (candidates.length === 0 && noteFallbackCandidates.length > 0) {
-    noteFallbackCandidates.sort((a, b) => {
-      const ta = Number.isFinite(a.timestamp) ? a.timestamp : 0
-      const tb = Number.isFinite(b.timestamp) ? b.timestamp : 0
-      if (tb !== ta) return tb - ta
-      return b.score - a.score
-    })
-    for (const candidate of noteFallbackCandidates.slice(0, 2)) {
-      candidates.push({
-        ...candidate,
-        score: Math.min(candidate.score, 20),
-        reason: ['兜底注入：最近项目基础笔记（未命中关键词）'],
-      })
-    }
-  }
-
-  // 若仍无候选，兜底注入最近压缩快照。
-  if (candidates.length === 0 && snapshotFallbackCandidates.length > 0) {
-    snapshotFallbackCandidates.sort((a, b) => {
-      const ta = Number.isFinite(a.timestamp) ? a.timestamp : 0
-      const tb = Number.isFinite(b.timestamp) ? b.timestamp : 0
-      if (tb !== ta) return tb - ta
-      return b.score - a.score
-    })
-    for (const candidate of snapshotFallbackCandidates.slice(0, 2)) {
-      candidates.push({
-        ...candidate,
-        score: Math.min(candidate.score, 24),
-        reason: ['兜底注入：最近上下文压缩快照（未命中关键词）'],
-      })
-    }
-  }
-
+  // 去重：保留每个候选的最新版本（评分都是0，按时间）
   const dedupedCandidateMap = new Map<string, RecallCandidate>()
   for (const candidate of candidates) {
     const key = toCandidateKey(candidate.source, candidate.id)
     const prev = dedupedCandidateMap.get(key)
-    if (!prev || candidate.score > prev.score) dedupedCandidateMap.set(key, candidate)
+    if (!prev || candidate.score > prev.score || (candidate.score === prev.score && candidate.timestamp > prev.timestamp)) {
+      dedupedCandidateMap.set(key, candidate)
+    }
   }
   candidates.length = 0
   candidates.push(...dedupedCandidateMap.values())
 
+  // 排序：先按评分（仅笔记和快照有分），再按时间（最新优先）
   candidates.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score
     return (Number.isFinite(b.timestamp) ? b.timestamp : 0) - (Number.isFinite(a.timestamp) ? a.timestamp : 0)
@@ -2399,10 +2313,12 @@ async function recallBackgroundContext(
 }
 
 function taskMemoryTimestamp(item: TaskMemoryEntry): number {
-  const updated = Date.parse(item.updatedAt || '')
-  if (Number.isFinite(updated)) return updated
+  // 优先使用 createdAt（创建时间不可变，代表用户实际操作时间）
+  // updatedAt 会被合并/整理操作修改，导致排序不稳定
   const created = Date.parse(item.createdAt || '')
   if (Number.isFinite(created)) return created
+  const updated = Date.parse(item.updatedAt || '')
+  if (Number.isFinite(updated)) return updated
   return 0
 }
 
@@ -2443,11 +2359,12 @@ function extractReplayAssistantResult(item: TaskMemoryEntry): string {
 
 export async function buildBackgroundContextConversationMessages(
   workspace: string,
-  userQuery: string,
+  userQuery: string | unknown,
   projectId?: string,
   options?: BuildBackgroundContextConversationOptions,
 ): Promise<{
   messages: ChatMessage[]
+  noteMessages: ChatMessage[]
   notes: ProjectNote[]
   recalled: RecalledItem[]
   replayedSnapshots: MemorySnapshotEntry[]
@@ -2459,60 +2376,63 @@ export async function buildBackgroundContextConversationMessages(
   recallMeta: RecallMeta
   recallDebug: RecallDebugCandidate[]
 }> {
-  const recalled = await recallBackgroundContext(workspace, projectId, userQuery, options)
+  // 规范化 userQuery,确保是纯字符串
+  let normalizedQuery = ''
+  if (typeof userQuery === 'string') {
+    normalizedQuery = userQuery
+  } else if (Array.isArray(userQuery)) {
+    // content 是数组时,提取所有 text 类型的部分
+    normalizedQuery = (userQuery as Array<{type?: string; text?: string}>)
+      .filter((part) => part.type === 'text')
+      .map((part) => part.text || '')
+      .join('\n')
+  } else {
+    normalizedQuery = String(userQuery ?? '')
+  }
+  
+  // 如果已经被包装过,提取原始内容,避免重复包装
+  if (normalizedQuery.includes('[USER_QUERY]')) {
+    const match = normalizedQuery.match(/\[USER_QUERY\]([\s\S]*?)\[\/USER_QUERY\]/i)
+    if (match && match[1]) {
+      normalizedQuery = match[1].trim()
+    }
+  }
+  
+  const recalled = await recallBackgroundContext(workspace, projectId, normalizedQuery, options)
   const replayMode = options?.replayMode ?? (options?.reason === 'post_compress' ? 'compact' : 'full')
   const replayBudgetChars = estimateReplayBudgetChars(options?.maxTokens, replayMode)
-  const safeUserQuery = extractUserQueryText(userQuery)
-  const userAssetsBlock = extractUserAssetsBlock(userQuery)
-  const forceEmptyReplay = recalled.meta.selectionMethod === 'tool_call' && recalled.meta.toolSelectedCount === 0
+  const safeUserQuery = extractUserQueryText(normalizedQuery)
+  const userAssetsBlock = extractUserAssetsBlock(normalizedQuery)
 
-  const selectedSnapshotIds = new Set(recalled.recalled.filter((item) => item.source === 'snapshot').map((item) => item.id))
-  const selectedTaskIds = new Set(recalled.recalled.filter((item) => item.source === 'task').map((item) => item.id))
-
+  // 任务记忆：直接取最新的 N 条，按时间正序排列，不再经过 recall 评分/过滤
   const orderedTaskMemories = sortTaskMemoriesAsc(recalled.taskMemories)
-  const orderedSnapshots = sortMemorySnapshotsAsc(recalled.snapshots)
+  const taskLimit = replayMode === 'compact' ? 12 : 30
+  const taskCandidatesRaw = orderedTaskMemories.slice(-taskLimit)
 
-  const taskCandidates = forceEmptyReplay
-    ? []
-    : (selectedTaskIds.size > 0
-      ? orderedTaskMemories.filter((item) => selectedTaskIds.has(item.id))
-      : [])
-  const snapshotCandidates = forceEmptyReplay
-    ? []
-    : (selectedSnapshotIds.size > 0
-      ? orderedSnapshots.filter((item) => selectedSnapshotIds.has(item.id))
-      : orderedSnapshots.slice(-(replayMode === 'compact' ? 1 : 2)))
-
-  const selectedSnapshotsFromEnd: MemorySnapshotEntry[] = []
-  let droppedSnapshotReplayCount = 0
-  let usedChars = safeUserQuery.length + (userAssetsBlock ? userAssetsBlock.length + 32 : 0)
-  const snapshotLimit = 3
-  for (let i = snapshotCandidates.length - 1; i >= 0; i--) {
-    if (selectedSnapshotsFromEnd.length >= snapshotLimit) {
-      droppedSnapshotReplayCount++
-      continue
-    }
-    const item = snapshotCandidates[i]
-    const summary = shortText(item.summary, replayMode === 'compact' ? 900 : 1800)
-    if (!summary) continue
-    const blockSize = summary.length + 64
-    if (usedChars + blockSize > replayBudgetChars && selectedSnapshotsFromEnd.length > 0) {
-      droppedSnapshotReplayCount++
-      continue
-    }
-    selectedSnapshotsFromEnd.push({ ...item, summary })
-    usedChars += blockSize
+  // 内容去重：按 goal + userQuery 的内容哈希去重，保留最新的那条
+  const seenContentKeys = new Set<string>()
+  const taskCandidates: TaskMemoryEntry[] = []
+  for (let i = taskCandidatesRaw.length - 1; i >= 0; i--) {
+    const item = taskCandidatesRaw[i]
+    const userText = String(item.userQuery || item.goal || '').trim()
+    const goalText = String(item.goal || '').trim()
+    const contentKey = `${goalText}|||${userText}`.toLowerCase().replace(/\s+/g, ' ')
+    if (seenContentKeys.has(contentKey)) continue
+    seenContentKeys.add(contentKey)
+    taskCandidates.unshift(item)
   }
-  const replayedSnapshots = selectedSnapshotsFromEnd.reverse()
+
+  // 快照不应该被回放，因为它是本轮任务压缩时产生的，不是历史记忆
+  const replayedSnapshots: MemorySnapshotEntry[] = []
+
+  let usedChars = safeUserQuery.length + (userAssetsBlock ? userAssetsBlock.length + 32 : 0)
 
   const selectedFromEnd: TaskMemoryEntry[] = []
   let droppedReplayByLimitCount = 0
   let droppedReplayByBudgetCount = 0
 
-  const compactLimit = replayMode === 'compact' ? 12 : 30
-
   for (let i = taskCandidates.length - 1; i >= 0; i--) {
-    if (selectedFromEnd.length >= compactLimit) {
+    if (selectedFromEnd.length >= taskLimit) {
       droppedReplayByLimitCount++
       continue
     }
@@ -2520,6 +2440,12 @@ export async function buildBackgroundContextConversationMessages(
     const userText = String(item.userQuery || item.goal || '').trim()
     const userAssets = String(item.userAssetsBlock || '').trim()
     const assistantText = extractReplayAssistantResult(item)
+    
+    // 仅选择完整的任务记忆（同时包含用户提问和助手回复）
+    const hasUserMessage = Boolean(userText || userAssets)
+    const hasAssistantMessage = Boolean(assistantText)
+    if (!hasUserMessage || !hasAssistantMessage) continue
+    
     if (!userText && !assistantText && !userAssets) continue
     const pairSize = userText.length + assistantText.length + userAssets.length + 48
     if (usedChars + pairSize > replayBudgetChars && selectedFromEnd.length > 0) {
@@ -2532,34 +2458,50 @@ export async function buildBackgroundContextConversationMessages(
 
   const droppedReplayCount = droppedReplayByLimitCount + droppedReplayByBudgetCount
   const replayedTaskMemories = selectedFromEnd.reverse()
-  const messages: ChatMessage[] = []
-  for (const item of replayedSnapshots) {
-    messages.push({
-      role: 'assistant',
-      content: `[MEMORY_SNAPSHOT]\n${item.summary}\n[/MEMORY_SNAPSHOT]`,
+
+  // 笔记单独返回，由调用方注入到系统提示之后
+  const noteMessages: ChatMessage[] = []
+  const recalledNoteIds = new Set(recalled.recalled.filter((item) => item.source === 'note').map((item) => item.id))
+  const recalledNotes = recalled.notes.filter((item) => recalledNoteIds.has(item.id))
+  for (const note of recalledNotes) {
+    const noteContent = `[项目笔记]\n标题: ${note.title}\n分类: ${note.category || '未分类'}\n内容: ${note.content}\n[/项目笔记]`
+    noteMessages.push({
+      role: 'user',
+      content: `[系统注入] 以下是相关的项目背景知识：\n\n${noteContent}`,
     })
   }
+
+  // 任务记忆回放到对话历史
+  const messages: ChatMessage[] = []
   for (const item of replayedTaskMemories) {
     const userText = String(item.userQuery || item.goal || '').trim()
     const userAssets = String(item.userAssetsBlock || '').trim()
     const assistantText = extractReplayAssistantResult(item)
-    if (userText || userAssets) {
-      messages.push({
-        role: 'user',
-        content: wrapUserQueryText(userText || item.goal || '(附件相关请求)', userAssets),
-      })
+    
+    // 仅注入完整的 user/assistant 消息对，避免孤立的单条消息破坏对话结构
+    const hasUserMessage = Boolean(userText || userAssets)
+    const hasAssistantMessage = Boolean(assistantText)
+    
+    if (!hasUserMessage || !hasAssistantMessage) {
+      continue // 跳过不完整的任务记忆
     }
-    if (assistantText) messages.push({ role: 'assistant', content: assistantText })
+    
+    messages.push({
+      role: 'user',
+      content: wrapUserQueryText(userText || item.goal || '(附件相关请求)', userAssets),
+    })
+    messages.push({ role: 'assistant', content: assistantText })
   }
-  messages.push({ role: 'user', content: wrapUserQueryText(userQuery) })
+  messages.push({ role: 'user', content: wrapUserQueryText(normalizedQuery) })
 
   return {
     messages,
+    noteMessages,
     notes: recalled.notes,
     recalled: recalled.recalled,
     replayedSnapshots,
     replayedTaskMemories,
-    droppedSnapshotReplayCount,
+    droppedSnapshotReplayCount: 0,
     droppedReplayCount,
     droppedReplayByLimitCount,
     droppedReplayByBudgetCount,

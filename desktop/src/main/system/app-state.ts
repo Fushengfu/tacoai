@@ -22,7 +22,15 @@ const LEGACY_APP_STATE_FILE = path.join(TACO_DIR, 'app-state.json')
 const THREADS_STATE_FILE = path.join(TACO_DIR, 'threads-state.json')
 const PROVIDERS_STATE_FILE = path.join(TACO_DIR, 'providers-state.json')
 const APP_STATE_VERSION = 2
-const PROVIDER_IDS: readonly AppStateProviderId[] = ['deepseek', 'kimi', 'minimax', 'glm', 'qwen']
+const PROVIDER_IDS: readonly AppStateProviderId[] = ['deepseek', 'kimi', 'minimax', 'glm', 'qwen', 'mimo']
+const PROVIDER_LABELS: Readonly<Record<AppStateProviderId, string>> = {
+  deepseek: 'DeepSeek',
+  kimi: 'Kimi',
+  minimax: 'MiniMax',
+  glm: 'GLM',
+  qwen: 'Qwen',
+  mimo: 'MiMo',
+}
 
 type StoredStateRecord<T> = {
   version: number
@@ -87,7 +95,13 @@ function normalizeModelConfig(raw: unknown, index: number): AppStateModelConfig 
   const model = asString(obj.model).trim()
   const id = asString(obj.id).trim() || `model-${Date.now()}-${index}`
   if (!id) return null
-  const name = asString(obj.name).trim() || model || provider
+  const rawName = asString(obj.name).trim()
+  const isNameKnownProvider = rawName && PROVIDER_IDS.some(
+    (pid) => rawName === pid || rawName === PROVIDER_LABELS[pid],
+  )
+  const name = isNameKnownProvider
+    ? (PROVIDER_LABELS[provider] ?? provider)
+    : (rawName || model || provider)
   return {
     id,
     provider,

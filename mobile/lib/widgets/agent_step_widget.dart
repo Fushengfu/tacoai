@@ -238,7 +238,7 @@ class _AgentStepWidgetState extends State<AgentStepWidget> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _buildStepThinking(step, isStepRunning),
+                  _buildStepThinking(step, isStepRunning, isAutoExpanded: isExpanded),
                   _buildStepConfirmStatus(step, isStepRunning),
                   _buildStepToolResults(step, isStepRunning),
                 ],
@@ -249,7 +249,7 @@ class _AgentStepWidgetState extends State<AgentStepWidget> {
     );
   }
 
-  Widget _buildStepThinking(BridgeAgentStep step, bool isStepRunning) {
+  Widget _buildStepThinking(BridgeAgentStep step, bool isStepRunning, {bool isAutoExpanded = false}) {
     if (step.thinking.isEmpty) return const SizedBox.shrink();
     final thinkKey = 'think-${step.round}';
     final isThinkOpen = _thinkExpandedMap[thinkKey] ?? false;
@@ -262,6 +262,10 @@ class _AgentStepWidgetState extends State<AgentStepWidget> {
     final preview = cleaned.length > 80
         ? cleaned.substring(0, 80).replaceAll('\n', ' ') + '...'
         : cleaned.replaceAll('\n', ' ');
+
+    // 只有当前运行中的步骤（自动展开）才显示完整思考文本
+    // 已完成步骤默认只显示摘要预览，需用户手动点击才能展开
+    final showFullThinking = isStepRunning && isAutoExpanded;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 6),
@@ -315,7 +319,7 @@ class _AgentStepWidgetState extends State<AgentStepWidget> {
               ],
             ),
           ),
-          if (isThinkOpen)
+          if (isThinkOpen || showFullThinking)
             Padding(
               padding: const EdgeInsets.only(top: 4, left: 18),
               child: MarkdownBody(

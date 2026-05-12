@@ -114,13 +114,71 @@ class _ProjectListPageState extends State<ProjectListPage> {
       _refreshProjectsInBackground();
     }
 
-    // 桌面端主动推送的项目状态变更，静默更新缓存
+    // 桌面端主动推送的项目状态变更，立即更新项目列表
     if (type == 'bridge:project-states') {
-      _refreshProjectsInBackground();
+      _updateProjectsFromStates(json);
+    }
+  }
+
+  /// 从 bridge:project-states 消息中立即更新项目列表（不异步刷新）
+  void _updateProjectsFromStates(Map<String, dynamic> json) {
+    try {
+      final statesJson = json['states'] as List<dynamic>?;
+      final newActiveThreadId = json['activeThreadId'] as String?;
+      
+      if (statesJson != null && mounted) {
+        // 创建新的项目列表，按照桌面端推送的顺序排列
+        final List<BridgeProjectInfo> reorderedProjects = [];
+        for (final stateJson in statesJson) {
+          final state = stateJson as Map<String, dynamic>;
+          final projectId = state['id'] as String?;
+          if (projectId != null) {
+            // 查找现有项目
+            final existingProject = _projects.firstWhere(
+              (p) => p.id == projectId,
+              orElse: () => BridgeProjectInfo(
+                id: projectId,
+                title: state['title'] as String? ?? '',
+                workspace: state['workspace'] as String?,
+                sessions: [],
+              ),
+            );
+            reorderedProjects.add(existingProject);
+            
+            // 更新活跃任务状态
+            final isProcessing = state['isProcessing'] as bool? ?? false;
+            final activeTaskId = state['activeTaskId'] as String?;
+            if (isProcessing && activeTaskId != null) {
+              final sessionId = activeTaskId.replaceFirst('agent-', '');
+              _activeTaskSessionIds.add(sessionId);
+              _projectToActiveSession[projectId] = sessionId;
+            } else {
+              // 移除该项目关联的活跃 session
+              final removedSessionId = _projectToActiveSession.remove(projectId);
+              if (removedSessionId != null) {
+                _activeTaskSessionIds.remove(removedSessionId);
+              }
+            }
+          }
+        }
+        
+        setState(() {
+          _projects = reorderedProjects;
+          _applyCustomOrder();
+          if (newActiveThreadId != null && newActiveThreadId.isNotEmpty) {
+            _activeThreadId = newActiveThreadId;
+          }
+        });
+        
+        print('[ProjectList] Updated from project-states push (${statesJson.length} states)');
+      }
+    } catch (e) {
+      print('[ProjectList] Failed to update from project-states: $e');
     }
   }
 
   final Set<String> _activeTaskSessionIds = {};
+  final Map<String, String> _projectToActiveSession = {}; // projectId -> sessionId
 
   void _onStatusChange(BridgeStatus status) {
     if (!mounted) return;

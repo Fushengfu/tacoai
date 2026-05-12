@@ -69,6 +69,8 @@ export class BridgeManager {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private pendingMessages: BridgeHostMessage[] = []
   private readonly maxPendingMessages = 200
+  /** 重连前的客户端数量，用于判断重连后是否需要推送状态 */
+  private previousClientCount = 0
 
   /* token refresh */
   private tokenExpiresAt = 0
@@ -78,6 +80,7 @@ export class BridgeManager {
 
   /* project state cache */
   private projectStates = new Map<string, ProjectStateInfo>()
+  private _activeThreadId: string | null = null
   private stateReportTimer: ReturnType<typeof setInterval> | null = null
   private readonly STATE_REPORT_INTERVAL_MS = 5000 // 每 5 秒上报一次项目状态
 
@@ -96,7 +99,7 @@ export class BridgeManager {
   /* ------------------------------------------------------------------ */
 
   /** 设置会员 Token 并连接 Relay */
-  connect(token: string, expiresAt?: number): void {
+  connect(token: string, expiresAt?: number, orderedProjectIds?: string[]): void {
     this.token = token
     // 从 JWT 中解析过期时间，或使用传入的 expiresAt，或默认 24h
     if (expiresAt && expiresAt > 0) {
@@ -110,7 +113,7 @@ export class BridgeManager {
     }
     this.reconnectAttempts = 0
     this.pendingMessages = []
-    this.connectToRelay()
+    this.connectToRelay(orderedProjectIds)
   }
 
   /** 获取当前桥接状态快照 */
@@ -137,6 +140,7 @@ export class BridgeManager {
   /** 断开连接 */
   disconnect(): void {
     this.clearTimers()
+    this.previousClientCount = this.clientCount
     if (this.ws) {
       this.ws.close()
       this.ws = null
@@ -149,7 +153,7 @@ export class BridgeManager {
   }
 
   /** 刷新 Token（由外部调用，用于 Token 过期时自动续期） */
-  refreshToken(newToken: string): void {
+  refreshToken(newToken: string, orderedProjectIds?: string[]): void {
     logBridge('Token refresh requested')
     this.token = newToken
     // 断开当前连接，使用新 Token 重连
@@ -159,7 +163,7 @@ export class BridgeManager {
       this.ws = null
     }
     this.reconnectAttempts = 0
-    this.connectToRelay()
+    this.connectToRelay(orderedProjectIds)
   }
 
   /** 监听状态变更 返回取消订阅函数 */
@@ -222,6 +226,14 @@ export class BridgeManager {
     logBridge(`Project state updated: ${projectId} (processing: ${updates.isProcessing})`)
   }
 
+  /** 更新项目状态并立即推送给移动端（由 IPC 层调用，当 Agent 开始/结束任务时） */
+  updateProjectStateAndPush(projectId: string, updates: Partial<Pick<ProjectStateInfo, 'title' | 'workspace' | 'isProcessing' | 'activeTaskId'>>): void {
+    this.updateProjectState(projectId, updates)
+    // 立即推送给移动端，确保状态即时同步
+    this.pushProjectsOnDemand()
+    logBridge(`Project state updated and pushed: ${projectId} (processing: ${updates.isProcessing})`)
+  }
+
   /** 获取所有项目状态列表 */
   getProjectStates(): ProjectStateInfo[] {
     return Array.from(this.projectStates.values())
@@ -232,11 +244,24 @@ export class BridgeManager {
     return this.projectStates.get(projectId)
   }
 
+  /** 设置当前活跃项目（由 IPC 层调用，当桌面端切换项目时） */
+  setActiveThread(threadId: string | null, orderedProjectIds?: string[]): void {
+    this._activeThreadId = threadId
+    logBridge(`Active thread set to: ${threadId}`)
+    // 立即推送一次项目状态，使移动端同步更新活跃项目
+    this.pushProjectsOnDemand(orderedProjectIds)
+  }
+
+  /** 获取当前活跃项目 ID */
+  getActiveThreadId(): string | null {
+    return this._activeThreadId
+  }
+
   /** 启动定期状态上报定时器 */
-  startStateReportTimer(): void {
+  startStateReportTimer(orderedProjectIds?: string[]): void {
     this.stopStateReportTimer()
     this.stateReportTimer = setInterval(() => {
-      this.reportProjectStates()
+      this.reportProjectStates(orderedProjectIds)
     }, this.STATE_REPORT_INTERVAL_MS)
   }
 
@@ -249,9 +274,9 @@ export class BridgeManager {
   }
 
   /** 向移动端推送当前所有项目状态 */
-  private reportProjectStates(): void {
+  private reportProjectStates(orderedProjectIds?: string[]): void {
     if (this.projectStates.size === 0) return
-    const states = Array.from(this.projectStates.values()).map((s) => ({
+    let states = Array.from(this.projectStates.values()).map((s) => ({
       id: s.id,
       title: s.title,
       workspace: s.workspace,
@@ -259,37 +284,78 @@ export class BridgeManager {
       activeTaskId: s.activeTaskId,
       lastActivityAt: s.lastActivityAt,
     }))
+    
+    // 如果提供了顺序信息，按照指定顺序排序项目状态
+    if (orderedProjectIds && orderedProjectIds.length > 0 && states.length > 0) {
+      states.sort((a, b) => {
+        const indexA = orderedProjectIds.indexOf(a.id)
+        const indexB = orderedProjectIds.indexOf(b.id)
+        // 如果两个项目都在顺序列表中，按指定顺序排
+        if (indexA !== -1 && indexB !== -1) {
+          return indexA - indexB
+        }
+        // 如果只有 a 在顺序列表中，a 排前面
+        if (indexA !== -1) return -1
+        // 如果只有 b 在顺序列表中，b 排前面
+        if (indexB !== -1) return 1
+        // 都不在顺序列表中，保持原顺序
+        return 0
+      })
+    }
+    
     this.sendHostMessage({
       type: 'bridge:project-states',
       states,
+      activeThreadId: this._activeThreadId || '',
       timestamp: Date.now(),
     } as any)
   }
 
   /** 按需立即推送项目列表（不等定时器），用于项目变更时即时通知移动端 */
-  pushProjectsOnDemand(): void {
-    if (this.projectStates.size === 0) return
-    const states = Array.from(this.projectStates.values()).map((s) => ({
-      id: s.id,
-      title: s.title,
-      workspace: s.workspace,
-      isProcessing: s.isProcessing,
-      activeTaskId: s.activeTaskId,
-      lastActivityAt: s.lastActivityAt,
-    }))
+  pushProjectsOnDemand(orderedProjectIds?: string[]): void {
+    let states = this.projectStates.size > 0
+      ? Array.from(this.projectStates.values()).map((s) => ({
+          id: s.id,
+          title: s.title,
+          workspace: s.workspace,
+          isProcessing: s.isProcessing,
+          activeTaskId: s.activeTaskId,
+          lastActivityAt: s.lastActivityAt,
+        }))
+      : []
+    
+    // 如果提供了顺序信息，按照指定顺序排序项目状态
+    if (orderedProjectIds && orderedProjectIds.length > 0 && states.length > 0) {
+      states.sort((a, b) => {
+        const indexA = orderedProjectIds.indexOf(a.id)
+        const indexB = orderedProjectIds.indexOf(b.id)
+        // 如果两个项目都在顺序列表中，按指定顺序排
+        if (indexA !== -1 && indexB !== -1) {
+          return indexA - indexB
+        }
+        // 如果只有 a 在顺序列表中，a 排前面
+        if (indexA !== -1) return -1
+        // 如果只有 b 在顺序列表中，b 排前面
+        if (indexB !== -1) return 1
+        // 都不在顺序列表中，保持原顺序
+        return 0
+      })
+    }
+    
     this.sendHostMessage({
       type: 'bridge:project-states',
       states,
+      activeThreadId: this._activeThreadId || '',
       timestamp: Date.now(),
     } as any)
-    logBridge(`Pushed project states on demand (${states.length} projects)`)
+    logBridge(`Pushed project states on demand (${states.length} projects, activeThread: ${this._activeThreadId})`)
   }
 
   /* ------------------------------------------------------------------ */
   /*  Private: connection                                                */
   /* ------------------------------------------------------------------ */
 
-  private connectToRelay(): void {
+  private connectToRelay(orderedProjectIds?: string[]): void {
     if (this.ws) {
       this.ws.close()
       this.ws = null
@@ -322,7 +388,14 @@ export class BridgeManager {
       this.startTokenRefreshTimer()
 
       // 启动项目状态定期上报
-      this.startStateReportTimer()
+      this.startStateReportTimer(orderedProjectIds)
+
+      // 重连后如果有之前连接的客户端，主动推送状态快照
+      // （移动端也会通过 bridge:request-state 主动请求，这里作为兜底）
+      if (this.previousClientCount > 0) {
+        logBridge(`Reconnected with ${this.previousClientCount} previous clients, will push state on client_connected`)
+      }
+      this.previousClientCount = 0
     })
 
     this.ws.on('message', (raw: WebSocket.Data) => {
@@ -339,7 +412,7 @@ export class BridgeManager {
       this.stopHeartbeat()
       this.ws = null
       this.setStatus('disconnected')
-      this.attemptReconnect()
+      this.attemptReconnect(orderedProjectIds)
     })
 
     this.ws.on('error', (err: Error) => {
@@ -403,7 +476,9 @@ export class BridgeManager {
       case 'bridge:file-write':
       case 'bridge:switch-project':
       case 'bridge:get-models':
-      case 'bridge:switch-model': {
+      case 'bridge:switch-model':
+      case 'bridge:request-state':
+      case 'bridge:load-older-messages': {
         this.lastHeartbeatReceived = Date.now()
         if (this.dataHandler) {
           const respond = (data: Record<string, unknown>) => {
@@ -483,7 +558,7 @@ export class BridgeManager {
   /*  Private: reconnect                                                 */
   /* ------------------------------------------------------------------ */
 
-  private attemptReconnect(): void {
+  private attemptReconnect(orderedProjectIds?: string[]): void {
     if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
       this.error = '重连次数已达上限'
       this.setStatus('disconnected')
@@ -497,7 +572,7 @@ export class BridgeManager {
     logBridge(`Reconnecting in ${Math.round(delay / 1000)}s (attempt ${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`)
 
     this.reconnectTimer = setTimeout(() => {
-      this.connectToRelay()
+      this.connectToRelay(orderedProjectIds)
     }, delay)
   }
 

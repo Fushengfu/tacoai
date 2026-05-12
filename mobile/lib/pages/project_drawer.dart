@@ -93,6 +93,10 @@ class _ProjectDrawerState extends State<ProjectDrawer> {
       if (state.workspace != null && state.workspace != _currentWorkspace) {
         setState(() => _currentWorkspace = state.workspace);
       }
+      // bridge:state 包含 threadId（当前活跃项目），直接更新激活状态
+      if (state.threadId != null && state.threadId!.isNotEmpty) {
+        setState(() => _activeThreadId = state.threadId);
+      }
       // 后台刷新项目列表，不阻塞 UI
       _refreshProjectsInBackground();
     } else if (type == 'bridge:agent-event') {
@@ -110,8 +114,25 @@ class _ProjectDrawerState extends State<ProjectDrawer> {
     } else if (type == 'bridge:chat-delta') {
       // 聊天流事件不需要更新项目列表，忽略
     } else if (type == 'bridge:project-states') {
-      // 桌面端主动推送的项目状态变更，静默更新缓存
-      _refreshProjectsInBackground();
+      // 桌面端主动推送的项目状态变更 — 直接从推送数据更新，不发起网络请求
+      _applyProjectStatesPush(json);
+    }
+  }
+
+  /// 从桌面端推送的 project-states 数据直接更新 UI，不发起网络请求
+  void _applyProjectStatesPush(Map<String, dynamic> json) {
+    if (!mounted) return;
+    try {
+      // 更新活跃项目 ID（来自推送的 activeThreadId）
+      final newActiveThreadId = json['activeThreadId'] as String?;
+      // 始终调用 setState 以触发重建，确保活跃任务状态（_hasActiveTask）被重新计算
+      setState(() {
+        if (newActiveThreadId != null && newActiveThreadId.isNotEmpty) {
+          _activeThreadId = newActiveThreadId;
+        }
+      });
+    } catch (e) {
+      print('[ProjectDrawer] _applyProjectStatesPush error: $e');
     }
   }
 
@@ -192,9 +213,15 @@ class _ProjectDrawerState extends State<ProjectDrawer> {
       widget.client.clearMessages();
       widget.client.setCurrentProject(projectId);
       
+      // 立即更新本地激活状态，确保 UI 只有一个项目被选中
+      setState(() {
+        _activeThreadId = projectId;
+      });
+      
       // 发送切换请求到桌面端（异步，不阻塞）
       widget.client.switchProject(projectId).catchError((e) {
         print('[ProjectDrawer] Switch project error: $e');
+        return BridgeProjectSwitchedResponse(requestId: '', success: false);
       });
       if (!mounted) return;
       
@@ -229,11 +256,17 @@ class _ProjectDrawerState extends State<ProjectDrawer> {
 
   /// 判断项目是否为当前选中的项目
   bool _isCurrentProject(BridgeProjectInfo project) {
-    // 优先通过 activeThreadId 精确匹配
-    if (_activeThreadId != null && project.id == _activeThreadId) {
+    // 优先通过 activeThreadId 精确匹配（来自 bridge:project-states 实时推送或 requestProjects）
+    // 当 activeThreadId 存在时，只使用它进行判断，避免与 currentProjectId 冲突
+    if (_activeThreadId != null && _activeThreadId!.isNotEmpty) {
+      return project.id == _activeThreadId;
+    }
+    // 其次通过 bridge_client 的 currentProjectId（来自 bridge:state 的 threadId）
+    final clientId = widget.client.currentProjectId;
+    if (clientId != null && clientId.isNotEmpty && project.id == clientId) {
       return true;
     }
-    // 其次通过 workspace 路径匹配
+    // 最后通过 workspace 路径匹配
     if (_currentWorkspace != null && project.workspace != null) {
       return _currentWorkspace == project.workspace;
     }
@@ -300,7 +333,6 @@ class _ProjectDrawerState extends State<ProjectDrawer> {
 
   Widget _buildBody() {
     final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
 
     if (_connectionStatus != BridgeConnectionStatus.connected) {
       return const Center(

@@ -558,6 +558,22 @@ class BridgeFilesChanged {
   }
 }
 
+/// 确认已处理通知（Host → Client，桌面端确认/拒绝后通知移动端清除弹窗）
+class BridgeAgentConfirmResolved {
+  final String type = 'bridge:agent-confirm-resolved';
+  final String confirmId;
+  final bool approved;
+
+  BridgeAgentConfirmResolved({required this.confirmId, required this.approved});
+
+  factory BridgeAgentConfirmResolved.fromJson(Map<String, dynamic> json) {
+    return BridgeAgentConfirmResolved(
+      confirmId: json['confirmId'] as String? ?? '',
+      approved: json['approved'] as bool? ?? false,
+    );
+  }
+}
+
 /// 心跳
 class BridgeHeartbeat {
   final String type = 'heartbeat';
@@ -895,6 +911,16 @@ class BridgeSwitchProject {
     'projectId': projectId,
     if (sessionId != null) 'sessionId': sessionId,
   };
+}
+
+/// 请求当前状态快照（连接/重连后使用）
+class BridgeRequestState {
+  final String type = 'bridge:request-state';
+  final String requestId;
+
+  BridgeRequestState({required this.requestId});
+
+  Map<String, dynamic> toJson() => {'type': type, 'requestId': requestId};
 }
 
 /// 项目切换结果

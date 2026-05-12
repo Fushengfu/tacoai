@@ -444,6 +444,21 @@ async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload)
 
   chatAbortControllers.set(requestId, abortController)
 
+  // Bridge: 发送用户消息到移动端
+  try {
+    const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user')
+    if (lastUserMessage) {
+      getBridgeManager().sendHostMessage({
+        type: 'bridge:chat-user-message',
+        messageId: sourceUserMessageId || `user-${requestId}`,
+        content: lastUserMessage.content || '',
+        images: lastUserMessage.images,
+        threadId: projectId,
+        timestamp: Date.now(),
+      })
+    }
+  } catch (_) { /* ignore bridge errors */ }
+
   try {
     for await (const chunk of requestChatCompletionStream(
       provider as ProviderKey,
@@ -574,7 +589,20 @@ async function handleAppStateSaveThreads(
   _event: IpcMainInvokeEvent,
   payload: AppStateThreadsPayload,
 ): Promise<AppStateThreadsPayload> {
-  return await saveAppThreadsState(payload)
+  const result = await saveAppThreadsState(payload)
+  // 当桌面端切换项目时，同步更新 BridgeManager 的活跃项目并推送移动端
+  try {
+    const mgr = getBridgeManager()
+    const newActiveId = result.activeThreadId || null
+    if (mgr.getActiveThreadId() !== newActiveId) {
+      // 获取项目顺序信息，确保移动端项目列表与桌面端一致
+      const orderedProjectIds = result.threads.map(t => t.id)
+      mgr.setActiveThread(newActiveId, orderedProjectIds)
+    }
+  } catch {
+    // bridge 未初始化时忽略
+  }
+  return result
 }
 
 async function handleAppStateSaveProviders(
@@ -667,6 +695,15 @@ async function handleAgentStream(event: IpcMainEvent, payload: AgentStreamPayloa
   const abortController = new AbortController()
   agentAbortControllers.set(requestId, abortController)
 
+  // Agent 开始任务时，立即更新项目状态并推送给移动端
+  try {
+    const mgr = getBridgeManager()
+    mgr.updateProjectStateAndPush(projectId, {
+      isProcessing: true,
+      activeTaskId: requestId,
+    })
+  } catch (_) { /* bridge 未初始化时忽略 */ }
+
   try {
     await runAgent(
       provider as ProviderKey,
@@ -698,6 +735,14 @@ async function handleAgentStream(event: IpcMainEvent, payload: AgentStreamPayloa
     )
   } finally {
     agentAbortControllers.delete(requestId)
+    // Agent 结束任务时，立即更新项目状态并推送给移动端
+    try {
+      const mgr = getBridgeManager()
+      mgr.updateProjectStateAndPush(projectId, {
+        isProcessing: false,
+        activeTaskId: undefined,
+      })
+    } catch (_) { /* bridge 未初始化时忽略 */ }
   }
 }
 
@@ -781,6 +826,14 @@ function handleChatAbort(_event: IpcMainEvent, requestId: string) {
 /** 用户对风险操作的确认/拒绝响应 */
 function handleAgentConfirm(_event: IpcMainEvent, payload: AgentConfirmPayload) {
   resolveConfirm(payload.confirmId, payload.approved)
+  // 通知移动端：确认已处理，清除待确认弹窗
+  try {
+    getBridgeManager().sendHostMessage({
+      type: 'bridge:agent-confirm-resolved',
+      confirmId: payload.confirmId,
+      approved: payload.approved,
+    } as any)
+  } catch (_) { /* bridge 未初始化时忽略 */ }
 }
 
 /** 目录选择对话框 */
@@ -1256,6 +1309,10 @@ function setupBridgeClientConnectedHandler(): void {
         return
       }
 
+      // 同步更新 BridgeManager 的活跃项目
+      const orderedProjectIds = state.threadsState.threads.map(t => t.id)
+      mgr.setActiveThread(state.threadsState.activeThreadId, orderedProjectIds)
+
       const resolvedSessionId = activeThread.activeSessionId || activeThread.sessions[0]?.id || ''
       if (!resolvedSessionId) {
         log('BRIDGE_NO_ACTIVE_SESSION', {}, 'bridge')
@@ -1467,6 +1524,15 @@ function setupBridgeDataHandler(): void {
           }
           // 先立即返回成功响应，让移动端 UI 立即响应
           respond({ type: 'bridge:project-switched', requestId, success: true })
+
+          // 立即更新 BridgeManager 的活跃项目并推送移动端
+          try {
+            const mgr = getBridgeManager()
+            // 获取项目顺序信息，确保移动端项目列表与桌面端一致
+            const state = await getAppState()
+            const orderedProjectIds = state.threadsState.threads.map(t => t.id)
+            mgr.setActiveThread(projectId, orderedProjectIds)
+          } catch { /* bridge 未初始化时忽略 */ }
           
           // 通知所有 renderer 切换项目（异步，不阻塞响应）
           for (const win of BrowserWindow.getAllWindows()) {
@@ -1521,6 +1587,63 @@ function setupBridgeDataHandler(): void {
               })
             }
           })()
+          break
+        }
+
+        /* ---- 移动端主动请求状态快照（连接/重连后使用） ---- */
+        case 'bridge:request-state': {
+          try {
+            const state = await getAppState()
+            const activeThread = state.threadsState.threads.find(
+              (t) => t.id === state.threadsState.activeThreadId,
+            )
+            if (!activeThread) {
+              respond({ type: 'bridge:state', requestId, messages: [], threadId: '' })
+              break
+            }
+
+            const resolvedSessionId = activeThread.activeSessionId || activeThread.sessions[0]?.id || ''
+            if (!resolvedSessionId) {
+              respond({ type: 'bridge:state', requestId, messages: [], threadId: activeThread.id })
+              break
+            }
+
+            const page = loadChatStoreSessionPage(resolvedSessionId, { limit: 50 })
+            if (page && Array.isArray(page.messages)) {
+              const modelConfig = state.providersState.modelConfigs.find(
+                (m) => m.id === activeThread.modelConfigId,
+              )
+              const hasActiveTask = agentAbortControllers.size > 0 &&
+                Array.from(agentAbortControllers.keys()).some(key => {
+                  return key.includes(resolvedSessionId) || key.includes(activeThread.id)
+                })
+              const activeAgentRequestId = hasActiveTask ? `agent-${resolvedSessionId}` : undefined
+
+              respond({
+                type: 'bridge:state',
+                requestId,
+                messages: page.messages as BridgeChatMessage[],
+                threadId: activeThread.id,
+                workspace: activeThread.workspace,
+                modelLabel: modelConfig?.model || modelConfig?.name || '',
+                modelConfigId: activeThread.modelConfigId,
+                threadTitle: activeThread.title,
+                activeAgentRequestId,
+              })
+              log('BRIDGE_STATE_REQUEST_HANDLED', {
+                threadId: activeThread.id,
+                sessionId: resolvedSessionId,
+                messageCount: page.messages.length,
+              }, 'bridge')
+            } else {
+              respond({ type: 'bridge:state', requestId, messages: [], threadId: activeThread.id })
+            }
+          } catch (err) {
+            logError('bridge', '处理 bridge:request-state 失败', {
+              error: err instanceof Error ? err.message : String(err),
+            })
+            respond({ type: 'bridge:state', requestId, messages: [], threadId: '' })
+          }
           break
         }
 

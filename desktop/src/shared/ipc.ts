@@ -722,7 +722,7 @@ export type ChatStoreSessionPatch = {
 
 
 
-export type AppStateProviderId = 'deepseek' | 'kimi' | 'minimax' | 'glm' | 'qwen'
+export type AppStateProviderId = 'deepseek' | 'kimi' | 'minimax' | 'glm' | 'qwen' | 'mimo'
 
 export type AppStateModelConfig = {
   id: string
