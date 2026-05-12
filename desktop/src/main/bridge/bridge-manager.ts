@@ -211,6 +211,7 @@ export class BridgeManager {
       this.projectStates.set(projectId, {
         ...existing,
         ...updates,
+        activeTaskId: updates.activeTaskId, // 显式覆盖，包括 undefined（清除）
         lastActivityAt: now,
       })
     } else {

@@ -129,6 +129,30 @@ class _ProjectListPageState extends State<ProjectListPage> {
       if (statesJson != null && mounted) {
         // 创建新的项目列表，按照桌面端推送的顺序排列
         final List<BridgeProjectInfo> reorderedProjects = [];
+        
+        // 先收集所有当前正在处理的项目 ID
+        final Set<String> currentProcessingProjectIds = {};
+        for (final stateJson in statesJson) {
+          final state = stateJson as Map<String, dynamic>;
+          final projectId = state['id'] as String?;
+          final isProcessing = state['isProcessing'] as bool? ?? false;
+          if (projectId != null && isProcessing) {
+            currentProcessingProjectIds.add(projectId);
+          }
+        }
+        
+        // 清理 _projectToActiveSession 中不再处理中的项目
+        final List<String> projectsToRemove = [];
+        for (final entry in _projectToActiveSession.entries) {
+          if (!currentProcessingProjectIds.contains(entry.key)) {
+            projectsToRemove.add(entry.key);
+            _activeTaskSessionIds.remove(entry.value);
+          }
+        }
+        for (final projectId in projectsToRemove) {
+          _projectToActiveSession.remove(projectId);
+        }
+        
         for (final stateJson in statesJson) {
           final state = stateJson as Map<String, dynamic>;
           final projectId = state['id'] as String?;
@@ -148,16 +172,10 @@ class _ProjectListPageState extends State<ProjectListPage> {
             // 更新活跃任务状态
             final isProcessing = state['isProcessing'] as bool? ?? false;
             final activeTaskId = state['activeTaskId'] as String?;
-            if (isProcessing && activeTaskId != null) {
+            if (isProcessing && activeTaskId != null && activeTaskId.isNotEmpty) {
               final sessionId = activeTaskId.replaceFirst('agent-', '');
               _activeTaskSessionIds.add(sessionId);
               _projectToActiveSession[projectId] = sessionId;
-            } else {
-              // 移除该项目关联的活跃 session
-              final removedSessionId = _projectToActiveSession.remove(projectId);
-              if (removedSessionId != null) {
-                _activeTaskSessionIds.remove(removedSessionId);
-              }
             }
           }
         }
@@ -294,7 +312,11 @@ class _ProjectListPageState extends State<ProjectListPage> {
 
   /// 判断项目是否有活跃任务（Agent 正在执行）
   bool _hasActiveTask(BridgeProjectInfo project) {
-    // 检查项目的任何 session 是否在活跃任务列表中
+    // 优先使用桌面端推送的活跃任务状态（更可靠）
+    if (_projectToActiveSession.containsKey(project.id)) {
+      return true;
+    }
+    // 兜底：检查项目的任何 session 是否在活跃任务列表中
     return project.sessions.any((s) => _activeTaskSessionIds.contains(s.id));
   }
 

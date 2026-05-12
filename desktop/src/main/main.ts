@@ -162,10 +162,12 @@ function updateTrayMenu() {
       click: () => {
         if (!mainWindow || mainWindow.isDestroyed()) {
           showMainWindow()
+          updateTrayMenu()
           return
         }
         if (mainWindow.isVisible()) mainWindow.hide()
         else showMainWindow()
+        updateTrayMenu()
       },
     },
     {
@@ -183,13 +185,17 @@ function createTray() {
   if (tray) return
   tray = new Tray(resolveTrayIcon())
   tray.setToolTip('Taco AI')
+  // macOS 左键点击默认打开上下文菜单，不触发 click 事件
+  // Windows/Linux 左键点击触发 click 事件，需要切换窗口并更新菜单标签
   tray.on('click', () => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       showMainWindow()
+      updateTrayMenu()
       return
     }
     if (mainWindow.isVisible()) mainWindow.hide()
     else showMainWindow()
+    updateTrayMenu()
   })
   updateTrayMenu()
 }

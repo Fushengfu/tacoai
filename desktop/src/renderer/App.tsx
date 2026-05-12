@@ -2361,6 +2361,7 @@ export default function App() {
               onToggleTerminal={() => setShowTerminal((v) => !v)}
               terminalCwd={currentWorkspace || undefined}
               onRollbackBeforeMsg={handleRollbackBeforeMsg}
+              supportsVision={Boolean(currentModelConfig?.supportsVision)}
               viewingFile={viewingFile}
               viewingSelection={viewingSelection}
               viewingWorkspace={currentWorkspace || undefined}

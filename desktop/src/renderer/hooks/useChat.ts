@@ -1324,53 +1324,10 @@ export function useChat() {
             ...(lastUserImages && lastUserImages.length > 0 ? { images: lastUserImages } : {}),
           })
         })
-      } else {
-        // ── Chat 模式：纯文本流 ──
-        await new Promise<void>((resolve, reject) => {
-          abortRejectRefs.current.set(threadId, reject)
-
-          const cleanup = globalThis.window.taco.chat.onChunk((data) => {
-            if (data.requestId !== requestId) return
-            if (data.error) { cleanup(); reject(new Error(data.error)); return }
-            if (data.done) {
-              trackRequestUsage(data.usage)
-              cleanup()
-              resolve()
-              return
-            }
-            accumulated += data.chunk
-            setStreamingContents((prev) => ({ ...prev, [threadId]: accumulated }))
-          })
-          streamCleanupRefs.current.set(threadId, cleanup)
-          globalThis.window.taco.chat.stream({
-            requestId,
-            provider,
-            messages: apiMessages,
-            overrides,
-            projectId,
-            workspace,
-            maxTokens,
-            sessionId: threadId,
-            sourceUserMessageId,
-            sourceAssistantMessageId: streamAssistantMessageId,
-          })
-        })
       }
 
       abortRejectRefs.current.delete(threadId)
       requestIdRefs.current.delete(threadId)
-      if (!isAgent) {
-        // Chat 模式才在此追加消息，Agent 模式已在事件回调中维护
-        if (accumulated) {
-          const assistantMsg: ChatMsg = {
-            id: streamAssistantMessageId,
-            role: 'assistant',
-            content: accumulated,
-            taskTiming: buildTaskTiming(taskStartedAt),
-          }
-          setMessages(threadId, (prev) => [...prev, assistantMsg])
-        }
-      }
       onComplete?.()
     } catch (error) {
       abortRejectRefs.current.delete(threadId)
@@ -1394,14 +1351,6 @@ export function useChat() {
             if (!accumulated) return prev
             return [...prev, { id: streamAssistantMessageId, role: 'assistant', content: accumulated + '\n\n*[已停止]*', taskTiming: timing }]
           })
-        } else if (accumulated) {
-          const stoppedMsg: ChatMsg = {
-            id: streamAssistantMessageId,
-            role: 'assistant',
-            content: accumulated + '\n\n*[已停止]*',
-            taskTiming: buildTaskTiming(taskStartedAt),
-          }
-          setMessages(threadId, (prev) => [...prev, stoppedMsg])
         }
       } else {
         const errChatMsg: ChatMsg = {
@@ -1691,49 +1640,10 @@ export function useChat() {
             sourceAssistantMessageId: streamAssistantMessageId,
           })
         })
-      } else {
-        await new Promise<void>((resolve, reject) => {
-          abortRejectRefs.current.set(threadId, reject)
-
-          const cleanup = window.taco.chat.onChunk((data) => {
-            if (data.requestId !== requestId) return
-            if (data.error) { cleanup(); reject(new Error(data.error)); return }
-            if (data.done) {
-              trackRequestUsage(data.usage)
-              cleanup()
-              resolve()
-              return
-            }
-            accumulated += data.chunk
-            setStreamingContents((prev) => ({ ...prev, [threadId]: accumulated }))
-          })
-          streamCleanupRefs.current.set(threadId, cleanup)
-          window.taco.chat.stream({
-            requestId,
-            provider,
-            messages: apiMessages,
-            overrides,
-            projectId,
-            workspace,
-            maxTokens,
-            sessionId: threadId,
-            sourceUserMessageId,
-            sourceAssistantMessageId: streamAssistantMessageId,
-          })
-        })
       }
 
       abortRejectRefs.current.delete(threadId)
       requestIdRefs.current.delete(threadId)
-      if (!isAgent && accumulated) {
-        const assistantMsg: ChatMsg = {
-          id: streamAssistantMessageId,
-          role: 'assistant',
-          content: accumulated,
-          taskTiming: buildTaskTiming(taskStartedAt),
-        }
-        setMessages(threadId, (prev) => [...prev, assistantMsg])
-      }
       onComplete?.()
     } catch (error) {
       abortRejectRefs.current.delete(threadId)
@@ -1756,14 +1666,6 @@ export function useChat() {
             if (!accumulated) return prev
             return [...prev, { id: streamAssistantMessageId, role: 'assistant', content: accumulated + '\n\n*[已停止]*', taskTiming: timing }]
           })
-        } else if (accumulated) {
-          const stoppedMsg: ChatMsg = {
-            id: streamAssistantMessageId,
-            role: 'assistant',
-            content: accumulated + '\n\n*[已停止]*',
-            taskTiming: buildTaskTiming(taskStartedAt),
-          }
-          setMessages(threadId, (prev) => [...prev, stoppedMsg])
         }
       } else {
         const errChatMsg: ChatMsg = {

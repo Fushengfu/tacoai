@@ -2353,8 +2353,15 @@ function estimateReplayBudgetChars(maxTokens?: number, replayMode: 'full' | 'com
 }
 
 function extractReplayAssistantResult(item: TaskMemoryEntry): string {
+  const userText = String(item.userQuery || item.goal || '').trim()
+  const userAssets = String(item.userAssetsBlock || '').trim()
+  const contextLines: string[] = []
+  if (userText) contextLines.push(`### 用户提问\n${userText}`)
+  if (userAssets) contextLines.push(`### 用户附件\n${userAssets}`)
+
   const block = buildHistoricalTaskResultBlock(item)
-  return block.trim() ? block : ''
+  const combined = `${contextLines.join('\n\n')}\n\n${block}`.trim()
+  return combined ? combined : ''
 }
 
 export async function buildBackgroundContextConversationMessages(

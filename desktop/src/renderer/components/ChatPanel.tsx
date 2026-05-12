@@ -202,6 +202,8 @@ type ChatPanelProps = {
   onRejectFile?: (filePath: string) => void
   /** 回滚到某条消息之前的 Git 版本 */
   onRollbackBeforeMsg?: (commitHash: string) => Promise<void>
+  /** 当前模型是否支持视觉理解 */
+  supportsVision?: boolean
   /** 当前在编辑器中打开的文件路径（非变更文件） */
   viewingFile?: string | null
   /** 文件编辑器初始定位（行/列） */
@@ -259,6 +261,7 @@ export function ChatPanel({
   onAcceptFile,
   onRejectFile,
   onRollbackBeforeMsg,
+  supportsVision,
   viewingFile,
   viewingSelection,
   viewingWorkspace,
@@ -347,6 +350,7 @@ export function ChatPanel({
 
   /** 粘贴事件处理：提取图片 */
   function handlePaste(e: React.ClipboardEvent) {
+    if (!supportsVision) return
     const items = e.clipboardData?.items
     if (!items) return
     const imageFiles: File[] = []
@@ -1573,8 +1577,8 @@ export function ChatPanel({
                 type="button"
                 className="composer-attach-btn"
                 onClick={() => fileInputRef.current?.click()}
-                title="添加图片（支持粘贴）"
-                disabled={!hasProviders || !workspace}
+                title={supportsVision ? '添加图片（支持粘贴）' : '当前模型不支持图片上传'}
+                disabled={!hasProviders || !workspace || !supportsVision}
               >
                 <svg className="composer-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
                   <rect x="3.5" y="5" width="17" height="14" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.7" />

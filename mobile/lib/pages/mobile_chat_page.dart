@@ -315,14 +315,20 @@ class _MobileChatPageState extends State<MobileChatPage> {
 
   /// 判断当前项目是否正在发送/处理中（按项目隔离）
   bool _isCurrentProjectSending() {
-    // 使用 threadId 作为项目唯一标识，与 bridge_client.dart 中的 _currentProjectId 保持一致
+    // 优先使用桌面端推送的活跃任务状态（更可靠）
     final projectId = _threadId;
     if (projectId != null && projectId.isNotEmpty) {
+      // 检查 _projectActiveTasks 是否包含该项目
       final activeTask = widget.client.getActiveTaskForProject(projectId);
-      return activeTask != null && activeTask.isNotEmpty;
+      if (activeTask != null && activeTask.isNotEmpty) {
+        return true;
+      }
     }
-    // 如果没有项目 ID，fallback 到全局状态
-    return widget.client.activeAgentRequestId != null;
+    // 兜底：使用全局 activeAgentRequestId（仅当 projectId 为空时）
+    if (projectId == null || projectId.isEmpty) {
+      return widget.client.activeAgentRequestId != null;
+    }
+    return false;
   }
 
   Future<void> _loadModels() async {

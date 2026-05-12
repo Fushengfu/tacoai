@@ -680,7 +680,7 @@ class BridgeClient {
                       // 更新活跃任务状态
                       final isProcessing = state['isProcessing'] as bool? ?? false;
                       final activeTaskId = state['activeTaskId'] as String?;
-                      if (isProcessing && activeTaskId != null) {
+                      if (isProcessing && activeTaskId != null && activeTaskId.isNotEmpty) {
                         _projectActiveTasks[projectId] = activeTaskId;
                       } else {
                         _projectActiveTasks.remove(projectId);

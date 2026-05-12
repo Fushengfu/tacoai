@@ -444,6 +444,15 @@ async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload)
 
   chatAbortControllers.set(requestId, abortController)
 
+  // Bridge: 开始任务时，立即更新项目状态并推送给移动端
+  try {
+    const mgr = getBridgeManager()
+    mgr.updateProjectStateAndPush(String(projectId ?? ''), {
+      isProcessing: true,
+      activeTaskId: requestId,
+    })
+  } catch (_) { /* bridge 未初始化时忽略 */ }
+
   // Bridge: 发送用户消息到移动端
   try {
     const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user')
@@ -570,6 +579,14 @@ async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload)
   } finally {
     chatAbortControllers.delete(requestId)
     restoreSkillEnv()
+    // Bridge: 结束任务时，立即更新项目状态并推送给移动端
+    try {
+      const mgr = getBridgeManager()
+      mgr.updateProjectStateAndPush(String(projectId ?? ''), {
+        isProcessing: false,
+        activeTaskId: undefined,
+      })
+    } catch (_) { /* bridge 未初始化时忽略 */ }
   }
 }
 
@@ -698,7 +715,7 @@ async function handleAgentStream(event: IpcMainEvent, payload: AgentStreamPayloa
   // Agent 开始任务时，立即更新项目状态并推送给移动端
   try {
     const mgr = getBridgeManager()
-    mgr.updateProjectStateAndPush(projectId, {
+    mgr.updateProjectStateAndPush(String(projectId ?? ''), {
       isProcessing: true,
       activeTaskId: requestId,
     })
@@ -738,7 +755,7 @@ async function handleAgentStream(event: IpcMainEvent, payload: AgentStreamPayloa
     // Agent 结束任务时，立即更新项目状态并推送给移动端
     try {
       const mgr = getBridgeManager()
-      mgr.updateProjectStateAndPush(projectId, {
+      mgr.updateProjectStateAndPush(String(projectId ?? ''), {
         isProcessing: false,
         activeTaskId: undefined,
       })
