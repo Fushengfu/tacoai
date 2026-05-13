@@ -18,6 +18,11 @@ export const IpcChannel = {
   CHAT_ABORT: 'chat:abort',
   /** main → renderer (send/on, 流式数据推送) */
   CHAT_CHUNK: 'chat:chunk',
+  /** renderer → main (invoke/handle, 图片上传到云存储) */
+  IMAGE_UPLOAD: 'image:upload',
+  /** renderer → main (invoke/handle, 保存上传配置到文件) */
+  UPLOAD_CONFIG_SAVE: 'upload-config:save',
+
   /** renderer → main (invoke/handle, 列出持久化会话摘要) */
   CHAT_STORE_LIST: 'chat-store:list',
   /** renderer → main (invoke/handle, 按页读取某个会话的持久化消息) */
@@ -133,6 +138,8 @@ export const IpcChannel = {
   OPEN_LOG_DIR: 'app:open-log-dir',
   /** renderer → main, 获取应用版本号（来自 app.getVersion()） */
   APP_GET_VERSION: 'app:get-version',
+  /** renderer → main, 保存上传配置到文件 */
+  APP_SAVE_UPLOAD_CONFIG: 'app:save-upload-config',
   /** renderer → main, 检查版本更新（内部会先登录获取 token） */
   APP_CHECK_UPDATE: 'app:check-update',
   /** renderer → main, 获取最近一次版本检查结果（启动自动检查/手动检查） */
@@ -143,6 +150,7 @@ export const IpcChannel = {
   APP_RENDERER_ERROR: 'app:renderer-error',
   /** renderer → main, 用户登录（通过主进程代理，避免 CORS） */
   MEMBER_LOGIN: 'member:login',
+  MEMBER_REGISTER: 'member:register',
 
   /** renderer → main, 会员登录桥接（使用 token 连接 Relay） */
   BRIDGE_CONNECT: 'bridge:connect',
@@ -242,6 +250,12 @@ export type IpcUploadConfig = IpcAliyunOssUploadConfig | IpcQiniuUploadConfig
 /* ------------------------------------------------------------------ */
 
 /** chat:send 请求体 */
+export type ImageUploadPayload = {
+  dataUrl: string
+  fileName: string
+  uploadConfig: IpcUploadConfig
+}
+
 export type ChatSendPayload = {
   provider: string
   messages: IpcChatMessage[]
@@ -785,6 +799,8 @@ export type TacoApi = {
   auth: {
     /** 通过主进程代理登录请求，避免 CORS 问题 */
     login: (username: string, password: string) => Promise<{ token: string; member: Record<string, unknown> }>
+    /** 通过主进程代理注册请求 */
+    register: (username: string, password: string, nickname?: string) => Promise<{ token: string; member: Record<string, unknown> }>
   }
   shell: {
     /** 用指定编辑器打开文件 */
@@ -811,6 +827,14 @@ export type TacoApi = {
     abort: (requestId: string) => void
     /** 监听流式数据块，返回取消订阅函数 */
     onChunk: (callback: (data: ChatChunkData) => void) => () => void
+  }
+  image: {
+    /** 上传图片到云存储，返回public URL */
+    upload: (dataUrl: string, fileName: string) => Promise<{ publicUrl: string }>
+  }
+  app: {
+    /** 保存上传配置到文件 */
+    saveUploadConfig: (config: unknown) => Promise<void>
   }
   chatStore: {
     /** 读取全部持久化会话摘要 */

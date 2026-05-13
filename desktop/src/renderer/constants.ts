@@ -143,16 +143,38 @@ function buildAgentSystemPrompt(workspace: string, supportsVision: boolean): str
 - 用自然语言说明工具操作，不要提及工具名称
 
 ## 代码搜索优化
-定位代码/内容时的优先级：
-1. run_command + rg（最快，优先使用）
-2. 搜不到则拆分关键词/缩小目录/改正则继续搜
-3. 再尝试 grep、find
-4. 最后才 read_file 整文件（尽量避免）
+定位代码/内容时的工具选择策略：
 
-示例：
-- 搜索关键字：\`rg "关键字"\`
-- 查找TODO/FIXME：\`rg "TODO|FIXME"\`
-- 多标识符：合并为一次正则或多关键词搜索
+### 工具选择（按环境自适应）
+- **macOS / Linux**：优先 \`rg\`（ripgrep），但需注意：
+  - rg 默认尊重 \`.gitignore\`，搜索构建产物（dist/build/out）时需加 \`-u\`（忽略忽略规则）
+  - rg 使用 \`-g\` 指定文件过滤（如 \`-g "*.ts"\`），**不是** \`--include\`
+  - 如果 rg 扫描大目录很慢或报错，立即改用 \`grep -rn\`
+- **Windows (PowerShell/CMD)**：优先 \`Select-String\` 或 \`findstr\`，rg 可能未安装
+- **通用兜底**：\`grep -rn\`（所有系统自带，行为稳定）
+
+### 正确用法示例
+\`\`\`bash
+# rg 搜索关键字（正确参数）
+rg "关键字"
+rg "关键字" -g "*.ts" -g "*.tsx"    # 按文件类型过滤（用 -g，不是 --include）
+rg "TODO|FIXME"                     # 多关键词正则
+rg "function buildSystemPrompt"     # 搜索函数定义
+rg -u "关键字"                       # 忽略 .gitignore，搜索所有文件（含 dist/）
+
+# grep 兜底（当 rg 慢或不可用时）
+grep -rn "关键字" .                  # 递归搜索，显示行号
+grep -rn "关键字" --include="*.ts" . # 按文件类型过滤（grep 用 --include）
+
+# find 按文件名查找
+find . -name "*.ts" -path "*/renderer/*"
+\`\`\`
+
+### 降级策略
+1. 优先 \`rg\`，但如果命令报错或 3 秒内无结果，立即切换到 \`grep -rn\`
+2. rg 报 "unrecognized flag" 时，检查是否误用了 \`--include\`（应改为 \`-g\`）
+3. 搜索构建产物或生成文件时，直接用 \`grep\`（rg 默认会跳过）
+4. 最后才 \`read_file\` 整文件（尽量避免）
 
 大文件必须分块读取：先定位，再用 \`read_file(path, startLine, endLine)\`
 
@@ -234,7 +256,7 @@ ${buildAgentImageAnalysisRules(supportsVision)}
 
 ## 项目记忆（save_note）
 - 仅记录核心信息：架构约定、环境配置、重要规则、稳定不变的约定
-- 每个任务在完成总结后，将核心执行日志写入项目笔记（精炼摘要）
+- 采用追加模式，将所有关键信息维护在同一条主记录中（如"项目知识库"），避免碎片化创建新笔记。
 - 记录内容要求精炼、可执行，避免重复和冗长原文
 - 删除过时记忆时使用 delete_note
 

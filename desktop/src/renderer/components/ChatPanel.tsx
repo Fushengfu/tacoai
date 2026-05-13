@@ -290,24 +290,77 @@ export function ChatPanel({
     })
   }
 
-  /** 添加图片（去重，限制 5 张） */
+  /** 添加图片（去重，限制 5 张）- 选择/粘贴时立即上传 */
   async function addImages(files: File[]) {
     const MAX_IMAGES = 5
     const MAX_SIZE = 10 * 1024 * 1024 // 10MB
     const validFiles = files.filter((f) => f.type.startsWith('image/') && f.size <= MAX_SIZE)
     if (validFiles.length === 0) return
 
-    const newImages: AttachedImage[] = []
     for (const file of validFiles) {
-      if (attachedImages.length + newImages.length >= MAX_IMAGES) break
-      const dataUrl = await readFileAsDataUrl(file)
-      newImages.push({
-        id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        dataUrl,
+      if (attachedImages.length >= MAX_IMAGES) break
+      
+      const id = `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      
+      // 先添加到列表,状态为pending
+      const placeholder: AttachedImage = {
+        id,
+        dataUrl: '',
+        cloudUrl: '',
         name: file.name,
-      })
+        uploadStatus: 'pending',
+        uploadProgress: 0,
+      }
+      setAttachedImages((prev) => [...prev, placeholder].slice(0, MAX_IMAGES))
+      
+      // 异步上传
+      uploadImage(file, id)
     }
-    setAttachedImages((prev) => [...prev, ...newImages].slice(0, MAX_IMAGES))
+  }
+
+  /** 上传图片到云存储 */
+  async function uploadImage(file: File, id: string) {
+    try {
+      // 更新状态为uploading
+      setAttachedImages((prev) => prev.map(img => 
+        img.id === id ? { ...img, uploadStatus: 'uploading', uploadProgress: 10 } : img
+      ))
+      
+      // 读取为data URL
+      const dataUrl = await readFileAsDataUrl(file)
+      
+      setAttachedImages((prev) => prev.map(img => 
+        img.id === id ? { ...img, dataUrl, uploadProgress: 30 } : img
+      ))
+      
+      // 调用IPC上传 (主进程会直接读取配置)
+      const result = await window.taco.image.upload(dataUrl, file.name)
+      
+      // 上传成功
+      if (!result?.publicUrl) {
+        throw new Error('上传返回的 URL 为空')
+      }
+      
+      setAttachedImages((prev) => prev.map(img => 
+        img.id === id ? { 
+          ...img, 
+          cloudUrl: result.publicUrl, 
+          uploadStatus: 'done', 
+          uploadProgress: 100 
+        } : img
+      ))
+    } catch (err) {
+      console.error('图片上传失败:', err)
+      setAttachedImages((prev) => prev.map(img => 
+        img.id === id ? { 
+          ...img, 
+          uploadStatus: 'error', 
+          uploadProgress: 0 
+        } : img
+      ))
+      // 3秒后自动移除失败的图片
+      setTimeout(() => removeImage(id), 3000)
+    }
   }
 
   function removeImage(id: string) {
@@ -378,7 +431,40 @@ export function ChatPanel({
   }
 
   /** 发送消息（携带图片后清空） */
-  function handleSend() {
+  async function handleSend() {
+    // 等待所有上传中的图片完成
+    const hasPending = attachedImages.some(img => 
+      img.uploadStatus === 'pending' || img.uploadStatus === 'uploading'
+    )
+    
+    if (hasPending) {
+      console.log('[handleSend] 等待图片上传完成...')
+      // 等待最多 30 秒
+      const maxWait = 30000
+      const startTime = Date.now()
+      
+      while (Date.now() - startTime < maxWait) {
+        // 使用函数式更新获取最新状态
+        let allDone = false
+        setAttachedImages(prev => {
+          const stillPending = prev.filter(img => 
+            img.uploadStatus === 'pending' || img.uploadStatus === 'uploading'
+          )
+          allDone = stillPending.length === 0
+          return prev // 不修改状态
+        })
+        
+        if (allDone) {
+          console.log('[handleSend] 所有图片上传完成')
+          break
+        }
+        
+        // 等待 100ms 后重试
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+    }
+    
+    // 直接使用当前状态的图片
     const imgs = attachedImages.length > 0 ? [...attachedImages] : undefined
     const assets = attachedAssets.length > 0 ? [...attachedAssets] : undefined
     setAttachedImages([])
@@ -1502,13 +1588,30 @@ export function ChatPanel({
             <div className="composer-images">
               {attachedImages.map((img) => (
                 <div key={img.id} className="composer-image-item">
-                  <img
-                    src={img.dataUrl}
-                    alt={img.name}
-                    className="composer-image-thumb"
-                    title="点击预览"
-                    onClick={() => setPreviewImageUrl(img.dataUrl)}
-                  />
+                  {/* 上传进度覆盖层 */}
+                  {img.uploadStatus === 'uploading' && (
+                    <div className="composer-image-upload-overlay">
+                      <div className="composer-image-progress-bar" style={{ width: `${img.uploadProgress || 0}%` }} />
+                      <span className="composer-image-progress-text">{img.uploadProgress || 0}%</span>
+                    </div>
+                  )}
+                  {/* 上传失败覆盖层 */}
+                  {img.uploadStatus === 'error' && (
+                    <div className="composer-image-error-overlay">
+                      <span>上传失败</span>
+                    </div>
+                  )}
+                  {/* 图片缩略图 */}
+                  {img.dataUrl && (
+                    <img
+                      src={img.dataUrl}
+                      alt={img.name}
+                      className="composer-image-thumb"
+                      title="点击预览"
+                      onClick={() => img.uploadStatus === 'done' && setPreviewImageUrl(img.dataUrl)}
+                      style={{ opacity: img.uploadStatus === 'uploading' ? 0.5 : 1 }}
+                    />
+                  )}
                   <button
                     type="button"
                     className="composer-image-remove"
@@ -1653,6 +1756,7 @@ export function ChatPanel({
           </div>
         </div>
       </footer>
+      <div className="composer-footer-version">v{window.taco.version}</div>
     </main>
   )
 }

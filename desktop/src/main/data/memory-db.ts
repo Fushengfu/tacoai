@@ -451,6 +451,13 @@ function ensureDb(): DatabaseSync {
       setting_value TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS upload_config (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL DEFAULT 'none',
+      config_json TEXT NOT NULL DEFAULT '{}',
+      updated_at TEXT NOT NULL
+    );
   `)
   ensureColumn(next, 'task_memories', 'scope_key', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(next, 'task_memories', 'evidence_facts_json', "TEXT NOT NULL DEFAULT '[]'")
@@ -1754,9 +1761,65 @@ export function getBridgeSetting(key: BridgeSettingKey): BridgeSettingValue | nu
 export function setBridgeSetting(key: BridgeSettingKey, value: BridgeSettingValue): void {
   const database = ensureDb()
   const now = new Date().toISOString()
-  database.prepare(
-    `INSERT INTO bridge_settings (setting_key, setting_value, updated_at)
-     VALUES (?, ?, ?)
-     ON CONFLICT(setting_key) DO UPDATE SET setting_value = ?, updated_at = ?`
-  ).run(key, value, now, value, now)
+  database.prepare(`
+    INSERT INTO bridge_settings (setting_key, setting_value, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(setting_key) DO UPDATE SET
+      setting_value=excluded.setting_value,
+      updated_at=excluded.updated_at
+  `).run(key, value, now)
+}
+
+// ── 上传配置 ──
+
+export type UploadConfigDbEntry = {
+  provider: string
+  config: Record<string, unknown>
+  updatedAt: string
+}
+
+export function loadUploadConfigFromDb(): UploadConfigDbEntry | null {
+  const database = ensureDb()
+  const row = database.prepare(
+    `SELECT provider, config_json, updated_at FROM upload_config ORDER BY id DESC LIMIT 1`
+  ).get() as Record<string, unknown> | undefined
+  
+  if (!row || !row.provider) return null
+  
+  try {
+    const config = typeof row.config_json === 'string' 
+      ? JSON.parse(row.config_json) 
+      : {}
+    return {
+      provider: String(row.provider),
+      config,
+      updatedAt: String(row.updated_at || ''),
+    }
+  } catch {
+    return null
+  }
+}
+
+export function saveUploadConfigToDb(provider: string, config: Record<string, unknown>): void {
+  const database = ensureDb()
+  const now = new Date().toISOString()
+  const configJson = JSON.stringify(config)
+  
+  // 先检查是否有记录
+  const count = database.prepare(`SELECT COUNT(1) as count FROM upload_config`).get() as Record<string, unknown>
+  
+  if (Number(count?.count || 0) > 0) {
+    // 有记录则更新
+    database.prepare(`
+      UPDATE upload_config 
+      SET provider = ?, config_json = ?, updated_at = ?
+      WHERE id = (SELECT id FROM upload_config ORDER BY id DESC LIMIT 1)
+    `).run(provider, configJson, now)
+  } else {
+    // 没有记录则插入
+    database.prepare(`
+      INSERT INTO upload_config (provider, config_json, updated_at)
+      VALUES (?, ?, ?)
+    `).run(provider, configJson, now)
+  }
 }

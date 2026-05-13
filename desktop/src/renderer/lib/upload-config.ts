@@ -96,7 +96,27 @@ export function loadUploadSettings(): UploadSettingsState {
 }
 
 export function saveUploadSettings(state: UploadSettingsState): void {
-  localStorage.setItem(UPLOAD_CONFIG_STORAGE_KEY, JSON.stringify(normalizeUploadSettingsState(state)))
+  const normalized = normalizeUploadSettingsState(state)
+  // 保存到localStorage (渲染进程)
+  localStorage.setItem(UPLOAD_CONFIG_STORAGE_KEY, JSON.stringify(normalized))
+  
+  // 只保存当前配置的服务商数据到数据库
+  const dbConfig: any = {
+    provider: normalized.provider
+  }
+  
+  if (normalized.provider === 'aliyun_oss') {
+    dbConfig.aliyunOss = normalized.aliyunOss
+  } else if (normalized.provider === 'qiniu') {
+    dbConfig.qiniu = normalized.qiniu
+  }
+  
+  // 同时保存到数据库 (主进程)
+  if (window.taco?.app?.saveUploadConfig) {
+    window.taco.app.saveUploadConfig(dbConfig).catch(err => {
+      console.error('保存上传配置到数据库失败:', err)
+    })
+  }
 }
 
 export function toIpcUploadConfig(state: UploadSettingsState): IpcUploadConfig | undefined {

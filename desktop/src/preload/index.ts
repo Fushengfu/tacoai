@@ -69,6 +69,8 @@ const tacoApi: TacoApi = {
   auth: {
     login: (username: string, password: string) =>
       ipcRenderer.invoke(IpcChannel.MEMBER_LOGIN, { username, password }),
+    register: (username: string, password: string, nickname?: string) =>
+      ipcRenderer.invoke(IpcChannel.MEMBER_REGISTER, { username, password, nickname }),
   },
   shell: {
     openInEditor: (filePath: string, editor: EditorId) =>
@@ -103,6 +105,14 @@ const tacoApi: TacoApi = {
         ipcRenderer.removeListener(IpcChannel.CHAT_CHUNK, handler)
       }
     }
+  },
+  image: {
+    upload: (dataUrl: string, fileName: string) =>
+      ipcRenderer.invoke(IpcChannel.IMAGE_UPLOAD, { dataUrl, fileName }),
+  },
+  app: {
+    saveUploadConfig: (config: any) =>
+      ipcRenderer.invoke(IpcChannel.UPLOAD_CONFIG_SAVE, config),
   },
   chatStore: {
     list: (): Promise<ChatStoreSessionSummary[]> =>

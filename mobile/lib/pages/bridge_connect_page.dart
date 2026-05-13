@@ -4,6 +4,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
+import 'package:crypto/crypto.dart';
 import '../services/bridge_client.dart';
 import '../services/bridge_protocol.dart';
 import 'hub_page.dart';
@@ -173,8 +175,11 @@ class _BridgeConnectPageState extends State<BridgeConnectPage> {
     });
 
     try {
+      // 对密码进行 SHA256 加密
+      final hashedPassword = _hashPasswordSHA256(password);
+      
       // 调用后端登录接口获取 Token
-      final response = await _loginApi(username, password);
+      final response = await _loginApi(username, hashedPassword);
       if (!mounted) return;
 
       if (response['token'] == null || response['token'].isEmpty) {
@@ -198,33 +203,59 @@ class _BridgeConnectPageState extends State<BridgeConnectPage> {
     }
   }
 
+  /// 使用 SHA256 对密码进行哈希
+  String _hashPasswordSHA256(String password) {
+    final bytes = utf8.encode(password);
+    final digest = sha256.convert(bytes);
+    return digest.toString();
+  }
+
   /// 调用后端登录接口
   Future<Map<String, dynamic>> _loginApi(String username, String password) async {
-    final response = await http.post(
-      Uri.parse('$_kDefaultHttpUrl/api/member/login'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'username': username, 'password': password}),
-    );
+    final url = '$_kDefaultHttpUrl/api/member/login';
+    print('[网络调试] 请求URL: $url');
+    print('[网络调试] 请求方法: POST');
+    print('[网络调试] 请求头: Content-Type: application/json');
+    
+    try {
+      final response = await http.post(
+        Uri.parse(url),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'username': username, 'password': password}),
+      ).timeout(const Duration(seconds: 30)); // 30秒超时
 
-    if (response.statusCode != 200) {
-      try {
-        final errorBody = jsonDecode(response.body);
-        return {'message': errorBody['message'] ?? '登录失败'};
-      } catch (_) {
-        return {'message': '登录请求失败 (${response.statusCode})'};
+      print('[网络调试] 响应状态码: ${response.statusCode}');
+      print('[网络调试] 响应体: ${response.body}');
+
+      if (response.statusCode != 200) {
+        try {
+          final errorBody = jsonDecode(response.body);
+          return {'message': errorBody['message'] ?? '登录失败'};
+        } catch (_) {
+          return {'message': '登录请求失败 (${response.statusCode})'};
+        }
       }
-    }
 
-    final data = jsonDecode(response.body);
-    final token = data['data']?['token'] as String?;
-    if (token == null || token.isEmpty) {
-      return {'message': '登录失败，未获取到 Token'};
-    }
+      final data = jsonDecode(response.body);
+      final token = data['data']?['token'] as String?;
+      if (token == null || token.isEmpty) {
+        return {'message': '登录失败，未获取到 Token'};
+      }
 
-    return {
-      'token': token,
-      'relayUrl': _kDefaultRelayUrl,
-    };
+      return {
+        'token': token,
+        'relayUrl': _kDefaultRelayUrl,
+      };
+    } on http.ClientException catch (e) {
+      print('[网络调试] HTTP客户端异常: $e');
+      return {'message': '网络连接失败: $e'};
+    } on TimeoutException catch (e) {
+      print('[网络调试] 请求超时: $e');
+      return {'message': '请求超时，请检查网络连接'};
+    } catch (e) {
+      print('[网络调试] 未知错误: $e');
+      return {'message': '登录请求失败: $e'};
+    }
   }
 
   void _onStatusChange(BridgeStatus status) {

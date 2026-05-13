@@ -126,10 +126,16 @@ export type TaskTiming = {
 export type AttachedImage = {
   /** 唯一 ID */
   id: string
-  /** base64 data URL（如 data:image/png;base64,...） */
+  /** base64 data URL（用于本地预览） */
   dataUrl: string
+  /** 云存储URL（上传成功后填充） */
+  cloudUrl: string
   /** 文件名（展示用） */
   name: string
+  /** 上传状态 */
+  uploadStatus: 'pending' | 'uploading' | 'done' | 'error'
+  /** 上传进度 0-100 */
+  uploadProgress?: number
 }
 
 /** 用户附带的文件附件（绝对路径） */

@@ -52,6 +52,14 @@ export const DEFAULT_STRICT_AGENT_EXTRA = `
 
 MUST 流程：
 - 定位：优先 \`run_command\` 执行 rg/grep/find，其次 \`find_file/list_dir\`
+  - macOS/Linux 优先 \`rg\`，但注意：rg 用 \`-g "*.ts"\` 过滤文件（不是 \`--include\`），用 \`-u\` 忽略 .gitignore
+  - rg 报错或很慢时立即降级到 \`grep -rn\`
+  - Windows 使用 \`Select-String\` 或 \`findstr\`
+  - 降级策略：
+    1. 优先 \`rg\`，但如果命令报错或 3 秒内无结果，立即切换到 \`grep -rn\`
+    2. rg 报 "unrecognized flag" 时，检查是否误用了 \`--include\`（应改为 \`-g\`）
+    3. 搜索构建产物或生成文件时，直接用 \`grep\`（rg 默认会跳过）
+    4. 最后才 \`read_file\` 整文件（尽量避免）
 - 读取：\`read_file\`（大文件分块）
 - 修改：优先局部编辑工具；整文件才 \`write_file\`
 - 回读：\`read_file\` 核对关键片段
@@ -117,7 +125,9 @@ MUST 流程：
 ## 10) 记忆与上下文
 
 - 识别稳定规则时调用 \`save_note\`。
-- 每个任务完成总结后，MUST 记录项目笔记日志（任务目标、执行动作、修改文件、关键标识符、结果与异常）。
+- 仅记录可复用的关键信息：代码规范、架构约定、核心配置、编码规则。
+- **禁止记录任务日志、临时状态、一次性错误、文件修改清单**。
+- **追加模式**：所有关键信息维护在同一条记录中（如"项目知识库"），不碎片化创建新笔记。
 - 过时规则调用 \`delete_note\`。
 - 上下文判断以 \`usage.total_tokens\` 为准。
 - 上下文高位（建议 >=80%）时：记忆召回 + 历史压缩后继续。

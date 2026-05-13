@@ -117,9 +117,24 @@ type ApiChatMessage = { role: ChatMsg['role']; content: string; images?: string[
 
 function mapMessageForApi(msg: ChatMsg): ApiChatMessage {
   if (msg.role !== 'user') return { role: msg.role, content: msg.content }
-  const imageDataUrls = (msg.images ?? [])
-    .map((img) => String(img?.dataUrl ?? '').trim())
+  
+  // 只使用 cloudUrl（上传成功的 HTTPS URL）
+  const imageUrls = (msg.images ?? [])
+    .map((img) => {
+      const cloudUrl = String(img?.cloudUrl ?? '').trim()
+      return cloudUrl
+    })
     .filter(Boolean)
+  
+  // 调试日志
+  console.log('[mapMessageForApi]', {
+    msgId: msg.id,
+    hasImages: (msg.images?.length ?? 0) > 0,
+    imageCount: msg.images?.length ?? 0,
+    imageUrlsCount: imageUrls.length,
+    imageUrls: imageUrls.slice(0, 3),
+  })
+  
   const raw = stripUserAssetsBlock(String(msg.content ?? ''))
   const wrapped = raw.match(/\[USER_QUERY\]([\s\S]*?)\[\/USER_QUERY\]/i)
   const userQueryBlock = wrapped && wrapped[1] !== undefined
@@ -127,8 +142,8 @@ function mapMessageForApi(msg: ChatMsg): ApiChatMessage {
     : `[USER_QUERY]\n${raw.trim()}\n[/USER_QUERY]`
   const assetsBlock = buildUserAssetsBlock(msg.attachments)
   const withImages = (base: ApiChatMessage): ApiChatMessage => {
-    if (imageDataUrls.length <= 0) return base
-    return { ...base, images: imageDataUrls }
+    if (imageUrls.length <= 0) return base
+    return { ...base, images: imageUrls }
   }
   if (assetsBlock) {
     return withImages({
@@ -179,7 +194,6 @@ function parseConfiguredTemperature(raw: unknown): number | undefined {
 }
 
 function resolveUploadOverrideForProvider(provider: ProviderId) {
-  if (provider !== 'qwen') return undefined
   return toIpcUploadConfig(loadUploadSettings())
 }
 
@@ -1105,6 +1119,7 @@ export function useChat() {
         model: modelConfig.model || undefined,
         temperature: parseConfiguredTemperature(modelConfig.temperature),
         upload: resolveUploadOverrideForProvider(provider),
+        supportsVision: Boolean(modelConfig.supportsVision),
       }
     }
 
@@ -1307,8 +1322,11 @@ export function useChat() {
             }
           })
           streamCleanupRefs.current.set(threadId, cleanup)
-          // 找到最新用户消息中的图片
-          const lastUserImages = images?.map((img) => img.dataUrl)
+          // 找到最新用户消息中的图片 (使用cloudUrl)
+          // 如果 cloudUrl 为空，说明上传失败或未完成，此时不应发送图片，保持原逻辑 filter(Boolean)
+          const lastUserImages = images
+            ?.map((img) => img.cloudUrl)
+            .filter((url): url is string => Boolean(url))
           globalThis.window.taco.agent.stream({
             requestId,
             provider,
@@ -1321,6 +1339,7 @@ export function useChat() {
             sessionId: threadId,
             sourceUserMessageId,
             sourceAssistantMessageId: streamAssistantMessageId,
+            // 如果图片数组非空，传递图片
             ...(lastUserImages && lastUserImages.length > 0 ? { images: lastUserImages } : {}),
           })
         })
@@ -1439,6 +1458,7 @@ export function useChat() {
         model: modelConfig.model || undefined,
         temperature: parseConfiguredTemperature(modelConfig.temperature),
         upload: resolveUploadOverrideForProvider(provider),
+        supportsVision: Boolean(modelConfig.supportsVision),
       }
     }
 

@@ -1112,11 +1112,11 @@ function buildHistoricalTaskResultBlock(item: TaskMemoryEntry): string {
     }
   }
 
-  const summary = normalizeHistoricalField(
-    extractCoreSummary(String(item.summary || item.assistantResult || item.goal)) || String(item.summary || item.goal),
-    TASK_MEMORY_REPLAY_RESULT_MAX_CHARS,
-  )
-  if (summary) lines.push(`summary: ${summary}`)
+  // 完整回放 assistantResult，不截断
+  const fullAssistantResult = String(item.assistantResult || '').trim()
+  if (fullAssistantResult) {
+    lines.push(`assistant_result: ${fullAssistantResult}`)
+  }
 
   const followUpHint = extractHistoricalFollowUpHint(String(item.assistantResult || ''))
   if (followUpHint) lines.push(`follow_up_hint: ${followUpHint}`)
@@ -2353,15 +2353,9 @@ function estimateReplayBudgetChars(maxTokens?: number, replayMode: 'full' | 'com
 }
 
 function extractReplayAssistantResult(item: TaskMemoryEntry): string {
-  const userText = String(item.userQuery || item.goal || '').trim()
-  const userAssets = String(item.userAssetsBlock || '').trim()
-  const contextLines: string[] = []
-  if (userText) contextLines.push(`### 用户提问\n${userText}`)
-  if (userAssets) contextLines.push(`### 用户附件\n${userAssets}`)
-
-  const block = buildHistoricalTaskResultBlock(item)
-  const combined = `${contextLines.join('\n\n')}\n\n${block}`.trim()
-  return combined ? combined : ''
+  // 直接使用原始的助手回复
+  const assistantResult = String(item.assistantResult || '').trim()
+  return assistantResult
 }
 
 export async function buildBackgroundContextConversationMessages(

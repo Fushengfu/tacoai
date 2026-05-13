@@ -49,6 +49,7 @@ export type ProviderConfig = {
   temperature?: number
   headers?: IncomingHttpHeaders
   upload?: IpcUploadConfig
+  supportsVision?: boolean
 }
 
 export type ProviderOverrides = Partial<Record<ProviderKey, Partial<ProviderConfig>>>
@@ -342,20 +343,8 @@ type QwenContentPart =
   | { type: 'image_url'; image_url: { url: string } }
   | { type: 'video'; video: string[] }
 
-type DashScopeUploadPolicyData = {
-  upload_dir: string
-  oss_access_key_id: string
-  signature: string
-  policy: string
-  x_oss_object_acl: string
-  x_oss_forbid_overwrite: string
-  upload_host: string
-}
-
 type QwenMessageBuildState = {
-  requiresOssResolveHeader: boolean
   uploadedUrlByPath: Map<string, string>
-  uploadPolicyPromise?: Promise<DashScopeUploadPolicyData>
 }
 
 const USER_ASSETS_BLOCK_REGEX = /\s*\[USER_ASSETS\][\s\S]*?\[\/USER_ASSETS\]\s*/gi
@@ -528,42 +517,6 @@ function buildUserAssetsBlock(entries: UserAssetEntry[]): string {
   return lines.join('\n')
 }
 
-function resolveDashScopeUploadPolicyUrls(baseUrl: string): string[] {
-  const urls: string[] = ['https://dashscope.aliyuncs.com/api/v1/uploads']
-  const pushUrl = (value: string) => {
-    const text = String(value ?? '').trim()
-    if (text) urls.push(text)
-  }
-
-  try {
-    const parsed = new URL(baseUrl)
-    const pathname = parsed.pathname.replace(/\/+$/, '')
-    if (/\/compatible-mode\/v\d+$/i.test(pathname)) {
-      const rewritten = new URL(parsed.toString())
-      rewritten.pathname = pathname.replace(/\/compatible-mode\/v\d+$/i, '/api/v1/uploads')
-      rewritten.search = ''
-      rewritten.hash = ''
-      pushUrl(rewritten.toString())
-    }
-    pushUrl(new URL('/api/v1/uploads', parsed.origin).toString())
-  } catch {
-    // ignore invalid baseUrl and fallback to official endpoint.
-  }
-
-  return dedupStrings(urls)
-}
-
-function maskAuthHeader(value: string): string {
-  const text = String(value ?? '').trim()
-  if (!text) return text
-  const m = text.match(/^(Bearer\s+)(.+)$/i)
-  if (!m) return text
-  const prefix = m[1]
-  const token = m[2]
-  if (token.length <= 12) return `${prefix}***`
-  return `${prefix}${token.slice(0, 6)}...${token.slice(-4)}`
-}
-
 function isLikelyLocalPath(value: string): boolean {
   if (isAbsolute(value)) return true
   return /^[a-zA-Z]:[\\/]/.test(value)
@@ -667,7 +620,7 @@ function resolveQiniuRegionUploadUrl(rawText: string, currentUploadUrl: string):
   return next
 }
 
-function resolveUploadConfig(config: ProviderConfig): ResolvedUploadConfig | null {
+export function resolveUploadConfig(config: ProviderConfig): ResolvedUploadConfig | null {
   const upload = config.upload
   if (!upload || typeof upload !== 'object') return null
   if (upload.provider === 'aliyun_oss') {
@@ -834,185 +787,143 @@ function toLocalPathIfFileUrl(value: string): string | null {
   }
 }
 
-async function getDashScopeUploadPolicy(
-  config: ProviderConfig,
-  signal?: AbortSignal,
-  logScope?: string,
-): Promise<DashScopeUploadPolicyData> {
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${config.apiKey}`,
-    'Content-Type': 'application/json',
-  }
-  const endpoints = resolveDashScopeUploadPolicyUrls(config.baseUrl)
-  const endpointErrors: string[] = []
-
-  for (const endpoint of endpoints) {
-    const uploadUrl = new URL(endpoint)
-    uploadUrl.searchParams.set('action', 'getPolicy')
-    uploadUrl.searchParams.set('model', config.model)
-
-    console.log('QWEN_UPLOAD_POLICY_REQUEST', {
-      url: uploadUrl.toString(),
-      headers: {
-        ...headers,
-        Authorization: maskAuthHeader(headers.Authorization),
-      },
-    }, logScope)
-    const response = await fetchWith429Retry(uploadUrl.toString(), {
-      method: 'GET',
-      headers,
-    }, signal, logScope)
-
-    const rawText = await response.text()
-    if (!response.ok) {
-      endpointErrors.push(`${uploadUrl.toString()} => ${response.status} ${response.statusText} ${rawText}`)
-      if (response.status === 404) continue
-      throw new Error(`Failed to get upload policy: ${response.status} ${response.statusText} ${rawText}`)
-    }
-
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(rawText)
-      log('QWEN_UPLOAD_POLICY', parsed, logScope)
-    } catch {
-      throw new Error(`Failed to parse upload policy response: ${rawText}`)
-    }
-    const data = (parsed && typeof parsed === 'object')
-      ? (parsed as { data?: unknown }).data
-      : null
-    if (!data || typeof data !== 'object') {
-      throw new Error(`Upload policy missing data field: ${rawText}`)
-    }
-    const policy = data as Partial<DashScopeUploadPolicyData>
-    if (
-      !policy.upload_dir ||
-      !policy.oss_access_key_id ||
-      !policy.signature ||
-      !policy.policy ||
-      !policy.x_oss_object_acl ||
-      !policy.x_oss_forbid_overwrite ||
-      !policy.upload_host
-    ) {
-      throw new Error(`Upload policy fields are incomplete: ${rawText}`)
-    }
-    return {
-      upload_dir: policy.upload_dir,
-      oss_access_key_id: policy.oss_access_key_id,
-      signature: policy.signature,
-      policy: policy.policy,
-      x_oss_object_acl: policy.x_oss_object_acl,
-      x_oss_forbid_overwrite: policy.x_oss_forbid_overwrite,
-      upload_host: policy.upload_host,
-    }
-  }
-
-  throw new Error(
-    `Failed to get upload policy: no reachable upload endpoint. ` +
-      `The current Qwen base URL may not support media upload policy API. ` +
-      `Tried: ${endpointErrors.join(' | ')}`,
-  )
-}
-
-async function uploadLocalFileToDashScopeOss(
-  policy: DashScopeUploadPolicyData,
-  filePath: string,
+export async function uploadDataUrlToStorage(
+  config: ResolvedUploadConfig,
+  dataUrl: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const fileName = basename(filePath)
-  const uploadDir = String(policy.upload_dir || '').replace(/\/+$/, '')
-  const key = `${uploadDir}/${fileName}`
-  const bytes = await readFile(filePath)
-  const formData = new FormData()
-  formData.append('OSSAccessKeyId', policy.oss_access_key_id)
-  formData.append('Signature', policy.signature)
-  formData.append('policy', policy.policy)
-  formData.append('x-oss-object-acl', policy.x_oss_object_acl)
-  formData.append('x-oss-forbid-overwrite', policy.x_oss_forbid_overwrite)
-  formData.append('key', key)
-  formData.append('success_action_status', '200')
-  formData.append('file', new Blob([bytes]), fileName)
+  // 解析 dataUrl: data:image/png;base64,xxxxx
+  const commaIndex = dataUrl.indexOf(',')
+  if (commaIndex === -1) throw new Error('Invalid data URL format')
+  const mimeHeader = dataUrl.slice(0, commaIndex)
+  const base64Data = dataUrl.slice(commaIndex + 1)
+  const bytes = Buffer.from(base64Data, 'base64')
 
-  const response = await fetch(policy.upload_host, {
+  // 从 MIME 类型推断文件扩展名
+  const mimeMatch = mimeHeader.match(/data:([^;]+)/i)
+  const mimeType = mimeMatch?.[1] ?? 'application/octet-stream'
+  const extMap: Record<string, string> = {
+    'image/png': '.png',
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/gif': '.gif',
+    'image/webp': '.webp',
+    'image/bmp': '.bmp',
+    'image/svg+xml': '.svg',
+    'image/ico': '.ico',
+    'image/tiff': '.tif',
+    'image/heic': '.heic',
+    'image/heif': '.heif',
+    'image/avif': '.avif',
+  }
+  const ext = extMap[mimeType.toLowerCase()] || ''
+  const fakePath = `upload${ext}`
+
+  if (config.provider === 'aliyun_oss') {
+    const fileName = basename(fakePath)
+    const key = buildStorageObjectKey(fakePath, config.objectPrefix)
+    const expiration = new Date(Date.now() + 10 * 60 * 1000).toISOString()
+    const policyText = JSON.stringify({
+      expiration,
+      conditions: [
+        ['starts-with', '$key', normalizeObjectPrefix(config.objectPrefix)],
+        ['content-length-range', 0, 1024 * 1024 * 200],
+      ],
+    })
+    const policy = Buffer.from(policyText).toString('base64')
+    const signature = createHmac('sha1', config.accessKeySecret).update(policy).digest('base64')
+    const formData = new FormData()
+    formData.append('key', key)
+    formData.append('policy', policy)
+    formData.append('OSSAccessKeyId', config.accessKeyId)
+    formData.append('Signature', signature)
+    formData.append('success_action_status', '200')
+    formData.append('file', new Blob([bytes]), fileName)
+    const response = await fetch(config.endpoint, {
+      method: 'POST',
+      body: formData,
+      signal,
+    })
+    if (!response.ok) {
+      const rawText = await readResponseTextSafe(response)
+      throw new Error(`Aliyun OSS upload failed: ${response.status} ${response.statusText} ${rawText}`)
+    }
+    return buildPublicUrl(config.publicBaseUrl, key)
+  }
+
+  // qiniu
+  const fileName = basename(fakePath)
+  const key = buildStorageObjectKey(fakePath, config.objectPrefix)
+  const deadline = Math.floor(Date.now() / 1000) + (config as ResolvedQiniuUploadConfig).expiresSeconds
+  const putPolicy = JSON.stringify({
+    scope: `${(config as ResolvedQiniuUploadConfig).bucket}:${key}`,
+    deadline,
+  })
+  const encodedPutPolicy = toUrlSafeBase64(putPolicy)
+  const signed = createHmac('sha1', (config as ResolvedQiniuUploadConfig).secretKey).update(encodedPutPolicy).digest()
+  const encodedSign = toUrlSafeBase64(signed)
+  const uploadToken = `${(config as ResolvedQiniuUploadConfig).accessKey}:${encodedSign}:${encodedPutPolicy}`
+  const buildFormData = () => {
+    const formData = new FormData()
+    formData.append('token', uploadToken)
+    formData.append('key', key)
+    formData.append('file', new Blob([bytes]), fileName)
+    return formData
+  }
+  let uploadUrl = (config as ResolvedQiniuUploadConfig).uploadUrl
+  
+  // 如果没有配置 uploadUrl，使用七牛云默认上传地址
+  if (!uploadUrl || uploadUrl.trim() === '') {
+    uploadUrl = 'https://up.qiniup.com'
+  }
+  
+  let response = await fetch(uploadUrl, {
     method: 'POST',
-    body: formData,
+    body: buildFormData(),
     signal,
   })
   if (!response.ok) {
     const rawText = await readResponseTextSafe(response)
-    throw new Error(`Failed to upload file: ${response.status} ${response.statusText} ${rawText}`)
+    if (response.status === 400) {
+      const regionUploadUrl = resolveQiniuRegionUploadUrl(rawText, uploadUrl)
+      if (regionUploadUrl) {
+        uploadUrl = regionUploadUrl
+        response = await fetch(uploadUrl, {
+          method: 'POST',
+          body: buildFormData(),
+          signal,
+        })
+      }
+    }
+    if (!response.ok) {
+      const retryRaw = await readResponseTextSafe(response)
+      throw new Error(`Qiniu upload failed: ${response.status} ${response.statusText} ${retryRaw}`)
+    }
   }
-  return `oss://${key}`
+  return buildPublicUrl(config.publicBaseUrl, key)
 }
 
 async function resolveQwenMediaUrl(
   raw: string,
   config: ProviderConfig,
   state: QwenMessageBuildState,
-  provider: ProviderKey,
+  _provider: ProviderKey,
   signal?: AbortSignal,
   logScope?: string,
+  supportsVision?: boolean,
 ): Promise<string> {
   const value = String(raw ?? '').trim()
   if (!value) return ''
-  if (/^oss:\/\//i.test(value)) {
-    // oss:// 只有qwen支持
-    if (provider === 'mimo') return ''
-    state.requiresOssResolveHeader = true
-    return value
-  }
-  // http:// https:// data: 直接返回（所有provider都支持）
-  if (/^(?:https?:\/\/|data:)/i.test(value)) return value
+  
+  // http:// https:// 直接返回 (前端已上传到云存储)
+  if (/^(?:https?:\/\/)/i.test(value)) return value
 
-  const localPathFromFileUrl = toLocalPathIfFileUrl(value)
-  const localPath = localPathFromFileUrl || (isLikelyLocalPath(value) ? value : '')
-  if (!localPath) return normalizeMediaUrl(value)
-  
-  // 对于mimo，尝试使用通用上传配置
-  const uploadConfig = resolveUploadConfig(config)
-  if (uploadConfig) {
-    const cacheKey = `${uploadConfig.provider}:${localPath}`
-    const cached = state.uploadedUrlByPath.get(cacheKey)
-    if (cached) return cached
-    const publicUrl = await uploadLocalFileToPublicStorage(uploadConfig, localPath, signal)
-    state.uploadedUrlByPath.set(cacheKey, publicUrl)
-    log('MEDIA_UPLOADED_PUBLIC', {
-      provider: uploadConfig.provider,
-      filePath: localPath,
-      publicUrl,
-    }, logScope)
-    return publicUrl
+  // 不再处理data URL和本地路径 (已在前端上传)
+  if (/^data:/i.test(value) || isLikelyLocalPath(value)) {
+    log('UNEXPECTED_MEDIA_TYPE', { media: value.slice(0, 50), reason: 'should_be_uploaded_by_renderer' }, logScope)
+    return ''
   }
-  
-  // qwen特有的OSS上传逻辑
-  if (provider === 'qwen') {
-    if (isTokenPlanBaseUrl(config.baseUrl)) {
-      throw new Error(
-        `Current Qwen endpoint does not support local-file upload policy with this API key. ` +
-        `Please use a public https:// media URL instead of local path: ${localPath}`,
-      )
-    }
 
-    const cacheKey = localPath
-    const cached = state.uploadedUrlByPath.get(cacheKey)
-    if (cached) {
-      state.requiresOssResolveHeader = true
-      return cached
-    }
-    if (!state.uploadPolicyPromise) {
-      state.uploadPolicyPromise = getDashScopeUploadPolicy(config, signal, logScope)
-    }
-    const policy = await state.uploadPolicyPromise
-    const ossUrl = await uploadLocalFileToDashScopeOss(policy, localPath, signal)
-    state.uploadedUrlByPath.set(cacheKey, ossUrl)
-    state.requiresOssResolveHeader = true
-    log('QWEN_MEDIA_UPLOADED', {
-      filePath: localPath,
-      ossUrl,
-    }, logScope)
-    return ossUrl
-  }
-  
-  // 其他provider（包括mimo）如果没有通用上传配置，返回原始值
   return normalizeMediaUrl(value)
 }
 
@@ -1028,9 +939,13 @@ async function buildQwenUserContent(
   const entries = parseUserAssetEntries(rawContent)
   const qwen36Plus = isQwen36PlusModel(config.model)
   const explicitCacheEnabled = hasQwenExplicitCacheHint(message, config, rawContent)
+  
+  // 检查模型是否支持视觉理解
+  const hasVision = config.supportsVision === true
+  
   const imageUrls: string[] = []
   for (const item of message.images ?? []) {
-    const resolved = await resolveQwenMediaUrl(item, config, state, provider, signal, logScope)
+    const resolved = await resolveQwenMediaUrl(item, config, state, provider, signal, logScope, hasVision)
     if (resolved) imageUrls.push(resolved)
   }
   const entryImageUrls: string[] = []
@@ -1038,10 +953,18 @@ async function buildQwenUserContent(
   const nonMediaEntries: UserAssetEntry[] = []
 
   for (const entry of entries) {
-    const normalizedPath = await resolveQwenMediaUrl(entry.path, config, state, provider, signal, logScope)
+    const normalizedPath = await resolveQwenMediaUrl(entry.path, config, state, provider, signal, logScope, hasVision)
     if (!normalizedPath) continue
     const kind = inferAssetKind(entry)
     if (kind === 'image') {
+      // 如果不支持视觉,保留本地路径作为文本
+      if (!hasVision) {
+        nonMediaEntries.push({
+          type: 'image',
+          path: entry.path,
+        })
+        continue
+      }
       entryImageUrls.push(normalizedPath)
       continue
     }
@@ -1076,6 +999,19 @@ async function buildQwenUserContent(
   const text = textSegments.join('\n\n').trim()
   if (text) parts.push({ type: 'text', text })
 
+  // mimo 模型：无媒体输入时使用字符串，有媒体输入时使用数组
+  if (provider === 'mimo') {
+    if (!hasMediaInput) {
+      return text || rawContent
+    }
+    if (parts.length <= 0) {
+      const fallbackText = (text || rawContent).trim()
+      if (!fallbackText) return rawContent
+      return [{ type: 'text', text: fallbackText }]
+    }
+    return parts
+  }
+
   if (!qwen36Plus) {
     if (parts.length <= 0) return rawContent
     return parts
@@ -1102,31 +1038,25 @@ async function buildProviderMessages(
   messages: ChatMessage[],
   signal?: AbortSignal,
   logScope?: string,
-): Promise<{ messages: unknown[]; requiresOssResolveHeader: boolean }> {
-  // qwen和mimo都需要处理图片格式
-  if (provider !== 'qwen' && provider !== 'mimo') {
-    return { messages, requiresOssResolveHeader: false }
-  }
+): Promise<{ messages: unknown[] }> {
+  // 所有provider都可能需要处理图片（统一上传到配置的存储）
   const state: QwenMessageBuildState = {
-    requiresOssResolveHeader: false,
     uploadedUrlByPath: new Map<string, string>(),
   }
   const out: unknown[] = []
   for (const message of messages) {
-    const { images: _unusedImages, ...rest } = message
     if (message.role !== 'user') {
-      out.push(rest)
+      out.push(message)
       continue
     }
     out.push({
-      ...rest,
+      // 不包含images
+      ...message,
       content: await buildQwenUserContent(message, config, state, provider, signal, logScope),
+      images: undefined, // 请求AI模型时不能包含images字段
     })
   }
-  return {
-    messages: out,
-    requiresOssResolveHeader: provider === 'qwen' ? state.requiresOssResolveHeader : false,
-  }
+  return { messages: out }
 }
 
 function fullHeadersForLog(headers: HeadersInit | undefined): Record<string, string> {
@@ -1167,9 +1097,6 @@ async function buildRequest(
     for (const [k, v] of Object.entries(config.headers)) {
       if (typeof v === 'string') headers[k] = v
     }
-  }
-  if (provider === 'qwen' || providerPrepared.requiresOssResolveHeader) {
-    headers['X-DashScope-OssResourceResolve'] = 'enable'
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

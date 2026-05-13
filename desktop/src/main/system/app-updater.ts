@@ -688,14 +688,20 @@ export function getLastUpdateCheckResult(): AppUpdateCheckResult | null {
   return lastUpdateCheckResult
 }
 
+const AUTO_CHECK_INTERVAL_MS = 60_000 // 每分钟检查一次
+
 export function scheduleStartupUpdateCheck(parentWindow?: BrowserWindow | null): void {
   const startupDelayMs = 1_000
-  setTimeout(() => {
+  const runCheck = () => {
     void checkAndPromptForUpdate({ manual: false, parentWindow })
       .catch((err) => {
-        logInfo('app-update', '启动检查更新失败（已忽略）', {
+        logInfo('app-update', '自动检查更新失败（已忽略）', {
           error: err instanceof Error ? err.message : String(err),
         })
       })
+  }
+  setTimeout(() => {
+    runCheck()
+    setInterval(runCheck, AUTO_CHECK_INTERVAL_MS)
   }, startupDelayMs)
 }

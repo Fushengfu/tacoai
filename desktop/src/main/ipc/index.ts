@@ -8,6 +8,7 @@ import { app, BrowserWindow, Notification, dialog, ipcMain, shell, net } from 'e
 import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron'
 import { exec } from 'node:child_process'
 import * as fs from 'node:fs/promises'
+import * as fsSync from 'node:fs'
 import { watch as fsWatch, type Dirent, type FSWatcher } from 'node:fs'
 import * as nodePath from 'node:path'
 import { IpcChannel, editorCommands } from '../../shared/ipc'
@@ -35,7 +36,7 @@ import type {
 import { setBrowserAutoApproved, setAutoApproveCategories } from '../tools'
 import type { RiskCategory } from '../tools'
 import type { ProviderKey, ProviderOverrides, TokenUsage } from '../ai/llm'
-import { requestChatCompletion, requestChatCompletionStream } from '../ai/llm'
+import { requestChatCompletion, requestChatCompletionStream, uploadDataUrlToStorage, resolveUploadConfig } from '../ai/llm'
 import { runAgent, resolveConfirm } from '../agent'
 import { gitLog, gitCommit, gitRollback, gitCommitFiles, gitStatus, gitFileChange, gitStageFiles, gitStageAll } from '../project/git'
 import { initSkills, listSkills, installSkill, uninstallSkill, toggleSkill, refreshSkills, buildActiveSkillsCatalogBlock, getActiveSkillEnv, applySkillEnvironment } from '../project/skills'
@@ -49,7 +50,7 @@ import { log, logError } from '../system/logger'
 import { applyRewardScore } from '../agent/reward-score'
 import { handleTerminalSpawn, handleTerminalInput, handleTerminalResize, handleTerminalKill } from '../system/terminal'
 import { openExternalBrowser, closeExternalBrowser, navigateExternalBrowser, focusExternalBrowser } from '../automation/browser'
-import { listChatStoreSessions, loadChatStoreSessionPage, saveChatStoreSessionPatch, deleteChatStoreSession, initMemoryDb } from '../data/memory-db'
+import { listChatStoreSessions, loadChatStoreSessionPage, saveChatStoreSessionPatch, deleteChatStoreSession, initMemoryDb, loadUploadConfigFromDb, saveUploadConfigToDb } from '../data/memory-db'
 import { checkAndPromptForUpdate, getLastUpdateCheckResult } from '../system/app-updater'
 import { getBridgeManager } from '../bridge/bridge-manager'
 import type { BridgeChatMessage } from '../bridge/bridge-protocol'
@@ -81,6 +82,36 @@ async function handleMemberLogin(_event: IpcMainInvokeEvent, payload: { username
           }
         } catch {
           reject(new Error(`登录失败 (${response.statusCode})`))
+        }
+      })
+    })
+    request.on('error', (err) => reject(err))
+    request.write(JSON.stringify(payload))
+    request.end()
+  })
+}
+
+async function handleMemberRegister(_event: IpcMainInvokeEvent, payload: { username: string; password: string; nickname?: string }) {
+  const REGISTER_URL = 'https://agent.bjctykj.com/api/member/register'
+  return new Promise((resolve, reject) => {
+    const request = net.request({
+      method: 'POST',
+      url: REGISTER_URL,
+    })
+    request.setHeader('Content-Type', 'application/json')
+    request.on('response', (response) => {
+      let body = ''
+      response.on('data', (chunk: Buffer) => { body += chunk.toString() })
+      response.on('end', () => {
+        try {
+          const json = JSON.parse(body)
+          if (response.statusCode >= 200 && response.statusCode < 300 && json.data) {
+            resolve(json.data)
+          } else {
+            reject(new Error(json.message || json.error || `注册失败 (${response.statusCode})`))
+          }
+        } catch {
+          reject(new Error(`注册失败 (${response.statusCode})`))
         }
       })
     })
@@ -675,37 +706,9 @@ async function handleAgentStream(event: IpcMainEvent, payload: AgentStreamPayloa
   } = payload
   const logScope = buildLogScope(projectId, workspace)
 
-  // ── 图片预处理：保存到本地文件，将路径告知 AI，由 AI 决定如何分析 ──
+  // 图片已由前端上传到云存储,直接使用URL
   if (images && images.length > 0) {
-    try {
-      const savedPaths: string[] = []
-      for (const dataUrl of images) {
-        const filePath = await saveScreenshot(dataUrl)
-        savedPaths.push(filePath)
-        log('IMAGE_SAVED', { filePath }, logScope)
-      }
-
-      // 将图片路径注入最后一条用户消息
-      const lastUserIdx = messages.length - 1
-      if (lastUserIdx >= 0 && messages[lastUserIdx].role === 'user') {
-        const originalContent = String(messages[lastUserIdx].content ?? '')
-        const existingEntries = parseUserAssetEntries(originalContent)
-        const baseContent = stripUserAssetsBlock(originalContent)
-        const assetsBlock = buildUserAssetsBlock([
-          ...existingEntries,
-          ...savedPaths.map((filePath) => ({ type: 'image', path: filePath })),
-        ])
-        const mergedContent = assetsBlock
-          ? (baseContent ? `${baseContent}\n\n${assetsBlock}` : assetsBlock)
-          : baseContent
-        messages[lastUserIdx] = {
-          ...messages[lastUserIdx],
-          content: mergedContent,
-        }
-      }
-    } catch (imgErr) {
-      log('IMAGE_PROCESS_FAIL', { error: imgErr instanceof Error ? imgErr.message : String(imgErr) }, logScope)
-    }
+    log('IMAGES_RECEIVED', { count: images.length, urls: images.slice(0, 3) }, logScope)
   }
 
   // 创建 AbortController 以支持外部终止
@@ -1769,6 +1772,7 @@ function setupBridgeDataHandler(): void {
 /** 注册全部 IPC handler，应在 app.whenReady() 之后调用一次 */
 export function registerIpcHandlers() {
   ipcMain.handle(IpcChannel.MEMBER_LOGIN, handleMemberLogin)
+  ipcMain.handle(IpcChannel.MEMBER_REGISTER, handleMemberRegister)
   ipcMain.handle(IpcChannel.CHAT_SEND, handleChatSend)
   ipcMain.handle(IpcChannel.CHAT_STORE_LIST, handleChatStoreList)
   ipcMain.handle(IpcChannel.CHAT_STORE_LOAD_PAGE, handleChatStoreLoadPage)
@@ -1910,4 +1914,129 @@ export function registerIpcHandlers() {
   setupBridgeClientConnectedHandler()
   setupBridgeStateSnapshotResponse()
   setupBridgeDataHandler()
+
+  // ── 图片上传到云存储 ──
+  ipcMain.handle(IpcChannel.IMAGE_UPLOAD, async (_event, payload: { dataUrl: string; fileName: string }) => {
+    const { dataUrl, fileName } = payload
+    
+    // 从数据库读取上传配置
+    let uploadConfig: any = null
+    
+    try {
+      const dbConfig = loadUploadConfigFromDb()
+      
+      if (dbConfig && dbConfig.provider !== 'none') {
+        log('UPLOAD_CONFIG_LOADED_FROM_DB', { 
+          provider: dbConfig.provider,
+          updatedAt: dbConfig.updatedAt
+        }, 'ipc')
+        
+        // 转换为 IpcUploadConfig 格式
+        const config = dbConfig.config as any
+        
+        if (dbConfig.provider === 'aliyun_oss') {
+          uploadConfig = {
+            provider: 'aliyun_oss',
+            accessKeyId: config.aliyunOss?.accessKeyId || '',
+            accessKeySecret: config.aliyunOss?.accessKeySecret || '',
+            bucket: config.aliyunOss?.bucket || '',
+            endpoint: config.aliyunOss?.endpoint || '',
+            objectPrefix: config.aliyunOss?.objectPrefix || '',
+            publicBaseUrl: config.aliyunOss?.publicBaseUrl || '',
+          }
+          log('UPLOAD_CONFIG_PARSED', { provider: 'aliyun_oss', bucket: uploadConfig.bucket }, 'ipc')
+        } else if (dbConfig.provider === 'qiniu') {
+          uploadConfig = {
+            provider: 'qiniu',
+            accessKey: config.qiniu?.accessKey || '',
+            secretKey: config.qiniu?.secretKey || '',
+            bucket: config.qiniu?.bucket || '',
+            uploadUrl: config.qiniu?.uploadUrl || '',
+            publicBaseUrl: config.qiniu?.publicBaseUrl || '',
+            objectPrefix: config.qiniu?.objectPrefix || '',
+            expiresSeconds: config.qiniu?.expiresSeconds ? Number(config.qiniu.expiresSeconds) : undefined,
+          }
+          log('UPLOAD_CONFIG_PARSED', { provider: 'qiniu', bucket: uploadConfig.bucket }, 'ipc')
+        } else {
+          log('UPLOAD_CONFIG_INVALID_PROVIDER', { provider: dbConfig.provider }, 'ipc')
+        }
+      } else {
+        // 兼容旧版本：从文件读取
+        log('UPLOAD_CONFIG_DB_EMPTY', {}, 'ipc')
+        const configPath = nodePath.join(app.getPath('userData'), 'upload-config.json')
+        
+        if (fsSync.existsSync(configPath)) {
+          const raw = fsSync.readFileSync(configPath, 'utf-8')
+          const parsed = JSON.parse(raw)
+          log('UPLOAD_CONFIG_LOADED_FROM_FILE', { 
+            path: configPath, 
+            provider: parsed.provider 
+          }, 'ipc')
+          
+          // 迁移到数据库
+          saveUploadConfigToDb(parsed.provider, parsed)
+          log('UPLOAD_CONFIG_MIGRATED_TO_DB', { provider: parsed.provider }, 'ipc')
+          
+          // 重新从数据库读取
+          const migratedConfig = loadUploadConfigFromDb()
+          if (migratedConfig && migratedConfig.provider === 'aliyun_oss') {
+            const migratedAny = migratedConfig.config as any
+            uploadConfig = {
+              provider: 'aliyun_oss',
+              accessKeyId: migratedAny.aliyunOss?.accessKeyId || '',
+              accessKeySecret: migratedAny.aliyunOss?.accessKeySecret || '',
+              bucket: migratedAny.aliyunOss?.bucket || '',
+              endpoint: migratedAny.aliyunOss?.endpoint || '',
+              objectPrefix: migratedAny.aliyunOss?.objectPrefix || '',
+              publicBaseUrl: migratedAny.aliyunOss?.publicBaseUrl || '',
+            }
+          } else if (migratedConfig && migratedConfig.provider === 'qiniu') {
+            const migratedAny = migratedConfig.config as any
+            uploadConfig = {
+              provider: 'qiniu',
+              accessKey: migratedAny.qiniu?.accessKey || '',
+              secretKey: migratedAny.qiniu?.secretKey || '',
+              bucket: migratedAny.qiniu?.bucket || '',
+              uploadUrl: migratedAny.qiniu?.uploadUrl || '',
+              publicBaseUrl: migratedAny.qiniu?.publicBaseUrl || '',
+              objectPrefix: migratedAny.qiniu?.objectPrefix || '',
+              expiresSeconds: migratedAny.qiniu?.expiresSeconds ? Number(migratedAny.qiniu.expiresSeconds) : undefined,
+            }
+          }
+        } else {
+          log('UPLOAD_CONFIG_NOT_FOUND', { path: configPath }, 'ipc')
+        }
+      }
+    } catch (err) {
+      log('UPLOAD_CONFIG_READ_FAIL', { error: err instanceof Error ? err.message : String(err) }, 'ipc')
+    }
+    
+    if (!uploadConfig) {
+      throw new Error('未配置云存储,请在设置中配置阿里云OSS或七牛云')
+    }
+    
+    // 上传到云存储
+    const publicUrl = await uploadDataUrlToStorage(uploadConfig, dataUrl)
+    log('IMAGE_UPLOADED_FROM_RENDERER', { fileName, publicUrl }, 'ipc')
+    return { publicUrl }
+  })
+  
+  // 保存上传配置到数据库
+  ipcMain.handle(IpcChannel.UPLOAD_CONFIG_SAVE, async (_event, config: unknown) => {
+    try {
+      const configAny = config as any
+      const provider = configAny?.provider || 'none'
+      
+      saveUploadConfigToDb(provider, configAny)
+      
+      log('UPLOAD_CONFIG_SAVED_TO_DB', { 
+        provider,
+        hasAliyunOss: !!configAny?.aliyunOss,
+        hasQiniu: !!configAny?.qiniu
+      }, 'ipc')
+    } catch (err) {
+      log('UPLOAD_CONFIG_SAVE_FAIL', { error: err instanceof Error ? err.message : String(err) }, 'ipc')
+      throw err
+    }
+  })
 }

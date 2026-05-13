@@ -712,7 +712,8 @@ export async function runAgent(
     }
     if (lastUserIdx >= 0) {
       // 提取用户原始查询文本,支持 content 为字符串或数组类型
-      const userContent: unknown = workingMessages[lastUserIdx].content
+      const userMessage = workingMessages[lastUserIdx]
+      const userContent: unknown = userMessage.content
       let rawUserQuery = ''
       
       if (typeof userContent === 'string') {
@@ -723,8 +724,27 @@ export async function runAgent(
           .filter((part) => part.type === 'text')
           .map((part) => part.text || '')
           .join('\n')
+        
+        // 如果 content 是数组且包含图片,需要将图片信息附加到查询中
+        const imageParts = (userContent as Array<{type?: string; image_url?: {url?: string}}>)
+          .filter((part) => part.type === 'image_url')
+          .map((part) => part.image_url?.url)
+          .filter(Boolean)
+        
+        if (imageParts.length > 0) {
+          // 将图片 URL 转换为 [USER_ASSETS] 格式
+          const assetsBlock = `[USER_ASSETS]\n${imageParts.map((url) => `- type: image\n  path: ${url}`).join('\n')}\n[/USER_ASSETS]`
+          rawUserQuery = rawUserQuery ? `${rawUserQuery}\n\n${assetsBlock}` : assetsBlock
+        }
       } else {
         rawUserQuery = String(userContent ?? '')
+      }
+      
+      // 处理 message.images 字段中的图片(data URL 或 URL)
+      const messageImages = userMessage.images
+      if (messageImages && messageImages.length > 0) {
+        const assetsBlock = `[USER_ASSETS]\n${messageImages.map((url) => `- type: image\n  path: ${url}`).join('\n')}\n[/USER_ASSETS]`
+        rawUserQuery = rawUserQuery ? `${rawUserQuery}\n\n${assetsBlock}` : assetsBlock
       }
       
       // 如果已经被包装过,提取原始内容,避免重复包装
@@ -761,6 +781,11 @@ export async function runAgent(
       // 任务记忆回放：替换最后一条用户消息
       workingMessages.splice(lastUserIdx, 1, ...injected.messages)
       currentTaskStartIndex = lastUserIdx + Math.max(0, injected.messages.length - 1)
+
+      // 保留原始图片信息这个地方不能删掉必须保留否则后面图片信息会丢失
+      if (messageImages && messageImages.length > 0) {
+        workingMessages[currentTaskStartIndex].images = messageImages
+      }
       latestRecallMeta = {
         intentSource: injected.recallMeta.intentSource,
         intentType: injected.recallMeta.intentType,
