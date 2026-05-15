@@ -83,6 +83,7 @@ function buildAgentSystemPrompt(workspace: string, supportsVision: boolean): str
 - Shell: ${shell}
 - 主目录: ${sys?.homeDir ?? '~'}
 - 语言/地区: ${sys?.locale ?? 'unknown'}
+- 输出语言规则: 根据用户的界面语言输出结果。当前语言为 ${sys?.locale?.startsWith('zh') ? '中文' : '英文'}，请优先使用该语言回复。如果用户明确要求使用其他语言,则按用户要求切换。
 - 当前时间: ${new Date().toLocaleString()}
 
 # 核心行为准则

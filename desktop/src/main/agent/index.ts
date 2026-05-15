@@ -18,11 +18,33 @@ import type { ToolCall, ToolResult, RiskInfo } from '../tools'
 import { log } from '../system/logger'
 import { gitCommit, gitEnsureRepo } from '../project/git'
 import { refreshSkills, buildActiveSkillsCatalogBlock, getActiveSkillEnv, applySkillEnvironment } from '../project/skills'
-import { buildBackgroundContextConversationMessages, inferIntentFromBackground, maintainTaskMemoriesByAI, recordMemorySnapshot, recordTaskLog, stripInternalContextTags, stripPseudoToolCallArtifacts } from '../data/notes'
+import { buildBackgroundContextConversationMessages, inferIntentFromBackground, maintainTaskMemoriesByAI, recordMemorySnapshot, recordTaskLog } from '../data/notes'
 import type { RecallMeta } from '../data/notes'
 import { buildAgentRequestMessages, buildCurrentTaskCompressionStateCard, validateCompletionClaim } from './context-builder'
 import type { ContextBuildState } from './context-builder'
 import { applyRewardScore } from './reward-score'
+import {
+  USER_ASSETS_BLOCK_REGEX,
+  extractUserQueryText,
+  extractUserAssetsBlock,
+  parseUserAssetEntries,
+  inferAssetKind,
+  collectUserMediaRefsFromContent,
+  collectUserMediaRefsFromMessages,
+  appendMediaRefsToSummary,
+} from '../../shared/user-assets'
+import type { UserAssetEntry } from '../../shared/user-assets'
+import {
+  stripInternalContextTags,
+  stripPseudoToolCallArtifacts,
+  sanitizeUserFacingText,
+  sanitizeContextArtifacts,
+  sanitizeReasoningForContext,
+  sanitizeReplayRawText,
+  containsPseudoToolCallSyntax,
+  stripReasoningArtifacts,
+} from '../../shared/sanitize'
+import { inferIntentTypeFromQuery } from '../../shared/intent'
 
 /* ------------------------------------------------------------------ */
 /*  Agent 事件                                                         */
@@ -61,7 +83,8 @@ export type AgentEvent =
 /* ------------------------------------------------------------------ */
 
 /** 待处理的确认请求：confirmId → resolve(approved) */
-const pendingConfirms = new Map<string, (approved: boolean) => void>()
+const pendingConfirms = new Map<string, { resolve: (approved: boolean) => void; timer: NodeJS.Timeout }>()
+const CONFIRM_TIMEOUT_MS = 5 * 60 * 1000 // 5分钟超时
 
 function isAbortError(err: unknown): boolean {
   if (!(err instanceof Error)) return false
@@ -70,9 +93,10 @@ function isAbortError(err: unknown): boolean {
 
 /** 外部调用：用户响应了确认请求 */
 export function resolveConfirm(confirmId: string, approved: boolean) {
-  const resolver = pendingConfirms.get(confirmId)
-  if (resolver) {
-    resolver(approved)
+  const pending = pendingConfirms.get(confirmId)
+  if (pending) {
+    clearTimeout(pending.timer)
+    pending.resolve(approved)
     pendingConfirms.delete(confirmId)
   }
 }
@@ -80,14 +104,24 @@ export function resolveConfirm(confirmId: string, approved: boolean) {
 /** 创建一个确认请求并等待用户响应 */
 function waitForConfirm(confirmId: string, signal?: AbortSignal): Promise<boolean> {
   return new Promise((resolve) => {
-    pendingConfirms.set(confirmId, resolve)
+    // 超时自动拒绝
+    const timer = setTimeout(() => {
+      log('CONFIRM_TIMEOUT', { confirmId, timeout: CONFIRM_TIMEOUT_MS }, 'agent')
+      pendingConfirms.delete(confirmId)
+      resolve(false) // 超时默认拒绝
+    }, CONFIRM_TIMEOUT_MS)
+    
+    pendingConfirms.set(confirmId, { resolve, timer })
+    
     // 如果 signal 已被中断，立即 resolve(false) 以跳出等待
     if (signal?.aborted) {
+      clearTimeout(timer)
       pendingConfirms.delete(confirmId)
       resolve(false)
       return
     }
     const onAbort = () => {
+      clearTimeout(timer)
       pendingConfirms.delete(confirmId)
       resolve(false)
     }
@@ -105,191 +139,7 @@ function safeParseObject(raw: string): Record<string, unknown> | null {
   }
 }
 
-const USER_ASSETS_BLOCK_REGEX = /\s*\[USER_ASSETS\][\s\S]*?\[\/USER_ASSETS\]\s*/gi
-const USER_ASSETS_BLOCK_CAPTURE_REGEX = /\[USER_ASSETS\]([\s\S]*?)\[\/USER_ASSETS\]/i
-const USER_ASSET_IMAGE_EXTENSIONS = new Set([
-  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico', '.tif', '.tiff', '.heic', '.heif', '.avif',
-])
-const USER_ASSET_VIDEO_EXTENSIONS = new Set([
-  '.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi', '.wmv', '.flv', '.mpeg', '.mpg', '.3gp', '.ts', '.m2ts',
-])
-
-type UserAssetEntry = { type: string; path: string }
-
-function stripUserAssetsBlock(content: string): string {
-  return String(content ?? '')
-    .replace(USER_ASSETS_BLOCK_REGEX, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
-
-function extractUserQueryText(content: string): string {
-  const raw = stripUserAssetsBlock(content)
-  const wrapped = raw.match(/\[USER_QUERY\]([\s\S]*?)\[\/USER_QUERY\]/i)
-  if (wrapped && wrapped[1]) return wrapped[1].trim()
-  return raw.trim()
-}
-
-function extractUserAssetsBlock(content: string): string {
-  const raw = String(content ?? '')
-  const wrapped = raw.match(USER_ASSETS_BLOCK_CAPTURE_REGEX)
-  if (!wrapped || !wrapped[1]) return ''
-  return wrapped[1].trim()
-}
-
-function parseUserAssetEntries(content: string): UserAssetEntry[] {
-  const body = extractUserAssetsBlock(content)
-  if (!body) return []
-  const entries: UserAssetEntry[] = []
-  let currentType = ''
-  for (const rawLine of body.split('\n')) {
-    const line = rawLine.trim()
-    if (!line) continue
-    const typeMatch = line.match(/^-+\s*type:\s*(.+)$/i)
-    if (typeMatch && typeMatch[1]) {
-      currentType = typeMatch[1].trim() || 'file'
-      continue
-    }
-    const pathMatch = line.match(/^(?:-+\s*)?path:\s*(.+)$/i)
-    if (pathMatch && pathMatch[1]) {
-      entries.push({
-        type: currentType || 'file',
-        path: pathMatch[1].trim(),
-      })
-    }
-  }
-  return entries
-}
-
-function userAssetExtension(value: string): string {
-  const clean = String(value ?? '').trim().split(/[?#]/, 1)[0] ?? ''
-  return path.extname(clean).toLowerCase()
-}
-
-function inferUserAssetKind(entry: UserAssetEntry): 'image' | 'video' | 'other' {
-  const type = String(entry.type ?? '').trim().toLowerCase()
-  if (type.includes('video')) return 'video'
-  if (type.includes('image')) return 'image'
-  const ext = userAssetExtension(entry.path)
-  if (USER_ASSET_IMAGE_EXTENSIONS.has(ext)) return 'image'
-  if (USER_ASSET_VIDEO_EXTENSIONS.has(ext)) return 'video'
-  return 'other'
-}
-
-function collectUserMediaRefsFromContent(content: string): string[] {
-  const refs: string[] = []
-  for (const entry of parseUserAssetEntries(content)) {
-    const kind = inferUserAssetKind(entry)
-    if (kind !== 'image' && kind !== 'video') continue
-    const ref = String(entry.path ?? '').trim()
-    if (!ref) continue
-    if (refs.includes(ref)) continue
-    refs.push(ref)
-  }
-  return refs
-}
-
-function collectUserMediaRefsFromMessages(messages: ChatMessage[]): string[] {
-  const refs: string[] = []
-  for (const message of messages) {
-    if (message.role !== 'user') continue
-    for (const item of collectUserMediaRefsFromContent(String(message.content ?? ''))) {
-      if (refs.includes(item)) continue
-      refs.push(item)
-    }
-  }
-  return refs
-}
-
-function appendMediaRefsToSummary(summary: string, mediaRefs: string[]): string {
-  const cleanedSummary = String(summary ?? '').trim()
-  if (mediaRefs.length <= 0) return cleanedSummary
-  const missingRefs = mediaRefs.filter((ref) => !cleanedSummary.includes(ref))
-  if (missingRefs.length <= 0) return cleanedSummary
-  const mediaBlock = [
-    '用户提交媒体文件（路径/链接）:',
-    ...missingRefs.map((ref) => `- ${ref}`),
-  ].join('\n')
-  return cleanedSummary ? `${cleanedSummary}\n\n${mediaBlock}` : mediaBlock
-}
-
-function inferIntentTypeFromQuery(query: string): string {
-  const text = String(query ?? '').trim().toLowerCase()
-  if (!text) return 'other'
-  if (/(报错|错误|异常|排查|调试|debug|error|bug|trace|崩溃)/.test(text)) return 'debug'
-  if (/(实现|新增|开发|编写|添加|implement|create|build|功能)/.test(text)) return 'implement'
-  if (/(重构|优化|整理|抽离|refactor|optimize|cleanup)/.test(text)) return 'refactor'
-  if (/(删除|重命名|移动|部署|发布|配置|运行|执行|remove|delete|rm |mv |deploy)/.test(text)) return 'ops'
-  if (/(是什么|为什么|怎么|如何|请解释|是否|吗|\?|？|what|why|how|can you)/.test(text)) return 'qa'
-  return 'other'
-}
-
 const STREAM_SANITIZE_HOLD_BACK = 24
-
-const USER_VISIBLE_SOURCE_PHRASE_RULES: Array<{ pattern: RegExp; replacement: string }> = [
-  { pattern: /从(?:项目)?历史(?:记录|记忆|信息|上下文)来看/g, replacement: '结合当前上下文来看' },
-  { pattern: /根据(?:项目)?历史(?:记录|记忆|信息|上下文)(?:显示|来看|可知|可见)?/g, replacement: '结合当前上下文' },
-  { pattern: /基于(?:项目)?历史(?:记录|记忆|信息|上下文)/g, replacement: '结合当前上下文' },
-  { pattern: /根据(?:背景|上下文)信息/g, replacement: '结合当前上下文' },
-  { pattern: /根据\s*BACKGROUND_CONTEXT/gi, replacement: '结合当前上下文' },
-  { pattern: /based on (?:the )?(?:project )?(?:history|historical (?:records?|memory|context))/gi, replacement: 'based on current context' },
-  { pattern: /from (?:the )?background context/gi, replacement: 'from current context' },
-]
-
-const PSEUDO_TOOL_CALL_TEXT_PATTERNS = [
-  /\[TOOL_CALL[^\]]*\]/i,
-  /<invoke\b/i,
-  /<minimax:tool_call\b/i,
-  /<parameter\b/i,
-]
-
-function containsPseudoToolCallSyntax(input: string): boolean {
-  const text = String(input ?? '')
-  return PSEUDO_TOOL_CALL_TEXT_PATTERNS.some((pattern) => pattern.test(text))
-}
-
-function stripReasoningArtifacts(input: string): string {
-  return String(input ?? '')
-    .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '\n')
-    .replace(/<reflection\b[^>]*>[\s\S]*?<\/reflection>/gi, '\n')
-    .replace(/<tool_code\b[^>]*>[\s\S]*?<\/tool_code>/gi, '\n')
-    .replace(/<\/?(?:think|reflection|tool_code)\b[^>]*>/gi, ' ')
-}
-
-function sanitizeContextArtifacts(input: string): string {
-  let output = stripReasoningArtifacts(stripPseudoToolCallArtifacts(stripInternalContextTags(String(input ?? ''))))
-  output = output
-    .replace(/[ \t]{2,}/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-  return output
-}
-
-function sanitizeReasoningForContext(input: string): string {
-  let output = stripPseudoToolCallArtifacts(stripInternalContextTags(String(input ?? '')))
-  output = output
-    .replace(/<\/?(?:think|reflection|tool_code)\b[^>]*>/gi, ' ')
-    .replace(/[ \t]{2,}/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-  return output
-}
-
-function sanitizeUserFacingText(input: string): string {
-  let output = sanitizeContextArtifacts(input)
-  for (const rule of USER_VISIBLE_SOURCE_PHRASE_RULES) {
-    output = output.replace(rule.pattern, rule.replacement)
-  }
-  return output
-}
-
-function sanitizeReplayRawText(input: string): string {
-  return stripPseudoToolCallArtifacts(stripInternalContextTags(String(input ?? '')))
-    .replace(/\r/g, '')
-    .replace(/[ \t]{2,}/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
 
 function extractThinkingFromAssistantRawText(rawText: string): string {
   const text = String(rawText ?? '')
@@ -385,7 +235,8 @@ function extractIdentifiers(text: string): string[] {
 /*  Agent 运行                                                         */
 /* ------------------------------------------------------------------ */
 
-const MAX_TOOL_ROUNDS = 1000 // 防止无限循环
+const MAX_TOOL_ROUNDS = 100 // 防止无限循环 (从1000降低到100)
+const AGENT_LOOP_TIMEOUT_MS = 10 * 60 * 1000 // 10分钟超时
 let confirmCounter = 0
 
 /* ------------------------------------------------------------------ */
@@ -647,6 +498,15 @@ export async function runAgent(
 ): Promise<void> {
   const taskStartedAt = Date.now()
   const isGitAutoOpsEnabled = () => getAutoApproveCategories().includes('git_ops')
+  
+  // 超时保护
+  const loopTimeoutTimer = setTimeout(() => {
+    log('AGENT_TIMEOUT_WARNING', { 
+      timeout: AGENT_LOOP_TIMEOUT_MS,
+      message: 'Agent 运行时间过长,可能存在无限循环'
+    }, logScope)
+  }, AGENT_LOOP_TIMEOUT_MS)
+  
   try {
     await refreshSkills(workspace)
   } catch (err) {
@@ -774,13 +634,13 @@ export async function runAgent(
       if (injected.noteMessages.length > 0) {
         const insertIdx = workingMessages.length > 0 && workingMessages[0].role === 'system' ? 1 : 0
         workingMessages.splice(insertIdx, 0, ...injected.noteMessages)
-        // lastUserIdx 需要偏移笔记插入的数量
-        lastUserIdx += injected.noteMessages.length
       }
 
-      // 任务记忆回放：替换最后一条用户消息
-      workingMessages.splice(lastUserIdx, 1, ...injected.messages)
-      currentTaskStartIndex = lastUserIdx + Math.max(0, injected.messages.length - 1)
+      // 任务记忆回放：替换system之后的所有消息(避免与当前会话历史重复)
+      const systemMsgCount = workingMessages.filter(m => m.role === 'system').length
+      const historyStartIdx = systemMsgCount > 0 ? systemMsgCount : 0
+      workingMessages.splice(historyStartIdx, workingMessages.length - historyStartIdx, ...injected.messages)
+      currentTaskStartIndex = historyStartIdx + injected.messages.length - 1
 
       // 保留原始图片信息这个地方不能删掉必须保留否则后面图片信息会丢失
       if (messageImages && messageImages.length > 0) {
@@ -824,7 +684,7 @@ export async function runAgent(
 
     // 工作空间目录结构注入（让 AI 从一开始就了解项目全貌，减少重复 list_dir 调用）
     try {
-      const tree = await getWorkspaceTree(workspace, 3, true)
+      const tree = await getWorkspaceTree(workspace)
       if (tree) {
         extraPrompt += '\n\n# 当前工作空间目录结构\n以下是项目目录树（自动生成，无需再次调用 list_dir 查看根目录结构）：\n```\n' + tree + '\n```\n注意：此目录树在对话开始时生成。如果你在执行过程中创建了新文件，目录树不会实时更新，可按需调用 list_dir 查看最新状态。'
       }
@@ -1064,7 +924,21 @@ export async function runAgent(
     finalSummary: string,
     outcome: 'success' | 'aborted' | 'error' = 'success',
   ): Promise<void> {
-    if ((!workspace || !workspace.trim()) && (!projectId || !projectId.trim())) return
+    // 调试日志:检查记忆保存条件
+    log('TASK_PERSIST_CHECK', {
+      workspace: workspace ? `[${workspace}]` : '(empty)',
+      projectId: projectId ? `[${projectId}]` : '(empty)',
+      outcome,
+      summaryLength: finalSummary?.length || 0,
+    }, logScope)
+    
+    if ((!workspace || !workspace.trim()) && (!projectId || !projectId.trim())) {
+      log('TASK_PERSIST_SKIPPED_NO_SCOPE', {
+        workspace,
+        projectId,
+      }, logScope)
+      return
+    }
     const decision = shouldPersistTaskCoreLog()
     if (!decision.persist) {
       log('TASK_CORE_NOTE_SKIPPED', {
@@ -1078,53 +952,19 @@ export async function runAgent(
       .map(([name, count]) => `${name} x${count}`)
     const modifiedFiles = changedFiles.size > 0 ? [...changedFiles] : [...touchedFiles]
     try {
-      let intentType = latestRecallMeta?.intentType || ''
-      let intentSummary = latestRecallMeta?.intentSummary || ''
-      let intentGoal = latestRecallMeta?.intentGoal || ''
-      let intentSource = latestRecallMeta?.intentSource || 'heuristic'
-
-      if (!intentType || intentType === 'other') {
-        try {
-          const inferred = await inferIntentFromBackground(
-            workspace,
-            plainUserQuery || lastUserGoal,
-            projectId,
-            {
-              usageTotalTokens: lastUsageTotalTokens,
-              maxTokens,
-              signal,
-              logScope,
-            },
-          )
-          intentType = inferred.intentType || intentType
-          intentSummary = inferred.intentSummary || intentSummary
-          intentGoal = inferred.intentGoal || intentGoal
-          intentSource = inferred.intentSource || intentSource
-        } catch (err) {
-          log('TASK_MEMORY_INTENT_INFER_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
-        }
-      }
-
-      const finalIntentType = intentType || inferIntentTypeFromQuery(plainUserQuery || lastUserGoal)
-      const finalIntentSummary = intentSummary || plainUserQuery || lastUserGoal
-      const finalIntentGoal = intentGoal || plainUserQuery || lastUserGoal
       const userMediaRefs = collectUserMediaRefsFromContent(lastUserGoal)
       const summaryWithMediaRefs = appendMediaRefsToSummary(finalSummary, userMediaRefs)
+      
       const savedTaskMemory = await recordTaskLog(
         workspace,
         {
-          goal: plainUserQuery || lastUserGoal,
-          userQuery: plainUserQuery || lastUserGoal,
+          userQuery: plainUserQuery || lastUserGoal,  // 用户原始提问
           ...(userAssetsBlock ? { userAssetsBlock } : {}),
-          intentType: finalIntentType,
-          intentSummary: finalIntentSummary,
-          intentGoal: finalIntentGoal,
-          summary: summaryWithMediaRefs,
+          assistantResult: summaryWithMediaRefs,  // AI完整回复
           outcome,
           tools,
           changedFiles: modifiedFiles.slice(0, 80),
-          identifiers: [...touchedIdentifiers].slice(0, 80),
-          evidenceFacts: [...memoryEvidenceFacts],
+          fileDiffs: [],  // TODO: 后续添加文件diff收集逻辑
           failures: failureLogs.slice(0, 12),
           sourceRef: {
             ...(normalizedMemorySessionId ? { sessionId: normalizedMemorySessionId } : {}),
@@ -1150,11 +990,8 @@ export async function runAgent(
       }
       log('TASK_CORE_NOTE_SAVED', {
         reason: decision.reason,
-        intentType: finalIntentType,
-        intentSource,
         toolKinds: tools.length,
         fileCount: modifiedFiles.length,
-        identifierCount: touchedIdentifiers.size,
         persisted: Boolean(savedTaskMemory),
       }, logScope)
     } catch (err) {
@@ -1901,8 +1738,13 @@ export async function runAgent(
 
   // 超出最大轮次
   await persistTaskCoreLogWithOutcome(lastAssistantText, 'error', `Agent exceeded max tool rounds (${MAX_TOOL_ROUNDS})`)
-  onEvent?.({ type: 'error', message: `Agent exceeded max tool rounds (${MAX_TOOL_ROUNDS})` })
-  } finally {
+  onEvent?.({ type: 'error', message: `Agent 循环次数过多(${MAX_TOOL_ROUNDS}次),已自动终止,请检查任务是否合理` })
+  
+  // 清理超时定时器
+  clearTimeout(loopTimeoutTimer)
+} finally {
     restoreSkillEnv()
+    // 确保清理超时定时器
+    clearTimeout(loopTimeoutTimer)
   }
 }

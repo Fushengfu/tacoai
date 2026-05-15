@@ -1,10 +1,13 @@
 /**
- * IPC Handler 注册
+ * IPC Handler 注册 - 组装文件
  *
  * 将所有 ipcMain handler 集中管理，main.ts 只需调用 registerIpcHandlers() 即可。
+ * 各领域 handler 已拆分到独立模块：
+ * - chat-handlers.ts: Chat/Agent 流式处理、聊天存储、通知、配置
+ * - bridge-handlers.ts: Bridge 跨端桥接
  */
 
-import { app, BrowserWindow, Notification, dialog, ipcMain, shell, net } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron'
 import { exec } from 'node:child_process'
 import * as fs from 'node:fs/promises'
@@ -13,52 +16,69 @@ import { watch as fsWatch, type Dirent, type FSWatcher } from 'node:fs'
 import * as nodePath from 'node:path'
 import { IpcChannel, editorCommands } from '../../shared/ipc'
 import type {
-  AppStateProvidersPayload,
-  AppStateSnapshot,
-  AppStateThreadsPayload,
-  AppNotifyPayload,
-  RendererErrorPayload,
-  ChatSendPayload,
-  ChatStreamPayload,
-  AgentStreamPayload,
-  AgentConfirmPayload,
   EditorId,
   ProjectNote,
   McpServerInfo,
-  GuiPlusConfig,
-  PromptConfig,
-  AgentEventData,
-  AgentEventChunkData,
-  ChatStoreSessionPatch,
-  ChatStoreSessionPage,
-  ChatStoreSessionSummary,
+  BridgeStatusPayload,
 } from '../../shared/ipc'
-import { setBrowserAutoApproved, setAutoApproveCategories } from '../tools'
 import type { RiskCategory } from '../tools'
-import type { ProviderKey, ProviderOverrides, TokenUsage } from '../ai/llm'
-import { requestChatCompletion, requestChatCompletionStream, uploadDataUrlToStorage, resolveUploadConfig } from '../ai/llm'
-import { runAgent, resolveConfirm } from '../agent'
+import { setBrowserAutoApproved, setAutoApproveCategories } from '../tools'
+import { uploadDataUrlToStorage, resolveUploadConfig } from '../ai/llm'
+import type { IpcUploadConfig } from '../../shared/ipc'
 import { gitLog, gitCommit, gitRollback, gitCommitFiles, gitStatus, gitFileChange, gitStageFiles, gitStageAll } from '../project/git'
-import { initSkills, listSkills, installSkill, uninstallSkill, toggleSkill, refreshSkills, buildActiveSkillsCatalogBlock, getActiveSkillEnv, applySkillEnvironment } from '../project/skills'
-import { inferIntentFromBackground, listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, maintainTaskMemoriesByAI, recordTaskLog, stripInternalContextTags, stripPseudoToolCallArtifacts, getMemoryScopeStats, exportMemoryScope } from '../data/notes'
-import { initMcp, listMcpServers, saveMcpServer, removeMcpServer, toggleMcpServer, saveScreenshot } from '../automation/mcp'
-import { getGuiPlusConfig, saveGuiPlusConfig } from '../automation/gui-plus'
-import { getPromptConfig, savePromptConfig } from '../project/prompt-config'
-import { getAppState, saveAppProvidersState, saveAppThreadsState } from '../system/app-state'
+import { initSkills, listSkills, installSkill, uninstallSkill, toggleSkill, refreshSkills } from '../project/skills'
+import { listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, getMemoryScopeStats, exportMemoryScope } from '../data/notes'
+import { initMcp, listMcpServers, saveMcpServer, removeMcpServer, toggleMcpServer } from '../automation/mcp'
 import { getLogDir } from '../system/logger'
 import { log, logError } from '../system/logger'
-import { applyRewardScore } from '../agent/reward-score'
 import { handleTerminalSpawn, handleTerminalInput, handleTerminalResize, handleTerminalKill } from '../system/terminal'
 import { openExternalBrowser, closeExternalBrowser, navigateExternalBrowser, focusExternalBrowser } from '../automation/browser'
-import { listChatStoreSessions, loadChatStoreSessionPage, saveChatStoreSessionPatch, deleteChatStoreSession, initMemoryDb, loadUploadConfigFromDb, saveUploadConfigToDb } from '../data/memory-db'
+import { loadUploadConfigFromDb, saveUploadConfigToDb } from '../data/memory-db'
 import { checkAndPromptForUpdate, getLastUpdateCheckResult } from '../system/app-updater'
 import { getBridgeManager } from '../bridge/bridge-manager'
-import type { BridgeChatMessage } from '../bridge/bridge-protocol'
-import type { BridgeStatusPayload } from '../../shared/ipc'
+import type { FileTreeEntry } from '../../shared/ipc'
+
+// Import from split modules
+import {
+  chatAbortControllers,
+  agentAbortControllers,
+  handleChatSend,
+  handleChatStream,
+  handleChatAbort,
+  handleAgentStream,
+  handleAgentConfirm,
+  handleAgentAbort,
+  handleRendererError,
+  handleChatStoreList,
+  handleChatStoreLoadPage,
+  handleChatStoreSave,
+  handleChatStoreDeleteSession,
+  handleAppNotify,
+  handleGuiPlusGet,
+  handleGuiPlusSave,
+  handleAppStateGet,
+  handleAppStateSaveThreads,
+  handleAppStateSaveProviders,
+  handlePromptConfigGet,
+  handlePromptConfigSave,
+} from './chat-handlers'
+
+import {
+  handleBridgeConnect,
+  handleBridgeDisconnect,
+  handleBridgeGetStatus,
+  handleBridgeRefreshToken,
+  setupBridgeStatusForwarding,
+  setupBridgeClientConnectedHandler,
+  setupBridgeStateSnapshotResponse,
+  setupBridgeDataHandler,
+} from './bridge-handlers'
 
 /* ------------------------------------------------------------------ */
-/*  Handlers                                                           */
+/*  Member login/register                                              */
 /* ------------------------------------------------------------------ */
+
+import { net } from 'electron'
 
 /** 登录请求通过主进程代理，避免渲染进程直接 fetch 时的 CORS 问题 */
 async function handleMemberLogin(_event: IpcMainInvokeEvent, payload: { username: string; password: string }) {
@@ -121,740 +141,9 @@ async function handleMemberRegister(_event: IpcMainInvokeEvent, payload: { usern
   })
 }
 
-const AGENT_EVENT_CHUNK_THRESHOLD_BYTES = 180 * 1024
-const AGENT_EVENT_CHUNK_SIZE_CHARS = 48 * 1024
-
-function sendAgentEventSafely(
-  sender: Electron.WebContents,
-  payload: AgentEventData,
-  logScope?: string,
-): void {
-  if (sender.isDestroyed()) return
-
-  let serialized = ''
-  try {
-    serialized = JSON.stringify(payload)
-  } catch (err) {
-    log('AGENT_EVENT_SERIALIZE_FAIL', {
-      error: err instanceof Error ? err.message : String(err),
-      requestId: payload.requestId,
-      type: (payload as { type?: string }).type ?? 'unknown',
-    }, logScope)
-    sender.send(IpcChannel.AGENT_EVENT, {
-      requestId: payload.requestId,
-      type: 'error',
-      message: 'Agent 事件序列化失败',
-    } satisfies AgentEventData)
-    return
-  }
-
-  const size = Buffer.byteLength(serialized, 'utf8')
-  if (size <= AGENT_EVENT_CHUNK_THRESHOLD_BYTES) {
-    sender.send(IpcChannel.AGENT_EVENT, payload)
-    return
-  }
-
-  const total = Math.max(1, Math.ceil(serialized.length / AGENT_EVENT_CHUNK_SIZE_CHARS))
-  const chunkId = `chunk-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-  for (let index = 0; index < total; index++) {
-    const start = index * AGENT_EVENT_CHUNK_SIZE_CHARS
-    const payloadChunk = serialized.slice(start, start + AGENT_EVENT_CHUNK_SIZE_CHARS)
-    const chunk: AgentEventChunkData = {
-      requestId: payload.requestId,
-      chunkId,
-      index,
-      total,
-      payloadChunk,
-    }
-    sender.send(IpcChannel.AGENT_EVENT_CHUNK, chunk)
-  }
-
-  log('AGENT_EVENT_CHUNK_SENT', {
-    requestId: payload.requestId,
-    type: (payload as { type?: string }).type ?? 'unknown',
-    size,
-    total,
-  }, logScope)
-}
-
-function buildLogScope(projectId?: string, workspace?: string): string | undefined {
-  if (projectId && projectId.trim()) return `project:${projectId.trim()}`
-  if (workspace && workspace.trim()) return `workspace:${nodePath.resolve(workspace.trim())}`
-  return undefined
-}
-
-function cleanupAssistantMemoryText(text: string): string {
-  return stripPseudoToolCallArtifacts(
-    stripInternalContextTags(String(text ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '')),
-  ).trim()
-}
-
-const USER_ASSETS_BLOCK_REGEX = /\s*\[USER_ASSETS\][\s\S]*?\[\/USER_ASSETS\]\s*/gi
-const USER_ASSETS_BLOCK_CAPTURE_REGEX = /\[USER_ASSETS\]([\s\S]*?)\[\/USER_ASSETS\]/i
-type UserAssetEntry = { type: string; path: string }
-
-function stripUserAssetsBlock(content: string): string {
-  return String(content ?? '')
-    .replace(USER_ASSETS_BLOCK_REGEX, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
-
-function buildUserAssetsBlock(entries: UserAssetEntry[]): string {
-  const dedup = new Set<string>()
-  const normalized: UserAssetEntry[] = []
-  for (const entry of entries) {
-    const type = String(entry?.type || '').trim() || 'file'
-    const path = String(entry?.path || '').trim()
-    if (!path) continue
-    const key = `${type}:${path}`
-    if (dedup.has(key)) continue
-    dedup.add(key)
-    normalized.push({ type, path })
-  }
-  if (normalized.length <= 0) return ''
-  const lines: string[] = ['[USER_ASSETS]']
-  for (const entry of normalized) {
-    lines.push(`- type: ${entry.type}`)
-    lines.push(`  path: ${entry.path}`)
-  }
-  lines.push('[/USER_ASSETS]')
-  return lines.join('\n')
-}
-
-function extractUserAssetsBlock(content: string): string {
-  const raw = String(content ?? '')
-  const wrapped = raw.match(USER_ASSETS_BLOCK_CAPTURE_REGEX)
-  if (!wrapped || !wrapped[1]) return ''
-  return wrapped[1].trim()
-}
-
-function parseUserAssetEntries(content: string): UserAssetEntry[] {
-  const body = extractUserAssetsBlock(content)
-  if (!body) return []
-  const entries: UserAssetEntry[] = []
-  let currentType = ''
-  for (const rawLine of body.split('\n')) {
-    const line = rawLine.trim()
-    if (!line) continue
-    const typeMatch = line.match(/^-+\s*type:\s*(.+)$/i)
-    if (typeMatch && typeMatch[1]) {
-      currentType = typeMatch[1].trim() || 'file'
-      continue
-    }
-    const pathMatch = line.match(/^(?:-+\s*)?path:\s*(.+)$/i)
-    if (pathMatch && pathMatch[1]) {
-      entries.push({
-        type: currentType || 'file',
-        path: pathMatch[1].trim(),
-      })
-    }
-  }
-  return entries
-}
-
-function extractUserQueryText(content: string): string {
-  const raw = stripUserAssetsBlock(String(content ?? ''))
-  const wrapped = raw.match(/\[USER_QUERY\]([\s\S]*?)\[\/USER_QUERY\]/i)
-  if (wrapped && wrapped[1]) return wrapped[1].trim()
-  return raw.trim()
-}
-
-function inferIntentTypeFromQuery(query: string): string {
-  const text = String(query ?? '').trim().toLowerCase()
-  if (!text) return 'other'
-  if (/(报错|错误|异常|排查|调试|debug|error|bug|trace|崩溃)/.test(text)) return 'debug'
-  if (/(实现|新增|开发|编写|添加|implement|create|build|功能)/.test(text)) return 'implement'
-  if (/(重构|优化|整理|抽离|refactor|optimize|cleanup)/.test(text)) return 'refactor'
-  if (/(删除|重命名|移动|部署|发布|配置|运行|执行|remove|delete|rm |mv |deploy)/.test(text)) return 'ops'
-  if (/(是什么|为什么|怎么|如何|请解释|是否|吗|\?|？|what|why|how|can you)/.test(text)) return 'qa'
-  return 'other'
-}
-
-const STREAM_SANITIZE_HOLD_BACK = 24
-
-const USER_VISIBLE_SOURCE_PHRASE_RULES: Array<{ pattern: RegExp; replacement: string }> = [
-  { pattern: /从(?:项目)?历史(?:记录|记忆|信息|上下文)来看/g, replacement: '结合当前上下文来看' },
-  { pattern: /根据(?:项目)?历史(?:记录|记忆|信息|上下文)(?:显示|来看|可知|可见)?/g, replacement: '结合当前上下文' },
-  { pattern: /基于(?:项目)?历史(?:记录|记忆|信息|上下文)/g, replacement: '结合当前上下文' },
-  { pattern: /根据(?:背景|上下文)信息/g, replacement: '结合当前上下文' },
-  { pattern: /根据\s*BACKGROUND_CONTEXT/gi, replacement: '结合当前上下文' },
-  { pattern: /based on (?:the )?(?:project )?(?:history|historical (?:records?|memory|context))/gi, replacement: 'based on current context' },
-  { pattern: /from (?:the )?background context/gi, replacement: 'from current context' },
-]
-
-function sanitizeUserFacingText(input: string): string {
-  let output = stripPseudoToolCallArtifacts(stripInternalContextTags(String(input ?? '')))
-  for (const rule of USER_VISIBLE_SOURCE_PHRASE_RULES) {
-    output = output.replace(rule.pattern, rule.replacement)
-  }
-  return output
-}
-
-function withActiveSkillsPrompt<T extends { role: string; content?: string }>(messages: T[]): T[] {
-  const skillCatalog = buildActiveSkillsCatalogBlock()
-  if (!skillCatalog.trim()) return messages
-
-  const systemIdx = messages.findIndex((m) => m.role === 'system')
-  if (systemIdx < 0) return messages
-
-  const current = String(messages[systemIdx].content ?? '')
-  if (current.includes('[SKILLS_CATALOG]')) return messages
-
-  const next = [...messages]
-  next[systemIdx] = { ...next[systemIdx], content: `${current}\n\n${skillCatalog}` }
-  return next
-}
-
-/** 非流式：renderer invoke → main handle → 返回完整回复 */
-async function handleChatSend(_event: IpcMainInvokeEvent, payload: ChatSendPayload) {
-  const logScope = buildLogScope(payload.projectId, undefined)
-  try {
-    await refreshSkills()
-  } catch (err) {
-    log('SKILLS_REFRESH_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
-  }
-  const messages = withActiveSkillsPrompt(payload.messages)
-  const restoreSkillEnv = applySkillEnvironment(getActiveSkillEnv())
-  try {
-    const raw = await requestChatCompletion(
-      payload.provider as ProviderKey,
-      messages,
-      payload.overrides as ProviderOverrides | undefined,
-      undefined,
-      logScope,
-    )
-    return sanitizeUserFacingText(raw)
-  } finally {
-    restoreSkillEnv()
-  }
-}
-
-/** 流式：renderer send → main on → 逐块 send 回 renderer */
-async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload) {
-  const {
-    requestId,
-    provider,
-    overrides,
-    projectId,
-    workspace,
-    maxTokens,
-    sessionId,
-    sourceUserMessageId,
-    sourceAssistantMessageId,
-  } = payload
-  const logScope = buildLogScope(projectId, workspace)
-  try {
-    await refreshSkills(workspace)
-  } catch (err) {
-    log('SKILLS_REFRESH_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
-  }
-  const messages = withActiveSkillsPrompt(payload.messages)
-  const restoreSkillEnv = applySkillEnvironment(getActiveSkillEnv())
-  const turnStartedAt = Date.now()
-  const abortController = new AbortController()
-  let lastUsage: TokenUsage | undefined
-  let assistantFullText = ''
-  let rawAssistantFullText = ''
-  let emittedSanitizedText = ''
-  const lastUserGoal = [...messages].reverse().find((m) => m.role === 'user')?.content?.trim() || ''
-  const plainUserQuery = extractUserQueryText(lastUserGoal)
-  const userAssetsBlock = extractUserAssetsBlock(lastUserGoal)
-
-  async function persistChatTurnMemory(
-    outcome: 'success' | 'aborted' | 'error',
-    summaryText: string,
-    errorMessage?: string,
-  ): Promise<void> {
-    const cleaned = cleanupAssistantMemoryText(summaryText)
-    const summary = (errorMessage
-      ? [cleaned, `错误信息: ${errorMessage}`].filter(Boolean).join('\n')
-      : cleaned
-    ) || (outcome === 'aborted' ? '(用户中止，未产出完整回复)' : '(无最终文本)')
-
-    try {
-      let intentType = inferIntentTypeFromQuery(plainUserQuery || lastUserGoal)
-      let intentSummary = plainUserQuery || lastUserGoal
-      let intentGoal = plainUserQuery || lastUserGoal
-      let intentSource: 'llm' | 'heuristic' = 'heuristic'
-
-      try {
-        const inferred = await inferIntentFromBackground(
-          workspace?.trim() ?? '',
-          plainUserQuery || lastUserGoal,
-          projectId,
-          {
-            usageTotalTokens: lastUsage?.totalTokens,
-            logScope,
-          },
-        )
-        intentType = inferred.intentType || intentType
-        intentSummary = inferred.intentSummary || intentSummary
-        intentGoal = inferred.intentGoal || intentGoal
-        intentSource = inferred.intentSource || intentSource
-      } catch (err) {
-        log('CHAT_TASK_MEMORY_INTENT_INFER_FAIL', {
-          error: err instanceof Error ? err.message : String(err),
-        }, logScope)
-      }
-
-      await recordTaskLog(
-        workspace?.trim() ?? '',
-        {
-          goal: plainUserQuery || lastUserGoal || '(未提取到用户提问)',
-          userQuery: plainUserQuery || lastUserGoal,
-          ...(userAssetsBlock ? { userAssetsBlock } : {}),
-          intentType,
-          intentSummary,
-          intentGoal,
-          summary,
-          outcome,
-          tools: [],
-          changedFiles: [],
-          identifiers: [],
-          failures: errorMessage ? [errorMessage] : [],
-          sourceRef: {
-            ...(String(sessionId || projectId || '').trim() ? { sessionId: String(sessionId || projectId || '').trim() } : {}),
-            ...(String(sourceUserMessageId || '').trim() ? { userMessageId: String(sourceUserMessageId || '').trim() } : {}),
-            ...(String(sourceAssistantMessageId || '').trim() ? { assistantMessageId: String(sourceAssistantMessageId || '').trim() } : {}),
-          },
-        },
-        projectId,
-      )
-      try {
-        await maintainTaskMemoriesByAI(workspace?.trim() ?? '', projectId, {
-          provider: provider as ProviderKey,
-          overrides: overrides as ProviderOverrides | undefined,
-          usageTotalTokens: lastUsage?.totalTokens,
-          maxTokens,
-          logScope,
-        })
-      } catch (maintainErr) {
-        log('CHAT_TASK_MEMORY_MAINTAIN_FAIL', {
-          error: maintainErr instanceof Error ? maintainErr.message : String(maintainErr),
-        }, logScope)
-      }
-      log('CHAT_TASK_MEMORY_SAVED', {
-        outcome,
-        hasGoal: Boolean(plainUserQuery || lastUserGoal),
-        intentType,
-        intentSource,
-        summaryLength: summary.length,
-      }, logScope)
-
-      try {
-        const scored = await applyRewardScore({
-          channel: 'chat',
-          outcome,
-          workspace,
-          projectId,
-          requestId,
-          failures: errorMessage ? 1 : 0,
-          elapsedMs: Math.max(0, Date.now() - turnStartedAt),
-        })
-        log('REWARD_SCORE_APPLIED', {
-          channel: 'chat',
-          outcome,
-          delta: scored.delta,
-          points: scored.state.points,
-          debtUsd: scored.state.debtUsd,
-          breakdown: scored.entry.breakdown,
-        }, logScope)
-      } catch (scoreErr) {
-        log('REWARD_SCORE_APPLY_FAIL', {
-          channel: 'chat',
-          error: scoreErr instanceof Error ? scoreErr.message : String(scoreErr),
-        }, logScope)
-      }
-    } catch (err) {
-      log('CHAT_TASK_MEMORY_SAVE_FAIL', {
-        error: err instanceof Error ? err.message : String(err),
-      }, logScope)
-    }
-  }
-
-  chatAbortControllers.set(requestId, abortController)
-
-  // Bridge: 开始任务时，立即更新项目状态并推送给移动端
-  try {
-    const mgr = getBridgeManager()
-    mgr.updateProjectStateAndPush(String(projectId ?? ''), {
-      isProcessing: true,
-      activeTaskId: requestId,
-    })
-  } catch (_) { /* bridge 未初始化时忽略 */ }
-
-  // Bridge: 发送用户消息到移动端
-  try {
-    const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user')
-    if (lastUserMessage) {
-      getBridgeManager().sendHostMessage({
-        type: 'bridge:chat-user-message',
-        messageId: sourceUserMessageId || `user-${requestId}`,
-        content: lastUserMessage.content || '',
-        images: lastUserMessage.images,
-        threadId: projectId,
-        timestamp: Date.now(),
-      })
-    }
-  } catch (_) { /* ignore bridge errors */ }
-
-  try {
-    for await (const chunk of requestChatCompletionStream(
-      provider as ProviderKey,
-      messages,
-      overrides as ProviderOverrides | undefined,
-      abortController.signal,
-      logScope,
-      (usage) => {
-        lastUsage = usage
-      },
-    )) {
-      rawAssistantFullText += chunk
-      const sanitizedFull = sanitizeUserFacingText(rawAssistantFullText)
-      // 防回退：若 sanitized 因标签剥离而变短，重置已发送指针
-      if (sanitizedFull.length < emittedSanitizedText.length) {
-        emittedSanitizedText = sanitizedFull
-      }
-      // 基于 raw 文本做安全裁剪：避免 sanitize 结果长度波动破坏 delta 连续性
-      const safeRawLen = Math.max(0, rawAssistantFullText.length - STREAM_SANITIZE_HOLD_BACK)
-      const safeRaw = rawAssistantFullText.slice(0, safeRawLen)
-      const sanitizedSafe = sanitizeUserFacingText(safeRaw)
-      const delta = sanitizedSafe.slice(emittedSanitizedText.length)
-      emittedSanitizedText = sanitizedSafe
-      assistantFullText = sanitizedFull
-      if (event.sender.isDestroyed()) return
-      if (delta) {
-        event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk: delta, done: false })
-        // Bridge: forward chat delta to mobile clients
-        try {
-          getBridgeManager().sendHostMessage({
-            type: 'bridge:chat-delta',
-            messageId: sourceAssistantMessageId || requestId,
-            delta,
-            done: false,
-            threadId: projectId,
-          })
-        } catch (_) { /* ignore bridge errors */ }
-      }
-    }
-    const finalSanitized = sanitizeUserFacingText(rawAssistantFullText)
-    const tailStart = Math.min(emittedSanitizedText.length, finalSanitized.length)
-    const tailDelta = finalSanitized.slice(tailStart)
-    assistantFullText = finalSanitized
-    if (tailDelta && !event.sender.isDestroyed()) {
-      event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk: tailDelta, done: false })
-      // Bridge: forward tail delta
-      try {
-        getBridgeManager().sendHostMessage({
-          type: 'bridge:chat-delta',
-          messageId: sourceAssistantMessageId || requestId,
-          delta: tailDelta,
-          done: false,
-          threadId: projectId,
-        })
-      } catch (_) { /* ignore bridge errors */ }
-    }
-    if (!event.sender.isDestroyed()) {
-      event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk: '', done: true, usage: lastUsage })
-      // Bridge: mark chat delta as done
-      try {
-        getBridgeManager().sendHostMessage({
-          type: 'bridge:chat-delta',
-          messageId: sourceAssistantMessageId || requestId,
-          delta: '',
-          done: true,
-          threadId: projectId,
-        })
-      } catch (_) { /* ignore bridge errors */ }
-    }
-    await persistChatTurnMemory('success', assistantFullText)
-  } catch (error) {
-    const aborted = abortController.signal.aborted || (error instanceof Error && error.name === 'AbortError')
-    if (aborted) {
-      if (!event.sender.isDestroyed()) {
-        event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk: '', done: true, usage: lastUsage })
-      }
-      // Bridge: mark chat delta as done (aborted)
-      try {
-        getBridgeManager().sendHostMessage({
-          type: 'bridge:chat-delta',
-          messageId: sourceAssistantMessageId || requestId,
-          delta: '',
-          done: true,
-          threadId: projectId,
-        })
-      } catch (_) { /* ignore bridge errors */ }
-      await persistChatTurnMemory('aborted', assistantFullText)
-      return
-    }
-    if (!event.sender.isDestroyed()) {
-      event.sender.send(IpcChannel.CHAT_CHUNK, {
-        requestId,
-        chunk: '',
-        done: true,
-        error: error instanceof Error ? error.message : 'Stream failed'
-      })
-    }
-    // Bridge: mark chat delta as done (error)
-    try {
-      getBridgeManager().sendHostMessage({
-        type: 'bridge:chat-delta',
-        messageId: sourceAssistantMessageId || requestId,
-        delta: '',
-        done: true,
-        threadId: projectId,
-      })
-    } catch (_) { /* ignore bridge errors */ }
-    await persistChatTurnMemory('error', assistantFullText, error instanceof Error ? error.message : 'Stream failed')
-  } finally {
-    chatAbortControllers.delete(requestId)
-    restoreSkillEnv()
-    // Bridge: 结束任务时，立即更新项目状态并推送给移动端
-    try {
-      const mgr = getBridgeManager()
-      mgr.updateProjectStateAndPush(String(projectId ?? ''), {
-        isProcessing: false,
-        activeTaskId: undefined,
-      })
-    } catch (_) { /* bridge 未初始化时忽略 */ }
-  }
-}
-
-async function handleGuiPlusGet(): Promise<GuiPlusConfig> {
-  return await getGuiPlusConfig()
-}
-
-async function handleGuiPlusSave(_event: IpcMainInvokeEvent, config: GuiPlusConfig): Promise<void> {
-  await saveGuiPlusConfig(config)
-}
-
-async function handleAppStateGet(): Promise<AppStateSnapshot> {
-  return await getAppState()
-}
-
-async function handleAppStateSaveThreads(
-  _event: IpcMainInvokeEvent,
-  payload: AppStateThreadsPayload,
-): Promise<AppStateThreadsPayload> {
-  const result = await saveAppThreadsState(payload)
-  // 当桌面端切换项目时，同步更新 BridgeManager 的活跃项目并推送移动端
-  try {
-    const mgr = getBridgeManager()
-    const newActiveId = result.activeThreadId || null
-    if (mgr.getActiveThreadId() !== newActiveId) {
-      // 获取项目顺序信息，确保移动端项目列表与桌面端一致
-      const orderedProjectIds = result.threads.map(t => t.id)
-      mgr.setActiveThread(newActiveId, orderedProjectIds)
-    }
-  } catch {
-    // bridge 未初始化时忽略
-  }
-  return result
-}
-
-async function handleAppStateSaveProviders(
-  _event: IpcMainInvokeEvent,
-  payload: AppStateProvidersPayload,
-): Promise<AppStateProvidersPayload> {
-  return await saveAppProvidersState(payload)
-}
-
-async function handlePromptConfigGet(): Promise<PromptConfig> {
-  return await getPromptConfig()
-}
-
-async function handlePromptConfigSave(_event: IpcMainInvokeEvent, config: PromptConfig): Promise<PromptConfig> {
-  return await savePromptConfig(config)
-}
-
-async function handleAppNotify(_event: IpcMainInvokeEvent, payload: AppNotifyPayload): Promise<boolean> {
-  if (!Notification.isSupported()) return false
-  const title = payload.title?.trim() || 'Taco AI'
-  const body = payload.body?.trim() || '任务执行完成'
-  const notification = new Notification({
-    title,
-    body,
-    silent: payload.silent ?? false,
-  })
-  notification.show()
-  return true
-}
-
-/* ── Chat abort 管理 ── */
-/** 当前正在运行的 chat 流式 AbortController 集合：requestId → AbortController */
-const chatAbortControllers = new Map<string, AbortController>()
-
-/* ── Agent abort 管理 ── */
-/** 当前正在运行的 agent AbortController 集合：requestId → AbortController */
-const agentAbortControllers = new Map<string, AbortController>()
-
-async function handleAgentStream(event: IpcMainEvent, payload: AgentStreamPayload): Promise<void> {
-  const {
-    requestId,
-    provider,
-    messages,
-    overrides,
-    workspace,
-    maxTokens,
-    images,
-    projectId,
-    recallDebug,
-    sessionId,
-    sourceUserMessageId,
-    sourceAssistantMessageId,
-  } = payload
-  const logScope = buildLogScope(projectId, workspace)
-
-  // 图片已由前端上传到云存储,直接使用URL
-  if (images && images.length > 0) {
-    log('IMAGES_RECEIVED', { count: images.length, urls: images.slice(0, 3) }, logScope)
-  }
-
-  // 创建 AbortController 以支持外部终止
-  const abortController = new AbortController()
-  agentAbortControllers.set(requestId, abortController)
-
-  // Agent 开始任务时，立即更新项目状态并推送给移动端
-  try {
-    const mgr = getBridgeManager()
-    mgr.updateProjectStateAndPush(String(projectId ?? ''), {
-      isProcessing: true,
-      activeTaskId: requestId,
-    })
-  } catch (_) { /* bridge 未初始化时忽略 */ }
-
-  try {
-    await runAgent(
-      provider as ProviderKey,
-      messages,
-      overrides as ProviderOverrides | undefined,
-      workspace,
-      (agentEvent) => {
-        if (event.sender.isDestroyed()) return
-        sendAgentEventSafely(event.sender, { requestId, ...agentEvent }, logScope)
-        // Bridge: forward agent event to mobile clients
-        try {
-          getBridgeManager().sendHostMessage({
-            type: 'bridge:agent-event',
-            requestId: sourceAssistantMessageId || requestId,
-            originalRequestId: requestId,
-            threadId: projectId,
-            event: agentEvent,
-          } as any)
-        } catch (_) { /* ignore bridge errors */ }
-      },
-      maxTokens,
-      abortController.signal,
-      projectId,
-      sessionId,
-      sourceUserMessageId,
-      sourceAssistantMessageId,
-      logScope,
-      Boolean(recallDebug),
-    )
-  } finally {
-    agentAbortControllers.delete(requestId)
-    // Agent 结束任务时，立即更新项目状态并推送给移动端
-    try {
-      const mgr = getBridgeManager()
-      mgr.updateProjectStateAndPush(String(projectId ?? ''), {
-        isProcessing: false,
-        activeTaskId: undefined,
-      })
-    } catch (_) { /* bridge 未初始化时忽略 */ }
-  }
-}
-
-async function handleRendererError(_event: IpcMainInvokeEvent, payload: RendererErrorPayload): Promise<void> {
-  const source = String(payload?.source ?? '').trim() || 'unknown'
-  const message = String(payload?.message ?? '').trim() || 'Renderer error'
-  const scope = buildLogScope(payload?.projectId, payload?.workspace)
-  logError('renderer-error', `[${source}] ${message}`, {
-    stack: payload?.stack,
-    componentStack: payload?.componentStack,
-    metadata: payload?.metadata,
-  }, scope)
-}
-
-async function handleChatStoreList(): Promise<ChatStoreSessionSummary[]> {
-  initMemoryDb()
-  return listChatStoreSessions().map((entry) => ({
-    projectId: entry.projectId,
-    sessionId: entry.sessionId,
-    workspace: entry.workspace,
-    updatedAt: entry.updatedAt,
-    messageCount: Number.isFinite(Number(entry.messageCount)) ? Number(entry.messageCount) : 0,
-  }))
-}
-
-async function handleChatStoreLoadPage(
-  _event: IpcMainInvokeEvent,
-  sessionId: string,
-  options?: { beforeSeq?: number; limit?: number },
-): Promise<ChatStoreSessionPage | null> {
-  initMemoryDb()
-  const page = loadChatStoreSessionPage(sessionId, options)
-  if (!page) return null
-  return {
-    projectId: page.projectId,
-    sessionId: page.sessionId,
-    workspace: page.workspace,
-    updatedAt: page.updatedAt,
-    totalCount: page.totalCount,
-    startSeq: page.startSeq,
-    endSeq: page.endSeq,
-    messages: Array.isArray(page.messages) ? page.messages : [],
-  }
-}
-
-async function handleChatStoreSave(_event: IpcMainInvokeEvent, patch: ChatStoreSessionPatch): Promise<void> {
-  initMemoryDb()
-  saveChatStoreSessionPatch({
-    projectId: String(patch?.projectId || ''),
-    sessionId: String(patch?.sessionId || ''),
-    workspace: String(patch?.workspace || ''),
-    updatedAt: Number.isFinite(Number(patch?.updatedAt)) ? Number(patch.updatedAt) : Date.now(),
-    fromSeq: Number.isFinite(Number(patch?.fromSeq)) ? Number(patch.fromSeq) : 0,
-    messages: Array.isArray(patch?.messages) ? patch.messages : [],
-  })
-}
-
-async function handleChatStoreDeleteSession(_event: IpcMainInvokeEvent, sessionId: string): Promise<void> {
-  initMemoryDb()
-  deleteChatStoreSession(sessionId)
-}
-
-/** 终止正在运行的 agent */
-function handleAgentAbort(_event: IpcMainEvent, requestId: string) {
-  const controller = agentAbortControllers.get(requestId)
-  if (controller) {
-    controller.abort()
-    agentAbortControllers.delete(requestId)
-  }
-}
-
-/** 终止正在运行的 chat 流式请求 */
-function handleChatAbort(_event: IpcMainEvent, requestId: string) {
-  const controller = chatAbortControllers.get(requestId)
-  if (controller) {
-    controller.abort()
-    chatAbortControllers.delete(requestId)
-  }
-}
-
-/** 用户对风险操作的确认/拒绝响应 */
-function handleAgentConfirm(_event: IpcMainEvent, payload: AgentConfirmPayload) {
-  resolveConfirm(payload.confirmId, payload.approved)
-  // 通知移动端：确认已处理，清除待确认弹窗
-  try {
-    getBridgeManager().sendHostMessage({
-      type: 'bridge:agent-confirm-resolved',
-      confirmId: payload.confirmId,
-      approved: payload.approved,
-    } as any)
-  } catch (_) { /* bridge 未初始化时忽略 */ }
-}
+/* ------------------------------------------------------------------ */
+/*  Directory / file dialogs                                           */
+/* ------------------------------------------------------------------ */
 
 /** 目录选择对话框 */
 async function handleSelectDirectory(event: IpcMainInvokeEvent): Promise<string | null> {
@@ -885,7 +174,6 @@ async function handleOpenInEditor(_event: IpcMainInvokeEvent, filePath: string, 
 
   let cmd: string
   if (process.platform === 'darwin') {
-    // macOS: 用 open -a 通过应用名打开，不依赖 CLI 是否在 PATH 中
     cmd = editor === 'system'
       ? `open "${filePath}"`
       : `open -a "${entry.macApp}" "${filePath}"`
@@ -894,7 +182,6 @@ async function handleOpenInEditor(_event: IpcMainInvokeEvent, filePath: string, 
       ? `start "" "${filePath}"`
       : `"${entry.cli}" "${filePath}"`
   } else {
-    // Linux
     cmd = editor === 'system'
       ? `xdg-open "${filePath}"`
       : `${entry.cli} "${filePath}"`
@@ -909,7 +196,7 @@ async function handleOpenInEditor(_event: IpcMainInvokeEvent, filePath: string, 
 }
 
 /* ------------------------------------------------------------------ */
-/*  Workspace tree — 读取工作空间目录结构                                */
+/*  Workspace tree                                                     */
 /* ------------------------------------------------------------------ */
 
 const EXCLUDED_DIRS = new Set([
@@ -918,8 +205,6 @@ const EXCLUDED_DIRS = new Set([
   '.next', '.nuxt', '.output', '.dart_tool', '.turbo',
   'dist', 'build', 'out', 'target', '.gradle', 'Pods', 'DerivedData',
 ])
-
-import type { FileTreeEntry } from '../../shared/ipc'
 
 const WORKSPACE_TREE_MAX_DEPTH = 8
 const WORKSPACE_TREE_MAX_ENTRIES = 12_000
@@ -1011,7 +296,7 @@ async function getWorkspaceTree(cwd: string): Promise<FileTreeEntry[]> {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Workspace watcher — 监听工作区文件系统变化并通知渲染进程                */
+/*  Workspace watcher                                                  */
 /* ------------------------------------------------------------------ */
 
 let activeWatcher: FSWatcher | null = null
@@ -1023,12 +308,10 @@ function startWatching(cwd: string, win: BrowserWindow) {
   activeWatchPath = nodePath.resolve(cwd)
   try {
     activeWatcher = fsWatch(activeWatchPath, { recursive: true }, (_eventType, filename) => {
-      // 过滤掉不需要关注的目录变化
       if (filename) {
         const top = filename.toString().split(/[/\\]/)[0]
         if (EXCLUDED_DIRS.has(top)) return
       }
-      // 防抖：多次变化合并为一次通知
       if (watchDebounce) clearTimeout(watchDebounce)
       watchDebounce = setTimeout(() => {
         watchDebounce = null
@@ -1050,18 +333,16 @@ function stopWatching() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  File revert / delete — 撤销 Agent 文件变更                          */
+/*  File revert / delete                                               */
 /* ------------------------------------------------------------------ */
 
-/** 将文件内容恢复为旧内容（也用于恢复被删除的文件，会自动创建目录） */
+/** 将文件内容恢复为旧内容 */
 async function handleFileRevert(_event: IpcMainInvokeEvent, filePath: string, oldContent: string): Promise<void> {
   try {
-    // 确保父目录存在（文件或目录可能已被删除）
     const dir = nodePath.dirname(filePath)
     await fs.mkdir(dir, { recursive: true })
     await fs.writeFile(filePath, oldContent, 'utf-8')
   } catch (err: unknown) {
-    // 其他错误正常抛出
     throw err
   }
 }
@@ -1071,7 +352,6 @@ async function handleFileDelete(_event: IpcMainInvokeEvent, filePath: string): P
   try {
     await shell.trashItem(filePath)
   } catch (err: unknown) {
-    // 文件不存在时忽略（可能已被手动删除）
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
     throw err
   }
@@ -1082,19 +362,16 @@ async function handleDirectoryDelete(_event: IpcMainInvokeEvent, dirPath: string
   try {
     await shell.trashItem(dirPath)
   } catch (err: unknown) {
-    // 目录不存在时忽略（可能已被手动删除）
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
     throw err
   }
 }
 
 /* ------------------------------------------------------------------ */
-/*  File read / write — 读取和写入文件内容                               */
+/*  File read / write                                                  */
 /* ------------------------------------------------------------------ */
 
-/** 检测是否为二进制内容（含 NUL 字节） */
 function isBinaryBuffer(buf: Buffer): boolean {
-  // 检查前 8192 字节
   const len = Math.min(buf.length, 8192)
   for (let i = 0; i < len; i++) {
     if (buf[i] === 0) return true
@@ -1153,7 +430,6 @@ function imageMimeFromPath(filePath: string): string | null {
   return m[ext] ?? null
 }
 
-/** 读取文件内容，返回文本内容或标记为二进制（图片可附带 dataUrl 预览） */
 async function handleFileRead(
   _event: IpcMainInvokeEvent, filePath: string,
 ): Promise<{ content: string | null; size: number; isBinary: boolean; dataUrl?: string; truncated?: boolean }> {
@@ -1161,7 +437,6 @@ async function handleFileRead(
   const size = stat.size
   const imageMime = imageMimeFromPath(filePath)
 
-  // 超过 5MB 不读取内容
   if (size > FILE_READ_HARD_LIMIT) {
     if (!imageMime && isLargeTextPreviewPath(filePath)) {
       const preview = await readUtf8Tail(filePath, size, LARGE_TEXT_PREVIEW_BYTES)
@@ -1181,10 +456,8 @@ async function handleFileRead(
         dataUrl: `data:${imageMime};base64,${buf.toString('base64')}`,
       }
     }
-    // 非图片二进制文件：生成前 8KB 的十六进制预览
     const previewLen = Math.min(buf.length, 8192)
     const hexPreview = buf.subarray(0, previewLen).toString('hex')
-    // 格式化为每行 32 字节（64 个 hex 字符）
     const lines: string[] = []
     for (let i = 0; i < hexPreview.length; i += 64) {
       lines.push(hexPreview.slice(i, i + 64))
@@ -1206,23 +479,18 @@ async function handleFileRead(
   return { content: text, size, isBinary: false }
 }
 
-/** 写入文件内容 */
 async function handleFileWrite(
   _event: IpcMainInvokeEvent, filePath: string, content: string,
 ): Promise<void> {
-  // 确保父目录存在
   const dir = nodePath.dirname(filePath)
   await fs.mkdir(dir, { recursive: true })
   await fs.writeFile(filePath, content, 'utf-8')
 }
 
-/* Terminal handlers imported from ./terminal.ts */
-
 /* ------------------------------------------------------------------ */
-/*  Window drag — 手动拖拽以支持自定义光标                               */
+/*  Window drag                                                        */
 /* ------------------------------------------------------------------ */
 
-/** 记录每个窗口的拖拽起始偏移 */
 const dragState = new Map<number, { offsetX: number; offsetY: number }>()
 
 function handleWindowDragStart(event: IpcMainEvent, pos: { screenX: number; screenY: number }) {
@@ -1269,503 +537,6 @@ function handleWindowClose(event: IpcMainEvent) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Bridge handlers                                                      */
-/* ------------------------------------------------------------------ */
-
-/** 使用会员 token 连接 Relay */
-function handleBridgeConnect(_event: IpcMainEvent, token: string): void {
-  const mgr = getBridgeManager()
-  mgr.connect(token)
-}
-
-/** 断开桥接连接 */
-function handleBridgeDisconnect(): void {
-  getBridgeManager().disconnect()
-}
-
-/** 获取当前桥接状态 */
-async function handleBridgeGetStatus(): Promise<BridgeStatusPayload> {
-  return getBridgeManager().getStatus()
-}
-
-/** 刷新 Token（用于 Token 过期时自动续期） */
-function handleBridgeRefreshToken(_event: IpcMainEvent, newToken: string): void {
-  getBridgeManager().refreshToken(newToken)
-}
-
-/** 注册桥接状态转发：BridgeManager 状态变化时推送给所有 renderer */
-function setupBridgeStatusForwarding(): void {
-  const mgr = getBridgeManager()
-  mgr.onStatusChange((status) => {
-    for (const win of BrowserWindow.getAllWindows()) {
-      if (!win.isDestroyed()) {
-        win.webContents.send(IpcChannel.BRIDGE_STATUS_CHANGED, status)
-      }
-    }
-  })
-  // 移动端消息转发到渲染进程
-  mgr.onClientMessage((msg) => {
-    for (const win of BrowserWindow.getAllWindows()) {
-      if (!win.isDestroyed()) {
-        win.webContents.send(IpcChannel.BRIDGE_CLIENT_MESSAGE, msg)
-      }
-    }
-  })
-}
-
-/** 注册移动端连接成功回调：主动推送 bridge:state 状态快照 */
-function setupBridgeClientConnectedHandler(): void {
-  const mgr = getBridgeManager()
-
-  mgr.onClientConnected(async () => {
-    log('BRIDGE_CLIENT_CONNECTED', {}, 'bridge')
-    try {
-      const state = await getAppState()
-      const activeThread = state.threadsState.threads.find(
-        (t) => t.id === state.threadsState.activeThreadId,
-      )
-      if (!activeThread) {
-        log('BRIDGE_NO_ACTIVE_THREAD', {}, 'bridge')
-        return
-      }
-
-      // 同步更新 BridgeManager 的活跃项目
-      const orderedProjectIds = state.threadsState.threads.map(t => t.id)
-      mgr.setActiveThread(state.threadsState.activeThreadId, orderedProjectIds)
-
-      const resolvedSessionId = activeThread.activeSessionId || activeThread.sessions[0]?.id || ''
-      if (!resolvedSessionId) {
-        log('BRIDGE_NO_ACTIVE_SESSION', {}, 'bridge')
-        return
-      }
-
-      // 直接从 DB 读取消息并推送，不再经过渲染进程
-      // 优化：首次连接只加载最近 50 条消息，减少传输和渲染压力
-      const page = loadChatStoreSessionPage(resolvedSessionId, { limit: 50 })
-      if (page && Array.isArray(page.messages)) {
-        const modelConfig = state.providersState.modelConfigs.find(
-          (m) => m.id === activeThread.modelConfigId,
-        )
-        // 查询当前项目是否有活跃任务
-        const hasActiveTask = agentAbortControllers.size > 0 &&
-          Array.from(agentAbortControllers.keys()).some(key => {
-            return key.includes(resolvedSessionId) || key.includes(activeThread.id)
-          })
-        const activeAgentRequestId = hasActiveTask ? `agent-${resolvedSessionId}` : undefined
-
-        mgr.sendHostMessage({
-          type: 'bridge:state',
-          messages: page.messages as BridgeChatMessage[],
-          threadId: activeThread.id,
-          workspace: activeThread.workspace,
-          modelLabel: modelConfig?.model || modelConfig?.name || '',
-          modelConfigId: activeThread.modelConfigId,
-          threadTitle: activeThread.title,
-          activeAgentRequestId,
-        })
-        log('BRIDGE_STATE_PUSHED_DIRECT', {
-          threadId: activeThread.id,
-          sessionId: resolvedSessionId,
-          messageCount: page.messages.length,
-          activeAgentRequestId: activeAgentRequestId || '(none)',
-        }, 'bridge')
-      }
-    } catch (err) {
-      logError('bridge', 'setupBridgeClientConnectedHandler 失败', {
-        error: err instanceof Error ? err.message : String(err),
-      })
-    }
-  })
-}
-
-/** 接收渲染进程返回的状态快照并转发给移动端 */
-function setupBridgeStateSnapshotResponse(): void {
-  ipcMain.on('bridge:state-snapshot-response', (_event, payload: {
-    messages: Array<{
-      id: string
-      role: string
-      content: string
-      hasImages?: boolean
-      streaming?: boolean
-      agentSteps?: any[]
-      activePlan?: any
-      taskTiming?: any
-    }>
-    threadId: string
-    sessionId?: string
-    workspace?: string
-    modelLabel?: string
-    modelConfigId?: string
-    threadTitle?: string
-    projectTitle?: string
-    activeAgentRequestId?: string
-    tokenUsage?: {
-      promptTokens?: number
-      completionTokens?: number
-      totalTokens?: number
-      cachedTokens?: number
-    }
-  }) => {
-    try {
-      const mgr = getBridgeManager()
-      mgr.sendHostMessage({
-        type: 'bridge:state',
-        messages: payload.messages as BridgeChatMessage[],
-        threadId: payload.threadId,
-        activeAgentRequestId: payload.activeAgentRequestId,
-        workspace: payload.workspace,
-        modelLabel: payload.modelLabel,
-        modelConfigId: payload.modelConfigId,
-        threadTitle: payload.threadTitle,
-        projectTitle: payload.projectTitle,
-        tokenUsage: payload.tokenUsage,
-      })
-      log('BRIDGE_STATE_PUSHED', {
-        threadId: payload.threadId,
-        messageCount: payload.messages.length,
-      }, 'bridge')
-    } catch (err) {
-      logError('bridge', '转发 bridge:state 失败', {
-        error: err instanceof Error ? err.message : String(err),
-      })
-    }
-  })
-}
-
-/** 注册移动端数据查询处理器：处理移动端发送的项目列表、目录树、文件读写等请求 */
-function setupBridgeDataHandler(): void {
-  const mgr = getBridgeManager()
-
-  mgr.setDataHandler(async (msg, respond) => {
-    const type = String(msg.type || '')
-    const requestId = String(msg.requestId || '')
-
-    try {
-      switch (type) {
-        /* ---- 项目列表 ---- */
-        case 'bridge:get-projects': {
-          const state = await getAppState()
-          const projects = state.threadsState.threads.map((t) => ({
-            id: t.id,
-            title: t.title,
-            workspace: t.workspace,
-            sessions: t.sessions.map((s) => ({
-              id: s.id,
-              title: s.title,
-              createdAt: s.createdAt,
-            })),
-            activeSessionId: t.activeSessionId,
-            modelConfigId: t.modelConfigId,
-          }))
-          respond({
-            type: 'bridge:projects',
-            requestId,
-            projects,
-            activeThreadId: state.threadsState.activeThreadId,
-          })
-          // 同时触发即时推送，减少移动端下次等待
-          mgr.pushProjectsOnDemand()
-          break
-        }
-
-        /* ---- 目录树 ---- */
-        case 'bridge:get-workspace-tree': {
-          const cwd = String(msg.path || '')
-          if (!cwd) {
-            respond({ type: 'bridge:workspace-tree', requestId, tree: [], error: 'path required' })
-            break
-          }
-          const tree = await getWorkspaceTree(cwd)
-          respond({ type: 'bridge:workspace-tree', requestId, tree })
-          break
-        }
-
-        /* ---- 文件读取 ---- */
-        case 'bridge:file-read': {
-          const filePath = String(msg.path || '')
-          if (!filePath) {
-            respond({ type: 'bridge:file-content', requestId, content: null, size: 0, isBinary: true, error: 'path required' })
-            break
-          }
-          try {
-            // 复用现有的文件读取逻辑（_event 参数不会被使用）
-            const result = await handleFileRead(null as unknown as IpcMainInvokeEvent, filePath)
-            respond({
-              type: 'bridge:file-content',
-              requestId,
-              content: result.content,
-              size: result.size,
-              isBinary: result.isBinary,
-              dataUrl: result.dataUrl,
-              truncated: result.truncated,
-            })
-          } catch (err) {
-            respond({
-              type: 'bridge:file-content',
-              requestId,
-              content: null,
-              size: 0,
-              isBinary: true,
-              error: err instanceof Error ? err.message : String(err),
-            })
-          }
-          break
-        }
-
-        /* ---- 文件写入 ---- */
-        case 'bridge:file-write': {
-          const filePath = String(msg.path || '')
-          const content = String(msg.content || '')
-          if (!filePath) {
-            respond({ type: 'bridge:file-written', requestId, success: false, error: 'path required' })
-            break
-          }
-          try {
-            await handleFileWrite(null as unknown as IpcMainInvokeEvent, filePath, content)
-            respond({ type: 'bridge:file-written', requestId, success: true })
-          } catch (err) {
-            respond({
-              type: 'bridge:file-written',
-              requestId,
-              success: false,
-              error: err instanceof Error ? err.message : String(err),
-            })
-          }
-          break
-        }
-
-        /* ---- 切换项目 ---- */
-        case 'bridge:switch-project': {
-          const projectId = String(msg.projectId || '')
-          const sessionId = String(msg.sessionId || '').trim() || undefined
-          if (!projectId) {
-            respond({ type: 'bridge:project-switched', requestId, success: false, error: 'projectId required' })
-            break
-          }
-          // 先立即返回成功响应，让移动端 UI 立即响应
-          respond({ type: 'bridge:project-switched', requestId, success: true })
-
-          // 立即更新 BridgeManager 的活跃项目并推送移动端
-          try {
-            const mgr = getBridgeManager()
-            // 获取项目顺序信息，确保移动端项目列表与桌面端一致
-            const state = await getAppState()
-            const orderedProjectIds = state.threadsState.threads.map(t => t.id)
-            mgr.setActiveThread(projectId, orderedProjectIds)
-          } catch { /* bridge 未初始化时忽略 */ }
-          
-          // 通知所有 renderer 切换项目（异步，不阻塞响应）
-          for (const win of BrowserWindow.getAllWindows()) {
-            if (!win.isDestroyed()) {
-              win.webContents.send('bridge:switch-project-from-mobile', { projectId, sessionId })
-            }
-          }
-          // 异步从 DB 读取消息并推送状态快照（不阻塞响应）
-          ;(async () => {
-            try {
-              const state = await getAppState()
-              const thread = state.threadsState.threads.find((t) => t.id === projectId)
-              const resolvedSessionId = sessionId || thread?.activeSessionId || thread?.sessions[0]?.id || ''
-              if (resolvedSessionId) {
-                // 优化：只加载最近 30 条消息，减少传输和渲染压力
-                const page = loadChatStoreSessionPage(resolvedSessionId, { limit: 30 })
-                if (page && Array.isArray(page.messages)) {
-                  const modelConfig = state.providersState.modelConfigs.find(
-                    (m) => m.id === thread?.modelConfigId,
-                  )
-                  // 查询当前项目是否有活跃任务（通过 activeTaskStartedAtByThread 判断）
-                  // 由于主进程无法直接访问渲染进程的 React state，通过检查 agentAbortControllers 是否有该项目的活跃请求
-                  const hasActiveTask = agentAbortControllers.size > 0 &&
-                    Array.from(agentAbortControllers.keys()).some(key => {
-                      // requestId 格式通常为 "agent-{sessionId}" 或类似
-                      return key.includes(resolvedSessionId) || key.includes(projectId)
-                    })
-                  const activeAgentRequestId = hasActiveTask ? `agent-${resolvedSessionId}` : undefined
-
-                  const mgr = getBridgeManager()
-                  mgr.sendHostMessage({
-                    type: 'bridge:state',
-                    messages: page.messages as BridgeChatMessage[],
-                    threadId: projectId,
-                    workspace: thread?.workspace || '',
-                    modelLabel: modelConfig?.model || modelConfig?.name || '',
-                    modelConfigId: thread?.modelConfigId || '',
-                    threadTitle: thread?.title || '',
-                    activeAgentRequestId,
-                  })
-                  log('BRIDGE_STATE_PUSHED_DIRECT', {
-                    threadId: projectId,
-                    sessionId: resolvedSessionId,
-                    messageCount: page.messages.length,
-                    activeAgentRequestId: activeAgentRequestId || '(none)',
-                  }, 'bridge')
-                }
-              }
-            } catch (err) {
-              logError('bridge', '切换项目后推送状态快照失败', {
-                error: err instanceof Error ? err.message : String(err),
-              })
-            }
-          })()
-          break
-        }
-
-        /* ---- 移动端主动请求状态快照（连接/重连后使用） ---- */
-        case 'bridge:request-state': {
-          try {
-            const state = await getAppState()
-            const activeThread = state.threadsState.threads.find(
-              (t) => t.id === state.threadsState.activeThreadId,
-            )
-            if (!activeThread) {
-              respond({ type: 'bridge:state', requestId, messages: [], threadId: '' })
-              break
-            }
-
-            const resolvedSessionId = activeThread.activeSessionId || activeThread.sessions[0]?.id || ''
-            if (!resolvedSessionId) {
-              respond({ type: 'bridge:state', requestId, messages: [], threadId: activeThread.id })
-              break
-            }
-
-            const page = loadChatStoreSessionPage(resolvedSessionId, { limit: 50 })
-            if (page && Array.isArray(page.messages)) {
-              const modelConfig = state.providersState.modelConfigs.find(
-                (m) => m.id === activeThread.modelConfigId,
-              )
-              const hasActiveTask = agentAbortControllers.size > 0 &&
-                Array.from(agentAbortControllers.keys()).some(key => {
-                  return key.includes(resolvedSessionId) || key.includes(activeThread.id)
-                })
-              const activeAgentRequestId = hasActiveTask ? `agent-${resolvedSessionId}` : undefined
-
-              respond({
-                type: 'bridge:state',
-                requestId,
-                messages: page.messages as BridgeChatMessage[],
-                threadId: activeThread.id,
-                workspace: activeThread.workspace,
-                modelLabel: modelConfig?.model || modelConfig?.name || '',
-                modelConfigId: activeThread.modelConfigId,
-                threadTitle: activeThread.title,
-                activeAgentRequestId,
-              })
-              log('BRIDGE_STATE_REQUEST_HANDLED', {
-                threadId: activeThread.id,
-                sessionId: resolvedSessionId,
-                messageCount: page.messages.length,
-              }, 'bridge')
-            } else {
-              respond({ type: 'bridge:state', requestId, messages: [], threadId: activeThread.id })
-            }
-          } catch (err) {
-            logError('bridge', '处理 bridge:request-state 失败', {
-              error: err instanceof Error ? err.message : String(err),
-            })
-            respond({ type: 'bridge:state', requestId, messages: [], threadId: '' })
-          }
-          break
-        }
-
-        /* ---- 加载更早消息（分页） ---- */
-        case 'bridge:load-older-messages': {
-          const sessionId = String(msg.sessionId || '').trim()
-          const beforeSeq = Number(msg.beforeSeq)
-          const limit = Math.min(200, Math.max(1, Number(msg.limit) || 50))
-          if (!sessionId || !Number.isFinite(beforeSeq)) {
-            respond({ type: 'bridge:older-messages', requestId, messages: [], totalCount: 0, error: 'sessionId and beforeSeq required' })
-            break
-          }
-          const page = loadChatStoreSessionPage(sessionId, { beforeSeq, limit })
-          if (!page) {
-            respond({ type: 'bridge:older-messages', requestId, messages: [], totalCount: 0 })
-            break
-          }
-          respond({
-            type: 'bridge:older-messages',
-            requestId,
-            messages: page.messages,
-            totalCount: page.totalCount,
-            startSeq: page.startSeq,
-            endSeq: page.endSeq,
-          })
-          break
-        }
-
-        /* ---- 模型列表 ---- */
-        case 'bridge:get-models': {
-          const state = await getAppState()
-          const providersState = state.providersState
-          respond({
-            type: 'bridge:models',
-            requestId,
-            models: providersState.modelConfigs.map((m) => ({
-              id: m.id,
-              provider: m.provider,
-              name: m.name,
-              model: m.model,
-              supportsVision: m.supportsVision,
-            })),
-            activeModelConfigId: providersState.activeModelConfigId,
-          })
-          break
-        }
-
-        /* ---- 切换模型 ---- */
-        case 'bridge:switch-model': {
-          const modelConfigId = String(msg.modelConfigId || '').trim()
-          if (!modelConfigId) {
-            respond({ type: 'bridge:model-switched', requestId, success: false, error: 'modelConfigId required' })
-            break
-          }
-          // 通知所有 renderer 切换模型
-          for (const win of BrowserWindow.getAllWindows()) {
-            if (!win.isDestroyed()) {
-              win.webContents.send('bridge:switch-model-from-mobile', { modelConfigId })
-            }
-          }
-          // 切换后主动推送状态快照，让移动端获取新的 modelLabel
-          setTimeout(async () => {
-            const state = await getAppState()
-            const activeThread = state.threadsState.threads.find(
-              (t) => t.id === state.threadsState.activeThreadId,
-            )
-            if (!activeThread) return
-            for (const win of BrowserWindow.getAllWindows()) {
-              if (!win.isDestroyed()) {
-                win.webContents.send('bridge:request-state-snapshot', {
-                  threadId: activeThread.id,
-                  sessionId: activeThread.activeSessionId,
-                  workspace: activeThread.workspace,
-                  modelConfigId: activeThread.modelConfigId || modelConfigId,
-                  threadTitle: activeThread.title,
-                })
-              }
-            }
-          }, 300)
-          respond({ type: 'bridge:model-switched', requestId, success: true })
-          break
-        }
-
-        default:
-          respond({ type: 'error', requestId, message: `Unknown request type: ${type}` })
-          break
-      }
-    } catch (err) {
-      logError('bridge-data-handler', `处理移动端请求 ${type} 失败`, {
-        error: err instanceof Error ? err.message : String(err),
-        requestId,
-      }, undefined)
-      respond({
-        type: type.replace(/^bridge:get-/, 'bridge:').replace(/^bridge:file-/, 'bridge:file-'),
-        requestId,
-        error: err instanceof Error ? err.message : String(err),
-      })
-    }
-  })
-}
-
-/* ------------------------------------------------------------------ */
 /*  Registration                                                       */
 /* ------------------------------------------------------------------ */
 
@@ -1782,8 +553,7 @@ export function registerIpcHandlers() {
   ipcMain.handle(IpcChannel.SELECT_ATTACHMENTS, handleSelectAttachments)
   ipcMain.handle(IpcChannel.OPEN_IN_EDITOR, handleOpenInEditor)
   ipcMain.handle(IpcChannel.OPEN_LOG_DIR, (_e, scope?: { projectId?: string; workspace?: string }) => {
-    const logScope = buildLogScope(scope?.projectId, scope?.workspace)
-    return shell.openPath(getLogDir(logScope))
+    return shell.openPath(getLogDir(buildLogScope(scope?.projectId, scope?.workspace)))
   })
   ipcMain.handle(IpcChannel.APP_GET_VERSION, () => app.getVersion())
   ipcMain.handle(IpcChannel.APP_CHECK_UPDATE, (event, manual?: boolean) =>
@@ -1873,8 +643,6 @@ export function registerIpcHandlers() {
     setBrowserAutoApproved(enabled)
   })
 
-  // (浏览器操作结果回收 — 已统一使用外部浏览器，不再需要内嵌模式的 IPC 回调)
-
   // MCP 管理
   initMcp().catch((err) => console.error('MCP 初始化失败:', err))
   ipcMain.handle(IpcChannel.MCP_LIST, () => listMcpServers())
@@ -1893,7 +661,7 @@ export function registerIpcHandlers() {
   ipcMain.handle(IpcChannel.MCP_REMOVE, (_e, id: string) => removeMcpServer(id))
   ipcMain.handle(IpcChannel.MCP_TOGGLE, (_e, id: string, enabled: boolean) => toggleMcpServer(id, enabled))
 
-  // ── 外部浏览器窗口 (AppId-based 多窗口管理) ──
+  // 外部浏览器窗口
   ipcMain.handle(IpcChannel.EXTERNAL_BROWSER_OPEN, (_e, url: string, appId?: string) => {
     console.log(`[IPC] EXTERNAL_BROWSER_OPEN: url="${url}", appId="${appId}"`)
     return openExternalBrowser(url, appId)
@@ -1902,10 +670,9 @@ export function registerIpcHandlers() {
   ipcMain.handle(IpcChannel.EXTERNAL_BROWSER_NAVIGATE, (_e, url: string, appId?: string) => navigateExternalBrowser(url, appId))
   ipcMain.handle(IpcChannel.EXTERNAL_BROWSER_FOCUS, (_e, appId?: string) => focusExternalBrowser(appId))
 
-  // 浏览器模式同步（保留 IPC 监听以防旧版渲染进程发送，不做处理）
   ipcMain.on(IpcChannel.BROWSER_MODE, () => { /* 已统一使用外部浏览器 */ })
 
-  // ── Bridge 跨端桥接 ──
+  // Bridge 跨端桥接
   ipcMain.on(IpcChannel.BRIDGE_CONNECT, handleBridgeConnect)
   ipcMain.on(IpcChannel.BRIDGE_DISCONNECT, handleBridgeDisconnect)
   ipcMain.handle(IpcChannel.BRIDGE_GET_STATUS, handleBridgeGetStatus)
@@ -1915,12 +682,10 @@ export function registerIpcHandlers() {
   setupBridgeStateSnapshotResponse()
   setupBridgeDataHandler()
 
-  // ── 图片上传到云存储 ──
+  // 图片上传到云存储
   ipcMain.handle(IpcChannel.IMAGE_UPLOAD, async (_event, payload: { dataUrl: string; fileName: string }) => {
     const { dataUrl, fileName } = payload
-    
-    // 从数据库读取上传配置
-    let uploadConfig: any = null
+    let uploadConfig: IpcUploadConfig | null = null
     
     try {
       const dbConfig = loadUploadConfigFromDb()
@@ -1931,7 +696,6 @@ export function registerIpcHandlers() {
           updatedAt: dbConfig.updatedAt
         }, 'ipc')
         
-        // 转换为 IpcUploadConfig 格式
         const config = dbConfig.config as any
         
         if (dbConfig.provider === 'aliyun_oss') {
@@ -1944,7 +708,6 @@ export function registerIpcHandlers() {
             objectPrefix: config.aliyunOss?.objectPrefix || '',
             publicBaseUrl: config.aliyunOss?.publicBaseUrl || '',
           }
-          log('UPLOAD_CONFIG_PARSED', { provider: 'aliyun_oss', bucket: uploadConfig.bucket }, 'ipc')
         } else if (dbConfig.provider === 'qiniu') {
           uploadConfig = {
             provider: 'qiniu',
@@ -1956,28 +719,18 @@ export function registerIpcHandlers() {
             objectPrefix: config.qiniu?.objectPrefix || '',
             expiresSeconds: config.qiniu?.expiresSeconds ? Number(config.qiniu.expiresSeconds) : undefined,
           }
-          log('UPLOAD_CONFIG_PARSED', { provider: 'qiniu', bucket: uploadConfig.bucket }, 'ipc')
-        } else {
-          log('UPLOAD_CONFIG_INVALID_PROVIDER', { provider: dbConfig.provider }, 'ipc')
         }
       } else {
-        // 兼容旧版本：从文件读取
         log('UPLOAD_CONFIG_DB_EMPTY', {}, 'ipc')
         const configPath = nodePath.join(app.getPath('userData'), 'upload-config.json')
         
         if (fsSync.existsSync(configPath)) {
           const raw = fsSync.readFileSync(configPath, 'utf-8')
           const parsed = JSON.parse(raw)
-          log('UPLOAD_CONFIG_LOADED_FROM_FILE', { 
-            path: configPath, 
-            provider: parsed.provider 
-          }, 'ipc')
-          
-          // 迁移到数据库
+          log('UPLOAD_CONFIG_LOADED_FROM_FILE', { path: configPath, provider: parsed.provider }, 'ipc')
           saveUploadConfigToDb(parsed.provider, parsed)
           log('UPLOAD_CONFIG_MIGRATED_TO_DB', { provider: parsed.provider }, 'ipc')
           
-          // 重新从数据库读取
           const migratedConfig = loadUploadConfigFromDb()
           if (migratedConfig && migratedConfig.provider === 'aliyun_oss') {
             const migratedAny = migratedConfig.config as any
@@ -2003,8 +756,6 @@ export function registerIpcHandlers() {
               expiresSeconds: migratedAny.qiniu?.expiresSeconds ? Number(migratedAny.qiniu.expiresSeconds) : undefined,
             }
           }
-        } else {
-          log('UPLOAD_CONFIG_NOT_FOUND', { path: configPath }, 'ipc')
         }
       }
     } catch (err) {
@@ -2015,8 +766,7 @@ export function registerIpcHandlers() {
       throw new Error('未配置云存储,请在设置中配置阿里云OSS或七牛云')
     }
     
-    // 上传到云存储
-    const publicUrl = await uploadDataUrlToStorage(uploadConfig, dataUrl)
+    const publicUrl = await uploadDataUrlToStorage(uploadConfig as any, dataUrl)
     log('IMAGE_UPLOADED_FROM_RENDERER', { fileName, publicUrl }, 'ipc')
     return { publicUrl }
   })
@@ -2026,17 +776,17 @@ export function registerIpcHandlers() {
     try {
       const configAny = config as any
       const provider = configAny?.provider || 'none'
-      
       saveUploadConfigToDb(provider, configAny)
-      
-      log('UPLOAD_CONFIG_SAVED_TO_DB', { 
-        provider,
-        hasAliyunOss: !!configAny?.aliyunOss,
-        hasQiniu: !!configAny?.qiniu
-      }, 'ipc')
+      log('UPLOAD_CONFIG_SAVED_TO_DB', { provider }, 'ipc')
     } catch (err) {
       log('UPLOAD_CONFIG_SAVE_FAIL', { error: err instanceof Error ? err.message : String(err) }, 'ipc')
       throw err
     }
   })
+}
+
+function buildLogScope(projectId?: string, workspace?: string): string | undefined {
+  if (projectId && projectId.trim()) return `project:${projectId.trim()}`
+  if (workspace && workspace.trim()) return `workspace:${nodePath.resolve(workspace.trim())}`
+  return undefined
 }

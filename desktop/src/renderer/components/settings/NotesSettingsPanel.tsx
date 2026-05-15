@@ -261,20 +261,15 @@ export function NotesSettingsPanel({
             const expanded = expandedTaskMemoryIds.has(memory.id)
             const resultBody = (memory.assistantResult || '').trim()
             const detailLines = [
-              `用户问题：${memory.userQuery || memory.goal || '无'}`,
-              `用户意图：${memory.intentType || 'other'}${memory.intentSummary ? ` | ${memory.intentSummary}` : ''}`,
-              `意图目标：${memory.intentGoal || memory.goal || '无'}`,
+              `用户问题：${memory.userQuery || '无'}`,
               `结果：${outcomeLabel(memory.outcome)}`,
               `执行动作：${memory.tools.length > 0 ? memory.tools.join('、') : '无'}`,
               `修改文件：${memory.changedFiles.length > 0 ? memory.changedFiles.join('、') : '无'}`,
-              `关键标识符：${memory.identifiers.length > 0 ? memory.identifiers.join('、') : '无'}`,
               memory.failures.length > 0 ? `异常：${memory.failures.slice(0, 3).join('；')}` : '',
             ].filter(Boolean)
             const detailText = detailLines.join('\n')
-            const memoryDigest = (memory.summary || '').trim()
             const contentText = [
-              memoryDigest ? `记忆摘要：\n${memoryDigest}` : '',
-              resultBody ? `处理结果：\n${resultBody}` : '',
+              resultBody ? `AI回复：\n${resultBody}` : '',
               detailText ? `结构化信息：\n${detailText}` : '',
             ].filter(Boolean).join('\n\n')
             const hasLongContent = contentText.length > 180 || contentText.includes('\n')
@@ -282,7 +277,7 @@ export function NotesSettingsPanel({
               <div key={memory.id} className="note-card">
                 <div className="note-card-header">
                   <span className="note-card-category other">{outcomeLabel(memory.outcome)}</span>
-                  <span className="note-card-title">{memory.goal || '（无目标）'}</span>
+                  <span className="note-card-title">{memory.userQuery || '（无提问）'}</span>
                   <div className="note-card-actions">
                     <button
                       type="button"

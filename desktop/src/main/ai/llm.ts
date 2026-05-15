@@ -6,6 +6,20 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { log } from '../system/logger'
 import type { ToolDefinition, ToolCall } from '../tools'
 import type { IpcUploadConfig } from '../../shared/ipc'
+import {
+  USER_ASSETS_BLOCK_REGEX,
+  USER_ASSETS_BLOCK_CAPTURE_REGEX,
+  USER_QUERY_BLOCK_CAPTURE_REGEX,
+  IMAGE_EXTENSIONS,
+  VIDEO_EXTENSIONS,
+  stripUserAssetsBlock,
+  extractUserAssetsBlock,
+  extractUserQueryText,
+  parseUserAssetEntries,
+  inferAssetKind,
+  buildUserAssetsBlock,
+} from '../../shared/user-assets'
+import type { UserAssetEntry } from '../../shared/user-assets'
 
 /** 标准聊天消息 */
 export type ChatMessage = {
@@ -336,8 +350,6 @@ function normalizeMessages(messages: ChatMessage[]): ChatMessage[] {
   return out
 }
 
-type UserAssetEntry = { type: string; path: string }
-
 type QwenContentPart =
   | { type: 'text'; text: string }
   | { type: 'image_url'; image_url: { url: string } }
@@ -347,15 +359,6 @@ type QwenMessageBuildState = {
   uploadedUrlByPath: Map<string, string>
 }
 
-const USER_ASSETS_BLOCK_REGEX = /\s*\[USER_ASSETS\][\s\S]*?\[\/USER_ASSETS\]\s*/gi
-const USER_ASSETS_BLOCK_CAPTURE_REGEX = /\[USER_ASSETS\]([\s\S]*?)\[\/USER_ASSETS\]/i
-const USER_QUERY_BLOCK_CAPTURE_REGEX = /\[USER_QUERY\]([\s\S]*?)\[\/USER_QUERY\]/i
-const IMAGE_EXTENSIONS = new Set([
-  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico', '.tif', '.tiff', '.heic', '.heif', '.avif',
-])
-const VIDEO_EXTENSIONS = new Set([
-  '.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi', '.wmv', '.flv', '.mpeg', '.mpg', '.3gp', '.ts', '.m2ts',
-])
 const QWEN_EXPLICIT_CACHE_HEADER_KEYS = new Set([
   'x-dashscope-explicit-cache',
   'x-explicit-cache',
@@ -365,66 +368,6 @@ const QWEN_EXPLICIT_CACHE_HEADER_KEYS = new Set([
 ])
 const EXPLICIT_CACHE_CONTENT_HINT_PATTERN =
   /["']cache_control["']\s*:|["']cache-control["']\s*:|\[EXPLICIT_CACHE\]|explicit[_\s-]?cache\s*[:=]\s*(?:true|1|enable|enabled)|enable[_\s-]?cache\s*[:=]\s*(?:true|1|enable|enabled)/i
-
-function stripUserAssetsBlock(content: string): string {
-  return String(content ?? '')
-    .replace(USER_ASSETS_BLOCK_REGEX, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
-
-function extractUserAssetsBlock(content: string): string {
-  const raw = String(content ?? '')
-  const wrapped = raw.match(USER_ASSETS_BLOCK_CAPTURE_REGEX)
-  if (!wrapped || !wrapped[1]) return ''
-  return wrapped[1].trim()
-}
-
-function extractUserQueryText(content: string): string {
-  const raw = stripUserAssetsBlock(String(content ?? ''))
-  const wrapped = raw.match(USER_QUERY_BLOCK_CAPTURE_REGEX)
-  if (wrapped && wrapped[1]) return wrapped[1].trim()
-  return raw.trim()
-}
-
-function parseUserAssetEntries(content: string): UserAssetEntry[] {
-  const body = extractUserAssetsBlock(content)
-  if (!body) return []
-  const entries: UserAssetEntry[] = []
-  let currentType = ''
-  for (const rawLine of body.split('\n')) {
-    const line = rawLine.trim()
-    if (!line) continue
-    const typeMatch = line.match(/^-+\s*type:\s*(.+)$/i)
-    if (typeMatch && typeMatch[1]) {
-      currentType = typeMatch[1].trim() || 'file'
-      continue
-    }
-    const pathMatch = line.match(/^(?:-+\s*)?path:\s*(.+)$/i)
-    if (pathMatch && pathMatch[1]) {
-      entries.push({
-        type: currentType || 'file',
-        path: pathMatch[1].trim(),
-      })
-    }
-  }
-  return entries
-}
-
-function toAssetExtension(value: string): string {
-  const clean = String(value ?? '').trim().split(/[?#]/, 1)[0] ?? ''
-  return extname(clean).toLowerCase()
-}
-
-function inferAssetKind(entry: UserAssetEntry): 'image' | 'video' | 'other' {
-  const type = String(entry.type ?? '').trim().toLowerCase()
-  if (type.includes('video')) return 'video'
-  if (type.includes('image')) return 'image'
-  const ext = toAssetExtension(entry.path)
-  if (IMAGE_EXTENSIONS.has(ext)) return 'image'
-  if (VIDEO_EXTENSIONS.has(ext)) return 'video'
-  return 'other'
-}
 
 function normalizeModelName(value: string): string {
   return String(value ?? '')
@@ -500,21 +443,6 @@ function dedupStrings(values: string[]): string[] {
     out.push(text)
   }
   return out
-}
-
-function buildUserAssetsBlock(entries: UserAssetEntry[]): string {
-  if (entries.length <= 0) return ''
-  const lines: string[] = ['[USER_ASSETS]']
-  for (const entry of entries) {
-    const type = String(entry?.type ?? '').trim() || 'file'
-    const path = String(entry?.path ?? '').trim()
-    if (!path) continue
-    lines.push(`- type: ${type}`)
-    lines.push(`  path: ${path}`)
-  }
-  if (lines.length <= 1) return ''
-  lines.push('[/USER_ASSETS]')
-  return lines.join('\n')
 }
 
 function isLikelyLocalPath(value: string): boolean {

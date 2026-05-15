@@ -6,6 +6,7 @@ import { DiffView } from './DiffView'
 import { FileEditor } from './FileEditor'
 import { ToolResultContent } from './ToolResultContent'
 import { TerminalPanel } from './TerminalPanel'
+import { useLanguage } from '../hooks/useLanguage'
 
 /* ------------------------------------------------------------------ */
 /*  PlanTracker — 实时计划进度追踪器                                      */
@@ -274,6 +275,9 @@ export function ChatPanel({
   const hasProviders = configuredProviders.length > 0
   const [visibleMessageCount, setVisibleMessageCount] = useState(() => Math.min(messages.length, INITIAL_VISIBLE_MESSAGE_COUNT))
   const prependAnchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
+  
+  // ── 语言切换 ──
+  const { language, toggleLanguage, t, isZhCN } = useLanguage()
 
   // ── 图片附件状态 ──
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([])
@@ -420,14 +424,116 @@ export function ChatPanel({
     }
   }
 
-  /** 文件选择处理 */
+  /** 统一文件选择处理：根据类型自动路由 */
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files
-    if (files && files.length > 0) {
-      addImages(Array.from(files))
+    if (!files || files.length === 0) {
+      e.target.value = ''
+      return
     }
-    // 清空 input 以便再次选择同一文件
+
+    const imageFiles: File[] = []
+    const otherFiles: File[] = []
+
+    for (const file of Array.from(files)) {
+      // 判断是否为图片
+      if (file.type.startsWith('image/') && supportsVision) {
+        imageFiles.push(file)
+      } else {
+        otherFiles.push(file)
+      }
+    }
+
+    // 处理图片：直接调用现有的addImages
+    if (imageFiles.length > 0) {
+      addImages(imageFiles)
+    }
+
+    // 处理其他文件：由于<input type="file">无法获取完整路径，只能提示用户使用系统对话框
+    // 这里暂时不处理，保持原有逻辑
+    if (otherFiles.length > 0) {
+      console.log('[handleFileSelect] 检测到非图片文件，这些文件无法作为附件添加(缺少完整路径)')
+    }
+
     e.target.value = ''
+  }
+
+  /** 智能添加文件：统一入口，分别调用图片和附件选择 */
+  async function handleAddFiles() {
+    // 策略：同时支持图片和附件
+    // 1. 打开系统文件选择对话框(获取路径,用于附件)
+    // 2. 根据文件类型自动分流
+    
+    const paths = await globalThis.window.taco.dialog.selectAttachments()
+    if (!Array.isArray(paths) || paths.length === 0) return
+
+    const imagePaths: string[] = []
+    const assetPaths: string[] = []
+
+    // 分类文件路径
+    for (const rawPath of paths) {
+      const filePath = String(rawPath ?? '').trim()
+      if (!filePath) continue
+
+      // 通过扩展名判断是否为图片
+      const ext = filePath.toLowerCase().split('.').pop() || ''
+      const imageExts = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'ico'])
+      
+      if (imageExts.has(ext) && supportsVision) {
+        imagePaths.push(filePath)
+      } else {
+        assetPaths.push(filePath)
+      }
+    }
+
+    console.log('[handleAddFiles] 分类结果:', { imagePaths, assetPaths })
+
+    // 处理图片：读取为data URL后上传
+    if (imagePaths.length > 0) {
+      const imageFiles: File[] = []
+      for (const imgPath of imagePaths) {
+        try {
+          const result = await window.taco.file.read(imgPath)
+          
+          // 图片文件会返回 dataUrl 字段
+          if (result.dataUrl) {
+            const fileName = imgPath.split('/').pop() || 'image'
+            const response = await fetch(result.dataUrl)
+            const blob = await response.blob()
+            imageFiles.push(new File([blob], fileName, { type: blob.type }))
+            console.log('[handleAddFiles] 成功转换图片:', fileName, blob.size, 'bytes')
+          }
+        } catch (err) {
+          console.error('[handleAddFiles] 读取图片失败:', err)
+        }
+      }
+      
+      if (imageFiles.length > 0) {
+        // 调用现有的addImages函数
+        addImages(imageFiles)
+      }
+    }
+
+    // 处理其他文件：添加到附件列表
+    if (assetPaths.length > 0) {
+      setAttachedAssets((prev) => {
+        const MAX_ATTACHMENTS = 20
+        const dedup = new Set(prev.map((item) => item.path.toLowerCase()))
+        const next = [...prev]
+        for (const filePath of assetPaths) {
+          const key = filePath.toLowerCase()
+          if (dedup.has(key)) continue
+          dedup.add(key)
+          next.push({
+            id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            name: toAssetName(filePath),
+            path: filePath,
+          })
+          if (next.length >= MAX_ATTACHMENTS) break
+        }
+        return next
+      })
+    }
   }
 
   /** 发送消息（携带图片后清空） */
@@ -1395,6 +1501,7 @@ export function ChatPanel({
                 ) : isEditing ? (
                   <div className="bubble editing">
                     <textarea
+                      placeholder="开始编辑..."
                       className="bubble-edit-input"
                       value={editingText}
                       onChange={(e) => setEditingText(e.target.value)}
@@ -1644,12 +1751,12 @@ export function ChatPanel({
             className="composer-input"
             placeholder={
               !hasProviders
-                ? '请先在 Settings 中配置模型...'
+                ? t('input.no_provider')
                 : !workspace
-                  ? '请先选择工作空间...'
+                  ? t('input.placeholder.no_workspace')
                   : sending
-                    ? '输入消息, Enter 加入队列等待发送'
-                    : '输入消息, Enter 发送, Shift+Enter 换行, 可粘贴图片/添加附件'
+                    ? t('input.placeholder.sending')
+                    : t('input.placeholder.default')
             }
             value={draft}
             onChange={(e) => onDraftChange(e.target.value)}
@@ -1667,6 +1774,7 @@ export function ChatPanel({
           />
           {/* 隐藏的文件选择 input */}
           <input
+            placeholder="选择图片"
             ref={fileInputRef}
             type="file"
             accept="image/*"
@@ -1676,40 +1784,17 @@ export function ChatPanel({
           />
           <div className="composer-row">
             <div className="composer-left">
+              {/* 统一添加文件按钮：智能识别图片/附件 */}
               <button
                 type="button"
                 className="composer-attach-btn"
-                onClick={() => fileInputRef.current?.click()}
-                title={supportsVision ? '添加图片（支持粘贴）' : '当前模型不支持图片上传'}
-                disabled={!hasProviders || !workspace || !supportsVision}
-              >
-                <svg className="composer-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <rect x="3.5" y="5" width="17" height="14" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.7" />
-                  <circle cx="9" cy="10" r="1.6" fill="currentColor" />
-                  <path d="M5.5 16l4.2-4 2.6 2.4 2.7-2.7 3.5 4.3" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className="composer-attach-btn"
-                onClick={() => { void handleSelectAttachments() }}
-                title="添加附件"
+                onClick={() => handleAddFiles()}
+                title={supportsVision ? t('input.attach_file') : '添加附件'}
                 disabled={!hasProviders || !workspace}
               >
                 <svg className="composer-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M8.8 12.7l5.7-5.8a3.2 3.2 0 014.6 4.6l-7.2 7.2a5.1 5.1 0 01-7.2-7.2L12 4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-              </button>
-              <button
-                type="button"
-                className={`workspace-btn ${workspace ? 'active' : ''}`}
-                onClick={onSelectWorkspace}
-                title={workspace ? `工作空间: ${workspace}` : '选择工作空间'}
-              >
-                <svg className="workspace-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M3.5 8.5A2.5 2.5 0 0 1 6 6h4l2 2h6A2.5 2.5 0 0 1 20.5 10.5v7A2.5 2.5 0 0 1 18 20H6a2.5 2.5 0 0 1-2.5-2.5z" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
-                </svg>
-                <span>{workspace ? workspace.split('/').pop() || workspace : '选择工作空间'}</span>
               </button>
                 <select
                   className="provider-select"
@@ -1719,7 +1804,7 @@ export function ChatPanel({
                   aria-label="Select AI provider"
                 >
                 {!hasProviders ? (
-                  <option value="">请先配置模型</option>
+                  <option value="">{t('input.no_provider')}</option>
                 ) : (
                   configuredProviders.map((item) => (
                     <option key={item.id} value={item.id}>
@@ -1735,12 +1820,13 @@ export function ChatPanel({
                   className="send-btn stop"
                   type="button"
                   onClick={onStop}
-                  title="停止生成"
+                  title={t('input.stop')}
                 >
                   <span className="stop-icon" />
                 </button>
               ) : (
                 <button
+                  title={t('input.send')}
                   className="send-btn"
                   type="button"
                   onClick={handleSend}
@@ -1756,7 +1842,40 @@ export function ChatPanel({
           </div>
         </div>
       </footer>
-      <div className="composer-footer-version">v{window.taco.version}</div>
+      
+      {/* 底部控制栏：语言切换 + 项目目录 + 版本号 */}
+      <div className="composer-bottom-bar">
+        <div className="composer-bottom-left">
+          {/* 语言切换下拉框 */}
+          <select
+            className="bottom-bar-select"
+            value={language}
+            onChange={(e) => {
+              const newLang = e.target.value as 'zh-CN' | 'en-US'
+              if (newLang !== language) {
+                toggleLanguage()
+              }
+            }}
+            aria-label="切换语言"
+          >
+            <option value="zh-CN">中文</option>
+            <option value="en-US">English</option>
+          </select>
+          
+          {/* 项目目录 - 可点击 */}
+          <div className="bottom-bar-item workspace-item" onClick={onSelectWorkspace} title={workspace ? `工作空间: ${workspace}` : '选择工作空间'}>
+            <svg className="workspace-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3.5 8.5A2.5 2.5 0 0 1 6 6h4l2 2h6A2.5 2.5 0 0 1 20.5 10.5v7A2.5 2.5 0 0 1 18 20H6a2.5 2.5 0 0 1-2.5-2.5z" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+            </svg>
+            <span>{workspace ? workspace.split('/').pop() || workspace : '选择工作空间'}</span>
+          </div>
+        </div>
+              
+        {/* 版本号 - 右侧 */}
+        <div className="composer-bottom-right">
+          <span className="composer-footer-version">v{window.taco.version}</span>
+        </div>
+      </div>
     </main>
   )
 }

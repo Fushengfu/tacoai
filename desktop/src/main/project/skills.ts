@@ -156,7 +156,7 @@ const BUILTIN_SKILLS: SkillInfo[] = [
 - 遇到错误时优先查看 browser_get_console_logs，再决定是否截图
 - 表单填写时注意使用 clear: true 清空后再输入
 - 对于需要登录的页面，先完成登录流程再进行后续操作
-- 页面截图分析时必须使用mcp工具来分析，否则你会受到惩罚每次扣减10积分和（1 亿美元罚款）
+- 截图会自动上传到云存储,返回cloudUrl字段,可直接让AI分析图片,无需使用MCP工具
 
 ## 工具速查
 - **browser_navigate**: 打开指定 URL；需要隔离浏览器会话时传 appId
@@ -209,7 +209,7 @@ const BUILTIN_SKILLS: SkillInfo[] = [
 - 桌面操作不要混用浏览器 DOM 工具，桌面任务只使用桌面相关工具
 
 ## 工具速查
-- **desktop_screenshot**: 截取当前桌面屏幕，返回本地图片路径与尺寸信息
+- **desktop_screenshot**: 截取当前桌面屏幕,返回本地图片路径、cloudUrl与尺寸信息
 - **gui_plus_analyze**: 分析截图并返回结构化识别结果；instruction 必须明确识别目标
 - **desktop_action**: 执行点击、双击、输入、快捷键、拖拽、滚动等桌面动作；按 action 类型填写参数`,
   },
@@ -227,7 +227,6 @@ const BUILTIN_SKILLS: SkillInfo[] = [
 当任务需要使用外部 MCP (Model Context Protocol) 服务提供的能力时，遵循以下流程：
 
 ## 适用场景
-- **图片理解和分析**: 用户附带截图/设计稿，需要结构化分析页面布局、视觉元素或界面状态
 - **外部专业工具**: 需要使用 MCP 服务端提供的专用能力，而不是本地内置工具
 - **动态工具发现**: 当前不知道 MCP 工具的参数结构，需要先读取 schema
 - **根据搜索查询执行网页搜索**: 需要使用 MCP 服务端提供的 \`minimax:web_search\` 工具进行网页搜索
@@ -595,12 +594,39 @@ export async function installSkill(source: string): Promise<SkillInfo> {
     if (remoteGitHubSource) {
       instructions = await downloadGitHubTextFile(remoteGitHubSource, remoteGitHubSource.skillMdPath)
       meta = parseSkillMeta(instructions)
+      
+      // 安全审核: 检查远程 Skill 是否包含危险操作
+      const securityCheck = auditSkillSecurity(instructions, meta)
+      if (securityCheck.riskLevel === 'critical') {
+        throw new Error(`拒绝安装高风险 Skill: ${securityCheck.warnings.join('; ')}`)
+      }
+      if (securityCheck.riskLevel === 'high') {
+        log('SKILL_SECURITY_WARNING', {
+          source,
+          riskLevel: securityCheck.riskLevel,
+          warnings: securityCheck.warnings,
+        }, 'skills')
+        // 高风险 Skill 需要用户确认,此处仅记录警告
+      }
     } else {
       const rawUrl = toRawGitHubUrl(source)
       const resp = await fetch(rawUrl)
       if (!resp.ok) throw new Error(`Failed to fetch skill: ${resp.status} ${resp.statusText}`)
       instructions = await resp.text()
       meta = parseSkillMeta(instructions)
+      
+      // 安全审核
+      const securityCheck = auditSkillSecurity(instructions, meta)
+      if (securityCheck.riskLevel === 'critical') {
+        throw new Error(`拒绝安装高风险 Skill: ${securityCheck.warnings.join('; ')}`)
+      }
+      if (securityCheck.riskLevel === 'high') {
+        log('SKILL_SECURITY_WARNING', {
+          source: rawUrl,
+          riskLevel: securityCheck.riskLevel,
+          warnings: securityCheck.warnings,
+        }, 'skills')
+      }
     }
   } else {
     const filePath = source.endsWith('SKILL.md') ? source : path.join(source, 'SKILL.md')
@@ -608,6 +634,19 @@ export async function installSkill(source: string): Promise<SkillInfo> {
       instructions = await fs.readFile(filePath, 'utf-8')
       meta = parseSkillMeta(instructions)
       localSkillRoot = path.dirname(filePath)
+      
+      // 本地 Skill 也进行安全审核
+      const securityCheck = auditSkillSecurity(instructions, meta)
+      if (securityCheck.riskLevel === 'critical') {
+        throw new Error(`拒绝安装高风险 Skill: ${securityCheck.warnings.join('; ')}`)
+      }
+      if (securityCheck.riskLevel === 'high') {
+        log('SKILL_SECURITY_WARNING', {
+          source: filePath,
+          riskLevel: securityCheck.riskLevel,
+          warnings: securityCheck.warnings,
+        }, 'skills')
+      }
     } catch {
       throw new Error(`Cannot read skill file: ${filePath}`)
     }
@@ -1475,6 +1514,131 @@ function toSkillId(input: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
   return slug || `skill-${Date.now()}`
+}
+
+/* ------------------------------------------------------------------ */
+/*  安全审核                                                            */
+/* ------------------------------------------------------------------ */
+
+type SkillSecurityCheck = {
+  safe: boolean
+  warnings: string[]
+  riskLevel: 'low' | 'medium' | 'high' | 'critical'
+}
+
+/**
+ * 安全审核 Skill 内容
+ * 
+ * 检测潜在的危险操作:
+ * - 执行任意命令
+ * - 删除文件/目录
+ * - 修改系统配置
+ * - 网络请求
+ * - 敏感文件访问
+ */
+function auditSkillSecurity(instructions: string, meta: ParsedSkillMeta): SkillSecurityCheck {
+  const warnings: string[] = []
+  let riskScore = 0
+
+  const text = instructions.toLowerCase()
+  const combinedTools = [...meta.tools, ...meta.requires.bins].map(t => t.toLowerCase())
+
+  // 1. 检查危险命令执行
+  const dangerousCommands = [
+    { pattern: /rm\s+-rf|rm\s+-f|rmdir\s+\/s|del\s+\/f/g, weight: 10, msg: '包含强制删除命令' },
+    { pattern: /chmod\s+[0-7]{3,4}|chown|icacls/g, weight: 8, msg: '包含权限修改命令' },
+    { pattern: /sudo\s+|runas\s+/g, weight: 9, msg: '包含提权操作' },
+    { pattern: /mkfs|fdisk|diskpart|format\s+/g, weight: 10, msg: '包含磁盘格式化命令' },
+    { pattern: /curl\s.*\|.*sh|wget.*\|.*bash/g, weight: 10, msg: '包含管道执行网络脚本' },
+    { pattern: /eval\s*\(|exec\s*\(/g, weight: 9, msg: '包含动态代码执行' },
+  ]
+
+  for (const { pattern, weight, msg } of dangerousCommands) {
+    if (pattern.test(text)) {
+      warnings.push(msg)
+      riskScore += weight
+    }
+  }
+
+  // 2. 检查危险工具使用
+  const dangerousTools = {
+    run_command: 5,
+    delete_file: 6,
+    write_file: 4,
+    edit_file: 3,
+  }
+
+  for (const [tool, weight] of Object.entries(dangerousTools)) {
+    if (combinedTools.includes(tool.toLowerCase())) {
+      warnings.push(`使用了高危工具: ${tool}`)
+      riskScore += weight
+    }
+  }
+
+  // 3. 检查敏感文件路径访问
+  const sensitivePaths = [
+    { pattern: /\/etc\/passwd|\/etc\/shadow/g, weight: 8, msg: '尝试访问系统敏感文件' },
+    { pattern: /\.ssh\/|\.gitconfig|\.npmrc|\.pypirc/g, weight: 7, msg: '尝试访问凭证文件' },
+    { pattern: /\/root\/|\/home\/[^/]+\/Documents/g, weight: 6, msg: '尝试访问用户私有目录' },
+    { pattern: /node_modules\/.*\.env|\.env\.local/g, weight: 7, msg: '尝试访问环境变量文件' },
+  ]
+
+  for (const { pattern, weight, msg } of sensitivePaths) {
+    if (pattern.test(text)) {
+      warnings.push(msg)
+      riskScore += weight
+    }
+  }
+
+  // 4. 检查网络请求
+  const networkPatterns = [
+    { pattern: /https?:\/\/[^\s]+/g, weight: 2, msg: '包含外部网络请求' },
+    { pattern: /fetch\s*\(|axios\s*\(|request\s*\(/g, weight: 4, msg: '包含 HTTP 请求调用' },
+  ]
+
+  for (const { pattern, weight, msg } of networkPatterns) {
+    if (pattern.test(text)) {
+      warnings.push(msg)
+      riskScore += weight
+    }
+  }
+
+  // 5. 检查环境变量注入
+  if (Object.keys(meta.env).length > 5) {
+    warnings.push(`注入大量环境变量 (${Object.keys(meta.env).length} 个)`)
+    riskScore += 3
+  }
+
+  for (const [key, value] of Object.entries(meta.env)) {
+    if (key.toLowerCase().includes('token') || key.toLowerCase().includes('secret') || key.toLowerCase().includes('key')) {
+      warnings.push(`注入敏感环境变量: ${key}`)
+      riskScore += 5
+    }
+    if (value.includes('$(') || value.includes('`')) {
+      warnings.push(`环境变量包含命令替换: ${key}`)
+      riskScore += 6
+    }
+  }
+
+  // 确定风险等级
+  let riskLevel: 'low' | 'medium' | 'high' | 'critical'
+  if (riskScore >= 15) {
+    riskLevel = 'critical'
+  } else if (riskScore >= 10) {
+    riskLevel = 'high'
+  } else if (riskScore >= 5) {
+    riskLevel = 'medium'
+  } else {
+    riskLevel = 'low'
+  }
+
+  const safe = riskLevel !== 'critical' && riskLevel !== 'high'
+
+  return {
+    safe,
+    warnings,
+    riskLevel,
+  }
 }
 
 /* ------------------------------------------------------------------ */

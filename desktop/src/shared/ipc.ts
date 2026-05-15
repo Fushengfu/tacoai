@@ -541,44 +541,43 @@ export type ProjectNote = {
 /** 任务执行记忆 */
 export type ProjectTaskMemory = {
   id: string
-  /** 本轮用户原始提问（纯文本） */
-  userQuery?: string
-  /** 本轮用户附件信息（[USER_ASSETS] 内部正文） */
+  /** 用户原始提问(完整原文) */
+  userQuery: string
+  /** 用户附件信息([USER_ASSETS]内部正文) */
   userAssetsBlock?: string
-  goal: string
-  /** 意图类型（qa/debug/implement/refactor/ops/other） */
-  intentType?: string
-  /** 一句话意图摘要 */
-  intentSummary?: string
-  /** 意图目标描述 */
-  intentGoal?: string
-  /** 本轮处理结果正文（用于后续上下文重放） */
-  assistantResult?: string
-  summary: string
+  /** AI最终回复(完整原文) */
+  assistantResult: string
+  /** 任务结果 */
   outcome: 'success' | 'aborted' | 'error'
+  /** 工具使用统计(如 ["read_file x3", "edit_file x2"]) */
   tools: string[]
+  /** 变更文件路径列表 */
   changedFiles: string[]
-  identifiers: string[]
-  /** 本轮过程中的关键事实证据（例如命中的文件/行号/修改动作/验证动作） */
-  evidenceFacts: string[]
-  /** 原始会话来源：sessionId（用于从 chat_messages 追溯原文） */
-  sourceSessionId?: string
-  /** 原始会话来源：本轮用户消息 ID */
-  sourceUserMessageId?: string
-  /** 原始会话来源：本轮助手消息 ID */
-  sourceAssistantMessageId?: string
-  /** 原始会话来源：本轮关联消息 ID 列表（通常含 user+assistant） */
-  sourceMessageIds?: string[]
-  /** 原始会话来源：在 chat_messages 中的起始 seq（可选） */
-  sourceStartSeq?: number
-  /** 原始会话来源：在 chat_messages 中的结束 seq（可选） */
-  sourceEndSeq?: number
+  /** 文件变更diff数组 */
+  fileDiffs: Array<{
+    path: string
+    oldContent: string | null
+    newContent: string | null
+  }>
+  /** 失败日志 */
   failures: string[]
-  /** 软删除时间（存在即表示已删除） */
+  /** 原始会话来源:sessionId(用于从 chat_messages 追溯原文) */
+  sourceSessionId?: string
+  /** 原始会话来源:本轮用户消息 ID */
+  sourceUserMessageId?: string
+  /** 原始会话来源:本轮助手消息 ID */
+  sourceAssistantMessageId?: string
+  /** 原始会话来源:本轮关联消息 ID 列表(通常含 user+assistant) */
+  sourceMessageIds?: string[]
+  /** 原始会话来源:在 chat_messages 中的起始 seq(可选) */
+  sourceStartSeq?: number
+  /** 原始会话来源:在 chat_messages 中的结束 seq(可选) */
+  sourceEndSeq?: number
+  /** 软删除时间(存在即表示已删除) */
   deletedAt?: string
-  /** 软删除原因（manual_delete/ai_drop/ai_merge_into:xxx） */
+  /** 软删除原因(manual_delete/ai_drop/ai_merge_into:xxx) */
   deletedReason?: string
-  /** 若由合并淘汰，指向保留的目标记忆 ID */
+  /** 若由合并淘汰,指向保留的目标记忆 ID */
   mergedIntoId?: string
   createdAt: string
   updatedAt: string

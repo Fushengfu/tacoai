@@ -1,9 +1,6 @@
 import path from 'node:path'
-import os from 'node:os'
 import fs from 'node:fs'
-import { createHash } from 'node:crypto'
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
-import { app } from 'electron'
 import type {
   AppStateModelConfig,
   AppStateProviderId,
@@ -14,6 +11,8 @@ import type {
   ProjectNote,
   ProjectTaskMemory,
 } from '../../shared/ipc'
+import { TACO_HOME, workspaceHash, projectScope } from '../../shared/paths'
+import { parseFileDiffsArray } from './memory-db/utils'
 
 export type TaskMemoryEntry = ProjectTaskMemory
 export type ProjectNoteEntry = ProjectNote
@@ -86,33 +85,10 @@ const APP_PROVIDER_LABELS: Readonly<Record<AppStateProviderId, string>> = {
   mimo: 'MiMo',
 }
 
-function resolveHomeDir(): string {
-  try {
-    const electronHome = app.getPath('home')
-    if (electronHome && electronHome.trim()) return electronHome.trim()
-  } catch {
-    // ignore: fallback to env/os
-  }
-  const envHome = (process.env.HOME || process.env.USERPROFILE || '').trim()
-  if (envHome) return envHome
-  const osHome = (os.homedir() || '').trim()
-  if (osHome) return osHome
-  return process.cwd()
-}
-
-const TACO_HOME = path.join(resolveHomeDir(), '.taco')
 const STATE_DIR = path.join(TACO_HOME, 'state')
 const MEMORY_DB_PATH = path.join(STATE_DIR, 'memory.db')
 
 let db: DatabaseSync | null = null
-
-function workspaceHash(workspace: string): string {
-  return createHash('sha256').update(path.resolve(workspace)).digest('hex').slice(0, 16)
-}
-
-function projectScope(projectId: string): string {
-  return 'project-' + createHash('sha256').update(projectId).digest('hex').slice(0, 16)
-}
 
 function resolveScopeKey(workspace: string, projectId?: string): string {
   if (projectId && projectId.trim()) return projectScope(projectId.trim())
@@ -275,17 +251,11 @@ function ensureDb(): DatabaseSync {
       storage_tier TEXT NOT NULL DEFAULT 'active',
       user_query TEXT NOT NULL DEFAULT '',
       user_assets_block TEXT NOT NULL DEFAULT '',
-      goal TEXT NOT NULL DEFAULT '',
-      intent_type TEXT NOT NULL DEFAULT '',
-      intent_summary TEXT NOT NULL DEFAULT '',
-      intent_goal TEXT NOT NULL DEFAULT '',
       assistant_result TEXT NOT NULL DEFAULT '',
-      summary TEXT NOT NULL DEFAULT '',
       outcome TEXT NOT NULL DEFAULT 'success',
       tools_json TEXT NOT NULL DEFAULT '[]',
       changed_files_json TEXT NOT NULL DEFAULT '[]',
-      identifiers_json TEXT NOT NULL DEFAULT '[]',
-      evidence_facts_json TEXT NOT NULL DEFAULT '[]',
+      file_diffs_json TEXT NOT NULL DEFAULT '[]',
       source_session_id TEXT NOT NULL DEFAULT '',
       source_user_message_id TEXT NOT NULL DEFAULT '',
       source_assistant_message_id TEXT NOT NULL DEFAULT '',
@@ -308,7 +278,34 @@ function ensureDb(): DatabaseSync {
 
     CREATE INDEX IF NOT EXISTS idx_task_memories_scope_key_tier_updated
     ON task_memories(scope_key, storage_tier, updated_at DESC, created_at DESC);
+  `)
 
+  // 数据库迁移:为旧数据库添加file_diffs_json列(捕获已存在列的错误)
+  try {
+    next.exec(`ALTER TABLE task_memories ADD COLUMN file_diffs_json TEXT NOT NULL DEFAULT '[]'`)
+  } catch (e) {
+    // 列已存在,忽略错误
+  }
+
+  // 数据库迁移:删除废弃字段(SQLite 3.35.0+支持)
+  const dropColumns = [
+    'goal',
+    'intent_type',
+    'intent_summary',
+    'intent_goal',
+    'summary',
+    'identifiers_json',
+    'evidence_facts_json',
+  ]
+  for (const col of dropColumns) {
+    try {
+      next.exec(`ALTER TABLE task_memories DROP COLUMN ${col}`)
+    } catch (e) {
+      // 列不存在或其他错误,忽略
+    }
+  }
+
+  next.exec(`
     CREATE TABLE IF NOT EXISTS project_notes (
       id TEXT PRIMARY KEY,
       workspace TEXT NOT NULL,
@@ -541,19 +538,13 @@ function rowToTaskMemoryEntry(row: Record<string, unknown>): TaskMemoryEntry {
   const sourceEndSeq = parseOptionalInteger(row.source_end_seq)
   return {
     id: String(row.id || ''),
-    ...(String(row.user_query || '').trim() ? { userQuery: String(row.user_query || '') } : {}),
+    userQuery: String(row.user_query || ''),
     ...(String(row.user_assets_block || '').trim() ? { userAssetsBlock: String(row.user_assets_block || '') } : {}),
-    goal: String(row.goal || ''),
-    ...(String(row.intent_type || '').trim() ? { intentType: String(row.intent_type || '') } : {}),
-    ...(String(row.intent_summary || '').trim() ? { intentSummary: String(row.intent_summary || '') } : {}),
-    ...(String(row.intent_goal || '').trim() ? { intentGoal: String(row.intent_goal || '') } : {}),
-    ...(String(row.assistant_result || '').trim() ? { assistantResult: String(row.assistant_result || '') } : {}),
-    summary: String(row.summary || ''),
+    assistantResult: String(row.assistant_result || ''),
     outcome: (String(row.outcome || 'success') as 'success' | 'aborted' | 'error'),
     tools: parseStringArray(row.tools_json),
     changedFiles: parseStringArray(row.changed_files_json),
-    identifiers: parseStringArray(row.identifiers_json),
-    evidenceFacts: parseStringArray(row.evidence_facts_json),
+    fileDiffs: parseFileDiffsArray(row.file_diffs_json),
     ...(String(row.source_session_id || '').trim() ? { sourceSessionId: String(row.source_session_id || '').trim() } : {}),
     ...(String(row.source_user_message_id || '').trim() ? { sourceUserMessageId: String(row.source_user_message_id || '').trim() } : {}),
     ...(String(row.source_assistant_message_id || '').trim() ? { sourceAssistantMessageId: String(row.source_assistant_message_id || '').trim() } : {}),
@@ -618,20 +609,18 @@ function upsertTaskMemoryRows(scope: MemoryScope, items: TaskMemoryEntry[], tier
   const stmt = database.prepare(`
     INSERT INTO task_memories (
       id, workspace, project_id, scope_key, storage_tier,
-      user_query, user_assets_block, goal,
-      intent_type, intent_summary, intent_goal,
-      assistant_result, summary, outcome,
-      tools_json, changed_files_json, identifiers_json, evidence_facts_json,
+      user_query, user_assets_block,
+      assistant_result, outcome,
+      tools_json, changed_files_json, file_diffs_json,
       source_session_id, source_user_message_id, source_assistant_message_id, source_message_ids_json, source_start_seq, source_end_seq,
       failures_json,
       deleted_at, deleted_reason, merged_into_id,
       created_at, updated_at
     ) VALUES (
       ?, ?, ?, ?, ?,
+      ?, ?,
+      ?, ?,
       ?, ?, ?,
-      ?, ?, ?,
-      ?, ?, ?,
-      ?, ?, ?, ?,
       ?, ?, ?, ?, ?, ?,
       ?,
       ?, ?, ?,
@@ -644,17 +633,11 @@ function upsertTaskMemoryRows(scope: MemoryScope, items: TaskMemoryEntry[], tier
       storage_tier=excluded.storage_tier,
       user_query=excluded.user_query,
       user_assets_block=excluded.user_assets_block,
-      goal=excluded.goal,
-      intent_type=excluded.intent_type,
-      intent_summary=excluded.intent_summary,
-      intent_goal=excluded.intent_goal,
       assistant_result=excluded.assistant_result,
-      summary=excluded.summary,
       outcome=excluded.outcome,
       tools_json=excluded.tools_json,
       changed_files_json=excluded.changed_files_json,
-      identifiers_json=excluded.identifiers_json,
-      evidence_facts_json=excluded.evidence_facts_json,
+      file_diffs_json=excluded.file_diffs_json,
       source_session_id=excluded.source_session_id,
       source_user_message_id=excluded.source_user_message_id,
       source_assistant_message_id=excluded.source_assistant_message_id,
@@ -677,17 +660,11 @@ function upsertTaskMemoryRows(scope: MemoryScope, items: TaskMemoryEntry[], tier
       tier,
       String(item.userQuery || ''),
       String(item.userAssetsBlock || ''),
-      String(item.goal || ''),
-      String(item.intentType || ''),
-      String(item.intentSummary || ''),
-      String(item.intentGoal || ''),
       String(item.assistantResult || ''),
-      String(item.summary || ''),
       String(item.outcome || 'success'),
       stringifyStringArray(item.tools),
       stringifyStringArray(item.changedFiles),
-      stringifyStringArray(item.identifiers),
-      stringifyStringArray(item.evidenceFacts),
+      JSON.stringify(item.fileDiffs || []),
       String(item.sourceSessionId || ''),
       String(item.sourceUserMessageId || ''),
       String(item.sourceAssistantMessageId || ''),
@@ -814,6 +791,16 @@ export function replaceTaskMemoriesByTier(scope: MemoryScope, items: TaskMemoryE
 export function importTaskMemoriesByTier(scope: MemoryScope, items: TaskMemoryEntry[], tier: MemoryTier): void {
   if (!Array.isArray(items) || items.length <= 0) return
   upsertTaskMemoryRows(scope, items, tier)
+}
+
+/** 硬删除任务记忆 */
+export function deleteTaskMemoryById(scope: MemoryScope, memoryId: string): void {
+  const database = ensureDb()
+  const normalized = normalizeScope(scope)
+  database.prepare(`
+    DELETE FROM task_memories 
+    WHERE id = ? AND workspace = ? AND project_id = ?
+  `).run(memoryId, normalized.workspace, normalized.projectId || '')
 }
 
 function upsertSnapshotRows(scope: MemoryScope, items: MemorySnapshotEntry[]): void {

@@ -4,6 +4,7 @@ import type { ChatStoreSessionPage, ChatStoreSessionPatch, ChatStoreSessionSumma
 import { buildSystemPrompt } from '../constants'
 import { loadJson, saveJson, uid } from '../lib/storage'
 import { loadUploadSettings, toIpcUploadConfig } from '../lib/upload-config'
+import { buildUserAssetsBlockFromAttachments, inferAttachmentType, stripUserAssetsBlock } from '../../shared/user-assets'
 
 type SessionStoreMeta = {
   projectId?: string
@@ -13,6 +14,19 @@ type SessionStoreMeta = {
 const CHAT_STORE_FLUSH_DEBOUNCE_MS = 280
 const CHAT_STORE_INITIAL_PAGE_SIZE = 120
 const CHAT_STORE_OLDER_PAGE_SIZE = 120
+
+// 重试配置
+const MAX_RETRY_ATTEMPTS = 2
+const RETRY_DELAY_MS = 1000
+const RETRYABLE_ERRORS = [
+  'network',
+  'timeout',
+  'ECONNREFUSED',
+  'ETIMEDOUT',
+  'EAI_AGAIN',
+  'fetch failed',
+  'request failed',
+]
 
 type SessionLoadMeta = {
   totalCount: number
@@ -75,44 +89,6 @@ function buildTaskTiming(startedAt: number, endedAt = Date.now()): TaskTiming {
   }
 }
 
-const USER_ASSETS_BLOCK_STRIP_REGEX = /\s*\[USER_ASSETS\][\s\S]*?\[\/USER_ASSETS\]\s*/gi
-const IMAGE_ASSET_EXT_REGEX = /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?|heic|heif|avif)$/i
-const VIDEO_ASSET_EXT_REGEX = /\.(mp4|mov|m4v|webm|mkv|avi|wmv|flv|mpeg|mpg|3gp|ts|m2ts)$/i
-
-function stripUserAssetsBlock(content: string): string {
-  return String(content ?? '')
-    .replace(USER_ASSETS_BLOCK_STRIP_REGEX, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
-
-function inferAssetType(path: string): 'image' | 'video' | 'file' {
-  const raw = String(path ?? '').trim()
-  if (!raw) return 'file'
-  const normalized = raw.replace(/\\/g, '/').split(/[?#]/, 1)[0] ?? raw
-  if (IMAGE_ASSET_EXT_REGEX.test(normalized)) return 'image'
-  if (VIDEO_ASSET_EXT_REGEX.test(normalized)) return 'video'
-  return 'file'
-}
-
-function buildUserAssetsBlock(attachments?: AttachedAsset[]): string {
-  if (!attachments || attachments.length <= 0) return ''
-  const dedup = new Set<string>()
-  const lines: string[] = ['[USER_ASSETS]']
-  for (const asset of attachments) {
-    const path = String(asset?.path ?? '').trim()
-    if (!path) continue
-    const key = path.toLowerCase()
-    if (dedup.has(key)) continue
-    dedup.add(key)
-    lines.push(`- type: ${inferAssetType(path)}`)
-    lines.push(`  path: ${path}`)
-  }
-  if (lines.length === 1) return ''
-  lines.push('[/USER_ASSETS]')
-  return lines.join('\n')
-}
-
 type ApiChatMessage = { role: ChatMsg['role']; content: string; images?: string[] }
 
 function mapMessageForApi(msg: ChatMsg): ApiChatMessage {
@@ -140,7 +116,7 @@ function mapMessageForApi(msg: ChatMsg): ApiChatMessage {
   const userQueryBlock = wrapped && wrapped[1] !== undefined
     ? raw.trim()
     : `[USER_QUERY]\n${raw.trim()}\n[/USER_QUERY]`
-  const assetsBlock = buildUserAssetsBlock(msg.attachments)
+  const assetsBlock = buildUserAssetsBlockFromAttachments(msg.attachments ?? [], inferAttachmentType)
   const withImages = (base: ApiChatMessage): ApiChatMessage => {
     if (imageUrls.length <= 0) return base
     return { ...base, images: imageUrls }
@@ -182,6 +158,111 @@ function buildMessagesForApi(messages: ChatMsg[], mode?: ThreadMode): ApiChatMes
 
 function isRecallDebugEnabled(): boolean {
   return localStorage.getItem('taco.recallDebugEnabled') === 'true'
+}
+
+/**
+ * 判断错误是否可重试
+ */
+function isRetryableError(error: Error): boolean {
+  const message = error.message.toLowerCase()
+  return RETRYABLE_ERRORS.some((keyword) => message.includes(keyword))
+}
+
+/**
+ * 延迟函数
+ */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * 模型配置验证结果
+ */
+type ModelConfigValidation = {
+  valid: boolean
+  errors: string[]
+}
+
+/**
+ * 验证模型配置
+ */
+function validateModelConfig(config: {
+  provider: string
+  baseUrl?: string
+  apiKey?: string
+  model?: string
+  maxTokens?: string
+  temperature?: string | number
+}): ModelConfigValidation {
+  const errors: string[] = []
+
+  // 1. 提供商不能为空
+  if (!config.provider || !config.provider.trim()) {
+    errors.push('未选择 AI 提供商')
+  }
+
+  // 2. API Key 验证
+  const apiKey = String(config.apiKey ?? '').trim()
+  if (!apiKey) {
+    errors.push('API Key 不能为空')
+  } else if (apiKey.length < 10) {
+    errors.push('API Key 格式不正确（过短）')
+  } else if (apiKey.includes(' ')) {
+    errors.push('API Key 不能包含空格')
+  }
+
+  // 3. Base URL 验证（如果提供）
+  const baseUrl = String(config.baseUrl ?? '').trim()
+  if (baseUrl) {
+    try {
+      new URL(baseUrl)
+      if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
+        errors.push('Base URL 必须以 http:// 或 https:// 开头')
+      }
+    } catch {
+      errors.push('Base URL 格式不正确')
+    }
+  }
+
+  // 4. Model 验证（如果提供）
+  const model = String(config.model ?? '').trim()
+  if (model) {
+    if (model.length > 200) {
+      errors.push('Model 名称过长')
+    }
+    if (/[^a-zA-Z0-9._\/\-]/.test(model)) {
+      errors.push('Model 名称包含非法字符')
+    }
+  }
+
+  // 5. Max Tokens 验证
+  const maxTokens = String(config.maxTokens ?? '').trim()
+  if (maxTokens) {
+    const tokens = Number(maxTokens)
+    if (!Number.isInteger(tokens) || tokens <= 0) {
+      errors.push('Max Tokens 必须是正整数')
+    } else if (tokens > 1000000) {
+      errors.push('Max Tokens 不能超过 1000000')
+    }
+  }
+
+  // 6. Temperature 验证
+  const temp = typeof config.temperature === 'string' 
+    ? String(config.temperature).trim() 
+    : config.temperature
+  if (temp !== undefined && temp !== '') {
+    const temperature = Number(temp)
+    if (Number.isNaN(temperature)) {
+      errors.push('Temperature 必须是数字')
+    } else if (temperature < 0 || temperature > 2) {
+      errors.push('Temperature 必须在 0-2 之间')
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  }
 }
 
 function parseConfiguredTemperature(raw: unknown): number | undefined {
@@ -1041,6 +1122,32 @@ export function useChat() {
 
   async function sendMessage(params: SendMessageParams) {
     const { threadId, projectId, projectRules, content, images, attachments, provider, modelConfig, mode, workspace, maxTokens, onFirstMessage, onComplete } = params
+    
+    // 验证模型配置
+    const validation = validateModelConfig({
+      provider,
+      baseUrl: modelConfig.baseUrl,
+      apiKey: modelConfig.apiKey,
+      model: modelConfig.model,
+      maxTokens: modelConfig.maxTokens,
+      temperature: modelConfig.temperature,
+    })
+    
+    if (!validation.valid) {
+      const errorMsg = `模型配置验证失败: ${validation.errors.join('; ')}`
+      console.error('[sendMessage]', errorMsg)
+      
+      // 显示错误消息
+      const errChatMsg: ChatMsg = {
+        id: uid(),
+        role: 'assistant',
+        content: `[Error] ${errorMsg}`,
+        taskTiming: buildTaskTiming(Date.now()),
+      }
+      setMessages(threadId, (prev) => [...prev, errChatMsg])
+      return
+    }
+    
     rememberSessionStoreMeta(threadId, { projectId, workspace })
 
     // 保存参数供队列重发
@@ -1125,16 +1232,21 @@ export function useChat() {
 
     let accumulated = ''
     let requestUsage: TokenUsageSnapshot | null = null
-    let appliedUsage: TokenUsageSnapshot | null = null
     let usageTurnCounted = false
     const projectKey = String(projectId ?? threadId ?? '').trim()
+    
+    /** 累加单轮API调用的token成本到项目统计 */
     const applyProjectUsage = (usage: TokenUsageSnapshot | null) => {
       if (!usage || !projectKey) return
-      const nextAgg = usageToAggregate(usage)
-      const prevAgg = usageToAggregate(appliedUsage)
-      const delta = diffUsageAggregate(nextAgg, prevAgg)
-      const shouldCountTurn = !usageTurnCounted && (nextAgg.totalTokens > 0 || nextAgg.inputTokens > 0 || nextAgg.outputTokens > 0)
-      if (!hasUsageDelta(delta) && !shouldCountTurn) return
+      const currentAgg = usageToAggregate(usage)
+      
+      // 检查是否有真实token消耗
+      const hasCost = currentAgg.totalTokens > 0 || currentAgg.inputTokens > 0 || currentAgg.outputTokens > 0
+      if (!hasCost) return
+      
+      // 判断是否计数为1轮对话
+      const shouldCountTurn = !usageTurnCounted
+      
       setProjectTokenStatsByThread((prev) => {
         const base = prev[projectKey] ?? {
           inputTokens: 0,
@@ -1147,19 +1259,35 @@ export function useChat() {
         }
         return {
           ...prev,
-          [projectKey]: applyUsageDeltaToProjectStats(base, delta, shouldCountTurn),
+          [projectKey]: {
+            inputTokens: base.inputTokens + currentAgg.inputTokens,
+            outputTokens: base.outputTokens + currentAgg.outputTokens,
+            hitTokens: base.hitTokens + currentAgg.hitTokens,
+            missTokens: base.missTokens + currentAgg.missTokens,
+            totalTokens: base.totalTokens + currentAgg.totalTokens,
+            turns: base.turns + (shouldCountTurn ? 1 : 0),
+            updatedAt: Date.now(),
+          }
         }
       })
-      appliedUsage = usage
+      
       if (shouldCountTurn) usageTurnCounted = true
     }
+    
+    /** 追踪每次API调用的token使用(累加模式,用于成本统计) */
     const trackRequestUsage = (usage?: TokenUsageSnapshot) => {
-      requestUsage = mergeUsageSnapshot(requestUsage, usage)
-      const totalTokens = resolveUsageTotalTokens(requestUsage)
-      if (typeof totalTokens === 'number' && Number.isFinite(totalTokens)) {
-        setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: totalTokens }))
+      if (!usage) return
+      
+      const currentAgg = usageToAggregate(usage)
+      
+      // 上下文占比:只使用当前AI回复的usage(不累加历史轮次)
+      const currentTotal = resolveUsageTotalTokens(usage)
+      if (typeof currentTotal === 'number' && Number.isFinite(currentTotal)) {
+        setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: currentTotal }))
       }
-      applyProjectUsage(requestUsage)
+      
+      // 项目统计:仍然累加所有轮次(用于成本核算)
+      applyProjectUsage(usage)
     }
     try {
       const requestId = `req-${Date.now()}-${threadId}`
@@ -1327,21 +1455,37 @@ export function useChat() {
           const lastUserImages = images
             ?.map((img) => img.cloudUrl)
             .filter((url): url is string => Boolean(url))
-          globalThis.window.taco.agent.stream({
-            requestId,
-            provider,
-            messages: apiMessages,
-            overrides,
-            projectId,
-            workspace: params.workspace ?? '',
-            maxTokens,
-            recallDebug: isRecallDebugEnabled(),
-            sessionId: threadId,
-            sourceUserMessageId,
-            sourceAssistantMessageId: streamAssistantMessageId,
-            // 如果图片数组非空，传递图片
-            ...(lastUserImages && lastUserImages.length > 0 ? { images: lastUserImages } : {}),
-          })
+          
+          // 执行流式请求（带重试）
+          const executeStreamWithRetry = async (attempt: number): Promise<void> => {
+            try {
+              globalThis.window.taco.agent.stream({
+                requestId,
+                provider,
+                messages: apiMessages,
+                overrides,
+                projectId,
+                workspace: params.workspace ?? '',
+                maxTokens,
+                recallDebug: isRecallDebugEnabled(),
+                sessionId: threadId,
+                sourceUserMessageId,
+                sourceAssistantMessageId: streamAssistantMessageId,
+                // 如果图片数组非空，传递图片
+                ...(lastUserImages && lastUserImages.length > 0 ? { images: lastUserImages } : {}),
+              })
+            } catch (error) {
+              // 如果是可重试错误且还有重试次数
+              if (isRetryableError(error as Error) && attempt < MAX_RETRY_ATTEMPTS) {
+                console.log(`[sendMessage] 请求失败，正在重试 (${attempt + 1}/${MAX_RETRY_ATTEMPTS})`, error)
+                await delay(RETRY_DELAY_MS * (attempt + 1)) // 指数退避
+                return executeStreamWithRetry(attempt + 1)
+              }
+              throw error
+            }
+          }
+          
+          executeStreamWithRetry(0).catch(reject)
         })
       }
 
@@ -1464,16 +1608,15 @@ export function useChat() {
 
     let accumulated = ''
     let requestUsage: TokenUsageSnapshot | null = null
-    let appliedUsage: TokenUsageSnapshot | null = null
     let usageTurnCounted = false
     const projectKey = String(projectId ?? threadId ?? '').trim()
+    
     const applyProjectUsage = (usage: TokenUsageSnapshot | null) => {
       if (!usage || !projectKey) return
-      const nextAgg = usageToAggregate(usage)
-      const prevAgg = usageToAggregate(appliedUsage)
-      const delta = diffUsageAggregate(nextAgg, prevAgg)
-      const shouldCountTurn = !usageTurnCounted && (nextAgg.totalTokens > 0 || nextAgg.inputTokens > 0 || nextAgg.outputTokens > 0)
-      if (!hasUsageDelta(delta) && !shouldCountTurn) return
+      const currentAgg = usageToAggregate(usage)
+      const hasCost = currentAgg.totalTokens > 0 || currentAgg.inputTokens > 0 || currentAgg.outputTokens > 0
+      if (!hasCost) return
+      const shouldCountTurn = !usageTurnCounted
       setProjectTokenStatsByThread((prev) => {
         const base = prev[projectKey] ?? {
           inputTokens: 0,
@@ -1486,19 +1629,31 @@ export function useChat() {
         }
         return {
           ...prev,
-          [projectKey]: applyUsageDeltaToProjectStats(base, delta, shouldCountTurn),
+          [projectKey]: {
+            inputTokens: base.inputTokens + currentAgg.inputTokens,
+            outputTokens: base.outputTokens + currentAgg.outputTokens,
+            hitTokens: base.hitTokens + currentAgg.hitTokens,
+            missTokens: base.missTokens + currentAgg.missTokens,
+            totalTokens: base.totalTokens + currentAgg.totalTokens,
+            turns: base.turns + (shouldCountTurn ? 1 : 0),
+            updatedAt: Date.now(),
+          }
         }
       })
-      appliedUsage = usage
       if (shouldCountTurn) usageTurnCounted = true
     }
+    
     const trackRequestUsage = (usage?: TokenUsageSnapshot) => {
-      requestUsage = mergeUsageSnapshot(requestUsage, usage)
-      const totalTokens = resolveUsageTotalTokens(requestUsage)
-      if (typeof totalTokens === 'number' && Number.isFinite(totalTokens)) {
-        setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: totalTokens }))
+      if (!usage) return
+      
+      // 上下文占比:只使用当前AI回复的usage(不累加历史轮次)
+      const currentTotal = resolveUsageTotalTokens(usage)
+      if (typeof currentTotal === 'number' && Number.isFinite(currentTotal)) {
+        setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: currentTotal }))
       }
-      applyProjectUsage(requestUsage)
+      
+      // 项目统计:仍然累加所有轮次(用于成本核算)
+      applyProjectUsage(usage)
     }
     try {
       const requestId = `req-${Date.now()}-${threadId}`

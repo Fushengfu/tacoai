@@ -1,5 +1,6 @@
 import type { ChatMessage } from '../ai/llm'
 import type { PlanStepStatus } from '../../shared/ipc'
+import { stripUserAssetsBlock, extractUserQueryText } from '../../shared/user-assets'
 
 type PlanStep = {
   text: string
@@ -55,16 +56,8 @@ function collectResolvedPlanSteps(plan: ContextBuildState['currentPlan']): Array
   return out
 }
 
-const USER_ASSETS_BLOCK_REGEX = /\s*\[USER_ASSETS\][\s\S]*?\[\/USER_ASSETS\]\s*/gi
-
 function extractUserGoalText(goal: string): string {
-  const raw = String(goal ?? '')
-    .replace(USER_ASSETS_BLOCK_REGEX, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-  const wrapped = raw.match(/\[USER_QUERY\]([\s\S]*?)\[\/USER_QUERY\]/i)
-  if (wrapped && wrapped[1]) return wrapped[1].trim()
-  return raw.trim()
+  return extractUserQueryText(goal)
 }
 
 function hasRequestSignal(text: string): boolean {

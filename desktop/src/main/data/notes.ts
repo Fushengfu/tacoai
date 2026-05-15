@@ -13,9 +13,7 @@
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import os from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
-import { app } from 'electron'
 import type { ProjectNote, ProjectTaskMemory, MemoryScopeStats, MemoryScopeExportResult } from '../../shared/ipc'
 import type { ChatMessage } from '../ai/llm'
 import { requestChatCompletion, requestStreamWithTools } from '../ai/llm'
@@ -42,40 +40,27 @@ import {
   getMemoryDbInfo,
   resolveChatStoreMessageSeqRange,
 } from './memory-db'
+import { TACO_HOME, workspaceHash, projectScope } from '../../shared/paths'
+import {
+  stripUserAssetsBlock,
+  extractUserAssetsBlock,
+  extractUserQueryText,
+} from '../../shared/user-assets'
+import {
+  stripInternalContextTags,
+  stripPseudoToolCallArtifacts,
+} from '../../shared/sanitize'
+import { inferIntentTypeFromQuery } from '../../shared/intent'
 
 /* ------------------------------------------------------------------ */
 /*  存储路径                                                            */
 /* ------------------------------------------------------------------ */
 
-function resolveHomeDir(): string {
-  try {
-    const electronHome = app.getPath('home')
-    if (electronHome && electronHome.trim()) return electronHome.trim()
-  } catch {
-    // ignore: fallback to env/os
-  }
-  const envHome = (process.env.HOME || process.env.USERPROFILE || '').trim()
-  if (envHome) return envHome
-  const osHome = (os.homedir() || '').trim()
-  if (osHome) return osHome
-  return process.cwd()
-}
-
-const TACO_HOME = path.join(resolveHomeDir(), '.taco')
 const NOTES_DIR = path.join(TACO_HOME, 'notes')
 const MEMORY_DIR = path.join(TACO_HOME, 'memory')
 const MEMORY_ARCHIVE_DIR = path.join(TACO_HOME, 'memory-archive')
 const SNAPSHOT_DIR = path.join(TACO_HOME, 'memory-snapshots')
 const MEMORY_EXPORT_DIR = path.join(TACO_HOME, 'exports')
-
-/** 将工作空间路径转为稳定的文件名 hash */
-function workspaceHash(workspace: string): string {
-  return createHash('sha256').update(path.resolve(workspace)).digest('hex').slice(0, 16)
-}
-
-function projectScope(projectId: string): string {
-  return 'project-' + createHash('sha256').update(projectId).digest('hex').slice(0, 16)
-}
 
 function resolveScope(workspace: string, projectId?: string): string {
   if (projectId && projectId.trim()) return projectScope(projectId.trim())
@@ -239,20 +224,23 @@ type TaskLogSourceRefInput = {
 }
 
 type TaskLogInput = {
-  goal: string
-  userQuery?: string
+  userQuery: string  // 用户原始提问(必填)
   userAssetsBlock?: string
-  intentType?: string
-  intentSummary?: string
-  intentGoal?: string
-  summary: string
+  assistantResult: string  // AI完整回复(必填)
   outcome: 'success' | 'aborted' | 'error'
   tools?: string[]
   changedFiles?: string[]
-  identifiers?: string[]
-  evidenceFacts?: string[]
+  fileDiffs?: Array<{path: string, oldContent: string | null, newContent: string | null}>
   failures?: string[]
   sourceRef?: TaskLogSourceRefInput
+  // 废弃字段(保留兼容性)
+  goal?: string
+  intentType?: string
+  intentSummary?: string
+  intentGoal?: string
+  summary?: string
+  identifiers?: string[]
+  evidenceFacts?: string[]
 }
 
 export type MemoryMaintainOptions = {
@@ -331,32 +319,6 @@ function normalizeIso(input: unknown): string {
   return ''
 }
 
-const PSEUDO_TOOL_CALL_BLOCK_PATTERNS = [
-  /<minimax:tool_call\b[^>]*>[\s\S]*?<\/minimax:tool_call>/gi,
-  /<invoke\b[^>]*>[\s\S]*?<\/invoke>/gi,
-]
-
-const PSEUDO_TOOL_CALL_INLINE_PATTERNS = [
-  /\[(?:\/)?TOOL_CALL[^\]]*\]/gi,
-  /<\/?minimax:tool_call\b[^>]*>/gi,
-  /<\/?invoke\b[^>]*>/gi,
-  /<\/?parameter\b[^>]*>/gi,
-]
-
-export function stripPseudoToolCallArtifacts(input: string): string {
-  let output = String(input ?? '')
-  for (const pattern of PSEUDO_TOOL_CALL_BLOCK_PATTERNS) {
-    output = output.replace(pattern, '\n')
-  }
-  for (const pattern of PSEUDO_TOOL_CALL_INLINE_PATTERNS) {
-    output = output.replace(pattern, ' ')
-  }
-  return output
-    .replace(/[ \t]{2,}/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
-
 function stripMemoryMetaLines(text: string): string {
   const lines = String(text ?? '').replace(/\r/g, '').split('\n')
   const out: string[] = []
@@ -393,22 +355,12 @@ function stripMemoryMetaLines(text: string): string {
 
 function normalizeTaskMemoryEntry(raw: Partial<TaskMemoryEntry>, index: number): TaskMemoryEntry {
   const now = new Date().toISOString()
-  const goal = shortText(String(raw.goal || raw.userQuery || '(未记录目标)'), 800)
-  const userQueryRaw = String(raw.userQuery || goal)
-  const userQuery = shortText(extractUserQueryText(userQueryRaw) || goal, 800)
-  const userAssetsBlockRaw = String(raw.userAssetsBlock || '')
+  const userQuery = shortText(extractUserQueryText(String(raw.userQuery || '')), 8000)
   const userAssetsBlock = shortText(
-    stripControlChars(userAssetsBlockRaw || extractUserAssetsBlock(userQueryRaw)),
+    stripControlChars(String(raw.userAssetsBlock || '')),
     TASK_MEMORY_USER_ASSETS_MAX_CHARS,
   )
-  const intentType = shortText(String(raw.intentType || ''), 48) || 'other'
-  const intentSummary = shortText(String(raw.intentSummary || ''), 280)
-  const intentGoal = shortText(String(raw.intentGoal || goal), 220)
-  const assistantResult = buildAssistantResultBody(String(raw.assistantResult || raw.summary || ''))
-  const compactSummary = shortText(
-    String(raw.summary || '').trim() || `处理: ${extractCoreSummary(assistantResult || goal)}`,
-    TASK_MEMORY_SUMMARY_MAX_CHARS,
-  )
+  const assistantResult = shortText(String(raw.assistantResult || ''), 12000)
   const sourceSessionId = shortText(String((raw as Record<string, unknown>).sourceSessionId || ''), 120)
   const sourceUserMessageId = shortText(String((raw as Record<string, unknown>).sourceUserMessageId || ''), 180)
   const sourceAssistantMessageId = shortText(String((raw as Record<string, unknown>).sourceAssistantMessageId || ''), 180)
@@ -424,23 +376,17 @@ function normalizeTaskMemoryEntry(raw: Partial<TaskMemoryEntry>, index: number):
   const updatedAt = updatedAtRaw || createdAt
 
   const rawId = String(raw.id || '').trim()
-  const stableId = rawId || `task-legacy-${createHash('sha1').update(`${goal}|${createdAt}|${index}`).digest('hex').slice(0, 12)}`
+  const stableId = rawId || `task-legacy-${createHash('sha1').update(`${userQuery}|${createdAt}|${index}`).digest('hex').slice(0, 12)}`
 
   return {
     id: stableId,
     userQuery,
     ...(userAssetsBlock ? { userAssetsBlock } : {}),
-    goal,
-    intentType,
-    intentSummary,
-    intentGoal,
     assistantResult,
-    summary: compactSummary,
     outcome: normalizeOutcome(raw.outcome),
     tools: normalizeStringList(raw.tools, 120),
     changedFiles: normalizeStringList(raw.changedFiles, 160),
-    identifiers: normalizeStringList(raw.identifiers, 160),
-    evidenceFacts: normalizeStringList((raw as Record<string, unknown>).evidenceFacts, 2000),
+    fileDiffs: [],
     ...(sourceSessionId ? { sourceSessionId } : {}),
     ...(sourceUserMessageId ? { sourceUserMessageId } : {}),
     ...(sourceAssistantMessageId ? { sourceAssistantMessageId } : {}),
@@ -1019,7 +965,7 @@ function buildAssistantResultBody(summary: string, evidenceFacts?: string[]): st
 function buildCompactMemorySummary(input: TaskLogInput): string {
   const intentType = shortText(input.intentType || '', 48) || 'other'
   const intentSummary = shortText(input.intentSummary || '', 160)
-  const core = extractCoreSummary(input.summary)
+  const core = extractCoreSummary(input.summary || '')
   const toolText = compactJoin(input.tools ?? [], 4)
   const fileText = compactJoin(input.changedFiles ?? [], 4)
   const factText = compactJoin(normalizeEvidenceFacts(input.evidenceFacts, 6), 3)
@@ -1079,17 +1025,11 @@ function buildHistoricalTaskResultBlock(item: TaskMemoryEntry): string {
   const lines = ['[HISTORICAL_TASK_RESULT]']
   lines.push(`outcome: ${item.outcome}`)
 
-  const intentType = normalizeHistoricalField(String(item.intentType || ''), 48)
-  if (intentType) lines.push(`intent_type: ${intentType}`)
-
   const tools = compactJoin(item.tools ?? [], 6)
   if (tools) lines.push(`tools: ${tools}`)
 
   const changedFiles = compactJoin(item.changedFiles ?? [], 6)
   if (changedFiles) lines.push(`changed_files: ${changedFiles}`)
-
-  const identifiers = compactJoin(item.identifiers ?? [], 6)
-  if (identifiers) lines.push(`identifiers: ${identifiers}`)
 
   const sourceSessionId = normalizeHistoricalField(String(item.sourceSessionId || ''), 120)
   if (sourceSessionId) lines.push(`source_session_id: ${sourceSessionId}`)
@@ -1101,16 +1041,6 @@ function buildHistoricalTaskResultBlock(item: TaskMemoryEntry): string {
 
   const failures = compactJoin((item.failures ?? []).slice(0, 3), 3)
   if (failures) lines.push(`failures: ${failures}`)
-
-  const factLines = item.evidenceFacts.length > 0
-    ? item.evidenceFacts
-    : extractStructuredFactLines(String(item.assistantResult || ''))
-  if (factLines.length > 0) {
-    lines.push('key_facts:')
-    for (const fact of factLines) {
-      lines.push(`- ${normalizeHistoricalField(fact, TASK_MEMORY_REPLAY_RESULT_MAX_CHARS)}`)
-    }
-  }
 
   // 完整回放 assistantResult，不截断
   const fullAssistantResult = String(item.assistantResult || '').trim()
@@ -1130,17 +1060,30 @@ function buildHistoricalTaskResultBlock(item: TaskMemoryEntry): string {
  * 仅成功任务会进入可召回的任务记忆；失败和中止任务不写入记忆总结。
  */
 export async function recordTaskLog(workspace: string, input: TaskLogInput, projectId?: string): Promise<TaskMemoryEntry | null> {
-  if (input.outcome !== 'success') return null
+  // 调试日志
+  console.log('[recordTaskLog] 开始保存任务记忆', {
+    workspace,
+    projectId,
+    outcome: input.outcome,
+    userQuery: input.userQuery?.slice(0, 50),
+    assistantResultLength: input.assistantResult?.length || 0,
+  })
+  
+  if (input.outcome !== 'success') {
+    console.log('[recordTaskLog] 跳过: outcome不是success', { outcome: input.outcome })
+    return null
+  }
 
   const now = new Date().toISOString()
-  const evidenceFacts = normalizeEvidenceFacts(input.evidenceFacts, 2000)
-  const assistantResult = buildAssistantResultBody(input.summary, evidenceFacts)
-  const compactSummary = buildCompactMemorySummary(input)
-  const normalizedUserQuery = extractUserQueryText(input.userQuery || input.goal)
+  
+  // 直接使用用户原始提问和AI完整回复
+  const normalizedUserQuery = shortText(extractUserQueryText(input.userQuery), 8000)
   const normalizedUserAssetsBlock = shortText(
-    stripControlChars(String(input.userAssetsBlock || extractUserAssetsBlock(input.userQuery || input.goal || ''))),
+    stripControlChars(String(input.userAssetsBlock || '')),
     TASK_MEMORY_USER_ASSETS_MAX_CHARS,
   )
+  const assistantResult = shortText(input.assistantResult, 12000)
+  
   const normalizedSourceRef = normalizeTaskLogSourceRef(input.sourceRef)
   let sourceMessageIds = normalizedSourceRef.messageIds ?? []
   let sourceStartSeq: number | undefined
@@ -1153,21 +1096,16 @@ export async function recordTaskLog(workspace: string, input: TaskLogInput, proj
     if (typeof resolved.startSeq === 'number') sourceStartSeq = resolved.startSeq
     if (typeof resolved.endSeq === 'number') sourceEndSeq = resolved.endSeq
   }
+  
   const item: TaskMemoryEntry = {
     id: `task-${Date.now()}-${randomUUID().slice(0, 8)}`,
-    userQuery: shortText(normalizedUserQuery || input.goal, 800),
+    userQuery: normalizedUserQuery,
     ...(normalizedUserAssetsBlock ? { userAssetsBlock: normalizedUserAssetsBlock } : {}),
-    goal: shortText(input.goal, 800),
-    intentType: shortText(input.intentType || '', 48) || 'other',
-    intentSummary: shortText(input.intentSummary || '', 280),
-    intentGoal: shortText(input.intentGoal || input.goal, 220),
     assistantResult,
-    summary: compactSummary,
     outcome: input.outcome,
     tools: [...new Set((input.tools ?? []).map((x) => String(x).trim()).filter(Boolean))],
     changedFiles: [...new Set((input.changedFiles ?? []).map((x) => String(x).trim()).filter(Boolean))],
-    identifiers: [...new Set((input.identifiers ?? []).map((x) => String(x).trim()).filter(Boolean))],
-    evidenceFacts,
+    fileDiffs: input.fileDiffs ?? [],
     ...(normalizedSourceRef.sessionId ? { sourceSessionId: normalizedSourceRef.sessionId } : {}),
     ...(normalizedSourceRef.userMessageId ? { sourceUserMessageId: normalizedSourceRef.userMessageId } : {}),
     ...(normalizedSourceRef.assistantMessageId ? { sourceAssistantMessageId: normalizedSourceRef.assistantMessageId } : {}),
@@ -1181,16 +1119,13 @@ export async function recordTaskLog(workspace: string, input: TaskLogInput, proj
 
   const current = await loadTaskMemories(workspace, projectId)
 
-  // 近似去重：短时间内完全相同目标+总结+结果，视为同一条，更新而不重复堆积
+  // 去重：相同提问+回复+附件,视为同一条(不限时间)
   const duplicateIdx = current.findIndex((entry) =>
     !isSoftDeletedMemory(entry) &&
-    (entry.userQuery ?? '') === (item.userQuery ?? '') &&
+    entry.userQuery === item.userQuery &&
     (entry.userAssetsBlock ?? '') === (item.userAssetsBlock ?? '') &&
-    entry.goal === item.goal &&
-    entry.summary === item.summary &&
-    (entry.assistantResult ?? '') === (item.assistantResult ?? '') &&
-    entry.outcome === item.outcome &&
-    Math.abs(Date.parse(entry.updatedAt || entry.createdAt || '') - Date.now()) <= 10 * 60 * 1000
+    entry.assistantResult === item.assistantResult &&
+    entry.outcome === item.outcome
   )
 
   if (duplicateIdx >= 0) {
@@ -1299,24 +1234,13 @@ function normalizeConsolidationDecision(value: unknown): MemoryConsolidationDeci
 function applyConsolidationPatch(base: TaskMemoryEntry, patch: MemoryConsolidationPatch | undefined, now: string): TaskMemoryEntry {
   if (!patch || typeof patch !== 'object') return { ...base, updatedAt: now }
   const next: TaskMemoryEntry = { ...base, updatedAt: now }
-  const goal = shortText(String(patch.goal || '').trim(), 800)
-  const intentType = shortText(String(patch.intentType || '').trim(), 48)
-  const intentSummary = shortText(String(patch.intentSummary || '').trim(), 280)
-  const intentGoal = shortText(String(patch.intentGoal || '').trim(), 220)
-  const summaryRaw = String(patch.summary || '').trim()
   const assistantResultRaw = String(patch.assistantResult || '').trim()
-  if (goal) next.goal = goal
-  if (intentType) next.intentType = intentType
-  if (intentSummary) next.intentSummary = intentSummary
-  if (intentGoal) next.intentGoal = intentGoal
-  if (summaryRaw) next.summary = shortText(summaryRaw, TASK_MEMORY_SUMMARY_MAX_CHARS)
   if (assistantResultRaw) next.assistantResult = buildAssistantResultBody(assistantResultRaw)
   if (patch.outcome === 'success' || patch.outcome === 'aborted' || patch.outcome === 'error') {
     next.outcome = patch.outcome
   }
   if (Array.isArray(patch.tools)) next.tools = normalizeStringList(patch.tools, 120)
   if (Array.isArray(patch.changedFiles)) next.changedFiles = normalizeStringList(patch.changedFiles, 160)
-  if (Array.isArray(patch.identifiers)) next.identifiers = normalizeStringList(patch.identifiers, 160)
   if (Array.isArray(patch.failures)) next.failures = normalizeStringList(patch.failures, 32)
   delete (next as Record<string, unknown>).deletedAt
   delete (next as Record<string, unknown>).deletedReason
@@ -1429,16 +1353,10 @@ export async function maintainTaskMemoriesByAI(
         id: item.id,
         userQuery: item.userQuery || '',
         userAssetsBlock: item.userAssetsBlock || '',
-        goal: item.goal,
-        intentType: item.intentType || '',
-        intentSummary: item.intentSummary || '',
-        intentGoal: item.intentGoal || '',
-        summary: item.summary,
         assistantResult: item.assistantResult || '',
         outcome: item.outcome,
         tools: item.tools,
         changedFiles: item.changedFiles,
-        identifiers: item.identifiers,
         failures: item.failures,
         createdAt: item.createdAt,
         updatedAt: item.updatedAt,
@@ -1658,30 +1576,6 @@ function stripControlChars(input: string): string {
   return String(input ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
 }
 
-const USER_ASSETS_BLOCK_CAPTURE_REGEX = /\[USER_ASSETS\]([\s\S]*?)\[\/USER_ASSETS\]/i
-const USER_ASSETS_BLOCK_STRIP_REGEX = /\s*\[USER_ASSETS\][\s\S]*?\[\/USER_ASSETS\]\s*/gi
-
-function stripUserAssetsBlock(input: string): string {
-  return String(input ?? '')
-    .replace(USER_ASSETS_BLOCK_STRIP_REGEX, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
-
-function extractUserAssetsBlock(input: string): string {
-  const raw = String(input ?? '')
-  const wrapped = raw.match(USER_ASSETS_BLOCK_CAPTURE_REGEX)
-  if (!wrapped || !wrapped[1]) return ''
-  return stripControlChars(wrapped[1]).trim()
-}
-
-function extractUserQueryText(input: string): string {
-  const raw = stripUserAssetsBlock(input)
-  const wrapped = raw.match(/\[USER_QUERY\]([\s\S]*?)\[\/USER_QUERY\]/i)
-  if (wrapped && wrapped[1]) return wrapped[1].trim()
-  return raw.trim()
-}
-
 function wrapUserQueryText(input: string, assetsOverride?: string): string {
   const plain = extractUserQueryText(input)
   const inferredAssets = extractUserAssetsBlock(input)
@@ -1696,65 +1590,6 @@ function wrapUserQueryText(input: string, assetsOverride?: string): string {
     assetsBlock,
     '[/USER_ASSETS]',
   ].join('\n')
-}
-
-const INTERNAL_CONTEXT_BLOCK_TAGS = [
-  'CURRENT_TASK_SUMMARY',
-  'HISTORICAL_TASK_RESULT',
-  'HISTORICAL_PENDING_STATE',
-  'MEMORY_SNAPSHOT',
-  'BACKGROUND_CONTEXT',
-  'SKILLS_CATALOG',
-  'SKILL_ALLOWED_TOOLS',
-  'SKILL_RESOURCES',
-  'USER_QUERY',
-  'USER_ASSETS',
-  'RUNTIME_TOOL_PROMPT',
-]
-
-const INTERNAL_CONTEXT_ATTR_BLOCK_TAGS = [
-  'SKILL_DETAIL',
-  'SKILL_RESOURCE',
-]
-
-const INTERNAL_CONTEXT_TAG_NAME_RULES: Array<{ pattern: RegExp; replacement: string }> = [
-  { pattern: /\bCURRENT_TASK_SUMMARY\b/g, replacement: '当前任务续跑摘要' },
-  { pattern: /\bHISTORICAL_TASK_RESULT\b/g, replacement: '历史任务总结' },
-  { pattern: /\bHISTORICAL_PENDING_STATE\b/g, replacement: '历史待继续状态' },
-  { pattern: /\bMEMORY_SNAPSHOT\b/g, replacement: '历史记忆快照' },
-  { pattern: /\bSKILLS_CATALOG\b/g, replacement: '技能目录' },
-  { pattern: /\bSKILL_DETAIL\b/g, replacement: '技能详情' },
-  { pattern: /\bSKILL_RESOURCE\b/g, replacement: '技能资源' },
-]
-
-export function stripInternalContextTags(input: string): string {
-  let output = String(input ?? '')
-
-  output = output.replace(/<!--TACO_RUNTIME_TOOL_PROMPT_START-->[\s\S]*?<!--TACO_RUNTIME_TOOL_PROMPT_END-->/gi, '')
-  output = output.replace(/<!--TACO_RUNTIME_TOOL_PROMPT_START-->[\s\S]*$/gi, '')
-  output = output.replace(/<!--TACO_RUNTIME_TOOL_PROMPT_END-->/gi, '')
-
-  for (const tag of INTERNAL_CONTEXT_ATTR_BLOCK_TAGS) {
-    output = output.replace(new RegExp(`\\[${tag}[^\\]]*\\][\\s\\S]*?\\[\\/${tag}\\]`, 'gi'), '')
-  }
-  for (const tag of INTERNAL_CONTEXT_BLOCK_TAGS) {
-    output = output.replace(new RegExp(`\\[${tag}\\][\\s\\S]*?\\[\\/${tag}\\]`, 'gi'), '')
-  }
-
-  for (const tag of INTERNAL_CONTEXT_ATTR_BLOCK_TAGS) {
-    output = output.replace(new RegExp(`\\[${tag}[^\\]]*\\][\\s\\S]*$`, 'gi'), '')
-  }
-  for (const tag of INTERNAL_CONTEXT_BLOCK_TAGS) {
-    output = output.replace(new RegExp(`\\[${tag}\\][\\s\\S]*$`, 'gi'), '')
-  }
-
-  output = output.replace(/\[(?:\/)?(?:CURRENT_TASK_SUMMARY|HISTORICAL_TASK_RESULT|HISTORICAL_PENDING_STATE|MEMORY_SNAPSHOT|BACKGROUND_CONTEXT|SKILLS_CATALOG|SKILL_ALLOWED_TOOLS|SKILL_RESOURCES|USER_QUERY|USER_ASSETS|RUNTIME_TOOL_PROMPT|SKILL_DETAIL|SKILL_RESOURCE)[^\]]*\]/gi, '')
-
-  for (const rule of INTERNAL_CONTEXT_TAG_NAME_RULES) {
-    output = output.replace(rule.pattern, rule.replacement)
-  }
-
-  return output.replace(/\n{3,}/g, '\n\n')
 }
 
 function daysAgoScore(ts: number): number {
@@ -2007,22 +1842,16 @@ function toRecalledItem(candidate: RecallCandidate): RecalledItem {
   return {
     source: 'task',
     id: task.id,
-    title: shortText(task.goal, 120) || '任务记忆',
+    title: shortText(task.userQuery, 120) || '任务记忆',
     score: candidate.score,
     reason: candidate.reason,
     data: {
-      userQuery: task.userQuery || task.goal,
+      userQuery: task.userQuery,
       userAssetsBlock: task.userAssetsBlock || '',
-      intentType: task.intentType || 'other',
-      intentSummary: task.intentSummary || '',
-      intentGoal: task.intentGoal || task.goal,
-      goal: task.goal,
       assistantResult: task.assistantResult || '',
-      summary: task.summary,
       outcome: task.outcome,
       tools: task.tools,
       changedFiles: task.changedFiles,
-      identifiers: task.identifiers,
       failures: task.failures,
       updatedAt: task.updatedAt,
     },
@@ -2053,15 +1882,9 @@ async function recallBackgroundContext(
       ...task,
       userQuery: stripControlChars(task.userQuery || ''),
       userAssetsBlock: stripControlChars(task.userAssetsBlock || ''),
-      intentType: stripControlChars(task.intentType || ''),
-      intentSummary: stripControlChars(task.intentSummary || ''),
-      intentGoal: stripControlChars(task.intentGoal || ''),
-      goal: stripControlChars(task.goal),
       assistantResult: stripControlChars(task.assistantResult || ''),
-      summary: stripControlChars(task.summary),
       tools: (task.tools ?? []).map((x) => stripControlChars(x)),
       changedFiles: (task.changedFiles ?? []).map((x) => stripControlChars(x)),
-      identifiers: (task.identifiers ?? []).map((x) => stripControlChars(x)),
       failures: (task.failures ?? []).map((x) => stripControlChars(x)),
     }))
   const snapshots = (await loadMemorySnapshots(workspace, projectId))
@@ -2101,12 +1924,12 @@ async function recallBackgroundContext(
 
   // 任务记忆：直接使用所有记忆，按时间排序，不再使用评分机制
   for (const task of taskMemories) {
-    const taskText = `${task.userQuery || ''}\n${task.userAssetsBlock || ''}\n${task.intentType || ''}\n${task.intentSummary || ''}\n${task.intentGoal || ''}\n${task.goal}\n${task.assistantResult || ''}\n${task.summary}\n${task.tools.join('\n')}\n${task.changedFiles.join('\n')}\n${task.identifiers.join('\n')}\n${task.failures.join('\n')}`.toLowerCase()
+    const taskText = `${task.userQuery || ''}\n${task.userAssetsBlock || ''}\n${task.assistantResult || ''}\n${(task.tools ?? []).join('\n')}\n${(task.changedFiles ?? []).join('\n')}\n${(task.failures ?? []).join('\n')}`.toLowerCase()
     const timestamp = Date.parse(task.updatedAt || task.createdAt || '')
     const candidate: RecallCandidate = {
       source: 'task',
       id: task.id,
-      title: shortText(task.goal, 120),
+      title: shortText(task.userQuery, 120),
       text: taskText,
       timestamp,
       data: task,
@@ -2144,24 +1967,9 @@ async function recallBackgroundContext(
         const tb = Date.parse(b.updatedAt || b.createdAt || '')
         return (Number.isFinite(tb) ? tb : 0) - (Number.isFinite(ta) ? ta : 0)
       })
-      .find((task) => (task.intentType && task.intentType !== 'other') || task.goal)
+      .find((task) => task.userQuery)
 
-    if (recent) {
-      const inheritedType = shortText(toText(recent.intentType), 48)
-      const inheritedSummary = shortText(toText(recent.intentSummary), 220)
-      const inheritedGoal = shortText(toText(recent.intentGoal || recent.goal), 220)
-
-      if (inheritedType && (intentType === 'other' || isLikelyFollowUpQuery(query))) {
-        intentType = inheritedType
-      }
-      if (inheritedSummary && isLikelyFollowUpQuery(query)) {
-        intentSummary = shortText(`延续上轮意图：${inheritedSummary}`, 220)
-      }
-      if (inheritedGoal && (isLikelyFollowUpQuery(query) || !intentGoal)) {
-        intentGoal = inheritedGoal
-      }
-      // 不再对最近任务记忆额外加分
-    }
+    // 不再继承旧意图,直接使用当前查询
   }
 
   // 去重：保留每个候选的最新版本（评分都是0，按时间）
@@ -2410,14 +2218,13 @@ export async function buildBackgroundContextConversationMessages(
   const taskLimit = replayMode === 'compact' ? 12 : 30
   const taskCandidatesRaw = orderedTaskMemories.slice(-taskLimit)
 
-  // 内容去重：按 goal + userQuery 的内容哈希去重，保留最新的那条
+  // 内容去重：按 userQuery 的内容哈希去重，保留最新的那条
   const seenContentKeys = new Set<string>()
   const taskCandidates: TaskMemoryEntry[] = []
   for (let i = taskCandidatesRaw.length - 1; i >= 0; i--) {
     const item = taskCandidatesRaw[i]
-    const userText = String(item.userQuery || item.goal || '').trim()
-    const goalText = String(item.goal || '').trim()
-    const contentKey = `${goalText}|||${userText}`.toLowerCase().replace(/\s+/g, ' ')
+    const userText = String(item.userQuery || '').trim()
+    const contentKey = userText.toLowerCase().replace(/\s+/g, ' ')
     if (seenContentKeys.has(contentKey)) continue
     seenContentKeys.add(contentKey)
     taskCandidates.unshift(item)
@@ -2438,7 +2245,7 @@ export async function buildBackgroundContextConversationMessages(
       continue
     }
     const item = taskCandidates[i]
-    const userText = String(item.userQuery || item.goal || '').trim()
+    const userText = String(item.userQuery || '').trim()
     const userAssets = String(item.userAssetsBlock || '').trim()
     const assistantText = extractReplayAssistantResult(item)
     
@@ -2475,7 +2282,7 @@ export async function buildBackgroundContextConversationMessages(
   // 任务记忆回放到对话历史
   const messages: ChatMessage[] = []
   for (const item of replayedTaskMemories) {
-    const userText = String(item.userQuery || item.goal || '').trim()
+    const userText = String(item.userQuery || '').trim()
     const userAssets = String(item.userAssetsBlock || '').trim()
     const assistantText = extractReplayAssistantResult(item)
     
@@ -2489,7 +2296,7 @@ export async function buildBackgroundContextConversationMessages(
     
     messages.push({
       role: 'user',
-      content: wrapUserQueryText(userText || item.goal || '(附件相关请求)', userAssets),
+      content: wrapUserQueryText(userText || '(用户提问)', userAssets),
     })
     messages.push({ role: 'assistant', content: assistantText })
   }

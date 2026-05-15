@@ -2,13 +2,23 @@
  * Terminal — 基于 node-pty 的真实 PTY 终端管理
  */
 
-import type { IpcMainEvent } from 'electron'
+import type { IpcMainEvent, WebContents } from 'electron'
 import * as pty from 'node-pty'
 import type { IPty } from 'node-pty'
 import { IpcChannel } from '../../shared/ipc'
 
 /** 每个 webContents 对应一个 PTY 进程 */
 const terminalProcesses = new Map<number, IPty>()
+
+/** 进程信息记录 */
+type ProcessInfo = {
+  pty: IPty
+  senderId: number
+  createdAt: number
+  pid?: number
+}
+
+const processRegistry = new Map<number, ProcessInfo>()
 
 function getShell(): string {
   if (process.platform === 'win32') return process.env.COMSPEC || 'powershell.exe'
@@ -23,6 +33,7 @@ export function handleTerminalSpawn(event: IpcMainEvent, payload: { cwd?: string
   if (existing) {
     try { existing.kill() } catch { /* ignore */ }
     terminalProcesses.delete(senderId)
+    processRegistry.delete(senderId)
   }
 
   const shell = getShell()
@@ -42,6 +53,14 @@ export function handleTerminalSpawn(event: IpcMainEvent, payload: { cwd?: string
     })
 
     terminalProcesses.set(senderId, ptyProcess)
+    
+    // 注册进程信息
+    processRegistry.set(senderId, {
+      pty: ptyProcess,
+      senderId,
+      createdAt: Date.now(),
+      pid: ptyProcess.pid,
+    })
 
     // PTY 输出 → 推送给渲染进程
     ptyProcess.onData((data) => {
@@ -53,6 +72,7 @@ export function handleTerminalSpawn(event: IpcMainEvent, payload: { cwd?: string
     // PTY 退出
     ptyProcess.onExit(({ exitCode }) => {
       terminalProcesses.delete(senderId)
+      processRegistry.delete(senderId)
       if (!event.sender.isDestroyed()) {
         event.sender.send(IpcChannel.TERMINAL_EXIT, { code: exitCode })
       }
@@ -89,5 +109,51 @@ export function handleTerminalKill(event: IpcMainEvent) {
   if (ptyProcess) {
     try { ptyProcess.kill() } catch { /* ignore */ }
     terminalProcesses.delete(event.sender.id)
+    processRegistry.delete(event.sender.id)
   }
+}
+
+/**
+ * 清理所有终端进程
+ * 在应用退出时调用
+ */
+export function cleanupAllTerminals(): void {
+  const count = terminalProcesses.size
+  if (count === 0) return
+
+  console.log(`[Terminal] Cleaning up ${count} terminal process(es)...`)
+
+  for (const [senderId, ptyProcess] of terminalProcesses.entries()) {
+    try {
+      ptyProcess.kill()
+      console.log(`[Terminal] Killed terminal for sender ${senderId}`)
+    } catch (error) {
+      console.error(`[Terminal] Failed to kill terminal for sender ${senderId}:`, error)
+    }
+  }
+
+  terminalProcesses.clear()
+  processRegistry.clear()
+  console.log('[Terminal] All terminals cleaned up')
+}
+
+/**
+ * 获取活跃的终端进程数
+ */
+export function getActiveTerminalCount(): number {
+  return terminalProcesses.size
+}
+
+/**
+ * 获取终端进程信息
+ */
+export function getTerminalInfo(senderId: number): ProcessInfo | undefined {
+  return processRegistry.get(senderId)
+}
+
+/**
+ * 获取所有终端进程信息
+ */
+export function getAllTerminalInfo(): ProcessInfo[] {
+  return Array.from(processRegistry.values())
 }
