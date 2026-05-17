@@ -66,7 +66,7 @@ function cleanupAssistantMemoryText(text: string): string {
   ).trim()
 }
 
-function withActiveSkillsPrompt<T extends { role: string; content?: string }>(messages: T[]): T[] {
+function withActiveSkillsPrompt<T extends { role: string; content?: string | Array<{ type: string; [key: string]: any }> }>(messages: T[]): T[] {
   const skillCatalog = buildActiveSkillsCatalogBlock()
   if (!skillCatalog.trim()) return messages
 
@@ -199,7 +199,24 @@ export async function handleChatStream(event: IpcMainEvent, payload: ChatStreamP
   let assistantFullText = ''
   let rawAssistantFullText = ''
   let emittedSanitizedText = ''
-  const lastUserGoal = [...messages].reverse().find((m) => m.role === 'user')?.content?.trim() || ''
+  
+  // 提取用户消息内容（处理数组和字符串两种情况）
+  const lastUserMessageObj = [...messages].reverse().find((m) => m.role === 'user')
+  let lastUserGoal = ''
+  if (lastUserMessageObj?.content) {
+    if (Array.isArray(lastUserMessageObj.content)) {
+      // 从数组中提取文本
+      for (const part of lastUserMessageObj.content) {
+        if (part.type === 'text') {
+          lastUserGoal += part.text
+        }
+      }
+    } else {
+      lastUserGoal = lastUserMessageObj.content
+    }
+  }
+  lastUserGoal = lastUserGoal.trim()
+  
   const plainUserQuery = extractUserQueryText(lastUserGoal)
   const userAssetsBlock = extractUserAssetsBlock(lastUserGoal)
 
@@ -296,14 +313,6 @@ export async function handleChatStream(event: IpcMainEvent, payload: ChatStreamP
           failures: errorMessage ? 1 : 0,
           elapsedMs: Math.max(0, Date.now() - turnStartedAt),
         })
-        log('REWARD_SCORE_APPLIED', {
-          channel: 'chat',
-          outcome,
-          delta: scored.delta,
-          points: scored.state.points,
-          debtUsd: scored.state.debtUsd,
-          breakdown: scored.entry.breakdown,
-        }, logScope)
       } catch (scoreErr) {
         log('REWARD_SCORE_APPLY_FAIL', {
           channel: 'chat',
@@ -332,11 +341,27 @@ export async function handleChatStream(event: IpcMainEvent, payload: ChatStreamP
   try {
     const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user')
     if (lastUserMessage) {
+      // 提取 content：如果是数组，提取文本和图片；如果是字符串，直接使用
+      let contentText = ''
+      let imageUrls: string[] = []
+      
+      if (Array.isArray(lastUserMessage.content)) {
+        for (const part of lastUserMessage.content) {
+          if (part.type === 'text') {
+            contentText += part.text
+          } else if (part.type === 'image_url') {
+            imageUrls.push(part.image_url.url)
+          }
+        }
+      } else {
+        contentText = lastUserMessage.content || ''
+      }
+      
       getBridgeManager().sendHostMessage({
         type: 'bridge:chat-user-message',
         messageId: sourceUserMessageId || `user-${requestId}`,
-        content: lastUserMessage.content || '',
-        images: lastUserMessage.images,
+        content: contentText,
+        images: imageUrls.length > 0 ? imageUrls : undefined,
         threadId: projectId,
         timestamp: Date.now(),
       })
@@ -375,6 +400,18 @@ export async function handleChatStream(event: IpcMainEvent, payload: ChatStreamP
             delta,
             done: false,
             threadId: projectId,
+          })
+          
+          // 关键修复：使用 updateProjectStateAndPush 实时推送状态变更
+          // 避免移动端因状态延迟而显示错误的发送按钮状态
+          const mgr = getBridgeManager()
+          const projectIdStr = String(projectId ?? '')
+          const assistantMessageId = sourceAssistantMessageId || requestId
+          mgr.updateProjectStateAndPush(projectIdStr, {
+            lastMessageId: assistantMessageId,
+            lastMessageRole: 'assistant',
+            lastMessageHasContent: true,
+            lastMessageIsStreaming: true,
           })
         } catch (_) { /* ignore bridge errors */ }
       }
@@ -518,6 +555,56 @@ export async function handleAgentStream(event: IpcMainEvent, payload: AgentStrea
             threadId: projectId,
             event: agentEvent,
           } as any)
+          
+          // 新增：根据事件类型更新项目状态
+          const mgr = getBridgeManager()
+          const projectIdStr = String(projectId ?? '')
+          const assistantMessageId = sourceAssistantMessageId || requestId
+          
+          if (agentEvent.type === 'text' || agentEvent.type === 'reasoning') {
+            // 流式输出中 - 实时推送状态变更
+            mgr.updateProjectStateAndPush(projectIdStr, {
+              lastMessageId: assistantMessageId,
+              lastMessageRole: 'assistant',
+              lastMessageHasContent: true,
+              lastMessageIsStreaming: true,
+            })
+          } else if (agentEvent.type === 'tool_calls') {
+            // 工具调用 - 实时推送状态变更
+            mgr.updateProjectStateAndPush(projectIdStr, {
+              lastMessageId: assistantMessageId,
+              lastMessageRole: 'assistant',
+              lastMessageHasContent: true,
+              lastMessageIsStreaming: false,
+            })
+          } else if (agentEvent.type === 'plan_init' || agentEvent.type === 'plan_progress') {
+            // 执行计划 - 实时推送状态变更
+            mgr.updateProjectStateAndPush(projectIdStr, {
+              lastMessageId: assistantMessageId,
+              lastMessageRole: 'assistant',
+              lastMessageHasContent: true,
+              lastMessageHasPlan: true,
+              lastMessageIsStreaming: false,
+            })
+          } else if (agentEvent.type === 'done') {
+            // 任务完成 - 实时推送状态变更
+            mgr.updateProjectStateAndPush(projectIdStr, {
+              lastMessageId: assistantMessageId,
+              lastMessageRole: 'assistant',
+              lastMessageHasContent: true,
+              lastMessageIsStreaming: false,
+              lastMessageHasPlan: false,
+            })
+          } else if (agentEvent.type === 'error') {
+            // 任务出错 - 实时推送状态变更
+            mgr.updateProjectStateAndPush(projectIdStr, {
+              lastMessageId: assistantMessageId,
+              lastMessageRole: 'assistant',
+              lastMessageHasContent: true,
+              lastMessageIsStreaming: false,
+              lastMessageHasPlan: false,
+            })
+          }
         } catch (_) { /* ignore bridge errors */ }
       },
       maxTokens,

@@ -152,6 +152,8 @@ class _MobileChatPageState extends State<MobileChatPage> {
   void _onConfirmChange(List<BridgePendingConfirm> confirms) {
     if (!mounted) return;
     setState(() {
+      // 显示所有项目的确认请求（不过滤）
+      // 确认发送时会验证项目隔离，确保安全
       _pendingConfirms = confirms;
     });
   }
@@ -168,10 +170,8 @@ class _MobileChatPageState extends State<MobileChatPage> {
     // 增量更新：只更新变化的部分，避免全量替换
     if (type == 'bridge:state') {
       final state = BridgeState.fromJson(json);
-      // 切换项目完成，隐藏加载指示器
-      if (_isSwitchingProject) {
-        setState(() => _isSwitchingProject = false);
-      }
+      // 关键修复：不在 bridge:state 中清除 _isSwitchingProject
+      // 只在 bridge:project-switched 中清除，避免快照先于响应到达导致提前清除
       // 只更新变化的字段，减少 setState 范围
       bool needUpdate = false;
       if (_workspace != state.workspace) { _workspace = state.workspace; needUpdate = true; }
@@ -212,9 +212,16 @@ class _MobileChatPageState extends State<MobileChatPage> {
     } else if (type == 'bridge:project-cleared' || type == 'bridge:messages-cleared') {
       // 切换项目时清空消息列表，显示加载状态
       _messagesNotifier.value = [];
-      if (!_isSwitchingProject) {
-        setState(() => _isSwitchingProject = true);
+      // 不清除待确认弹窗，保留所有项目的确认请求
+      setState(() {
+        _isSwitchingProject = true;
+      });
+    } else if (type == 'bridge:project-switched') {
+      // 切换项目完成，隐藏加载指示器
+      if (_isSwitchingProject) {
+        setState(() => _isSwitchingProject = false);
       }
+      _messagesNotifier.value = List.from(widget.client.messages);
     } else {
       // 其他消息类型，更新消息列表
       _messagesNotifier.value = List.from(widget.client.messages);
@@ -314,21 +321,24 @@ class _MobileChatPageState extends State<MobileChatPage> {
   }
 
   /// 判断当前项目是否正在发送/处理中（按项目隔离）
+  /// 
+  /// 权威数据源：_projectActiveTasks（桌面端推送的项目级活跃任务状态）
+  /// 桌面端在 Agent/Chat 开始和结束时都会推送 isProcessing/activeTaskId
+  /// 手机端只信任桌面端推送的状态，不扫描本地消息列表
   bool _isCurrentProjectSending() {
-    // 优先使用桌面端推送的活跃任务状态（更可靠）
-    final projectId = _threadId;
+    // 关键修复：使用 _currentProjectId（用户主动切换的项目）而不是 _threadId（可能滞后）
+    final projectId = _threadId ?? widget.client.currentProjectId;
+    
+    // 优先使用桌面端推送的活跃任务状态（唯一权威来源）
     if (projectId != null && projectId.isNotEmpty) {
-      // 检查 _projectActiveTasks 是否包含该项目
       final activeTask = widget.client.getActiveTaskForProject(projectId);
-      if (activeTask != null && activeTask.isNotEmpty) {
-        return true;
-      }
+      // activeTask 非空 = 桌面端确认正在处理
+      // activeTask 为空 = 桌面端已确认任务完成
+      return activeTask != null && activeTask.isNotEmpty;
     }
+    
     // 兜底：使用全局 activeAgentRequestId（仅当 projectId 为空时）
-    if (projectId == null || projectId.isEmpty) {
-      return widget.client.activeAgentRequestId != null;
-    }
-    return false;
+    return widget.client.activeAgentRequestId != null && widget.client.activeAgentRequestId!.isNotEmpty;
   }
 
   Future<void> _loadModels() async {
@@ -549,6 +559,21 @@ class _MobileChatPageState extends State<MobileChatPage> {
               confirms: _pendingConfirms,
               onConfirm: (confirmId, approved) {
                 widget.client.sendAgentConfirm(confirmId, approved);
+              },
+              getProjectTitle: (projectId) {
+                // 从缓存的项目列表中查找项目名称
+                if (projectId == null) return null;
+                try {
+                  final projects = widget.client.cachedProjects;
+                  if (projects != null) {
+                    final project = projects.firstWhere(
+                      (p) => p.id == projectId,
+                      orElse: () => BridgeProjectInfo(id: projectId, title: '', workspace: null, sessions: []),
+                    );
+                    return project.title.isNotEmpty ? project.title : null;
+                  }
+                } catch (_) {}
+                return null;
               },
             ),
 

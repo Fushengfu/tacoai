@@ -161,7 +161,7 @@ type ChatPanelProps = {
   draft: string
   onDraftChange: (value: string) => void
   sending: boolean
-  onSend: (images?: AttachedImage[], attachments?: AttachedAsset[]) => void
+  onSend: (content: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } } | { type: 'video_url'; video_url: { url: string } } | { type: 'audio_url'; audio_url: { url: string } }>) => void
   onStop: () => void
   /** 会话管理 */
   onSwitchSession: (sessionId: string) => void
@@ -281,8 +281,77 @@ export function ChatPanel({
 
   // ── 图片附件状态 ──
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([])
+  /** 文件附件（代码、文档、视频、音频等） - 以卡片形式显示 */
   const [attachedAssets, setAttachedAssets] = useState<AttachedAsset[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const inputDivRef = useRef<HTMLDivElement>(null)
+
+  /** 在 contentEditable div 中插入附件卡片 */
+  function insertFileChip(path: string) {
+    const div = inputDivRef.current
+    if (!div) return
+
+    // 创建附件卡片元素
+    const chip = document.createElement('span')
+    chip.className = 'file-attachment-chip'
+    chip.setAttribute('data-file-path', path)
+    chip.contentEditable = 'false'
+    chip.innerHTML = `📄 ${toAssetName(path)} <span class="file-chip-remove">×</span>`
+    
+    // 点击删除
+    chip.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement
+      if (target.classList.contains('file-chip-remove')) {
+        chip.remove()
+        // 从 attachedAssets 中移除
+        setAttachedAssets(prev => prev.filter(a => a.path !== path))
+        // 更新 draft
+        updateDraftFromDiv()
+      }
+    })
+
+    // 插入到光标位置
+    const selection = window.getSelection()
+    if (selection && selection.rangeCount > 0) {
+      const range = selection.getRangeAt(0)
+      range.deleteContents()
+      range.insertNode(chip)
+      // 光标移动到卡片后面
+      range.setStartAfter(chip)
+      range.collapse(true)
+      selection.removeAllRanges()
+      selection.addRange(range)
+    } else {
+      div.appendChild(chip)
+    }
+
+    div.focus()
+    updateDraftFromDiv()
+  }
+
+  /** 从 contentEditable div 提取 draft */
+  function updateDraftFromDiv() {
+    const div = inputDivRef.current
+    if (!div) return
+    
+    let text = ''
+    for (const node of div.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        text += node.textContent || ''
+      } else if (node.nodeType === Node.ELEMENT_NODE) {
+        const el = node as Element
+        if (el.classList.contains('file-attachment-chip')) {
+          const path = el.getAttribute('data-file-path')
+          if (path) {
+            text += `[FILE]${path}[/FILE]`
+          }
+        } else {
+          text += el.textContent || ''
+        }
+      }
+    }
+    onDraftChange(text)
+  }
 
   /** 读取文件为 base64 data URL */
   function readFileAsDataUrl(file: File): Promise<string> {
@@ -375,34 +444,9 @@ export function ChatPanel({
     setAttachedAssets((prev) => prev.filter((item) => item.id !== id))
   }
 
-  function toAssetName(filePath: string): string {
-    const normalized = String(filePath ?? '').replace(/\\/g, '/')
+  function toAssetName(filePath: string): string {    const normalized = String(filePath ?? '').replace(/\\/g, '/')
     const parts = normalized.split('/').filter(Boolean)
     return parts[parts.length - 1] || normalized
-  }
-
-  async function handleSelectAttachments() {
-    const paths = await globalThis.window.taco.dialog.selectAttachments()
-    if (!Array.isArray(paths) || paths.length <= 0) return
-    setAttachedAssets((prev) => {
-      const MAX_ATTACHMENTS = 20
-      const dedup = new Set(prev.map((item) => item.path.toLowerCase()))
-      const next = [...prev]
-      for (const rawPath of paths) {
-        const filePath = String(rawPath ?? '').trim()
-        if (!filePath) continue
-        const key = filePath.toLowerCase()
-        if (dedup.has(key)) continue
-        dedup.add(key)
-        next.push({
-          id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          name: toAssetName(filePath),
-          path: filePath,
-        })
-        if (next.length >= MAX_ATTACHMENTS) break
-      }
-      return next
-    })
   }
 
   /** 粘贴事件处理：提取图片 */
@@ -460,10 +504,6 @@ export function ChatPanel({
 
   /** 智能添加文件：统一入口，分别调用图片和附件选择 */
   async function handleAddFiles() {
-    // 策略：同时支持图片和附件
-    // 1. 打开系统文件选择对话框(获取路径,用于附件)
-    // 2. 根据文件类型自动分流
-    
     const paths = await globalThis.window.taco.dialog.selectAttachments()
     if (!Array.isArray(paths) || paths.length === 0) return
 
@@ -475,7 +515,6 @@ export function ChatPanel({
       const filePath = String(rawPath ?? '').trim()
       if (!filePath) continue
 
-      // 通过扩展名判断是否为图片
       const ext = filePath.toLowerCase().split('.').pop() || ''
       const imageExts = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'ico'])
       
@@ -486,22 +525,17 @@ export function ChatPanel({
       }
     }
 
-    console.log('[handleAddFiles] 分类结果:', { imagePaths, assetPaths })
-
     // 处理图片：读取为data URL后上传
     if (imagePaths.length > 0) {
       const imageFiles: File[] = []
       for (const imgPath of imagePaths) {
         try {
           const result = await window.taco.file.read(imgPath)
-          
-          // 图片文件会返回 dataUrl 字段
           if (result.dataUrl) {
             const fileName = imgPath.split('/').pop() || 'image'
             const response = await fetch(result.dataUrl)
             const blob = await response.blob()
             imageFiles.push(new File([blob], fileName, { type: blob.type }))
-            console.log('[handleAddFiles] 成功转换图片:', fileName, blob.size, 'bytes')
           }
         } catch (err) {
           console.error('[handleAddFiles] 读取图片失败:', err)
@@ -509,34 +543,29 @@ export function ChatPanel({
       }
       
       if (imageFiles.length > 0) {
-        // 调用现有的addImages函数
         addImages(imageFiles)
       }
     }
 
-    // 处理其他文件：添加到附件列表
+    // 处理其他文件：插入附件卡片到输入框
     if (assetPaths.length > 0) {
-      setAttachedAssets((prev) => {
-        const MAX_ATTACHMENTS = 20
-        const dedup = new Set(prev.map((item) => item.path.toLowerCase()))
-        const next = [...prev]
-        for (const filePath of assetPaths) {
-          const key = filePath.toLowerCase()
-          if (dedup.has(key)) continue
-          dedup.add(key)
-          next.push({
+      for (const filePath of assetPaths) {
+        insertFileChip(filePath)
+        // 添加到 attachedAssets 状态
+        setAttachedAssets((prev) => {
+          const exists = prev.some(a => a.path === filePath)
+          if (exists) return prev
+          return [...prev, {
             id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             name: toAssetName(filePath),
             path: filePath,
-          })
-          if (next.length >= MAX_ATTACHMENTS) break
-        }
-        return next
-      })
+          }]
+        })
+      }
     }
   }
 
-  /** 发送消息（携带图片后清空） */
+  /** 发送消息（构建统一 content 数组） */
   async function handleSend() {
     // 等待所有上传中的图片完成
     const hasPending = attachedImages.some(img => 
@@ -544,7 +573,6 @@ export function ChatPanel({
     )
     
     if (hasPending) {
-      console.log('[handleSend] 等待图片上传完成...')
       // 等待最多 30 秒
       const maxWait = 30000
       const startTime = Date.now()
@@ -561,7 +589,6 @@ export function ChatPanel({
         })
         
         if (allDone) {
-          console.log('[handleSend] 所有图片上传完成')
           break
         }
         
@@ -570,17 +597,120 @@ export function ChatPanel({
       }
     }
     
-    // 直接使用当前状态的图片
-    const imgs = attachedImages.length > 0 ? [...attachedImages] : undefined
-    const assets = attachedAssets.length > 0 ? [...attachedAssets] : undefined
+    // 构建统一的 content 数组
+    const parts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } } | { type: 'video_url'; video_url: { url: string } } | { type: 'audio_url'; audio_url: { url: string } }> = []
+    
+    // 1. 添加文本内容
+    const textContent = draft.trim() || false
+    if (textContent) {
+      parts.push({ type: 'text', text: textContent })
+    }
+    
+    // 2. 添加已上传的图片（使用 cloudUrl）
+    const doneImages = attachedImages.filter(img => img.uploadStatus === 'done' && img.cloudUrl)
+    for (const img of doneImages) {
+      parts.push({ type: 'image_url', image_url: { url: img.cloudUrl } })
+    }
+    
+    // 3. 添加文件附件（代码、文档、视频、音频等）
+    // 后端会根据 attachedAssets 自动处理为对应格式
+    for (const asset of attachedAssets) {
+      const ext = asset.path.split('.').pop()?.toLowerCase() || ''
+      const imageExts = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'ico'])
+      const videoExts = new Set(['mp4', 'webm', 'ogg', 'mov', 'avi', 'mkv'])
+      const audioExts = new Set(['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'])
+      
+      if (imageExts.has(ext)) {
+        parts.push({ type: 'image_url', image_url: { url: asset.path } })
+      } else if (videoExts.has(ext)) {
+        parts.push({ type: 'video_url', video_url: { url: asset.path } })
+      } else if (audioExts.has(ext)) {
+        parts.push({ type: 'audio_url', audio_url: { url: asset.path } })
+      }
+      // 非媒体文件（代码、文档等）由后端 mapMessageForApi 处理为 [FILE] 标签
+    }
+    
+    
+    // 清空附件状态
     setAttachedImages([])
     setAttachedAssets([])
-    onSend(imgs, assets)
+    
+    // 清空输入框
+    onDraftChange('')
+    if (inputDivRef.current) {
+      inputDivRef.current.innerHTML = ''
+    }
+    
+    // 发送统一的 content 数组
+    onSend(parts)
   }
 
   // 编辑中的用户消息
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null)
   const [editingText, setEditingText] = useState('')
+  const [editingAttachments, setEditingAttachments] = useState<AttachedAsset[]>([])
+  const editingInputDivRef = useRef<HTMLDivElement>(null)
+
+  /** 在编辑框中插入附件卡片 */
+  function insertEditingFileChip(path: string) {
+    const div = editingInputDivRef.current
+    if (!div) return
+
+    const chip = document.createElement('span')
+    chip.className = 'file-attachment-chip'
+    chip.setAttribute('data-file-path', path)
+    chip.contentEditable = 'false'
+    chip.innerHTML = `📄 ${toAssetName(path)} <span class="file-chip-remove">×</span>`
+    
+    chip.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement
+      if (target.classList.contains('file-chip-remove')) {
+        chip.remove()
+        setEditingAttachments(prev => prev.filter(a => a.path !== path))
+        updateEditingTextFromDiv()
+      }
+    })
+
+    const selection = window.getSelection()
+    if (selection && selection.rangeCount > 0) {
+      const range = selection.getRangeAt(0)
+      range.deleteContents()
+      range.insertNode(chip)
+      range.setStartAfter(chip)
+      range.collapse(true)
+      selection.removeAllRanges()
+      selection.addRange(range)
+    } else {
+      div.appendChild(chip)
+    }
+
+    div.focus()
+    updateEditingTextFromDiv()
+  }
+
+  /** 从编辑框提取文本 */
+  function updateEditingTextFromDiv() {
+    const div = editingInputDivRef.current
+    if (!div) return
+    
+    let text = ''
+    for (const node of div.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        text += node.textContent || ''
+      } else if (node.nodeType === Node.ELEMENT_NODE) {
+        const el = node as Element
+        if (el.classList.contains('file-attachment-chip')) {
+          const path = el.getAttribute('data-file-path')
+          if (path) {
+            text += `[FILE]${path}[/FILE]`
+          }
+        } else {
+          text += el.textContent || ''
+        }
+      }
+    }
+    setEditingText(text)
+  }
 
   // 已响应的确认请求（防止重复点击）
   const [respondedConfirms, setRespondedConfirms] = useState<Map<string, boolean>>(new Map())
@@ -1037,18 +1167,116 @@ export function ChatPanel({
   function startEdit(msg: ChatMsg) {
     if (sending) return
     setEditingMsgId(msg.id)
+    
+    // 初始化编辑时的附件：从 msg.attachments 或从 content 中解析 [FILE] 标签
+    if (msg.attachments && msg.attachments.length > 0) {
+      setEditingAttachments([...msg.attachments])
+    } else {
+      // 尝试从 content 中解析 [FILE] 标签
+      const fileRegex = /\[FILE\]([^\[]+)\[\/FILE\]/g
+      const attachments: AttachedAsset[] = []
+      let match
+      let idx = 0
+      while ((match = fileRegex.exec(msg.content)) !== null) {
+        const filePath = match[1]
+        const fileName = filePath.split('/').pop() || filePath
+        attachments.push({
+          id: `edit-file-${idx++}`,
+          path: filePath,
+          name: fileName,
+        })
+      }
+      setEditingAttachments(attachments)
+    }
+    
     setEditingText(msg.content)
+    
+    // 延迟填充 contentEditable 内容（确保 DOM 已渲染）
+    setTimeout(() => {
+      const div = editingInputDivRef.current
+      if (!div) return
+      
+      // 清空并填充内容
+      div.innerHTML = ''
+      
+      // 解析 content，将 [FILE] 标签转换为卡片，普通文本直接插入
+      const content = msg.content
+      const fileRegex2 = /\[FILE\]([^\[]+)\[\/FILE\]/g
+      let lastIndex = 0
+      let match2
+      
+      while ((match2 = fileRegex2.exec(content)) !== null) {
+        // 添加文件标签前的文本
+        if (match2.index > lastIndex) {
+          const textNode = document.createTextNode(content.slice(lastIndex, match2.index))
+          div.appendChild(textNode)
+        }
+        
+        // 插入文件卡片
+        const filePath = match2[1]
+        const chip = document.createElement('span')
+        chip.className = 'file-attachment-chip'
+        chip.setAttribute('data-file-path', filePath)
+        chip.contentEditable = 'false'
+        chip.innerHTML = `📄 ${toAssetName(filePath)} <span class="file-chip-remove">×</span>`
+        
+        chip.addEventListener('click', (e) => {
+          const target = e.target as HTMLElement
+          if (target.classList.contains('file-chip-remove')) {
+            chip.remove()
+            setEditingAttachments(prev => prev.filter(a => a.path !== filePath))
+            updateEditingTextFromDiv()
+          }
+        })
+        
+        div.appendChild(chip)
+        lastIndex = match2.index + match2[0].length
+      }
+      
+      // 添加剩余文本
+      if (lastIndex < content.length) {
+        const textNode = document.createTextNode(content.slice(lastIndex))
+        div.appendChild(textNode)
+      }
+      
+      // 如果没有文件标签，直接设置文本
+      if (!div.innerHTML) {
+        div.textContent = msg.content
+      }
+      
+      // 聚焦并移动光标到末尾
+      div.focus()
+      const range = document.createRange()
+      const sel = window.getSelection()
+      range.selectNodeContents(div)
+      range.collapse(false)
+      sel?.removeAllRanges()
+      sel?.addRange(range)
+    }, 50)
   }
 
   function confirmEdit(msgId: string) {
     const text = editingText.trim()
+    const attachments = editingAttachments
+    
     setEditingMsgId(null)
-    if (!text) return
-    onEditResend(msgId, text)
+    setEditingAttachments([])
+    
+    if (!text && attachments.length === 0) return
+    
+    // 将附件信息添加到文本中
+    let finalText = text
+    if (attachments.length > 0) {
+      const fileTags = attachments.map(a => `[FILE]${a.path}[/FILE]`).join('\n')
+      finalText = text ? `${text}\n\n${fileTags}` : fileTags
+    }
+    
+    onEditResend(msgId, finalText)
   }
 
   function cancelEdit() {
     setEditingMsgId(null)
+    setEditingAttachments([])
   }
 
   const showPendingThinkingHint = sending && !showStreamBubble && !selectedFileChange && !viewingFile
@@ -1500,13 +1728,43 @@ export function ChatPanel({
                   </div>
                 ) : isEditing ? (
                   <div className="bubble editing">
-                    <textarea
-                      placeholder="开始编辑..."
+                    {/* 附件显示区 */}
+                    {editingAttachments.length > 0 && (
+                      <div className="msg-assets" style={{ marginBottom: '8px' }}>
+                        {editingAttachments.map((asset) => (
+                          <div key={asset.id} className="msg-asset-chip" title={asset.path}>
+                            <span className="msg-asset-name">{asset.name}</span>
+                            <button
+                              type="button"
+                              className="msg-asset-remove"
+                              onClick={() => {
+                                setEditingAttachments(prev => prev.filter(a => a.id !== asset.id))
+                                // 从编辑框中移除对应的 chip
+                                if (editingInputDivRef.current) {
+                                  const chips = editingInputDivRef.current.querySelectorAll('.file-attachment-chip')
+                                  chips.forEach(chip => {
+                                    if (chip.getAttribute('data-file-path') === asset.path) {
+                                      chip.remove()
+                                    }
+                                  })
+                                }
+                              }}
+                              title="移除附件"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {/* contentEditable 编辑框 */}
+                    <div
+                      ref={editingInputDivRef}
                       className="bubble-edit-input"
-                      value={editingText}
-                      onChange={(e) => setEditingText(e.target.value)}
+                      contentEditable
+                      suppressContentEditableWarning
+                      onInput={updateEditingTextFromDiv}
                       onKeyDown={(e) => {
-                        // 输入法组合中按 Enter 不提交
                         if (e.nativeEvent.isComposing || e.keyCode === 229) return
                         if (e.key === 'Enter' && !e.shiftKey) {
                           e.preventDefault()
@@ -1514,10 +1772,47 @@ export function ChatPanel({
                         }
                         if (e.key === 'Escape') cancelEdit()
                       }}
-                      onBlur={() => cancelEdit()}
-                      autoFocus
-                      rows={Math.min(editingText.split('\n').length, 8)}
+                      style={{
+                        width: '100%',
+                        minWidth: '100%',
+                        minHeight: '2.5em',
+                        maxHeight: '12em',
+                        overflowY: 'auto',
+                      }}
                     />
+                    {/* 添加附件按钮 */}
+                    <div style={{ marginTop: '8px', display: 'flex', gap: '6px', alignItems: 'center' }}>
+                      <button
+                        type="button"
+                        className="msg-action-btn"
+                        title="添加附件"
+                        onClick={() => {
+                          const input = document.createElement('input')
+                          input.type = 'file'
+                          input.multiple = true
+                          input.onchange = async (e) => {
+                            const files = (e.target as HTMLInputElement).files
+                            if (!files) return
+                            for (const file of Array.from(files)) {
+                              const asset: AttachedAsset = {
+                                id: `edit-asset-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+                                path: (file as any).path || file.name,
+                                name: file.name,
+                              }
+                              setEditingAttachments(prev => [...prev, asset])
+                              // 在编辑框中插入卡片
+                              insertEditingFileChip(asset.path)
+                            }
+                          }
+                          input.click()
+                        }}
+                      >
+                        +
+                      </button>
+                      <span style={{ fontSize: '11px', color: 'var(--muted)', opacity: 0.6 }}>
+                        添加附件
+                      </span>
+                    </div>
                     <div className="bubble-edit-hint">
                       Enter 确认 · Esc 取消
                     </div>
@@ -1527,16 +1822,21 @@ export function ChatPanel({
                     <div className="bubble">
                       {msg.images && msg.images.length > 0 && (
                         <div className="msg-images">
-                          {msg.images.map((img) => (
-                            <img
-                              key={img.id}
-                              src={img.dataUrl}
-                              alt={img.name}
-                              className="msg-image-thumb"
-                              title="点击预览"
-                              onClick={() => setPreviewImageUrl(img.dataUrl)}
-                            />
-                          ))}
+                          {msg.images.map((img) => {
+                            // 优先使用 dataUrl（本地预览），回退到 cloudUrl（云端URL）
+                            const imageSrc = img.dataUrl || img.cloudUrl
+                            if (!imageSrc) return null
+                            return (
+                              <img
+                                key={img.id}
+                                src={imageSrc}
+                                alt={img.name}
+                                className="msg-image-thumb"
+                                title="点击预览"
+                                onClick={() => setPreviewImageUrl(imageSrc)}
+                              />
+                            )
+                          })}
                         </div>
                       )}
                       {msg.attachments && msg.attachments.length > 0 && (
@@ -1548,9 +1848,59 @@ export function ChatPanel({
                           ))}
                         </div>
                       )}
-                      {msg.content
-                        .split('\n')
-                        .map((line, i) => <p key={`${msg.id}-${i}`}>{line}</p>)}
+                      {(() => {
+                        // 解析 content，提取 [FILE]...[/FILE] 标签并渲染为附件卡片
+                        const content = msg.content
+                        const fileRegex = /\[FILE\]([^\[]+)\[\/FILE\]/g
+                        const parts: Array<{ type: 'text' | 'file'; content: string; path?: string }> = []
+                        let lastIndex = 0
+                        let match
+                        
+                        while ((match = fileRegex.exec(content)) !== null) {
+                          // 添加文件标签前的文本
+                          if (match.index > lastIndex) {
+                            parts.push({ type: 'text', content: content.slice(lastIndex, match.index) })
+                          }
+                          // 添加文件标签
+                          parts.push({ type: 'file', content: match[1], path: match[1] })
+                          lastIndex = match.index + match[0].length
+                        }
+                        
+                        // 添加剩余文本
+                        if (lastIndex < content.length) {
+                          parts.push({ type: 'text', content: content.slice(lastIndex) })
+                        }
+                        
+                        // 如果没有匹配到任何文件标签，直接渲染原文本
+                        if (parts.length === 0) {
+                          parts.push({ type: 'text', content })
+                        }
+                        
+                        return (
+                          <>
+                            {/* 渲染提取出的文件附件卡片 */}
+                            {parts.filter(p => p.type === 'file').length > 0 && (
+                              <div className="msg-assets">
+                                {parts.filter(p => p.type === 'file').map((file, idx) => {
+                                  const fileName = file.path?.split('/').pop() || file.path || ''
+                                  return (
+                                    <div key={`file-${idx}`} className="msg-asset-chip" title={file.path}>
+                                      <span className="msg-asset-name">📄 {fileName}</span>
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            )}
+                            {/* 渲染文本内容（移除文件标签） */}
+                            {parts.filter(p => p.type === 'text').map((part, i) => {
+                              if (!part.content.trim()) return null
+                              return part.content.split('\n').map((line, j) => (
+                                <p key={`text-${i}-${j}`}>{line}</p>
+                              ))
+                            })}
+                          </>
+                        )
+                      })()}
                     </div>
                     <div className="msg-actions">
                       <button
@@ -1732,24 +2082,12 @@ export function ChatPanel({
               ))}
             </div>
           )}
-          {attachedAssets.length > 0 && (
-            <div className="composer-assets">
-              {attachedAssets.map((asset) => (
-                <div key={asset.id} className="composer-asset-item" title={asset.path}>
-                  <span className="composer-asset-name">{asset.name}</span>
-                  <button
-                    type="button"
-                    className="composer-asset-remove"
-                    onClick={() => removeAsset(asset.id)}
-                    title="移除附件"
-                  >×</button>
-                </div>
-              ))}
-            </div>
-          )}
-          <textarea
+          <div
+            ref={inputDivRef}
             className="composer-input"
-            placeholder={
+            contentEditable
+            suppressContentEditableWarning
+            data-placeholder={
               !hasProviders
                 ? t('input.no_provider')
                 : !workspace
@@ -1758,11 +2096,29 @@ export function ChatPanel({
                     ? t('input.placeholder.sending')
                     : t('input.placeholder.default')
             }
-            value={draft}
-            onChange={(e) => onDraftChange(e.target.value)}
+            onInput={(e) => {
+              const target = e.currentTarget
+              // 提取纯文本，过滤掉附件卡片
+              let text = ''
+              for (const node of target.childNodes) {
+                if (node.nodeType === Node.TEXT_NODE) {
+                  text += node.textContent
+                } else if (node.nodeType === Node.ELEMENT_NODE) {
+                  const el = node as Element
+                  if (el.classList.contains('file-attachment-chip')) {
+                    // 保留 FILE 标签
+                    const path = el.getAttribute('data-file-path')
+                    if (path) {
+                      text += `[FILE]${path}[/FILE]`
+                    }
+                  } else {
+                    text += el.textContent
+                  }
+                }
+              }
+              onDraftChange(text)
+            }}
             onPaste={handlePaste}
-            rows={1}
-            disabled={!hasProviders || !workspace}
             onKeyDown={(e) => {
               // 输入法组合中（如拼音选字）按 Enter 不发送
               if (e.nativeEvent.isComposing || e.keyCode === 229) return

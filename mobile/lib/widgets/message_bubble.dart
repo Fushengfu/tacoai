@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -18,6 +19,28 @@ class MessageBubble extends StatefulWidget {
 }
 
 class _MessageBubbleState extends State<MessageBubble> {
+  /// 判断消息是否正在处理中（根据 activePlan 和 agentSteps 状态）
+  bool _isMessageProcessing(BridgeChatMessage msg) {
+    // 如果有 taskTiming 且已结束，说明任务已完成
+    if (msg.taskTiming != null && msg.taskTiming!.endedAt != null) {
+      return false;
+    }
+
+    // 如果有 activePlan，说明正在执行
+    if (msg.activePlan != null) return true;
+
+    // 如果 agentSteps 中有 running/calling/confirm 状态的步骤，说明正在执行
+    if (msg.agentSteps != null && msg.agentSteps!.isNotEmpty) {
+      for (final step in msg.agentSteps!) {
+        if (step.status == 'calling' || step.status == 'running' || step.status == 'confirm') {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
   @override
   Widget build(BuildContext context) {
     final isUser = widget.message.role == 'user';
@@ -72,11 +95,40 @@ class _MessageBubbleState extends State<MessageBubble> {
                               mainAxisSize: MainAxisSize.min,
                               crossAxisAlignment: CrossAxisAlignment.end,
                               children: [
+                                // 图片附件
+                                if (widget.message.images != null && widget.message.images!.isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.only(bottom: 8),
+                                    child: Wrap(
+                                      spacing: 8,
+                                      runSpacing: 8,
+                                      children: widget.message.images!
+                                          .map((img) => _buildImageThumbnail(img, colorScheme))
+                                          .toList(),
+                                    ),
+                                  ),
+
+                                // 文件附件
+                                if (widget.message.attachments != null && widget.message.attachments!.isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.only(bottom: 8),
+                                    child: Wrap(
+                                      spacing: 6,
+                                      runSpacing: 6,
+                                      children: widget.message.attachments!
+                                          .map((asset) => _buildAssetChip(asset, colorScheme))
+                                          .toList(),
+                                    ),
+                                  ),
+
                                 // Markdown 内容
                                 _buildContent(isUser, colorScheme),
 
                                 // 流式指示器
-                                if (widget.message.streaming)
+                                // 判断条件：
+                                // 1. 有 activePlan（正在执行计划）
+                                // 2. agentSteps 中有 running/calling/confirm 状态的步骤（且任务未完成）
+                                if (_isMessageProcessing(widget.message))
                                   Padding(
                                     padding: const EdgeInsets.only(top: 6),
                                     child: SizedBox(
@@ -109,9 +161,36 @@ class _MessageBubbleState extends State<MessageBubble> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            // Agent 步骤（仅 assistant 消息）
+                            // 图片附件
+                            if (widget.message.images != null && widget.message.images!.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: Wrap(
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  children: widget.message.images!
+                                      .map((img) => _buildImageThumbnail(img, colorScheme))
+                                      .toList(),
+                                ),
+                              ),
+
+                            // 文件附件
+                            if (widget.message.attachments != null && widget.message.attachments!.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: Wrap(
+                                  spacing: 6,
+                                  runSpacing: 6,
+                                  children: widget.message.attachments!
+                                      .map((asset) => _buildAssetChip(asset, colorScheme))
+                                      .toList(),
+                                ),
+                              ),
+
+                            // Agent 步骤（仅 assistant 消息，且至少有一个步骤包含工具调用）
                             if (widget.message.agentSteps != null &&
-                                widget.message.agentSteps!.isNotEmpty)
+                                widget.message.agentSteps!.isNotEmpty &&
+                                widget.message.agentSteps!.any((step) => step.toolCalls.isNotEmpty))
                               AgentStepWidget(
                                 steps: widget.message.agentSteps!,
                                 colorScheme: colorScheme,
@@ -128,7 +207,9 @@ class _MessageBubbleState extends State<MessageBubble> {
                             _buildContent(isUser, colorScheme),
 
                             // 流式指示器
-                            if (widget.message.streaming)
+                            if (widget.message.activePlan != null ||
+                                (widget.message.agentSteps?.isNotEmpty == true &&
+                                 widget.message.agentSteps!.last.status == 'running'))
                               Padding(
                                 padding: const EdgeInsets.only(top: 6),
                                 child: SizedBox(
@@ -208,6 +289,127 @@ class _MessageBubbleState extends State<MessageBubble> {
         isUser ? Icons.person : Icons.smart_toy,
         size: 18,
         color: isUser ? Colors.white : colorScheme.onSecondaryContainer,
+      ),
+    );
+  }
+
+  /// 构建图片缩略图
+  Widget _buildImageThumbnail(BridgeAttachedImage img, ColorScheme colorScheme) {
+    // 优先使用 dataUrl（本地预览），回退到 cloudUrl（云端URL）
+    String? imageSrc;
+    if (img.dataUrl.isNotEmpty) {
+      imageSrc = img.dataUrl;
+    } else if (img.cloudUrl.isNotEmpty) {
+      imageSrc = img.cloudUrl;
+    }
+    
+    if (imageSrc == null || imageSrc.isEmpty) return const SizedBox.shrink();
+
+    return GestureDetector(
+      onTap: () {
+        // TODO: 可以后续添加图片预览功能
+      },
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: _buildImageWidget(imageSrc, colorScheme),
+      ),
+    );
+  }
+
+  /// 构建图片 Widget（支持 dataUrl 和网络 URL）
+  Widget _buildImageWidget(String src, ColorScheme colorScheme) {
+    // 判断是否为 dataUrl
+    if (src.startsWith('data:')) {
+      // 提取 base64 数据
+      final match = RegExp(r'data:image/[^;]+;base64,(.+)').firstMatch(src);
+      if (match == null) {
+        return _buildImageErrorWidget(colorScheme);
+      }
+      
+      final base64Data = match.group(1)!;
+      final bytes = base64Decode(base64Data);
+      
+      return Image.memory(
+        bytes,
+        width: 150,
+        height: 150,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) {
+          return _buildImageErrorWidget(colorScheme);
+        },
+      );
+    } else {
+      // 网络 URL
+      return Image.network(
+        src,
+        width: 150,
+        height: 150,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) {
+          return _buildImageErrorWidget(colorScheme);
+        },
+        loadingBuilder: (context, child, loadingProgress) {
+          if (loadingProgress == null) return child;
+          return Container(
+            width: 150,
+            height: 150,
+            color: colorScheme.surfaceContainerHighest,
+            child: Center(
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                value: loadingProgress.expectedTotalBytes != null
+                    ? loadingProgress.cumulativeBytesLoaded / loadingProgress.expectedTotalBytes!
+                    : null,
+                color: colorScheme.primary,
+              ),
+            ),
+          );
+        },
+      );
+    }
+  }
+
+  /// 构建图片错误提示
+  Widget _buildImageErrorWidget(ColorScheme colorScheme) {
+    return Container(
+      width: 150,
+      height: 150,
+      color: colorScheme.surfaceContainerHighest,
+      child: Icon(Icons.broken_image, size: 40, color: colorScheme.onSurfaceVariant),
+    );
+  }
+
+  /// 构建文件附件卡片
+  Widget _buildAssetChip(BridgeAttachedAsset asset, ColorScheme colorScheme) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: colorScheme.outline.withValues(alpha: 0.2),
+          width: 1,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.attach_file, size: 14, color: colorScheme.onSurfaceVariant),
+          const SizedBox(width: 6),
+          ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: 120,
+            ),
+            child: Text(
+              asset.name,
+              style: TextStyle(
+                fontSize: 12,
+                color: colorScheme.onSurface,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
       ),
     );
   }

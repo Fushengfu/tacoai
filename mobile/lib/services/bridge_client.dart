@@ -5,6 +5,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
 import 'bridge_protocol.dart';
+import 'bridge_ack_manager.dart';
+import 'bridge_message_queue.dart';
+import 'message_cache.dart';
 
 const String _kCachedRelayUrlKey = 'bridge_cached_relay_url';
 const String _kCachedTokenKey = 'bridge_cached_token';
@@ -56,6 +59,8 @@ class BridgeClient {
   String? get cachedActiveThreadId => _cachedActiveThreadId;
   /// 当前连接的项目 ID（来自 bridge:state 的 threadId）
   String? get currentProjectId => _currentProjectId;
+  /// 获取缓存的项目列表（用于显示项目名称）
+  List<BridgeProjectInfo>? get cachedProjects => _cachedProjects;
 
   // 待确认列表（授权确认 + 执行计划确认）
   final List<BridgePendingConfirm> _pendingConfirms = [];
@@ -70,11 +75,36 @@ class BridgeClient {
   Timer? _agentNotifyTimer;
   bool _pendingAgentNotify = false;
 
-  /// 请求/响应模式：requestId → Completer
+  // 请求/响应模式：requestId → Completer
   final Map<String, Completer<Map<String, dynamic>>> _pendingRequests = {};
   int _requestCounter = 0;
+  
+  // ACK 管理器
+  BridgeAckManager? _ackManager;
+  
+  // 消息队列管理器
+  final BridgeMessageQueue _messageQueue = BridgeMessageQueue();
+  
+  // 本地消息缓存
+  MessageCache? _messageCache;
+  
+  // 超时保护：防止任务状态永久残留
+  // 每个项目任务设置超时时间，超过后自动清理
+  final Map<String, DateTime> _projectTaskTimeouts = {};
+  Timer? _taskTimeoutChecker;
+  static const Duration _kTaskTimeout = Duration(minutes: 15); // 任务超时15分钟，避免误杀复杂Agent任务
+  
+  BridgeClient({String? relayUrl}) : _relayUrlOverride = relayUrl {
+    _initMessageCache();
+  }
 
-  BridgeClient({String? relayUrl}) : _relayUrlOverride = relayUrl;
+  Future<void> _initMessageCache() async {
+    try {
+      _messageCache = await MessageCache.getInstance();
+    } catch (e) {
+      print('[BridgeClient] Failed to init message cache: $e');
+    }
+  }
 
   /* ------------------------------------------------------------------ */
   /*  Public API                                                         */
@@ -166,7 +196,6 @@ class BridgeClient {
       id: userMsgId,
       role: 'user',
       content: content,
-      streaming: false,
     ));
     _notifyListeners({
       'type': 'bridge:chat-send',
@@ -191,8 +220,20 @@ class BridgeClient {
     _confirmListeners.remove(callback);
   }
 
-  /// 发送 Agent 确认
+  /// 发送 Agent 确认（带项目隔离验证）
   void sendAgentConfirm(String confirmId, bool approved) {
+    // 查找确认项，验证项目隔离
+    final confirm = _pendingConfirms.firstWhere(
+      (c) => c.confirmId == confirmId,
+      orElse: () => throw Exception('Confirm not found: $confirmId'),
+    );
+    
+    // 项目隔离验证：只有当前项目的确认才能发送
+    if (confirm.projectId != null && confirm.projectId != _currentProjectId) {
+      print('[BridgeClient] Confirm project mismatch: ${confirm.projectId} vs $_currentProjectId');
+      return; // 静默忽略，不发送非当前项目的确认
+    }
+    
     _send(BridgeAgentConfirm(confirmId: confirmId, approved: approved));
     // 从待确认列表中移除
     _pendingConfirms.removeWhere((c) => c.confirmId == confirmId);
@@ -346,10 +387,132 @@ class BridgeClient {
     return BridgeProjectSwitchedResponse.fromJson(response);
   }
 
-  /// 主动请求当前状态快照（连接/重连后使用）
-  void _requestState() {
+  /// 连接成功后主动同步数据：项目列表、模型列表、当前项目状态、消息差异
+  Future<void> _syncOnConnect() async {
+    print('[BridgeClient] Starting sync on connect...');
+    
+    // 1. 同步项目列表
+    try {
+      final projectsResp = await requestProjects(forceRefresh: true);
+      print('[BridgeClient] Synced ${projectsResp.projects.length} projects');
+    } catch (e) {
+      print('[BridgeClient] Failed to sync projects: $e');
+    }
+    
+    // 2. 同步模型列表
+    try {
+      final models = await requestModels();
+      print('[BridgeClient] Synced ${models.models.length} models');
+    } catch (e) {
+      print('[BridgeClient] Failed to sync models: $e');
+    }
+    
+    // 3. 同步当前项目状态和消息差异
+    final sessionId = _currentProjectId;
+    if (sessionId == null || sessionId.isEmpty) return;
+    
+    // 3a. 优先从本地缓存加载消息
+    final cachedMessages = await _messageCache?.loadMessages(sessionId, limit: 50) ?? [];
+    if (cachedMessages.isNotEmpty) {
+      print('[BridgeClient] Loaded ${cachedMessages.length} messages from local cache');
+      _messages.clear();
+      _messages.addAll(cachedMessages);
+      _notifyListenersImmediately({'type': 'bridge:cache-loaded', 'threadId': sessionId, 'count': cachedMessages.length});
+    }
+    
+    // 3b. 请求桌面端快照，用于增量更新
     final requestId = 'req-${++_requestCounter}-${DateTime.now().millisecondsSinceEpoch}';
-    print('[BridgeClient] Requesting state snapshot (requestId: $requestId)');
+    print('[BridgeClient] Requesting state snapshot from desktop (requestId: $requestId)');
+    _send(BridgeRequestState(requestId: requestId));
+    
+    // 4. 启动定时任务状态轮询（每2秒）
+    _startTaskStatusPolling();
+  }
+  
+  /// 定时轮询当前项目的任务处理状态（每2秒）
+  Timer? _taskStatusPollingTimer;
+  static const Duration _kTaskStatusPollingInterval = Duration(seconds: 2);
+  
+  void _startTaskStatusPolling() {
+    _taskStatusPollingTimer?.cancel();
+    _taskStatusPollingTimer = Timer.periodic(_kTaskStatusPollingInterval, (_) {
+      _pollTaskStatus();
+    });
+  }
+  
+  void _stopTaskStatusPolling() {
+    _taskStatusPollingTimer?.cancel();
+    _taskStatusPollingTimer = null;
+  }
+  
+  /// 轮询当前项目的任务处理状态
+  Future<void> _pollTaskStatus() async {
+    final projectId = _currentProjectId;
+    if (projectId == null || projectId.isEmpty) return;
+    
+    final requestId = 'req-poll-${++_requestCounter}-${DateTime.now().millisecondsSinceEpoch}';
+    final completer = Completer<Map<String, dynamic>>();
+    _pendingRequests[requestId] = completer;
+    
+    _sendRaw({
+      'type': 'bridge:poll-task-status',
+      'requestId': requestId,
+      'projectId': projectId,
+    });
+    
+    try {
+      final response = await completer.future.timeout(const Duration(seconds: 5));
+      final isProcessing = response['isProcessing'] as bool? ?? false;
+      final activeTaskId = response['activeTaskId'] as String?;
+      
+      // 更新项目活跃任务状态
+      if (isProcessing && activeTaskId != null && activeTaskId.isNotEmpty) {
+        _projectActiveTasks[projectId] = activeTaskId;
+        if (projectId == _currentProjectId) {
+          _activeAgentRequestId = activeTaskId;
+        }
+        _projectTaskTimeouts[projectId] = DateTime.now().add(_kTaskTimeout);
+        _startTimeoutChecker();
+      } else {
+        _projectActiveTasks.remove(projectId);
+        if (projectId == _currentProjectId) {
+          _activeAgentRequestId = null;
+          _activeOriginalRequestId = null;
+        }
+        _projectTaskTimeouts.remove(projectId);
+      }
+      
+      // 通知 UI 更新
+      _notifyListenersImmediately({
+        'type': 'bridge:task-status-polled',
+        'projectId': projectId,
+        'isProcessing': isProcessing,
+        'activeTaskId': activeTaskId,
+      });
+    } catch (e) {
+      // 轮询超时或失败，静默忽略
+      print('[BridgeClient] Task status polling failed: $e');
+    }
+  }
+
+  /// 主动请求当前状态快照（连接/重连后使用）
+  /// 优先从本地缓存加载，缓存未命中时再请求桌面端
+  Future<void> _requestState() async {
+    final sessionId = _currentProjectId;
+    if (sessionId == null || sessionId.isEmpty) return;
+
+    // 1. 优先从本地缓存加载消息
+    final cachedMessages = await _messageCache?.loadMessages(sessionId, limit: 50) ?? [];
+    if (cachedMessages.isNotEmpty) {
+      print('[BridgeClient] Loaded ${cachedMessages.length} messages from local cache');
+      _messages.clear();
+      _messages.addAll(cachedMessages);
+      _notifyListenersImmediately({'type': 'bridge:cache-loaded', 'threadId': sessionId, 'count': cachedMessages.length});
+    }
+
+    // 2. 再请求桌面端快照（用于增量更新）
+    final requestId = 'req-${++_requestCounter}-${DateTime.now().millisecondsSinceEpoch}';
+    print('[BridgeClient] Requesting state snapshot from desktop (requestId: $requestId)');
     _send(BridgeRequestState(requestId: requestId));
   }
 
@@ -435,6 +598,26 @@ class BridgeClient {
     // 切换项目时，更新活跃任务状态
     _activeAgentRequestId = _projectActiveTasks[projectId];
     _activeOriginalRequestId = null;
+
+    // 切换项目时，优先从本地缓存加载新项目的消息
+    if (projectId != null && projectId.isNotEmpty) {
+      _loadMessagesFromCache(projectId);
+    }
+  }
+
+  /// 从本地缓存加载消息（异步，不阻塞 UI）
+  Future<void> _loadMessagesFromCache(String sessionId) async {
+    try {
+      final cachedMessages = await _messageCache?.loadMessages(sessionId, limit: 50) ?? [];
+      if (cachedMessages.isNotEmpty) {
+        print('[BridgeClient] Loaded ${cachedMessages.length} messages from local cache for project $sessionId');
+        _messages.clear();
+        _messages.addAll(cachedMessages);
+        _notifyListenersImmediately({'type': 'bridge:cache-loaded', 'threadId': sessionId, 'count': cachedMessages.length});
+      }
+    } catch (e) {
+      print('[BridgeClient] Failed to load messages from cache: $e');
+    }
   }
 
   /// 清空消息列表（用于切换项目时立即清空 UI）
@@ -445,7 +628,9 @@ class BridgeClient {
 
   /// 立即通知（不节流），用于切换项目等需要即时反馈的场景
   void _notifyListenersImmediately(dynamic data) {
-    for (final cb in _messageListeners) {
+    // 创建副本避免并发修改错误
+    final listeners = List.from(_messageListeners);
+    for (final cb in listeners) {
       try {
         cb(data);
       } catch (e) {
@@ -536,6 +721,9 @@ class BridgeClient {
       final json = jsonDecode(data as String) as Map<String, dynamic>;
       final type = json['type'] as String?;
 
+      // ACK 管理器处理（去重、发送ACK）
+      _ackManager?.handleMessage(json);
+
       switch (type) {
         case 'connected':
           _reconnectAttempts = 0;
@@ -547,20 +735,24 @@ class BridgeClient {
           if (_token != null) {
             _saveConnectionInfo(_token!);
           }
-          // 连接成功后主动请求最新状态（延迟 500ms 确保连接稳定）
+          // 初始化 ACK 管理器
+          if (_ackManager == null && _channel != null) {
+            _ackManager = BridgeAckManager(_channel!.sink);
+          }
+          // 连接成功后主动同步数据（延迟 500ms 确保连接稳定）
           Future.delayed(const Duration(milliseconds: 500), () {
-            _requestState();
+            _syncOnConnect();
           });
           break;
 
         case 'host_connected':
           // Host 上线通知（来自 pending→reconnect 流程）
-          // 重置重连计数，请求最新状态
+          // 重置重连计数，同步最新数据
           _reconnectAttempts = 0;
-          print('[BridgeClient] Host is now online, requesting state...');
-          // Host 上线后主动请求最新状态（延迟 500ms 确保连接稳定）
+          print('[BridgeClient] Host is now online, syncing data...');
+          // Host 上线后主动同步数据（延迟 500ms 确保连接稳定）
           Future.delayed(const Duration(milliseconds: 500), () {
-            _requestState();
+            _syncOnConnect();
           });
           break;
 
@@ -579,125 +771,189 @@ class BridgeClient {
           break;
 
         case 'bridge:state':
-          final state = BridgeState.fromJson(json);
-          // 增量更新消息列表，避免全量替换导致的 UI 闪烁
-          _mergeMessages(state.messages);
-          // 更新当前项目 ID 和活跃任务状态
-          // 使用 threadId 作为项目唯一标识（优先），其次使用 workspace
-          if (state.threadId != null && state.threadId!.isNotEmpty) {
-            _currentProjectId = state.threadId;
-          } else if (state.workspace != null && state.workspace!.isNotEmpty) {
-            _currentProjectId = state.workspace;
-          }
-          if (state.activeAgentRequestId != null && state.activeAgentRequestId!.isNotEmpty) {
-            _activeAgentRequestId = state.activeAgentRequestId;
-            if (_currentProjectId != null) {
-              _projectActiveTasks[_currentProjectId!] = state.activeAgentRequestId!;
+          _messageQueue.enqueue(
+            type: BridgeMessageType.chat,
+            data: json,
+            handler: () {
+              final state = BridgeState.fromJson(json);
+              // 增量更新消息列表，避免全量替换导致的 UI 闪烁
+              _mergeMessages(state.messages);
+              // 关键修复：bridge:state 不再更新 _currentProjectId
+              // _currentProjectId 只由 setCurrentProject() 设置（用户主动切换）
+              // bridge:state 只更新 _activeAgentRequestId（用于 abort 等全局状态）
+              if (state.activeAgentRequestId != null && state.activeAgentRequestId!.isNotEmpty) {
+                _activeAgentRequestId = state.activeAgentRequestId;
+              } else {
+                _activeAgentRequestId = null;
+              }
+              // 保存快照到本地缓存
+              if (_currentProjectId != null && _messages.isNotEmpty) {
+                _messageCache?.saveMessages(_currentProjectId!, _messages);
+              }
+              _notifyListeners(json);
+            },
+          );
+          // 同时完成 pending request（如果是请求-响应模式）
+          {
+            final rid = json['requestId'] as String?;
+            if (rid != null) {
+              final completer = _pendingRequests.remove(rid);
+              if (completer != null && !completer.isCompleted) {
+                completer.complete(json);
+              }
             }
-          } else {
-            _activeAgentRequestId = null;
-            // 清理当前项目的残留状态
-            if (_currentProjectId != null) {
-              _projectActiveTasks.remove(_currentProjectId);
-            }
           }
-          _notifyListeners(json);
           break;
 
         case 'bridge:chat-delta':
-          final delta = BridgeChatDelta.fromJson(json);
-          _applyDelta(delta);
-          _notifyListeners(json);
+          _messageQueue.enqueue(
+            type: BridgeMessageType.chat,
+            data: json,
+            handler: () {
+              final delta = BridgeChatDelta.fromJson(json);
+              _applyDelta(delta);
+              _notifyListeners(json);
+            },
+          );
           break;
 
         case 'bridge:chat-user-message':
-          _applyUserMessage(json);
-          _notifyListeners(json);
+          _messageQueue.enqueue(
+            type: BridgeMessageType.chat,
+            data: json,
+            handler: () {
+              _applyUserMessage(json);
+              _notifyListeners(json);
+            },
+          );
           break;
 
         case 'bridge:agent-event':
           {
-            final agentEvent = BridgeAgentEvent.fromJson(json);
-            _applyAgentEvent(agentEvent);
-            // Agent 事件立即通知（不节流），保证思考过程和工具调用的实时性
-            _notifyAgentListeners(json);
+            _messageQueue.enqueue(
+              type: BridgeMessageType.agent,
+              data: json,
+              handler: () {
+                final agentEvent = BridgeAgentEvent.fromJson(json);
+                _applyAgentEvent(agentEvent);
+                // Agent 事件立即通知（不节流），保证思考过程和工具调用的实时性
+                _notifyAgentListeners(json);
+              },
+            );
           }
           break;
 
         case 'bridge:agent-confirm-resolved':
           {
-            // 桌面端已处理确认，通知移动端清除对应的待确认弹窗
-            final resolved = BridgeAgentConfirmResolved.fromJson(json);
-            final beforeCount = _pendingConfirms.length;
-            _pendingConfirms.removeWhere((c) => c.confirmId == resolved.confirmId);
-            if (_pendingConfirms.length < beforeCount) {
-              _notifyConfirmListeners();
-              // 同时更新消息中对应 step 的确认状态
-              _updateStepConfirmStatus(resolved.confirmId, resolved.approved);
-            }
+            _messageQueue.enqueue(
+              type: BridgeMessageType.confirm,
+              data: json,
+              handler: () {
+                // 桌面端已处理确认，通知移动端清除对应的待确认弹窗
+                final resolved = BridgeAgentConfirmResolved.fromJson(json);
+                final beforeCount = _pendingConfirms.length;
+                _pendingConfirms.removeWhere((c) => c.confirmId == resolved.confirmId);
+                if (_pendingConfirms.length < beforeCount) {
+                  _notifyConfirmListeners();
+                  // 同时更新消息中对应 step 的确认状态
+                  _updateStepConfirmStatus(resolved.confirmId, resolved.approved);
+                }
+              },
+            );
           }
           break;
 
         case 'bridge:files-changed':
-          _notifyListeners(json);
+          _messageQueue.enqueue(
+            type: BridgeMessageType.files,
+            data: json,
+            handler: () {
+              _notifyListeners(json);
+            },
+          );
           break;
 
         // 项目状态推送（桌面端主动推送，无需请求）
         case 'bridge:project-states':
           {
-            try {
-              final statesJson = json['states'] as List<dynamic>?;
-              // 提取活跃项目 ID（桌面端切换项目时实时推送）
-              final newActiveThreadId = json['activeThreadId'] as String?;
-              if (newActiveThreadId != null && newActiveThreadId.isNotEmpty) {
-                _cachedActiveThreadId = newActiveThreadId;
-                // 异步持久化到本地（不阻塞）
-                SharedPreferences.getInstance().then((prefs) {
-                  prefs.setString('bridge_active_thread_id', newActiveThreadId);
-                });
-              }
-              if (statesJson != null) {
-                // 按照桌面端推送的顺序更新项目列表
-                if (_cachedProjects != null) {
-                  // 创建新的项目列表，按照桌面端推送的顺序排列
-                  final List<BridgeProjectInfo> reorderedProjects = [];
-                  for (final stateJson in statesJson) {
-                    final state = stateJson as Map<String, dynamic>;
-                    final projectId = state['id'] as String?;
-                    if (projectId != null) {
-                      // 查找现有项目
-                      final existingProject = _cachedProjects!.firstWhere(
-                        (p) => p.id == projectId,
-                        orElse: () => BridgeProjectInfo(
-                          id: projectId,
-                          title: state['title'] as String? ?? '',
-                          workspace: state['workspace'] as String?,
-                          sessions: [],
-                        ),
-                      );
-                      reorderedProjects.add(existingProject);
-                      
-                      // 更新活跃任务状态
-                      final isProcessing = state['isProcessing'] as bool? ?? false;
-                      final activeTaskId = state['activeTaskId'] as String?;
-                      if (isProcessing && activeTaskId != null && activeTaskId.isNotEmpty) {
-                        _projectActiveTasks[projectId] = activeTaskId;
-                      } else {
-                        _projectActiveTasks.remove(projectId);
+            _messageQueue.enqueue(
+              type: BridgeMessageType.project,
+              data: json,
+              handler: () {
+                try {
+                  final statesJson = json['states'] as List<dynamic>?;
+                  // 提取活跃项目 ID（桌面端切换项目时实时推送）
+                  final newActiveThreadId = json['activeThreadId'] as String?;
+                  if (newActiveThreadId != null && newActiveThreadId.isNotEmpty) {
+                    _cachedActiveThreadId = newActiveThreadId;
+                    // 关键修复: 不再覆盖 _currentProjectId
+                    // _currentProjectId 只由 setCurrentProject() 设置（用户主动切换）
+                    // 异步持久化到本地（不阻塞）
+                    SharedPreferences.getInstance().then((prefs) {
+                      prefs.setString('bridge_active_thread_id', newActiveThreadId);
+                    });
+                  }
+                  if (statesJson != null) {
+                    // 按照桌面端推送的顺序更新项目列表
+                    if (_cachedProjects != null) {
+                      // 创建新的项目列表，按照桌面端推送的顺序排列
+                      final List<BridgeProjectInfo> reorderedProjects = [];
+                      for (final stateJson in statesJson) {
+                        final state = stateJson as Map<String, dynamic>;
+                        final projectId = state['id'] as String?;
+                        if (projectId != null) {
+                          // 查找现有项目
+                          final existingProject = _cachedProjects!.firstWhere(
+                            (p) => p.id == projectId,
+                            orElse: () => BridgeProjectInfo(
+                              id: projectId,
+                              title: state['title'] as String? ?? '',
+                              workspace: state['workspace'] as String?,
+                              sessions: [],
+                            ),
+                          );
+                          reorderedProjects.add(existingProject);
+                          
+                          // 更新活跃任务状态
+                          final isProcessing = state['isProcessing'] as bool? ?? false;
+                          final activeTaskId = state['activeTaskId'] as String?;
+                          if (isProcessing && activeTaskId != null && activeTaskId.isNotEmpty) {
+                            _projectActiveTasks[projectId] = activeTaskId;
+                          } else {
+                            _projectActiveTasks.remove(projectId);
+                          }
+                        }
                       }
+                      // 更新缓存中的项目列表（保持桌面端推送的顺序）
+                      _cachedProjects = reorderedProjects;
+                      _projectsCacheTime = DateTime.now();
+                    }
+                    print('[BridgeClient] Received project-states push (${statesJson?.length ?? 0} states, activeThread: $newActiveThreadId)');
+                  }
+                  
+                  // 关键修复：同步当前项目的活跃任务状态
+                  // 确保 _activeAgentRequestId 与桌面端的 activeTaskId 保持一致
+                  if (_currentProjectId != null) {
+                    final activeTaskId = _projectActiveTasks[_currentProjectId];
+                    if (activeTaskId != null && activeTaskId.isNotEmpty) {
+                      _activeAgentRequestId = activeTaskId;
+                      // 设置超时保护
+                      _projectTaskTimeouts[_currentProjectId!] = DateTime.now().add(_kTaskTimeout);
+                      _startTimeoutChecker();
+                    } else {
+                      // 清除当前项目的活跃任务
+                      _activeAgentRequestId = null;
+                      _projectTaskTimeouts.remove(_currentProjectId);
                     }
                   }
-                  // 更新缓存中的项目列表（保持桌面端推送的顺序）
-                  _cachedProjects = reorderedProjects;
-                  _projectsCacheTime = DateTime.now();
+                  
+                  // 通知 UI 项目状态已更新（包括活跃项目变更）
+                  _notifyListeners(json);
+                } catch (e) {
+                  print('[BridgeClient] Failed to handle project-states push: $e');
                 }
-                print('[BridgeClient] Received project-states push (${statesJson.length} states, activeThread: $newActiveThreadId)');
-              }
-              // 通知 UI 项目状态已更新（包括活跃项目变更）
-              _notifyListeners(json);
-            } catch (e) {
-              print('[BridgeClient] Failed to handle project-states push: $e');
-            }
+              },
+            );
           }
           break;
 
@@ -727,10 +983,21 @@ class BridgeClient {
           }
           break;
 
+        case 'bridge:task-status':
+          {
+            final rid = json['requestId'] as String?;
+            if (rid != null) {
+              final completer = _pendingRequests.remove(rid);
+              if (completer != null && !completer.isCompleted) {
+                completer.complete(json);
+              }
+            }
+          }
+          break;
+
         case 'bridge:workspace-tree':
         case 'bridge:file-content':
         case 'bridge:file-written':
-        case 'bridge:project-switched':
         case 'bridge:model-switched':
         case 'bridge:models':
         case 'bridge:older-messages':
@@ -742,6 +1009,20 @@ class BridgeClient {
                 completer.complete(json);
               }
             }
+          }
+          break;
+
+        case 'bridge:project-switched':
+          {
+            final rid = json['requestId'] as String?;
+            if (rid != null) {
+              final completer = _pendingRequests.remove(rid);
+              if (completer != null && !completer.isCompleted) {
+                completer.complete(json);
+              }
+            }
+            // 关键修复：通知 UI 层切换项目完成，清除 _isSwitchingProject
+            _notifyListeners(json);
           }
           break;
 
@@ -759,7 +1040,7 @@ class BridgeClient {
       final messageId = json['messageId'] as String?;
       final content = json['content'] as String?;
       final threadId = json['threadId'] as String?;
-      final images = json['images'] as List<dynamic>?;
+      final imagesJson = json['images'] as List<dynamic>?;
       
       if (messageId == null || content == null) return;
       
@@ -771,17 +1052,46 @@ class BridgeClient {
       final existingIdx = _messages.indexWhere((m) => m.id == messageId);
       if (existingIdx >= 0) return; // 已存在则跳过
       
-      // 添加用户消息到消息列表
+      // 解析图片数组（与桌面端 AttachedImage 一致）
+      List<BridgeAttachedImage>? images;
+      if (imagesJson != null && imagesJson.isNotEmpty) {
+        images = imagesJson
+            .map((img) => BridgeAttachedImage.fromJson(img as Map<String, dynamic>))
+            .toList();
+      }
+      
+      // 添加用户消息到消息列表（保存完整的图片数据）
       _messages.add(BridgeChatMessage(
         id: messageId,
         role: 'user',
         content: content,
-        hasImages: images != null && images.isNotEmpty,
-        streaming: false,
+        images: images,
       ));
     } catch (e) {
       print('[BridgeClient] Failed to apply user message: $e');
     }
+  }
+
+  /// 判断消息是否正在处理中（根据 activePlan 和 agentSteps 状态）
+  bool _isMessageProcessing(BridgeChatMessage msg) {
+    // 如果有 taskTiming 且已结束，说明任务已完成
+    if (msg.taskTiming != null && msg.taskTiming!.endedAt != null) {
+      return false;
+    }
+
+    // 如果有 activePlan，说明正在执行
+    if (msg.activePlan != null) return true;
+
+    // 如果 agentSteps 中有 running/calling/confirm 状态的步骤，说明正在执行
+    if (msg.agentSteps != null && msg.agentSteps!.isNotEmpty) {
+      for (final step in msg.agentSteps!) {
+        if (step.status == 'calling' || step.status == 'running' || step.status == 'confirm') {
+          return true;
+        }
+      }
+    }
+
+    return false;
   }
 
   void _applyDelta(BridgeChatDelta delta) {
@@ -795,32 +1105,38 @@ class BridgeClient {
       return;
     }
 
-    // 竞态保护：如果收到 done=true 但本地该消息已非 streaming，说明已被快照同步，跳过
+    // 竞态保护：如果收到 done=true 但本地该消息已完成，说明已被快照同步，跳过
     final existingIdx = _messages.indexWhere((m) => m.id == delta.messageId);
-    if (delta.done && existingIdx >= 0 && !_messages[existingIdx].streaming) {
+    if (delta.done && existingIdx >= 0 && !_isMessageProcessing(_messages[existingIdx])) {
       return; // 已完成的消息不再重复处理
     }
 
     if (!delta.done) {
       // 聊天流开始/进行中：标记项目为处理中
+      // 关键修复：_projectActiveTasks 只由 bridge:project-states 更新（权威来源）
+      // delta 只更新 _activeAgentRequestId（用于 abort）
       if (delta.messageId != null) {
-        _projectActiveTasks[projectId] = delta.messageId!;
         _activeAgentRequestId = delta.messageId;
+        // 设置超时保护：防止任务状态永久残留
+        _projectTaskTimeouts[projectId] = DateTime.now().add(_kTaskTimeout);
+        _startTimeoutChecker();
       }
     } else {
       // 聊天流完成：清理项目处理中状态
-      if (delta.messageId != null && _projectActiveTasks[projectId] == delta.messageId) {
-        _projectActiveTasks.remove(projectId);
-      }
-      if (_activeAgentRequestId == delta.messageId) {
+      // 关键修复：_projectActiveTasks 只由 bridge:project-states 清理
+      // delta 只清理 _activeAgentRequestId
+      if (projectId == _currentProjectId) {
         _activeAgentRequestId = null;
       }
+      // 清除超时记录
+      _projectTaskTimeouts.remove(projectId);
     }
 
     if (existingIdx >= 0) {
       final old = _messages[existingIdx];
-      // 如果内容没有变化且 streaming 状态一致，跳过更新（减少不必要的通知）
-      if (delta.delta.isEmpty && old.streaming == !delta.done) {
+      // 关键修复：done=true 时必须更新，不能跳过！
+      // 只有当 delta 为空且不是完成信号时才跳过
+      if (delta.delta.isEmpty && !delta.done) {
         return;
       }
       BridgeTaskTiming? timing = old.taskTiming;
@@ -831,7 +1147,6 @@ class BridgeClient {
       // 原地更新：使用可变字段减少对象重建
       _messages[existingIdx] = old.copyWith(
         content: old.content + delta.delta,
-        streaming: !delta.done,
         taskTiming: timing,
       );
     } else {
@@ -850,62 +1165,59 @@ class BridgeClient {
         id: delta.messageId,
         role: 'assistant',
         content: delta.delta,
-        streaming: !delta.done,
         taskTiming: timing,
       ));
     }
   }
 
-  /// 增量合并消息列表（用于 bridge:state 全量快照）
-  /// 策略：按桌面端顺序重建列表，保护 streaming 状态不被快照覆盖，保留 activePlan/taskTiming
+  /// 合并消息列表（用于 bridge:state 全量快照）
+  /// 简化策略：快照只用于初始化，不用于更新。本地缓存优先，快照补充缺失的消息。
   void _mergeMessages(List<BridgeChatMessage> incoming) {
     if (incoming.isEmpty) return;
 
-    // 构建现有消息的 ID 索引（保留 streaming 状态和 agentSteps）
-    final existingMap = <String, BridgeChatMessage>{};
+    final sessionId = _currentProjectId;
+    if (sessionId == null || sessionId.isEmpty) return;
+
+    // 构建现有消息的 ID 索引
+    final existingIds = <String>{};
     for (final msg in _messages) {
-      existingMap[msg.id] = msg;
+      existingIds.add(msg.id);
     }
 
-    // 按桌面端顺序重建列表（只创建必要的对象）
-    final mergedList = <BridgeChatMessage>[];
     for (final msg in incoming) {
-      final existing = existingMap[msg.id];
-      if (existing != null) {
-        // 已存在：保护 streaming 状态不被快照覆盖
-        if (existing.streaming) {
-          // 正在流式输出，保留本地状态（内容、streaming、agentSteps）
-          // 但更新非流式字段（如 taskTiming、activePlan）
-          if (msg.taskTiming != null || msg.activePlan != null) {
-            mergedList.add(existing.copyWith(
-              taskTiming: msg.taskTiming ?? existing.taskTiming,
-              activePlan: msg.activePlan ?? existing.activePlan,
-            ));
-          } else {
-            mergedList.add(existing); // 无变化，直接复用
+      if (!existingIds.contains(msg.id) && (msg.content.isNotEmpty || msg.role == 'user')) {
+        // 本地缓存没有的消息，追加
+        _messages.add(msg);
+      } else if (existingIds.contains(msg.id)) {
+        // 消息已存在，检查是否需要更新
+        final existingIdx = _messages.indexWhere((m) => m.id == msg.id);
+        if (existingIdx >= 0) {
+          final existing = _messages[existingIdx];
+          // 关键修复：如果本地消息正在处理中，保护本地内容不被快照覆盖
+          // 快照可能不包含最新的流式输出
+          if (_isMessageProcessing(existing)) {
+            // 只更新 agentSteps 和 activePlan（如果快照有更新）
+            // 但不覆盖 content
+            if (msg.agentSteps != null && msg.agentSteps!.isNotEmpty) {
+              _messages[existingIdx] = existing.copyWith(
+                agentSteps: msg.agentSteps,
+                activePlan: msg.activePlan ?? existing.activePlan,
+                taskTiming: msg.taskTiming ?? existing.taskTiming,
+              );
+            }
+            continue;
           }
-        } else {
-          // 非 streaming，用快照覆盖（但保留 activePlan 和 taskTiming 如果快照中没有）
-          if (msg.activePlan == null && msg.taskTiming == null) {
-            mergedList.add(msg); // 无需合并，直接用快照
-          } else {
-            mergedList.add(msg.copyWith(
-              activePlan: msg.activePlan ?? existing.activePlan,
-              taskTiming: msg.taskTiming ?? existing.taskTiming,
-            ));
+          // 非处理中的消息：如果快照内容更长或 agentSteps 有更新，则更新
+          if (msg.content.length > existing.content.length ||
+              (msg.agentSteps != null && msg.agentSteps!.isNotEmpty && existing.agentSteps != msg.agentSteps)) {
+            _messages[existingIdx] = msg;
           }
-        }
-      } else {
-        // 新消息：只有当消息有内容时才追加，避免添加空消息
-        if (msg.content.isNotEmpty || msg.role == 'user') {
-          mergedList.add(msg);
         }
       }
     }
 
-    // 替换整个列表（保证顺序与桌面端一致）
-    _messages.clear();
-    _messages.addAll(mergedList);
+    // 保存到本地缓存
+    _messageCache?.saveMessages(sessionId, _messages);
   }
 
   /// 更新消息中对应 step 的确认状态（桌面端确认/拒绝后同步到移动端 UI）
@@ -950,21 +1262,30 @@ class BridgeClient {
         : _currentProjectId;
 
     // 更新指定项目的活跃任务状态，实现真正的项目隔离
+    // 关键修复：_projectActiveTasks 只由 bridge:project-states 更新（权威来源）
+    // agent-event 只更新 _activeAgentRequestId（用于 abort）
     if (projectId != null) {
       if (eventType == 'tool_calls' || eventType == 'thinking' || eventType == 'reasoning' || eventType == 'text') {
-        _projectActiveTasks[projectId] = requestId;
         // 只有当前项目的事件才更新全局 activeAgentRequestId
         if (projectId == _currentProjectId) {
           _activeAgentRequestId = requestId;
           // 保存 originalRequestId 用于 abort（桌面端 agentAbortControllers 的 key）
           _activeOriginalRequestId = agentEvent.originalRequestId ?? requestId;
         }
+        // 设置超时保护：防止任务状态永久残留
+        _projectTaskTimeouts[projectId] = DateTime.now().add(_kTaskTimeout);
+        _startTimeoutChecker();
       } else if (eventType == 'done' || eventType == 'error') {
-        _projectActiveTasks.remove(projectId);
-        if (projectId == _currentProjectId && _activeAgentRequestId == requestId) {
+        if (projectId == _currentProjectId) {
+          // 关键修复：无论 _activeAgentRequestId 是否等于 requestId，都清除活跃任务状态
+          // 因为 _activeAgentRequestId 可能来自 bridge:state（格式为 agent-{sessionId}），
+          // 而 requestId 来自 bridge:agent-event（格式为 req-{timestamp}-{threadId}），
+          // 两者格式不同但代表同一任务
           _activeAgentRequestId = null;
           _activeOriginalRequestId = null;
         }
+        // 清除超时记录
+        _projectTaskTimeouts.remove(projectId);
       }
     }
 
@@ -975,7 +1296,7 @@ class BridgeClient {
 
     // 竞态保护：如果消息已完成且事件是 done/error，跳过
     final existingIdx = _messages.indexWhere((m) => m.id == requestId);
-    if ((eventType == 'done' || eventType == 'error') && existingIdx >= 0 && !_messages[existingIdx].streaming) {
+    if ((eventType == 'done' || eventType == 'error') && existingIdx >= 0 && !_isMessageProcessing(_messages[existingIdx])) {
       return; // 已完成的消息不再重复处理
     }
 
@@ -987,7 +1308,6 @@ class BridgeClient {
         id: requestId,
         role: 'assistant',
         content: '',
-        streaming: true,
         agentSteps: [],
       ));
       idx = _messages.length - 1;
@@ -1003,7 +1323,6 @@ class BridgeClient {
         if (content.isNotEmpty) {
           _messages[idx] = old.copyWith(
             content: old.content + content,
-            streaming: true,
           );
           return;
         }
@@ -1040,7 +1359,7 @@ class BridgeClient {
         final toolCallsJson = event['toolCalls'] as List<dynamic>? ?? [];
         final thinking = event['thinking'] as String? ?? '';
         final toolCalls = toolCallsJson
-            .map((t) => BridgeToolCall.fromJson(t as Map<String, dynamic>))
+            .map((t) => BridgeToolCallInfo.fromJson(t as Map<String, dynamic>))
             .toList();
 
         if (steps.isEmpty || steps.last.status == 'done') {
@@ -1072,22 +1391,23 @@ class BridgeClient {
         final toolCallsJson = event['toolCalls'] as List<dynamic>? ?? [];
         final risksJson = event['risks'] as List<dynamic>? ?? [];
         final toolCalls = toolCallsJson
-            .map((t) => BridgeToolCall.fromJson(t as Map<String, dynamic>))
+            .map((t) => BridgeToolCallInfo.fromJson(t as Map<String, dynamic>))
             .toList();
         final risks = risksJson
             .map((r) => BridgeRiskInfo.fromJson(r as Map<String, dynamic>))
             .toList();
 
-        // 添加到待确认列表
+        // 添加到待确认列表（带项目隔离）
         final isPlanConfirm = risks.any((r) => r.toolName == 'propose_plan');
         String summary = '';
         if (isPlanConfirm && risks.isNotEmpty) {
           summary = risks[0].detail; // 计划详情作为摘要
         } else {
-          summary = toolCalls.map((t) => t.function.name).join(', ');
+          summary = toolCalls.map((t) => t.name).join(', ');
         }
         _pendingConfirms.add(BridgePendingConfirm(
           confirmId: confirmId,
+          projectId: projectId,  // 新增：记录项目 ID
           isPlanConfirm: isPlanConfirm,
           summary: summary,
           risks: risks,
@@ -1116,7 +1436,7 @@ class BridgeClient {
         // 工具执行结果
         final resultsJson = event['results'] as List<dynamic>? ?? [];
         final results = resultsJson
-            .map((r) => BridgeToolResult.fromJson(r as Map<String, dynamic>))
+            .map((r) => BridgeToolResultInfo.fromJson(r as Map<String, dynamic>))
             .toList();
 
         if (steps.isNotEmpty) {
@@ -1183,8 +1503,8 @@ class BridgeClient {
           id: old.id,
           role: old.role,
           content: old.content,
-          hasImages: old.hasImages,
-          streaming: old.streaming,
+          images: old.images,
+          attachments: old.attachments,
           agentSteps: steps,
           activePlan: activePlan,
           taskTiming: old.taskTiming,
@@ -1210,8 +1530,8 @@ class BridgeClient {
             id: old.id,
             role: old.role,
             content: old.content,
-            hasImages: old.hasImages,
-            streaming: old.streaming,
+            images: old.images,
+            attachments: old.attachments,
             agentSteps: steps,
             activePlan: BridgeActivePlan(
               summary: plan.summary,
@@ -1235,8 +1555,8 @@ class BridgeClient {
             id: old.id,
             role: old.role,
             content: old.content,
-            hasImages: old.hasImages,
-            streaming: old.streaming,
+            images: old.images,
+            attachments: old.attachments,
             agentSteps: steps,
             activePlan: old.activePlan,
             taskTiming: old.taskTiming,
@@ -1271,10 +1591,10 @@ class BridgeClient {
           id: old.id,
           role: old.role,
           content: old.content,
-          hasImages: old.hasImages,
-          streaming: false,
+          images: old.images,
+          attachments: old.attachments,
           agentSteps: steps,
-          activePlan: old.activePlan,
+          activePlan: null,  // 任务完成，清除 activePlan
           taskTiming: timing,
         );
         return;
@@ -1300,10 +1620,10 @@ class BridgeClient {
           id: old.id,
           role: old.role,
           content: old.content,
-          hasImages: old.hasImages,
-          streaming: false,
+          images: old.images,
+          attachments: old.attachments,
           agentSteps: steps,
-          activePlan: old.activePlan,
+          activePlan: null,  // 任务出错，清除 activePlan
           taskTiming: old.taskTiming,
         );
         return;
@@ -1314,8 +1634,8 @@ class BridgeClient {
       id: old.id,
       role: old.role,
       content: old.content,
-      hasImages: old.hasImages,
-      streaming: old.streaming,
+      images: old.images,
+      attachments: old.attachments,
       agentSteps: steps,
       activePlan: old.activePlan,
       taskTiming: old.taskTiming,
@@ -1367,6 +1687,51 @@ class BridgeClient {
     _reconnectTimer = null;
     _tokenRefreshTimer?.cancel();
     _tokenRefreshTimer = null;
+    _taskTimeoutChecker?.cancel();
+    _taskTimeoutChecker = null;
+    _stopTaskStatusPolling();
+  }
+
+  /// 启动任务超时检查器
+  /// 定期检查是否有任务超过超时时间，如果有则自动清理
+  void _startTimeoutChecker() {
+    if (_taskTimeoutChecker != null) return; // 已经启动
+    
+    _taskTimeoutChecker = Timer.periodic(Duration(seconds: 30), (_) {
+      final now = DateTime.now();
+      final expiredProjects = <String>[];
+      
+      // 查找超时的任务
+      _projectTaskTimeouts.forEach((projectId, timeout) {
+        if (now.isAfter(timeout)) {
+          expiredProjects.add(projectId);
+        }
+      });
+      
+      // 清理超时的任务
+      for (final projectId in expiredProjects) {
+        print('[BridgeClient] Task timeout exceeded for project $projectId, auto-cleaning');
+        _projectActiveTasks.remove(projectId);
+        _projectTaskTimeouts.remove(projectId);
+        
+        // 如果是当前项目，也清理全局状态
+        if (projectId == _currentProjectId) {
+          _activeAgentRequestId = null;
+          _activeOriginalRequestId = null;
+        }
+      }
+      
+      if (expiredProjects.isNotEmpty) {
+        // 通知UI更新
+        _notifyListeners({'type': 'bridge:task-timeout-cleaned', 'projects': expiredProjects});
+      }
+      
+      // 如果没有待检查的任务，停止检查器
+      if (_projectTaskTimeouts.isEmpty) {
+        _taskTimeoutChecker?.cancel();
+        _taskTimeoutChecker = null;
+      }
+    });
   }
 
   /* ------------------------------------------------------------------ */
@@ -1582,7 +1947,9 @@ class BridgeClient {
 
   void _notifyStatus() {
     final snap = status;
-    for (final cb in _statusListeners) {
+    // 创建副本避免并发修改错误
+    final listeners = List.from(_statusListeners);
+    for (final cb in listeners) {
       try {
         cb(snap);
       } catch (e) {
@@ -1599,7 +1966,9 @@ class BridgeClient {
         _pendingNotify = false;
         // 使用 Future.microtask 确保通知在下一帧执行，避免阻塞 WebSocket 消息处理
         Future.microtask(() {
-          for (final cb in _messageListeners) {
+          // 创建副本避免并发修改错误
+          final listeners = List.from(_messageListeners);
+          for (final cb in listeners) {
             try {
               cb(data);
             } catch (e) {
@@ -1619,7 +1988,9 @@ class BridgeClient {
       if (_pendingAgentNotify) {
         _pendingAgentNotify = false;
         Future.microtask(() {
-          for (final cb in _messageListeners) {
+          // 创建副本避免并发修改错误
+          final listeners = List.from(_messageListeners);
+          for (final cb in listeners) {
             try {
               cb(data);
             } catch (e) {
@@ -1633,7 +2004,9 @@ class BridgeClient {
 
   void _notifyConfirmListeners() {
     final snapshot = List<BridgePendingConfirm>.from(_pendingConfirms);
-    for (final cb in _confirmListeners) {
+    // 创建副本避免并发修改错误
+    final listeners = List.from(_confirmListeners);
+    for (final cb in listeners) {
       try {
         cb(snapshot);
       } catch (e) {

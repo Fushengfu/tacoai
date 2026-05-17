@@ -369,11 +369,11 @@ body.is-dragging * {
 }
 
 .chat-thread {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 18px;
   width: 100%;
   min-width: 0;
-  justify-items: stretch;
   align-content: start;
 }
 
@@ -426,6 +426,8 @@ body.is-dragging * {
   padding: 12px 14px;
   width: fit-content;
   max-width: min(100%, 760px);
+  min-width: 120px;
+  margin-left: auto;
 }
 
 .chat-row.assistant .bubble {
@@ -498,7 +500,18 @@ body.is-dragging * {
   resize: none;
   outline: none;
   width: 100%;
-  min-height: 36px;
+  min-height: 2.5em;
+  max-height: 12em;
+  overflow-y: auto;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.bubble-edit-input:empty:before {
+  content: attr(data-placeholder);
+  color: var(--muted);
+  opacity: 0.5;
+  pointer-events: none;
 }
 
 .bubble-edit-hint {
@@ -1064,6 +1077,29 @@ body.is-dragging * {
   text-overflow: ellipsis;
 }
 
+.msg-asset-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 4px;
+  border: none;
+  background: rgba(255, 255, 255, 0.15);
+  color: #b8f0ff;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 50%;
+  padding: 0;
+  transition: background 0.15s ease;
+}
+
+.msg-asset-remove:hover {
+  background: rgba(255, 100, 100, 0.3);
+  color: #ff6b6b;
+}
+
 .automation-shots {
   display: flex;
   flex-wrap: wrap;
@@ -1132,8 +1168,39 @@ body.is-dragging * {
   min-height: 44px;
 }
 
-.composer-input::placeholder {
+/* contentEditable placeholder */
+.composer-input:empty::before {
+  content: attr(data-placeholder);
   color: rgba(255, 255, 255, 0.28);
+  pointer-events: none;
+}
+
+/* 附件卡片样式 */
+.file-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text);
+  margin: 2px 4px;
+  cursor: default;
+  user-select: none;
+}
+
+.file-chip-remove {
+  cursor: pointer;
+  opacity: 0.6;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.file-chip-remove:hover {
+  opacity: 1;
 }
 
 .composer-input:disabled {

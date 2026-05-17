@@ -194,35 +194,38 @@ class _AgentStepWidgetState extends State<AgentStepWidget> {
                   _buildStepIcon(effectiveStatus, widget.colorScheme, isStepRunning),
                   const SizedBox(width: 6),
                   Expanded(
-                    child: Text(
-                      summary.label,
-                      style: const TextStyle(fontSize: 12),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  if (summary.detail.isNotEmpty)
-                    Flexible(
-                      child: GestureDetector(
-                        onTap: summary.filePath != null && widget.onOpenFile != null
-                            ? () => widget.onOpenFile!(summary.filePath!)
-                            : null,
-                        child: Text(
-                          summary.detail,
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: summary.filePath != null
-                                ? widget.colorScheme.primary
-                                : widget.colorScheme.onSurfaceVariant,
-                            decoration: summary.filePath != null
-                                ? TextDecoration.underline
-                                : null,
-                          ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          summary.label,
+                          style: const TextStyle(fontSize: 12),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
-                      ),
+                        if (summary.detail.isNotEmpty)
+                          GestureDetector(
+                            onTap: summary.filePath != null && widget.onOpenFile != null
+                                ? () => widget.onOpenFile!(summary.filePath!)
+                                : null,
+                            child: Text(
+                              summary.detail,
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: summary.filePath != null
+                                    ? widget.colorScheme.primary
+                                    : widget.colorScheme.onSurfaceVariant,
+                                decoration: summary.filePath != null
+                                    ? TextDecoration.underline
+                                    : null,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                      ],
                     ),
+                  ),
                   Icon(
                     isExpanded ? Icons.expand_less : Icons.expand_more,
                     size: 16,
@@ -573,7 +576,7 @@ class _AgentStepWidgetState extends State<AgentStepWidget> {
   }
 
   Widget _buildToolResultBlock(
-      BridgeToolCall tc, BridgeToolResult result, ColorScheme colorScheme) {
+      BridgeToolCallInfo tc, BridgeToolResultInfo result, ColorScheme colorScheme) {
     // 文件变更：显示 diff 而非纯文本
     if (result.fileChange != null) {
       return _buildFileChangeDiff(result.fileChange!, result, colorScheme);
@@ -678,7 +681,7 @@ class _AgentStepWidgetState extends State<AgentStepWidget> {
 
   /// 文件变更 diff 显示（编辑/新建/删除）
   Widget _buildFileChangeDiff(
-      BridgeFileChange change, BridgeToolResult result, ColorScheme colorScheme) {
+      BridgeFileChange change, BridgeToolResultInfo result, ColorScheme colorScheme) {
     final diffLines = _computeDiff(change.oldContent, change.newContent);
     final hunks = _groupDiffHunks(diffLines);
     final added = diffLines.where((l) => l.type == 'add').length;
@@ -1038,13 +1041,13 @@ class _AgentStepWidgetState extends State<AgentStepWidget> {
   }
 
   /// 生成每个工具调用的富摘要 + 可悬停路径
-  ({String label, String detail, String? filePath}) _toolCallSummary(BridgeToolCall tc) {
+  ({String label, String detail, String? filePath}) _toolCallSummary(BridgeToolCallInfo tc) {
     Map<String, dynamic> args = {};
     try {
-      args = jsonDecode(tc.function.arguments) as Map<String, dynamic>;
+      args = jsonDecode(tc.arguments) as Map<String, dynamic>;
     } catch (_) {}
 
-    switch (tc.function.name) {
+    switch (tc.name) {
       case 'read_file':
         final p = args['path']?.toString() ?? '';
         return (label: '查看文件', detail: p, filePath: p);

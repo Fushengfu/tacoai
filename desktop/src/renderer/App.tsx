@@ -62,7 +62,7 @@ export default function App() {
   const [middleView, setMiddleView] = useState<MiddleView>('chat')
   
   const scrollRef = useRef<HTMLDivElement>(null)
-  const doSendRef = useRef<(content: string, images?: AttachedImage[], attachments?: AttachedAsset[], target?: any) => void>(() => {})
+  const doSendRef = useRef<(contentParts: MessageContentPart[], target?: any) => void>(() => {})
   const handleProviderChangeRef = useRef<(id: string) => void>(() => {})
 
   /* ---- Derived state ---- */
@@ -199,6 +199,80 @@ export default function App() {
     void chat.ensureSessionLoaded(sessionId)
   }, [chat, sessionId, hasValidActiveSession])
 
+  // 监听移动端请求切换项目
+  useEffect(() => {
+    const unsubscribe = window.taco.bridge.onSwitchProject((data) => {
+      const projectId = String(data.projectId || '').trim()
+      const sessionId = String(data.sessionId || '').trim() || undefined
+      
+      if (!projectId) return
+      
+      // 检查项目是否存在
+      const thread = threadStore.threads.find((t) => t.id === projectId)
+      if (!thread) return
+      
+      // 切换项目
+      threadStore.switchThread(projectId)
+      
+      // 如果指定了会话，切换到对应会话
+      if (sessionId) {
+        const hasSession = thread.sessions.some((s) => s.id === sessionId)
+        if (hasSession) {
+          threadStore.switchSession(projectId, sessionId)
+        }
+      }
+      
+      // 清空 UI 状态
+      setDraft('')
+      setSelectedFile(null)
+      setViewingFile(null)
+      setViewingSelection(null)
+      setShowTerminal(false)
+    })
+    return unsubscribe
+  }, [threadStore])
+
+  // 监听移动端发来的消息（chat-send / agent-confirm / agent-abort）
+  useEffect(() => {
+    const unsubscribe = window.taco.bridge.onClientMessage((msg) => {
+      const type = String(msg.type || '')
+      const doSend = doSendRef.current
+      if (!doSend) return
+      
+      switch (type) {
+        case 'bridge:chat-send': {
+          const content = String(msg.content || '')
+          const threadId = String(msg.threadId || '')
+          if (content.trim()) {
+            // 构造消息内容
+            const contentParts = [{ type: 'text' as const, text: content }]
+            const target = threadId ? { threadId } : undefined
+            doSend(contentParts, target)
+          }
+          break
+        }
+        case 'bridge:agent-confirm': {
+          const confirmId = String(msg.confirmId || '')
+          const approved = Boolean(msg.approved)
+          if (confirmId) {
+            window.taco.agent.confirmResponse(confirmId, approved)
+            // 通知 ChatPanel 更新确认状态 UI
+            window.dispatchEvent(new CustomEvent('taco:confirm-response', { detail: { confirmId, approved } }))
+          }
+          break
+        }
+        case 'bridge:agent-abort': {
+          const requestId = String(msg.originalRequestId || msg.requestId || '')
+          if (requestId) {
+            window.taco.agent.abort(requestId)
+          }
+          break
+        }
+      }
+    })
+    return unsubscribe
+  }, [])
+
   function handleNewThread() {
     threadStore.createThread('新项目', providerSettings.activeModelConfigId || undefined)
     setDraft('')
@@ -291,7 +365,9 @@ export default function App() {
     void window.taco.shell.notify({ title, body, silent: false })
   }, [currentMode])
 
-  function doSend(content: string, images?: AttachedImage[], attachments?: AttachedAsset[], target?: any) {
+  type MessageContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } } | { type: 'video_url'; video_url: { url: string } } | { type: 'audio_url'; audio_url: { url: string } }
+
+  function doSend(contentParts: MessageContentPart[], target?: any) {
     const threadId = target?.threadId ?? threadStore.ensureActiveThread()
     const thread = threadStore.threads.find((t) => t.id === threadId)
     const targetSessionId = String(target?.sessionId || '').trim()
@@ -321,9 +397,7 @@ export default function App() {
       threadId: sid,
       projectId: threadId,
       projectRules: thread?.projectRules ?? '',
-      content,
-      images,
-      attachments,
+      content: contentParts,
       provider: modelConfig.provider,
       modelConfig,
       mode: currentMode,
@@ -392,19 +466,15 @@ export default function App() {
     })
   }
 
-  function handleSend(images?: AttachedImage[], attachments?: AttachedAsset[]) {
-    const content = draft.trim()
-    if (
-      (!content && (!images || images.length === 0) && (!attachments || attachments.length === 0))
-      || providerSettings.configuredModels.length === 0
-    ) return
-    setDraft('')
+  function handleSend(contentParts?: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } } | { type: 'video_url'; video_url: { url: string } } | { type: 'audio_url'; audio_url: { url: string } }>) {
+    // 检查是否有有效内容
+    if (!contentParts || contentParts.length === 0 || providerSettings.configuredModels.length === 0) return
 
     if (sessionSending) {
-      chat.addToQueue(sessionId, content || (images && images.length > 0 ? '(图片消息)' : '(附件消息)'))
+      // 队列也接收数组格式
+      chat.addToQueue(sessionId, contentParts)
     } else {
-      const fallback = images && images.length > 0 ? '请分析这张图片' : '请查看这些附件'
-      doSend(content || fallback, images, attachments)
+      doSend(contentParts)
     }
   }
 
@@ -449,8 +519,10 @@ export default function App() {
   const handleScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
-    const threshold = 50
-    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < threshold
+    // 增加阈值到 100px，更宽松地判断是否在底部
+    const threshold = 100
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    isNearBottomRef.current = distanceToBottom < threshold
   }, [])
 
   useEffect(() => {
@@ -460,6 +532,7 @@ export default function App() {
     return () => el.removeEventListener('scroll', handleScroll)
   }, [handleScroll])
 
+  // 只在用户已经滚动到底部时才自动跟随新消息滚动
   useEffect(() => {
     if (!scrollRef.current || !isNearBottomRef.current) return
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight
@@ -874,7 +947,7 @@ export default function App() {
               draft={draft}
               onDraftChange={setDraft}
               sending={sessionSending}
-              onSend={handleSend}
+              onSend={(contentParts) => handleSend(contentParts)}
               onStop={() => sessionId && chat.stopSending(sessionId)}
               onSwitchSession={handleSwitchSession}
               onDeleteSession={handleDeleteSession}

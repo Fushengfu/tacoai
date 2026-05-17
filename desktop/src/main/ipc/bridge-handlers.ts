@@ -64,7 +64,7 @@ export function setupBridgeStatusForwarding(): void {
   })
 }
 
-/** 注册移动端连接成功回调：主动推送 bridge:state 状态快照 */
+/** 注册移动端连接成功回调：仅更新活跃项目，不再主动推送全量快照 */
 export function setupBridgeClientConnectedHandler(): void {
   const mgr = getBridgeManager()
 
@@ -84,43 +84,11 @@ export function setupBridgeClientConnectedHandler(): void {
       const orderedProjectIds = state.threadsState.threads.map(t => t.id)
       mgr.setActiveThread(state.threadsState.activeThreadId, orderedProjectIds)
 
-      const resolvedSessionId = activeThread.activeSessionId || activeThread.sessions[0]?.id || ''
-      if (!resolvedSessionId) {
-        log('BRIDGE_NO_ACTIVE_SESSION', {}, 'bridge')
-        return
-      }
-
-      // 直接从 DB 读取消息并推送，不再经过渲染进程
-      // 优化：首次连接只加载最近 50 条消息，减少传输和渲染压力
-      const page = loadChatStoreSessionPage(resolvedSessionId, { limit: 50 })
-      if (page && Array.isArray(page.messages)) {
-        const modelConfig = state.providersState.modelConfigs.find(
-          (m) => m.id === activeThread.modelConfigId,
-        )
-        // 查询当前项目是否有活跃任务
-        const hasActiveTask = agentAbortControllers.size > 0 &&
-          Array.from(agentAbortControllers.keys()).some(key => {
-            return key.includes(resolvedSessionId) || key.includes(activeThread.id)
-          })
-        const activeAgentRequestId = hasActiveTask ? `agent-${resolvedSessionId}` : undefined
-
-        mgr.sendHostMessage({
-          type: 'bridge:state',
-          messages: page.messages as BridgeChatMessageType[],
-          threadId: activeThread.id,
-          workspace: activeThread.workspace,
-          modelLabel: modelConfig?.model || modelConfig?.name || '',
-          modelConfigId: activeThread.modelConfigId,
-          threadTitle: activeThread.title,
-          activeAgentRequestId,
-        })
-        log('BRIDGE_STATE_PUSHED_DIRECT', {
-          threadId: activeThread.id,
-          sessionId: resolvedSessionId,
-          messageCount: page.messages.length,
-          activeAgentRequestId: activeAgentRequestId || '(none)',
-        }, 'bridge')
-      }
+      // 不再主动推送全量快照，改为等待手机端发送 bridge:request-state 请求
+      // 手机端优先从本地 SQLite 缓存加载消息，按需请求快照
+      log('BRIDGE_CLIENT_CONNECTED_NO_SNAPSHOT', {
+        threadId: activeThread.id,
+      }, 'bridge')
     } catch (err) {
       logError('bridge', 'setupBridgeClientConnectedHandler 失败', {
         error: err instanceof Error ? err.message : String(err),
@@ -256,49 +224,12 @@ export function setupBridgeDataHandler(): void {
               win.webContents.send('bridge:switch-project-from-mobile', { projectId, sessionId })
             }
           }
-          // 异步从 DB 读取消息并推送状态快照（不阻塞响应）
-          ;(async () => {
-            try {
-              const state = await getAppState()
-              const thread = state.threadsState.threads.find((t) => t.id === projectId)
-              const resolvedSessionId = sessionId || thread?.activeSessionId || thread?.sessions[0]?.id || ''
-              if (resolvedSessionId) {
-                const page = loadChatStoreSessionPage(resolvedSessionId, { limit: 30 })
-                if (page && Array.isArray(page.messages)) {
-                  const modelConfig = state.providersState.modelConfigs.find(
-                    (m) => m.id === thread?.modelConfigId,
-                  )
-                  const hasActiveTask = agentAbortControllers.size > 0 &&
-                    Array.from(agentAbortControllers.keys()).some(key => {
-                      return key.includes(resolvedSessionId) || key.includes(projectId)
-                    })
-                  const activeAgentRequestId = hasActiveTask ? `agent-${resolvedSessionId}` : undefined
-
-                  const mgr = getBridgeManager()
-                  mgr.sendHostMessage({
-                    type: 'bridge:state',
-                    messages: page.messages as BridgeChatMessageType[],
-                    threadId: projectId,
-                    workspace: thread?.workspace || '',
-                    modelLabel: modelConfig?.model || modelConfig?.name || '',
-                    modelConfigId: thread?.modelConfigId || '',
-                    threadTitle: thread?.title || '',
-                    activeAgentRequestId,
-                  })
-                  log('BRIDGE_STATE_PUSHED_DIRECT', {
-                    threadId: projectId,
-                    sessionId: resolvedSessionId,
-                    messageCount: page.messages.length,
-                    activeAgentRequestId: activeAgentRequestId || '(none)',
-                  }, 'bridge')
-                }
-              }
-            } catch (err) {
-              logError('bridge', '切换项目后推送状态快照失败', {
-                error: err instanceof Error ? err.message : String(err),
-              })
-            }
-          })()
+          // 不再主动推送全量快照，改为等待手机端发送 bridge:request-state 请求
+          // 手机端优先从本地 SQLite 缓存加载消息，按需请求快照
+          log('BRIDGE_PROJECT_SWITCHED_NO_SNAPSHOT', {
+            threadId: projectId,
+            sessionId: sessionId || '(default)',
+          }, 'bridge')
           break
         }
 
@@ -329,6 +260,7 @@ export function setupBridgeDataHandler(): void {
                 Array.from(agentAbortControllers.keys()).some(key => {
                   return key.includes(resolvedSessionId) || key.includes(activeThread.id)
                 })
+              // 关键修复：只在有活跃任务时推送 activeAgentRequestId
               const activeAgentRequestId = hasActiveTask ? `agent-${resolvedSessionId}` : undefined
 
               respond({
@@ -340,7 +272,7 @@ export function setupBridgeDataHandler(): void {
                 modelLabel: modelConfig?.model || modelConfig?.name || '',
                 modelConfigId: activeThread.modelConfigId,
                 threadTitle: activeThread.title,
-                activeAgentRequestId,
+                ...(activeAgentRequestId ? { activeAgentRequestId } : {}),
               })
               log('BRIDGE_STATE_REQUEST_HANDLED', {
                 threadId: activeThread.id,
@@ -403,6 +335,34 @@ export function setupBridgeDataHandler(): void {
           break
         }
 
+        /* ---- 轮询任务状态（手机端每2秒调用） ---- */
+        case 'bridge:poll-task-status': {
+          const projectId = String(msg.projectId || '')
+          if (!projectId) {
+            respond({ type: 'bridge:task-status', requestId, isProcessing: false, error: 'projectId required' })
+            break
+          }
+          try {
+            const mgr = getBridgeManager()
+            const isProcessing = mgr.isProjectProcessing(projectId)
+            const activeTaskId = mgr.getActiveTaskForProject(projectId)
+            respond({
+              type: 'bridge:task-status',
+              requestId,
+              isProcessing,
+              activeTaskId: activeTaskId || null,
+            })
+          } catch (err) {
+            respond({
+              type: 'bridge:task-status',
+              requestId,
+              isProcessing: false,
+              error: err instanceof Error ? err.message : String(err),
+            })
+          }
+          break
+        }
+
         /* ---- 切换模型 ---- */
         case 'bridge:switch-model': {
           const modelConfigId = String(msg.modelConfigId || '').trim()
@@ -416,25 +376,7 @@ export function setupBridgeDataHandler(): void {
               win.webContents.send('bridge:switch-model-from-mobile', { modelConfigId })
             }
           }
-          // 切换后主动推送状态快照，让移动端获取新的 modelLabel
-          setTimeout(async () => {
-            const state = await getAppState()
-            const activeThread = state.threadsState.threads.find(
-              (t) => t.id === state.threadsState.activeThreadId,
-            )
-            if (!activeThread) return
-            for (const win of BrowserWindow.getAllWindows()) {
-              if (!win.isDestroyed()) {
-                win.webContents.send('bridge:request-state-snapshot', {
-                  threadId: activeThread.id,
-                  sessionId: activeThread.activeSessionId,
-                  workspace: activeThread.workspace,
-                  modelConfigId: activeThread.modelConfigId || modelConfigId,
-                  threadTitle: activeThread.title,
-                })
-              }
-            }
-          }, 300)
+          // 不再主动推送状态快照，手机端通过 bridge:project-states 获取最新 modelLabel
           respond({ type: 'bridge:model-switched', requestId, success: true })
           break
         }

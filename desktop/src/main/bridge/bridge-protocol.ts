@@ -63,6 +63,8 @@ export interface BridgePing {
 /** 完整会话状态快照 */
 export interface BridgeState {
   type: 'bridge:state'
+  messageId?: string
+  priority?: BridgeMessagePriority
   messages: BridgeChatMessage[]
   activeAgentRequestId?: string
   threadId?: string
@@ -129,6 +131,7 @@ export interface BridgeChatMessage {
 export interface BridgeChatUserMessage {
   type: 'bridge:chat-user-message'
   messageId: string
+  priority?: BridgeMessagePriority
   content: string
   images?: string[]
   threadId?: string
@@ -139,6 +142,7 @@ export interface BridgeChatUserMessage {
 export interface BridgeChatDelta {
   type: 'bridge:chat-delta'
   messageId: string
+  priority?: BridgeMessagePriority
   delta: string
   done: boolean
   threadId?: string
@@ -221,6 +225,27 @@ export interface BridgeAgentConfirmResolved {
 export interface BridgeHeartbeat {
   type: 'heartbeat'
   timestamp: number
+}
+
+/** 消息优先级 */
+export type BridgeMessagePriority = 'critical' | 'high' | 'normal' | 'low'
+
+/** ACK 确认消息（确保关键消息送达） */
+export interface BridgeAck {
+  type: 'bridge:ack'
+  /** 被确认的消息 ID */
+  messageId: string
+  /** 原始消息类型 */
+  originalType: string
+  /** 接收时间戳 */
+  receivedAt: number
+}
+
+/** 消息重传请求（未收到 ACK 时请求重传） */
+export interface BridgeRetransmitRequest {
+  type: 'bridge:retransmit-request'
+  /** 需要重传的消息 ID */
+  messageId: string
 }
 
 /* ------------------------------------------------------------------ */
@@ -366,6 +391,7 @@ export type BridgeHostMessage =
   | BridgeFileWritten
   | BridgeProjectSwitched
   | BridgeProjectStates
+  | BridgeAck
 
 /** Client → Host 的所有消息 */
 export type BridgeClientMessage =
@@ -379,6 +405,8 @@ export type BridgeClientMessage =
   | BridgeFileWrite
   | BridgeSwitchProject
   | BridgeRequestState
+  | BridgeAck
+  | BridgeRetransmitRequest
 
 /** 移动端主动请求当前状态快照（连接/重连后使用） */
 export interface BridgeRequestState {
@@ -418,6 +446,12 @@ export interface BridgeProjectState {
   isProcessing: boolean
   activeTaskId?: string
   lastActivityAt: number
+  // 新增：最后一条消息的状态（用于移动端侧边栏和消息气泡显示）
+  lastMessageId?: string        // 最后一条消息 ID
+  lastMessageRole?: string      // 最后一条消息角色（user/assistant）
+  lastMessageHasContent?: boolean  // 最后一条消息是否有内容
+  lastMessageIsStreaming?: boolean  // 最后一条消息是否正在流式输出
+  lastMessageHasPlan?: boolean     // 最后一条消息是否有执行计划
 }
 
 /** 所有 WebSocket 消息 */

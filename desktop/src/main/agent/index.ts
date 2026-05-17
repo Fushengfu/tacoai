@@ -45,6 +45,7 @@ import {
   stripReasoningArtifacts,
 } from '../../shared/sanitize'
 import { inferIntentTypeFromQuery } from '../../shared/intent'
+import { extractTextFromContent } from '../provider/message-adapter'
 
 /* ------------------------------------------------------------------ */
 /*  Agent 事件                                                         */
@@ -235,7 +236,7 @@ function extractIdentifiers(text: string): string[] {
 /*  Agent 运行                                                         */
 /* ------------------------------------------------------------------ */
 
-const MAX_TOOL_ROUNDS = 100 // 防止无限循环 (从1000降低到100)
+const MAX_TOOL_ROUNDS = 1000 // 防止无限循环 
 const AGENT_LOOP_TIMEOUT_MS = 10 * 60 * 1000 // 10分钟超时
 let confirmCounter = 0
 
@@ -317,7 +318,9 @@ async function summarizeCurrentTaskProgress(
   const lines: string[] = []
   const userMediaRefs = collectUserMediaRefsFromMessages(messagesToSummarize)
   for (const m of messagesToSummarize) {
-    const sanitizedContent = sanitizeContextArtifacts(String(m.content ?? ''))
+    // 支持 content 为数组格式
+    const contentText = typeof m.content === 'string' ? m.content : extractTextFromContent(m.content)
+    const sanitizedContent = sanitizeContextArtifacts(String(contentText ?? ''))
     if (!sanitizedContent) continue
     const role = m.role === 'assistant' ? 'AI助手'
       : m.role === 'user' ? '用户'
@@ -527,9 +530,12 @@ export async function runAgent(
 
   // 将启用的 skills 目录注入 system prompt
   const skillsCatalogBlock = buildActiveSkillsCatalogBlock()
+
   const workingMessages = [...messages]
   const activatedSkillIds = new Set<string>()
-  const lastUserGoal = [...messages].reverse().find((m) => m.role === 'user')?.content?.trim() || ''
+  // 提取用户目标文本（支持 content 为数组格式）
+  const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user')
+  const lastUserGoal = lastUserMsg ? extractTextFromContent(lastUserMsg.content).trim() : ''
   const plainUserQuery = extractUserQueryText(lastUserGoal)
   const userAssetsBlock = extractUserAssetsBlock(lastUserGoal)
   const normalizedMemorySessionId = String(sessionId || projectId || '').trim()
@@ -549,7 +555,9 @@ export async function runAgent(
   function syncRuntimeToolPrompt(allowedToolNames: Iterable<string>) {
     if (!workingMessages.length || workingMessages[0].role !== 'system') return
     const nextBlock = buildRuntimeToolPrompt(allowedToolNames)
-    const current = String(workingMessages[0].content ?? '')
+    const current = typeof workingMessages[0].content === 'string' 
+      ? workingMessages[0].content 
+      : extractTextFromContent(workingMessages[0].content)
     const cleanedBase = current
       .replace(TOOL_PROMPT_SENTINEL_BLOCK_REGEX, '\n')
       .replace(TOOL_PROMPT_LEGACY_BLOCK_REGEX, '\n')
@@ -617,7 +625,7 @@ export async function runAgent(
       
       const injected = await buildBackgroundContextConversationMessages(
         workspace,
-        rawUserQuery,
+        userContent,
         projectId,
         {
           maxTokens,
@@ -642,10 +650,6 @@ export async function runAgent(
       workingMessages.splice(historyStartIdx, workingMessages.length - historyStartIdx, ...injected.messages)
       currentTaskStartIndex = historyStartIdx + injected.messages.length - 1
 
-      // 保留原始图片信息这个地方不能删掉必须保留否则后面图片信息会丢失
-      if (messageImages && messageImages.length > 0) {
-        workingMessages[currentTaskStartIndex].images = messageImages
-      }
       latestRecallMeta = {
         intentSource: injected.recallMeta.intentSource,
         intentType: injected.recallMeta.intentType,
@@ -700,7 +704,10 @@ export async function runAgent(
     }
 
     if (extraPrompt) {
-      workingMessages[0] = { ...workingMessages[0], content: workingMessages[0].content + extraPrompt }
+      const currentContent = typeof workingMessages[0].content === 'string' 
+        ? workingMessages[0].content 
+        : extractTextFromContent(workingMessages[0].content)
+      workingMessages[0] = { ...workingMessages[0], content: currentContent + extraPrompt }
     }
   }
   let round = 0
@@ -1013,7 +1020,10 @@ export async function runAgent(
     try {
       // 从消息历史中提取最后一条用户消息作为提交摘要
       const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user')
-      const plainUserSummary = extractUserQueryText(lastUserMsg?.content || '')
+      const contentText = lastUserMsg 
+        ? (typeof lastUserMsg.content === 'string' ? lastUserMsg.content : extractTextFromContent(lastUserMsg.content))
+        : ''
+      const plainUserSummary = extractUserQueryText(contentText)
       const summary = plainUserSummary
         ? plainUserSummary.replace(/[\n\r]+/g, ' ').slice(0, 60)
         : `Agent round ${round}`
@@ -1068,14 +1078,6 @@ export async function runAgent(
         failures: failureLogs.length + (errorMessage ? 1 : 0),
         elapsedMs: Math.max(0, Date.now() - taskStartedAt),
       })
-      log('REWARD_SCORE_APPLIED', {
-        channel: 'agent',
-        outcome,
-        delta: scored.delta,
-        points: scored.state.points,
-        debtUsd: scored.state.debtUsd,
-        breakdown: scored.entry.breakdown,
-      }, logScope)
     } catch (err) {
       log('REWARD_SCORE_APPLY_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
     }
@@ -1119,7 +1121,10 @@ export async function runAgent(
     const normalized = String(content ?? '').trim()
     if (!normalized) return false
     const lastMessage = workingMessages[workingMessages.length - 1]
-    if (lastMessage?.role === 'assistant' && String(lastMessage.content ?? '').trim() === normalized) {
+    const lastContent = lastMessage 
+      ? (typeof lastMessage.content === 'string' ? lastMessage.content : extractTextFromContent(lastMessage.content))
+      : ''
+    if (lastMessage?.role === 'assistant' && String(lastContent ?? '').trim() === normalized) {
       return false
     }
     workingMessages.push({

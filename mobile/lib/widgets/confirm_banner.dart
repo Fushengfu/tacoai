@@ -6,11 +6,13 @@ import '../services/bridge_protocol.dart';
 class ConfirmBanner extends StatefulWidget {
   final List<BridgePendingConfirm> confirms;
   final void Function(String confirmId, bool approved) onConfirm;
+  final String? Function(String? projectId)? getProjectTitle;  // 新增：获取项目名称的回调
 
   const ConfirmBanner({
     super.key,
     required this.confirms,
     required this.onConfirm,
+    this.getProjectTitle,
   });
 
   @override
@@ -130,6 +132,7 @@ class _ConfirmBannerState extends State<ConfirmBanner>
                         confirm: confirm,
                         colorScheme: colorScheme,
                         onConfirm: widget.onConfirm,
+                        projectTitle: widget.getProjectTitle?.call(confirm.projectId),
                       );
                     },
                   ),
@@ -148,11 +151,13 @@ class _ConfirmCard extends StatefulWidget {
   final BridgePendingConfirm confirm;
   final ColorScheme colorScheme;
   final void Function(String confirmId, bool approved) onConfirm;
+  final String? projectTitle;  // 新增：项目名称
 
   const _ConfirmCard({
     required this.confirm,
     required this.colorScheme,
     required this.onConfirm,
+    this.projectTitle,
   });
 
   @override
@@ -215,13 +220,34 @@ class _ConfirmCardState extends State<_ConfirmCard> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          confirm.isPlanConfirm ? '执行计划' : '操作授权',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: colorScheme.onSurface,
-                          ),
+                        Row(
+                          children: [
+                            Text(
+                              confirm.isPlanConfirm ? '执行计划' : '操作授权',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: colorScheme.onSurface,
+                              ),
+                            ),
+                            if (widget.projectTitle != null) ...[
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: colorScheme.primary.withValues(alpha: 0.1),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  widget.projectTitle!,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: colorScheme.primary,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
                         if (confirm.summary.isNotEmpty)
                           Padding(
@@ -344,7 +370,7 @@ class _ConfirmCardState extends State<_ConfirmCard> {
                           Icon(Icons.circle, size: 6, color: colorScheme.onSurfaceVariant),
                           const SizedBox(width: 6),
                           Text(
-                            tc.function.name,
+                            tc.name,
                             style: TextStyle(
                               fontSize: 12,
                               fontFamily: 'monospace',

@@ -21,7 +21,9 @@ import {
   type BridgeHostMessage,
   type BridgeClientMessage,
   type BridgeMessage,
+  type BridgeMessagePriority,
 } from './bridge-protocol'
+import { BridgeSyncManager } from './bridge-sync-manager'
 
 /* ------------------------------------------------------------------ */
 /*  Event callbacks                                                    */
@@ -42,6 +44,12 @@ export interface ProjectStateInfo {
   isProcessing: boolean
   activeTaskId?: string
   lastActivityAt: number
+  // 新增：最后一条消息的状态（用于移动端侧边栏和消息气泡显示）
+  lastMessageId?: string        // 最后一条消息 ID
+  lastMessageRole?: string      // 最后一条消息角色（user/assistant）
+  lastMessageHasContent?: boolean  // 最后一条消息是否有内容
+  lastMessageIsStreaming?: boolean  // 最后一条消息是否正在流式输出
+  lastMessageHasPlan?: boolean     // 最后一条消息是否有执行计划
 }
 
 /* ------------------------------------------------------------------ */
@@ -84,6 +92,9 @@ export class BridgeManager {
   private stateReportTimer: ReturnType<typeof setInterval> | null = null
   private readonly STATE_REPORT_INTERVAL_MS = 5000 // 每 5 秒上报一次项目状态
 
+  /* sync manager */
+  private syncManager = new BridgeSyncManager()
+
   /* callbacks */
   private statusCallbacks = new Set<BridgeStatusCallback>()
   private clientMessageCallbacks = new Set<BridgeClientMessageCallback>()
@@ -113,6 +124,10 @@ export class BridgeManager {
     }
     this.reconnectAttempts = 0
     this.pendingMessages = []
+    
+    // 设置同步管理器的发送函数
+    this.syncManager.setSendFunction((msg) => this.sendHostMessageDirect(msg))
+    
     this.connectToRelay(orderedProjectIds)
   }
 
@@ -125,8 +140,14 @@ export class BridgeManager {
     }
   }
 
-  /** 发送 Host 消息到 Relay */
-  sendHostMessage(msg: BridgeHostMessage): void {
+  /** 发送 Host 消息到 Relay（支持优先级） */
+  sendHostMessage(msg: BridgeHostMessage, priority: BridgeMessagePriority = 'normal'): void {
+    // 使用同步管理器处理优先级、ACK、缓存、节流
+    this.syncManager.sendMessage(msg, priority)
+  }
+
+  /** 直接发送消息（不经过同步管理器，用于内部使用） */
+  private sendHostMessageDirect(msg: BridgeHostMessage): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg))
     } else {
@@ -149,6 +170,7 @@ export class BridgeManager {
     this.token = null
     this.clientCount = 0
     this.reconnectAttempts = 0
+    this.syncManager.dispose()
     this.setStatus('disconnected')
   }
 
@@ -204,7 +226,7 @@ export class BridgeManager {
   }
 
   /** 更新项目状态（由 IPC 层调用，当 Agent 开始/结束任务时） */
-  updateProjectState(projectId: string, updates: Partial<Pick<ProjectStateInfo, 'title' | 'workspace' | 'isProcessing' | 'activeTaskId'>>): void {
+  updateProjectState(projectId: string, updates: Partial<Pick<ProjectStateInfo, 'title' | 'workspace' | 'isProcessing' | 'activeTaskId' | 'lastMessageId' | 'lastMessageRole' | 'lastMessageHasContent' | 'lastMessageIsStreaming' | 'lastMessageHasPlan'>>): void {
     const existing = this.projectStates.get(projectId)
     const now = Date.now()
     if (existing) {
@@ -228,7 +250,7 @@ export class BridgeManager {
   }
 
   /** 更新项目状态并立即推送给移动端（由 IPC 层调用，当 Agent 开始/结束任务时） */
-  updateProjectStateAndPush(projectId: string, updates: Partial<Pick<ProjectStateInfo, 'title' | 'workspace' | 'isProcessing' | 'activeTaskId'>>): void {
+  updateProjectStateAndPush(projectId: string, updates: Partial<Pick<ProjectStateInfo, 'title' | 'workspace' | 'isProcessing' | 'activeTaskId' | 'lastMessageId' | 'lastMessageRole' | 'lastMessageHasContent' | 'lastMessageIsStreaming' | 'lastMessageHasPlan'>>): void {
     this.updateProjectState(projectId, updates)
     // 立即推送给移动端，确保状态即时同步
     this.pushProjectsOnDemand()
@@ -243,6 +265,18 @@ export class BridgeManager {
   /** 获取单个项目状态 */
   getProjectState(projectId: string): ProjectStateInfo | undefined {
     return this.projectStates.get(projectId)
+  }
+
+  /** 判断指定项目是否正在处理任务 */
+  isProjectProcessing(projectId: string): boolean {
+    const state = this.projectStates.get(projectId)
+    return state?.isProcessing ?? false
+  }
+
+  /** 获取指定项目的活跃任务 ID */
+  getActiveTaskForProject(projectId: string): string | undefined {
+    const state = this.projectStates.get(projectId)
+    return state?.activeTaskId
   }
 
   /** 设置当前活跃项目（由 IPC 层调用，当桌面端切换项目时） */
@@ -284,6 +318,12 @@ export class BridgeManager {
       isProcessing: s.isProcessing,
       activeTaskId: s.activeTaskId,
       lastActivityAt: s.lastActivityAt,
+      // 新增：最后一条消息的状态
+      lastMessageId: s.lastMessageId,
+      lastMessageRole: s.lastMessageRole,
+      lastMessageHasContent: s.lastMessageHasContent,
+      lastMessageIsStreaming: s.lastMessageIsStreaming,
+      lastMessageHasPlan: s.lastMessageHasPlan,
     }))
     
     // 如果提供了顺序信息，按照指定顺序排序项目状态
@@ -322,6 +362,12 @@ export class BridgeManager {
           isProcessing: s.isProcessing,
           activeTaskId: s.activeTaskId,
           lastActivityAt: s.lastActivityAt,
+          // 新增：最后一条消息的状态
+          lastMessageId: s.lastMessageId,
+          lastMessageRole: s.lastMessageRole,
+          lastMessageHasContent: s.lastMessageHasContent,
+          lastMessageIsStreaming: s.lastMessageIsStreaming,
+          lastMessageHasPlan: s.lastMessageHasPlan,
         }))
       : []
     
@@ -343,12 +389,14 @@ export class BridgeManager {
       })
     }
     
+    // 关键修复: 使用 critical 优先级，确保项目状态变更立即发送到移动端
+    // 避免被节流导致移动端永久显示"处理中"
     this.sendHostMessage({
       type: 'bridge:project-states',
       states,
       activeThreadId: this._activeThreadId || '',
       timestamp: Date.now(),
-    } as any)
+    } as any, 'critical')
     logBridge(`Pushed project states on demand (${states.length} projects, activeThread: ${this._activeThreadId})`)
   }
 
@@ -470,6 +518,18 @@ export class BridgeManager {
         break
       }
 
+      /* ---- ACK 确认消息 ---- */
+      case 'bridge:ack': {
+        this.syncManager.handleAck(msg as any)
+        break
+      }
+
+      /* ---- 重传请求 ---- */
+      case 'bridge:retransmit-request': {
+        this.syncManager.handleRetransmitRequest(msg as any)
+        break
+      }
+
       /* ---- client → host data requests ---- */
       case 'bridge:get-projects':
       case 'bridge:get-workspace-tree':
@@ -479,7 +539,8 @@ export class BridgeManager {
       case 'bridge:get-models':
       case 'bridge:switch-model':
       case 'bridge:request-state':
-      case 'bridge:load-older-messages': {
+      case 'bridge:load-older-messages':
+      case 'bridge:poll-task-status': {
         this.lastHeartbeatReceived = Date.now()
         if (this.dataHandler) {
           const respond = (data: Record<string, unknown>) => {

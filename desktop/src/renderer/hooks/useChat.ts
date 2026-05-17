@@ -89,53 +89,129 @@ function buildTaskTiming(startedAt: number, endedAt = Date.now()): TaskTiming {
   }
 }
 
-type ApiChatMessage = { role: ChatMsg['role']; content: string; images?: string[] }
+/**
+ * API 消息类型 - 统一使用标准 content 数组格式
+ * 
+ * 前端始终使用统一格式，后端根据 provider 转换
+ * 
+ * content 数组支持的类型：
+ * - text: 文本内容
+ * - image_url: 图片 URL
+ * - video_url: 视频 URL
+ * - audio_url: 音频 URL
+ * 
+ * 非媒体文件（代码、文档等）使用标签包裹插入文本：[FILE]path[/FILE]
+ */
+type ApiChatMessage = {
+  role: ChatMsg['role']
+  content: Array<
+    | { type: 'text'; text: string }
+    | { type: 'image_url'; image_url: { url: string } }
+    | { type: 'video_url'; video_url: { url: string } }
+    | { type: 'audio_url'; audio_url: { url: string } }
+  >
+}
 
-function mapMessageForApi(msg: ChatMsg): ApiChatMessage {
-  if (msg.role !== 'user') return { role: msg.role, content: msg.content }
+/** 判断文件是否为媒体类型（图片、视频、音频） */
+function isMediaFile(filePath: string): boolean {
+  const ext = filePath.split('.').pop()?.toLowerCase()
+  if (!ext) return false
   
-  // 只使用 cloudUrl（上传成功的 HTTPS URL）
+  const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'ico']
+  const videoExts = ['mp4', 'webm', 'ogg', 'mov', 'avi', 'mkv']
+  const audioExts = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a']
+  
+  return imageExts.includes(ext) || videoExts.includes(ext) || audioExts.includes(ext)
+}
+
+/**
+ * 将 ChatMsg 转换为统一的标准 API 消息格式
+ */
+function mapMessageForApi(msg: ChatMsg): ApiChatMessage {
+  // system 和 assistant 消息也使用数组格式
+  if (msg.role !== 'user') {
+    return {
+      role: msg.role,
+      content: [{ type: 'text', text: msg.content }]
+    }
+  }
+
+  // 构建用户消息的 content 数组
+  const parts: ApiChatMessage['content'] = []
+
+  // 1. 构建文本内容
+  const raw = stripUserAssetsBlock(String(msg.content ?? ''))
+  const wrapped = raw.match(/\[USER_QUERY\]([\s\S]*?)\[\/USER_QUERY\]/i)
+  let textContent = wrapped && wrapped[1] !== undefined
+    ? raw.trim()
+    : `[USER_QUERY]\n${raw.trim()}\n[/USER_QUERY]`
+
+  // 2. 处理附件：媒体文件加入数组，非媒体文件用标签包裹插入文本
+  const mediaFiles: Array<{ type: string; url: string }> = []
+  const nonMediaFiles: string[] = []
+
+  if (msg.attachments && msg.attachments.length > 0) {
+    for (const asset of msg.attachments) {
+      if (isMediaFile(asset.path)) {
+        // 媒体文件：判断类型并加入数组
+        const ext = asset.path.split('.').pop()?.toLowerCase()
+        const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'ico']
+        const videoExts = ['mp4', 'webm', 'ogg', 'mov', 'avi', 'mkv']
+        
+        if (imageExts.includes(ext || '')) {
+          mediaFiles.push({ type: 'image_url', url: asset.path })
+        } else if (videoExts.includes(ext || '')) {
+          mediaFiles.push({ type: 'video_url', url: asset.path })
+        } else {
+          mediaFiles.push({ type: 'audio_url', url: asset.path })
+        }
+      } else {
+        // 非媒体文件：用标签包裹
+        nonMediaFiles.push(asset.path)
+      }
+    }
+  }
+
+  // 将非媒体文件路径添加到文本中
+  if (nonMediaFiles.length > 0) {
+    textContent += '\n\n' + nonMediaFiles.map(p => `[FILE]${p}[/FILE]`).join('\n')
+  }
+
+  // 添加文本部分
+  parts.push({ type: 'text', text: textContent })
+
+  // 3. 添加图片部分（使用 cloudUrl）
   const imageUrls = (msg.images ?? [])
     .map((img) => {
       const cloudUrl = String(img?.cloudUrl ?? '').trim()
       return cloudUrl
     })
     .filter(Boolean)
-  
-  // 调试日志
-  console.log('[mapMessageForApi]', {
-    msgId: msg.id,
-    hasImages: (msg.images?.length ?? 0) > 0,
-    imageCount: msg.images?.length ?? 0,
-    imageUrlsCount: imageUrls.length,
-    imageUrls: imageUrls.slice(0, 3),
-  })
-  
-  const raw = stripUserAssetsBlock(String(msg.content ?? ''))
-  const wrapped = raw.match(/\[USER_QUERY\]([\s\S]*?)\[\/USER_QUERY\]/i)
-  const userQueryBlock = wrapped && wrapped[1] !== undefined
-    ? raw.trim()
-    : `[USER_QUERY]\n${raw.trim()}\n[/USER_QUERY]`
-  const assetsBlock = buildUserAssetsBlockFromAttachments(msg.attachments ?? [], inferAttachmentType)
-  const withImages = (base: ApiChatMessage): ApiChatMessage => {
-    if (imageUrls.length <= 0) return base
-    return { ...base, images: imageUrls }
+
+  for (const url of imageUrls) {
+    parts.push({ type: 'image_url', image_url: { url } })
   }
-  if (assetsBlock) {
-    return withImages({
-      role: msg.role,
-      content: `${userQueryBlock}\n\n${assetsBlock}`,
-    })
+
+  // 4. 添加其他媒体文件
+  for (const media of mediaFiles) {
+    if (media.type === 'image_url') {
+      parts.push({ type: 'image_url', image_url: { url: media.url } })
+    } else if (media.type === 'video_url') {
+      parts.push({ type: 'video_url', video_url: { url: media.url } })
+    } else if (media.type === 'audio_url') {
+      parts.push({ type: 'audio_url', audio_url: { url: media.url } })
+    }
   }
-  if (wrapped && wrapped[1] !== undefined) {
-    return withImages({ role: msg.role, content: raw.trim() })
-  }
-  return withImages({ role: msg.role, content: userQueryBlock })
+
+  return { role: msg.role, content: parts }
 }
 
-function buildMessagesForApi(messages: ChatMsg[], mode?: ThreadMode): ApiChatMessage[] {
+/**
+ * 构建 API 消息数组
+ */
+function buildMessagesForApi(messages: ChatMsg[], mode: ThreadMode | undefined): ApiChatMessage[] {
   if (mode === 'agent') {
-    // Agent 模式优先发送最近上下文，避免“仅发最后一条用户消息”导致在记忆为空时丢失链路。
+    // Agent 模式优先发送最近上下文
     const MAX_RECENT_MESSAGES = 8
     const MAX_RECENT_USER_TURNS = 3
     const recent: ChatMsg[] = []
@@ -413,16 +489,20 @@ function applyUsageDeltaToProjectStats(base: ProjectTokenStats, delta: UsageAggr
   }
 }
 
+/** API 消息 content 数组元素类型 */
+type MessageContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } } | { type: 'video_url'; video_url: { url: string } } | { type: 'audio_url'; audio_url: { url: string } }
+
 export type SendMessageParams = {
   threadId: string
   /** 项目标识（用于项目级日志与笔记隔离） */
   projectId?: string
   /** 当前项目的自定义规则（自动注入 system prompt） */
   projectRules?: string
-  content: string
-  /** 用户附带的图片 */
+  /** 统一的 content 数组格式 */
+  content: string | MessageContentPart[]
+  /** 用户附带的图片（兼容旧格式，优先使用 content 数组） */
   images?: AttachedImage[]
-  /** 用户附带的文件附件（绝对路径） */
+  /** 用户附带的文件附件（绝对路径，兼容旧格式，优先使用 content 数组） */
   attachments?: AttachedAsset[]
   provider: ProviderId
   modelConfig: ModelConfig
@@ -1040,8 +1120,13 @@ export function useChat() {
   /*  Queue management                                                   */
   /* ------------------------------------------------------------------ */
 
-  function addToQueue(threadId: string, content: string) {
-    const normalized = content.trim()
+  function addToQueue(threadId: string, content: string | MessageContentPart[]) {
+    // 提取文本内容用于队列显示
+    const textContent = Array.isArray(content) 
+      ? (content.find(p => p.type === 'text') as { type: 'text'; text: string } | undefined)?.text || ''
+      : String(content ?? '')
+    
+    const normalized = textContent.trim()
     if (!normalized) return
 
     setQueues((prev) => {
@@ -1123,6 +1208,62 @@ export function useChat() {
   async function sendMessage(params: SendMessageParams) {
     const { threadId, projectId, projectRules, content, images, attachments, provider, modelConfig, mode, workspace, maxTokens, onFirstMessage, onComplete } = params
     
+    // 处理 content 参数：支持字符串或数组
+    const contentText = Array.isArray(content) 
+      ? (content.find(p => p.type === 'text') as { type: 'text'; text: string } | undefined)?.text || ''
+      : String(content ?? '')
+    
+    // 从 content 数组中提取图片和附件（如果是数组格式）
+    let effectiveImages = images
+    let effectiveAttachments = attachments
+    
+    if (Array.isArray(content)) {
+      const extractedImages: AttachedImage[] = []
+      const extractedAttachments: AttachedAsset[] = []
+      
+      console.log('[sendMessage] 开始从 content 数组提取图片，content.length:', content.length)
+      console.log('[sendMessage] content 数组内容:', JSON.stringify(content, null, 2))
+      
+      for (const part of content) {
+        if (part.type === 'image_url') {
+          const url = part.image_url.url
+          console.log('[sendMessage] 检测到 image_url part, url:', url)
+          if (url.startsWith('http://') || url.startsWith('https://')) {
+            extractedImages.push({
+              id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              dataUrl: '',
+              cloudUrl: url,
+              name: 'image',
+              uploadStatus: 'done',
+            })
+            console.log('[sendMessage] 成功提取云端图片:', url)
+          } else {
+            extractedAttachments.push({
+              id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              name: url.split('/').pop() || 'image',
+              path: url,
+            })
+            console.log('[sendMessage] URL 不是 http(s)，作为附件处理:', url)
+          }
+        } else if (part.type === 'video_url' || part.type === 'audio_url') {
+          const url = part.type === 'video_url' ? part.video_url.url : part.audio_url.url
+          extractedAttachments.push({
+            id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            name: url.split('/').pop() || 'media',
+            path: url,
+          })
+        }
+      }
+      
+      console.log('[sendMessage] 提取完成 - extractedImages:', extractedImages.length, 'extractedAttachments:', extractedAttachments.length)
+      
+      // 如果传入了 content 数组，优先使用提取的结果
+      effectiveImages = extractedImages.length > 0 ? extractedImages : images
+      effectiveAttachments = extractedAttachments.length > 0 ? extractedAttachments : attachments
+      
+      console.log('[sendMessage] effectiveImages:', effectiveImages?.length, 'effectiveAttachments:', effectiveAttachments?.length)
+    }
+    
     // 验证模型配置
     const validation = validateModelConfig({
       provider,
@@ -1165,9 +1306,9 @@ export function useChat() {
 
     // 同一会话绝对串行：若已有在途请求，本次直接入队
     if (inFlightThreadsRef.current.has(threadId)) {
-      const queueText = content.trim()
-        || (images && images.length > 0 ? '(图片消息)' : '')
-        || (attachments && attachments.length > 0 ? '(附件消息)' : '')
+      const queueText = contentText.trim()
+        || (effectiveImages && effectiveImages.length > 0 ? '(图片消息)' : '')
+        || (effectiveAttachments && effectiveAttachments.length > 0 ? '(附件消息)' : '')
       if (queueText) addToQueue(threadId, queueText)
       return
     }
@@ -1179,9 +1320,9 @@ export function useChat() {
     const userMsg: ChatMsg = {
       id: uid(),
       role: 'user',
-      content,
-      ...(images && images.length > 0 ? { images } : {}),
-      ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      content: contentText,
+      ...(effectiveImages && effectiveImages.length > 0 ? { images: effectiveImages } : {}),
+      ...(effectiveAttachments && effectiveAttachments.length > 0 ? { attachments: effectiveAttachments } : {}),
     }
     const sourceUserMessageId = userMsg.id
     const streamAssistantMessageId = uid()
@@ -1195,7 +1336,7 @@ export function useChat() {
 
     // 首条消息 → 自动命名
     if (currentMsgs.length === 0 && onFirstMessage) {
-      const title = content.length > 30 ? content.slice(0, 30) + '...' : content
+      const title = contentText.length > 30 ? contentText.slice(0, 30) + '...' : contentText
       onFirstMessage(title)
     }
 
@@ -1452,9 +1593,11 @@ export function useChat() {
           streamCleanupRefs.current.set(threadId, cleanup)
           // 找到最新用户消息中的图片 (使用cloudUrl)
           // 如果 cloudUrl 为空，说明上传失败或未完成，此时不应发送图片，保持原逻辑 filter(Boolean)
-          const lastUserImages = images
+          console.log('[sendMessage] 准备提取 lastUserImages, effectiveImages:', effectiveImages?.length)
+          const lastUserImages = effectiveImages
             ?.map((img) => img.cloudUrl)
             .filter((url): url is string => Boolean(url))
+          console.log('[sendMessage] lastUserImages 结果:', lastUserImages)
           
           // 执行流式请求（带重试）
           const executeStreamWithRetry = async (attempt: number): Promise<void> => {

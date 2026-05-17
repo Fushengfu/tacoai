@@ -203,11 +203,27 @@ export const IpcChannel = {
 
 export type ChatRole = 'system' | 'user' | 'assistant'
 
+/**
+ * IPC 聊天消息类型 - 统一使用标准 content 数组格式
+ * 
+ * 前端始终发送此格式，后端根据 provider 转换
+ * 
+ * content 数组支持的类型：
+ * - text: 文本
+ * - image_url: 图片
+ * - video_url: 视频
+ * - audio_url: 音频
+ * 
+ * 非媒体文件使用 [FILE]path[/FILE] 标签包裹在文本中
+ */
 export type IpcChatMessage = {
   role: ChatRole
-  content: string
-  /** 用户消息附带的图片（base64 data URL） */
-  images?: string[]
+  content: Array<
+    | { type: 'text'; text: string }
+    | { type: 'image_url'; image_url: { url: string } }
+    | { type: 'video_url'; video_url: { url: string } }
+    | { type: 'audio_url'; audio_url: { url: string } }
+  > | string
 }
 
 export type IpcChatOverrides = Record<
@@ -319,7 +335,10 @@ export type AgentStreamPayload = {
   maxTokens?: number
   /** 是否开启召回调试日志（默认 false） */
   recallDebug?: boolean
-  /** 用户附带的图片（base64 data URL），需要通过 MCP 理解后注入消息 */
+  /**
+   * @deprecated 图片信息现在直接在 messages 的 content 数组中传递
+   * 保留此字段仅为向后兼容，新代码不应使用
+   */
   images?: string[]
   /** 会话 ID（通常等于 threadId），用于任务记忆指向原始会话 */
   sessionId?: string

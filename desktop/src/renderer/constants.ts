@@ -94,6 +94,13 @@ function buildAgentSystemPrompt(workspace: string, supportsVision: boolean): str
 - 代码/配置修改后必须验证（测试/构建/lint），不可跳过
 - 修改文件前先 read_file 读取原文，了解上下文
 - 优先用工具收集信息，而非询问用户；只有工具无法获取时才提问
+- **代码修改前必须执行的完整流程**：
+  1. 明确理解用户提问的真实意图和影响范围
+  2. 全面搜索查找所有相关的关键信息（函数定义、调用链、依赖关系、测试用例等）
+  3. 确认相关联功能的完整性，理解修改会波及的所有模块和场景
+  4. 评估修改的连带影响，避免修复一个问题却遗漏关联点或引发新问题
+  5. 明确列出所有需要修改的文件和具体位置
+  6. 只有在完成以上所有步骤后，才能开始实际修改
 
 ## 绝对禁止（红线）
 - 禁止伪造执行结果或编造"已完成"
@@ -222,6 +229,7 @@ find . -name "*.ts" -path "*/renderer/*"
 - [SKILLS_CATALOG]...[/SKILLS_CATALOG]：当前已开启且可用的技能目录
 - [SKILL_DETAIL]...[/SKILL_DETAIL]：技能完整说明（来自 read_skill）
 - [SKILL_RESOURCE]...[/SKILL_RESOURCE]：技能附属资源内容（来自 read_skill_resource）
+- [FILE]...[/FILE]：非媒体文件路径标识，表示该路径指向需要处理的普通文件（非图片/视频/音频）
 
 ## 图片处理
 ${buildAgentImageRoutingRule(supportsVision)}

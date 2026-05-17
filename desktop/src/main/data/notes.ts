@@ -2300,7 +2300,7 @@ export async function buildBackgroundContextConversationMessages(
     })
     messages.push({ role: 'assistant', content: assistantText })
   }
-  messages.push({ role: 'user', content: wrapUserQueryText(normalizedQuery) })
+  messages.push({ role: 'user', content: userQuery as ChatMessage['content'] })
 
   return {
     messages,

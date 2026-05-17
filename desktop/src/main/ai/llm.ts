@@ -24,7 +24,12 @@ import type { UserAssetEntry } from '../../shared/user-assets'
 /** 标准聊天消息 */
 export type ChatMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string
+  content: string | Array<
+    | { type: 'text'; text: string }
+    | { type: 'image_url'; image_url: { url: string } }
+    | { type: 'video_url'; video_url: { url: string } }
+    | { type: 'audio_url'; audio_url: { url: string } }
+  >
   /** 用户消息可附带的图片（data URL / URL） */
   images?: string[]
   /** assistant 消息可能包含 tool_calls */
@@ -317,6 +322,20 @@ function resolveToolCallsFromMap(
   }
 }
 
+/**
+ * 从 content 中提取文本（支持字符串和数组）
+ */
+function extractContentText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .filter((p: any) => p.type === 'text')
+      .map((p: any) => p.text)
+      .join('\n')
+  }
+  return String(content ?? '')
+}
+
 function normalizeMessages(messages: ChatMessage[]): ChatMessage[] {
   let firstSystemIdx = -1
   const extraSystem: string[] = []
@@ -332,7 +351,9 @@ function normalizeMessages(messages: ChatMessage[]): ChatMessage[] {
       out.push(msg)
       continue
     }
-    if (msg.content?.trim()) extraSystem.push(msg.content.trim())
+    // 提取文本内容（支持数组格式）
+    const text = extractContentText(msg.content)
+    if (text.trim()) extraSystem.push(text.trim())
   }
 
   if (extraSystem.length === 0) return out
@@ -343,9 +364,10 @@ function normalizeMessages(messages: ChatMessage[]): ChatMessage[] {
   }
 
   const first = out[firstSystemIdx]
+  const firstText = extractContentText(first.content)
   out[firstSystemIdx] = {
     ...first,
-    content: [first.content?.trim() ?? '', ...extraSystem].filter(Boolean).join('\n\n'),
+    content: [firstText?.trim() ?? '', ...extraSystem].filter(Boolean).join('\n\n'),
   }
   return out
 }
@@ -1015,8 +1037,16 @@ async function buildRequest(
   signal?: AbortSignal,
   logScope?: string,
 ) {
+  // 步骤 1: 合并 system 消息
   const normalizedMessages = normalizeMessages(messages)
-  const providerPrepared = await buildProviderMessages(provider, config, normalizedMessages, signal, logScope)
+  
+  // 步骤 2: 使用 provider 适配器转换消息格式
+  // 适配器会：
+  // - 将旧格式（content: string + images?: string[]）转换为标准格式
+  // - 根据 provider 要求决定使用 content 数组还是字符串
+  const { parseMessagesToStandard, adaptMessagesForProvider } = await import('../provider')
+  const standardMessages = parseMessagesToStandard(normalizedMessages as any)
+  const providerReadyMessages = adaptMessagesForProvider(standardMessages, provider)
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${config.apiKey}`,
@@ -1030,7 +1060,7 @@ async function buildRequest(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const body: Record<string, any> = {
     model: config.model,
-    messages: providerPrepared.messages,
+    messages: providerReadyMessages,
     temperature: resolveRequestTemperature(config),
     stream,
     thinking: {
@@ -1039,7 +1069,12 @@ async function buildRequest(
   }
   if (options?.tools && options.tools.length > 0) {
     body.tools = options.tools
-    body.tool_choice = 'auto'
+    // qwen 在 thinking mode 下不支持 tool_choice: 'required'，需要改为 'auto'
+    let toolChoice = options.toolChoice ?? 'auto'
+    if (provider === 'qwen' && toolChoice === 'required') {
+      toolChoice = 'auto'
+    }
+    body.tool_choice = toolChoice
   }
   if (stream) {
     // 请求 provider 在流式响应中返回 usage（尤其 total_tokens）
