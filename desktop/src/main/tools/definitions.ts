@@ -156,8 +156,19 @@ export const toolDefinitions: ToolDefinition[] = [
           summary: { type: 'string', description: '计划的简要概述（一句话）' },
           steps: {
             type: 'array',
-            items: { type: 'string' },
-            description: '具体的执行步骤列表',
+            items: {
+              type: 'object',
+              properties: {
+                index: { type: 'number', description: '步骤序号（从 1 开始递增，必须唯一）' },
+                title: { type: 'string', description: '步骤标题（简短概括，不超过 20 字）' },
+                content: { type: 'string', description: '步骤详细描述（具体要做什么、预期结果是什么）' },
+                status: { type: 'string', enum: ['pending'], description: '步骤初始状态，固定为 "pending"' },
+              },
+              required: ['index', 'title', 'content'],
+              additionalProperties: false,
+            },
+            minItems: 1,
+            description: '执行步骤列表。必须为数组，每个步骤是包含 index/title/content 的对象。示例：[{"index":1,"title":"读取配置","content":"读取 package.json 了解项目依赖"},{"index":2,"title":"修改代码","content":"修改 src/index.ts 中的启动逻辑"}]',
           },
           reasoning: { type: 'string', description: '选择此方案的理由（可选）' },
         },
@@ -173,7 +184,7 @@ export const toolDefinitions: ToolDefinition[] = [
       parameters: {
         type: 'object',
         properties: {
-          stepIndex: { type: 'number', description: '步骤的索引（从 0 开始，对应 propose_plan 中 steps 数组的下标）' },
+          stepIndex: { type: 'number', description: '步骤的 index 值（对应 propose_plan 中 steps 数组里每个对象的 index 字段，从 1 开始）' },
           status: {
             type: 'string',
             enum: ['in_progress', 'done', 'failed'],
@@ -695,6 +706,7 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
   update_plan_progress: {
     usage: [
       '开始某一步前标记 in_progress，完成后标记 done，失败标记 failed。',
+      'stepIndex 参数必须传入 propose_plan 中 steps 数组里对应步骤的 index 字段值（从 1 开始），而不是数组下标。',
       'note 只写关键进度或失败原因，不写冗余描述。',
       '确保状态与真实执行一致，不允许"先报完成后再执行"。',
     ],

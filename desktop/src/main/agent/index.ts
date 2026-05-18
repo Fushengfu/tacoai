@@ -71,7 +71,7 @@ export type AgentEvent =
   /** 本轮请求 token 使用量 */
   | { type: 'usage'; usage: TokenUsage }
   /** 计划初始化（用户确认后） */
-  | { type: 'plan_init'; summary: string; steps: string[]; reasoning?: string }
+  | { type: 'plan_init'; summary: string; steps: Array<{ index: number; title: string; content: string }>; reasoning?: string }
   /** 计划步骤进度更新 */
   | { type: 'plan_progress'; stepIndex: number; status: PlanStepStatus; note?: string }
   /** Agent 循环完成 */
@@ -85,7 +85,7 @@ export type AgentEvent =
 
 /** 待处理的确认请求：confirmId → resolve(approved) */
 const pendingConfirms = new Map<string, { resolve: (approved: boolean) => void; timer: NodeJS.Timeout }>()
-const CONFIRM_TIMEOUT_MS = 5 * 60 * 1000 // 5分钟超时
+const CONFIRM_TIMEOUT_MS = 10 * 60 * 1000 // 10分钟超时
 
 function isAbortError(err: unknown): boolean {
   if (!(err instanceof Error)) return false
@@ -714,7 +714,7 @@ export async function runAgent(
   let hasFileChanges = false // 跟踪整个 agent 运行期间是否有文件变更
 
   // 当前活跃的执行计划（用于跟踪步骤进度）
-  let currentPlan: { summary: string; reasoning?: string; steps: { text: string; status: PlanStepStatus; note?: string }[] } | null = null
+  let currentPlan: { summary: string; reasoning?: string; steps: Array<{ index: number; title: string; content: string; status: PlanStepStatus; note?: string }> } | null = null
   const toolUsageCount = new Map<string, number>()
   const changedFiles = new Set<string>()
   const touchedFiles = new Set<string>()
@@ -1096,14 +1096,13 @@ export async function runAgent(
     const finalPlan = currentPlan
     const unfinishedPlanSteps = finalPlan
       ? finalPlan.steps
-          .map((step, index) => ({ step, index }))
-          .filter(({ step }) => step.status === 'pending' || step.status === 'in_progress')
+          .filter((step) => step.status === 'pending' || step.status === 'in_progress')
       : []
     if (!finalPlan || unfinishedPlanSteps.length === 0) return
 
     // 先将遗留步骤落为 failed，避免完成校验因“仍有未完成步骤”进入死循环。
-    for (const { index, step } of unfinishedPlanSteps) {
-      const autoDone = isVerificationPlanStep(step.text) && successfulRunCommandCount > 0
+    for (const step of unfinishedPlanSteps) {
+      const autoDone = isVerificationPlanStep(step.title || step.content) && successfulRunCommandCount > 0
       const status: PlanStepStatus = autoDone ? 'done' : 'failed'
       const evidenceText = successfulRunCommandSummaries.length > 0
         ? `；证据命令: ${successfulRunCommandSummaries.join('、')}`
@@ -1111,9 +1110,9 @@ export async function runAgent(
       const note = autoDone
         ? `本轮结束前未显式更新该步骤状态；检测到成功的 run_command 验证证据，系统自动补记为 done（原状态: ${step.status}）${evidenceText}`
         : `本轮结束前未更新该步骤状态，系统自动标记为 failed（原状态: ${step.status}）`
-      finalPlan.steps[index].status = status
-      finalPlan.steps[index].note = note
-      onEvent?.({ type: 'plan_progress', stepIndex: index, status, note })
+      step.status = status
+      step.note = note
+      onEvent?.({ type: 'plan_progress', stepIndex: step.index, status, note })
     }
   }
 
@@ -1503,20 +1502,23 @@ export async function runAgent(
       for (const tc of planProgressCalls) {
         try {
           const args = JSON.parse(tc.function.arguments)
-          const stepIdx = args.stepIndex as number
+          const stepIndex = args.stepIndex as number
           const status = args.status as PlanStepStatus
           const note = args.note as string | undefined
 
-          // 更新本地计划状态
-          if (currentPlan && stepIdx >= 0 && stepIdx < currentPlan.steps.length) {
-            currentPlan.steps[stepIdx].status = status
-            if (note) currentPlan.steps[stepIdx].note = note
+          // 更新本地计划状态：按 index 字段查找步骤（不是数组下标）
+          if (currentPlan) {
+            const step = currentPlan.steps.find((s) => s.index === stepIndex)
+            if (step) {
+              step.status = status
+              if (note) step.note = note
+            }
           }
 
           // 发射进度事件到前端
-          onEvent?.({ type: 'plan_progress', stepIndex: stepIdx, status, note })
+          onEvent?.({ type: 'plan_progress', stepIndex, status, note })
 
-          const resultContent = `步骤 ${stepIdx + 1} 状态已更新为「${status}」${note ? `：${note}` : ''}`
+          const resultContent = `步骤 ${stepIndex} 状态已更新为「${status}」${note ? `：${note}` : ''}`
           onEvent?.({ type: 'tool_results', results: [{ tool_call_id: tc.id, name: tc.function.name, content: resultContent, success: true }] })
           workingMessages.push({ role: 'tool', content: resultContent, tool_call_id: tc.id })
         } catch (e) {
@@ -1581,11 +1583,22 @@ export async function runAgent(
       // 用户确认 → 存储计划并发射 plan_init 事件
       try {
         const planArgs = JSON.parse(planCall.function.arguments)
-        const steps: string[] = planArgs.steps || []
+        const rawSteps: unknown[] = Array.isArray(planArgs.steps) ? planArgs.steps : []
+        const steps: Array<{ index: number; title: string; content: string }> = rawSteps.map((s, idx) => {
+          if (s && typeof s === 'object') {
+            const obj = s as Record<string, unknown>
+            return {
+              index: typeof obj.index === 'number' ? obj.index : idx + 1,
+              title: String(obj.title || obj.text || `步骤 ${idx + 1}`),
+              content: String(obj.content || obj.text || ''),
+            }
+          }
+          return { index: idx + 1, title: `步骤 ${idx + 1}`, content: String(s) }
+        }).filter((s) => s.content || s.title)
         currentPlan = {
           summary: planArgs.summary || '',
           reasoning: planArgs.reasoning,
-          steps: steps.map((s: string) => ({ text: s, status: 'pending' as PlanStepStatus })),
+          steps: steps.map((s) => ({ ...s, status: 'pending' as PlanStepStatus })),
         }
         onEvent?.({ type: 'plan_init', summary: currentPlan.summary, steps, reasoning: currentPlan.reasoning })
         log('PLAN_INIT', { summary: currentPlan.summary, stepCount: steps.length }, logScope)

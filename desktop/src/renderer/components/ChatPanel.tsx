@@ -68,6 +68,7 @@ function PlanTracker({ plan }: { plan: ActivePlan }) {
 
   const normalizedSteps = plan.steps.map((s) => ({
     ...s,
+    text: s.title || s.content || '',
     status: normalizePlanStepStatus(s.status),
   }))
   const doneCount = normalizedSteps.filter((s) => s.status === 'done').length
@@ -99,8 +100,11 @@ function PlanTracker({ plan }: { plan: ActivePlan }) {
         {normalizedSteps.map((step, i) => (
           <li key={i} className={`plan-tracker-step ${step.status}`}>
             <span className={`plan-step-icon ${step.status}`}>{planStepIcons[step.status]}</span>
-            <span className="plan-step-text">{step.text}</span>
-            {step.note && <span className="plan-step-note">{step.note}</span>}
+            <div className="plan-step-content">
+              <span className="plan-step-title">{step.title || step.text}</span>
+              {step.content && <span className="plan-step-desc">{step.content}</span>}
+              {step.note && <span className="plan-step-note">{step.note}</span>}
+            </div>
           </li>
         ))}
       </ol>
@@ -1355,8 +1359,17 @@ export function ChatPanel({
     }
 
     if (isPlanConfirm) {
-      let plan: { summary?: string; steps?: string[]; reasoning?: string } = {}
+      let plan: { summary?: string; steps?: Array<{ index?: number; title?: string; content?: string; text?: string }>; reasoning?: string } = {}
       try { plan = JSON.parse(step.risks[0].detail) } catch { /* ignore */ }
+      const normalizedPlanSteps = Array.isArray(plan.steps)
+        ? plan.steps.map((s) => {
+            if (typeof s === 'string') return s
+            if (s && typeof s === 'object') {
+              return s.title || s.content || (s as { text?: string }).text || String(s)
+            }
+            return String(s)
+          })
+        : []
       return (
         <div className="agent-confirm-card plan">
           <div className="agent-confirm-title">
@@ -1364,8 +1377,8 @@ export function ChatPanel({
             执行计划{confirmStatus === 'pending' ? ' — 需要你的确认' : ''}
           </div>
           {plan.summary && <div className="agent-plan-summary">{plan.summary}</div>}
-          {plan.steps && plan.steps.length > 0 && (
-            <ol className="agent-plan-steps">{plan.steps.map((s, i) => <li key={i}>{s}</li>)}</ol>
+          {normalizedPlanSteps.length > 0 && (
+            <ol className="agent-plan-steps">{normalizedPlanSteps.map((s, i) => <li key={i}>{s}</li>)}</ol>
           )}
           {plan.reasoning && (
             <div className="agent-plan-reasoning"><span className="agent-plan-reasoning-label">理由：</span>{plan.reasoning}</div>

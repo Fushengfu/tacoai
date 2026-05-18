@@ -193,7 +193,9 @@ class MessageCache {
 
   Map<String, dynamic> _planStepToJson(BridgePlanStepInfo s) {
     return {
-      'text': s.text,
+      'index': s.index,
+      'title': s.title,
+      'content': s.content,
       'status': s.status,
       'note': s.note,
     };

@@ -1561,15 +1561,18 @@ export function useChat() {
               activePlan = {
                 summary: event.summary,
                 reasoning: event.reasoning,
-                steps: event.steps.map((text) => ({ text, status: 'pending' as const })),
+                steps: event.steps.map((s) => ({ index: s.index, title: s.title, content: s.content, status: 'pending' as const })),
                 startedAt: Date.now(),
               }
               flushAgentMsg(undefined, runningTaskTiming)
             } else if (event.type === 'plan_progress') {
               // 计划步骤进度更新
-              if (activePlan && event.stepIndex >= 0 && event.stepIndex < activePlan.steps.length) {
-                activePlan.steps[event.stepIndex].status = normalizePlanStatus(event.status)
-                if (event.note) activePlan.steps[event.stepIndex].note = event.note
+              if (activePlan) {
+                const targetStep = activePlan.steps.find((s) => s.index === event.stepIndex)
+                if (targetStep) {
+                  targetStep.status = normalizePlanStatus(event.status)
+                  if (event.note) targetStep.note = event.note
+                }
               }
               flushAgentMsg(undefined, runningTaskTiming)
             } else if (event.type === 'done') {
@@ -1916,14 +1919,17 @@ export function useChat() {
               activePlan = {
                 summary: evt.summary,
                 reasoning: evt.reasoning,
-                steps: evt.steps.map((text) => ({ text, status: 'pending' as const })),
+                steps: evt.steps.map((s) => ({ index: s.index, title: s.title, content: s.content, status: 'pending' as const })),
                 startedAt: Date.now(),
               }
               flushAgentMsg(undefined, runningTaskTiming)
             } else if (evt.type === 'plan_progress') {
-              if (activePlan && evt.stepIndex >= 0 && evt.stepIndex < activePlan.steps.length) {
-                activePlan.steps[evt.stepIndex].status = normalizePlanStatus(evt.status)
-                if (evt.note) activePlan.steps[evt.stepIndex].note = evt.note
+              if (activePlan) {
+                const targetStep = activePlan.steps.find((s) => s.index === evt.stepIndex)
+                if (targetStep) {
+                  targetStep.status = normalizePlanStatus(evt.status)
+                  if (evt.note) targetStep.note = evt.note
+                }
               }
               flushAgentMsg(undefined, runningTaskTiming)
             } else if (evt.type === 'done') {

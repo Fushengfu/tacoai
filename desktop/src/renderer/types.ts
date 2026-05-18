@@ -99,7 +99,9 @@ export type AgentStep = {
 
 /** 计划步骤信息（实时追踪用） */
 export type PlanStepInfo = {
-  text: string
+  index: number
+  title: string
+  content: string
   status: 'pending' | 'in_progress' | 'done' | 'failed'
   note?: string
 }

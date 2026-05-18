@@ -3,7 +3,9 @@ import type { PlanStepStatus } from '../../shared/ipc'
 import { stripUserAssetsBlock, extractUserQueryText } from '../../shared/user-assets'
 
 type PlanStep = {
-  text: string
+  index: number
+  title: string
+  content: string
   status: PlanStepStatus
   note?: string
 }
@@ -125,7 +127,7 @@ function buildRuntimeStateCard(state: ContextBuildState): string {
     lines.push(`- 执行计划: ${state.currentPlan.summary || '（无）'}`)
     lines.push(`- 未完成计划步骤: ${pendingSteps.length}`)
     for (const item of pendingSteps.slice(0, 8)) {
-      lines.push(`  - [${item.index + 1}] ${item.step.text} (${item.step.status})${item.step.note ? ` | ${item.step.note}` : ''}`)
+      lines.push(`  - [${item.index}] ${item.step.title || item.step.content} (${item.step.status})${item.step.note ? ` | ${item.step.note}` : ''}`)
     }
     lines.push('- 计划续跑要求: 若继续执行当前计划，开始步骤前调用 update_plan_progress(stepIndex, "in_progress")，完成后调用 update_plan_progress(stepIndex, "done"|"failed")。')
   }
@@ -162,11 +164,11 @@ export function buildCurrentTaskCompressionStateCard(state: ContextBuildState): 
     lines.push(`- 当前执行计划: ${state.currentPlan.summary || '（无）'}`)
     lines.push(`- 已完成/已结束步骤: ${resolvedSteps.length}`)
     for (const item of resolvedSteps.slice(-6)) {
-      lines.push(`  - [${item.index + 1}] ${item.step.text} (${item.step.status})${item.step.note ? ` | ${item.step.note}` : ''}`)
+      lines.push(`  - [${item.index}] ${item.step.title || item.step.content} (${item.step.status})${item.step.note ? ` | ${item.step.note}` : ''}`)
     }
     lines.push(`- 待继续步骤: ${pendingSteps.length}`)
     for (const item of pendingSteps.slice(0, 8)) {
-      lines.push(`  - [${item.index + 1}] ${item.step.text} (${item.step.status})${item.step.note ? ` | ${item.step.note}` : ''}`)
+      lines.push(`  - [${item.index}] ${item.step.title || item.step.content} (${item.step.status})${item.step.note ? ` | ${item.step.note}` : ''}`)
     }
     lines.push('- 计划续跑要求: 当前计划未结束，继续执行时必须持续调用 update_plan_progress 维护步骤状态。')
   } else {

@@ -395,7 +395,7 @@ export type AgentEventData = {
   | { type: 'tool_results'; results: IpcToolResult[] }
   | { type: 'git_commit'; hash: string; message: string }
   | { type: 'usage'; usage: IpcTokenUsage }
-  | { type: 'plan_init'; summary: string; steps: string[]; reasoning?: string }
+  | { type: 'plan_init'; summary: string; steps: Array<{ index: number; title: string; content: string }>; reasoning?: string }
   | { type: 'plan_progress'; stepIndex: number; status: PlanStepStatus; note?: string }
   | { type: 'done'; finalText?: string }
   | { type: 'error'; message: string }

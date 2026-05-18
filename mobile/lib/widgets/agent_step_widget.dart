@@ -1270,34 +1270,48 @@ class ActivePlanWidget extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           ...plan.steps.map((s) => Padding(
-            padding: const EdgeInsets.only(bottom: 2),
-            child: Row(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildPlanStepIcon(s.status, colorScheme),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    s.text,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: s.status == 'failed'
-                          ? Colors.red
-                          : colorScheme.onSurface,
+                Row(
+                  children: [
+                    _buildPlanStepIcon(s.status, colorScheme),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        s.title.isNotEmpty ? s.title : s.content,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: s.status == 'failed'
+                              ? Colors.red
+                              : colorScheme.onSurface,
+                        ),
+                      ),
                     ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                  ],
                 ),
+                if (s.content.isNotEmpty && s.content != s.title)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 24, top: 2),
+                    child: Text(
+                      s.content,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
                 if (s.note != null && s.note!.isNotEmpty)
-                  Flexible(
+                  Padding(
+                    padding: const EdgeInsets.only(left: 24, top: 2),
                     child: Text(
                       s.note!,
                       style: TextStyle(
                         fontSize: 10,
                         color: colorScheme.onSurfaceVariant,
                       ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
               ],

@@ -162,7 +162,7 @@ export type BridgeAgentEventData =
   | { type: 'system_notice'; title: string; message?: string }
   | { type: 'confirm'; confirmId: string; toolCalls: BridgeToolCall[]; risks: BridgeRiskInfo[] }
   | { type: 'tool_results'; results: BridgeToolResult[] }
-  | { type: 'plan_init'; summary: string; steps: string[]; reasoning?: string }
+  | { type: 'plan_init'; summary: string; steps: Array<{ text: string }>; reasoning?: string }
   | { type: 'plan_progress'; stepIndex: number; status: 'pending' | 'in_progress' | 'done' | 'failed'; note?: string }
   | { type: 'usage'; usage: BridgeTokenUsage }
   | { type: 'done'; finalText?: string }

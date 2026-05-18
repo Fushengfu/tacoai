@@ -357,19 +357,27 @@ class BridgeRiskInfo {
 
 /// 计划步骤信息
 class BridgePlanStepInfo {
-  final String text;
+  final int index;
+  final String title;
+  final String content;
   final String status; // 'pending' | 'in_progress' | 'done' | 'failed'
   final String? note;
 
   BridgePlanStepInfo({
-    required this.text,
+    this.index = 0,
+    this.title = '',
+    this.content = '',
     required this.status,
     this.note,
   });
 
   factory BridgePlanStepInfo.fromJson(Map<String, dynamic> json) {
+    // 兼容旧格式 { text, status } 和新格式 { index, title, content, status }
+    final text = json['text'] as String? ?? '';
     return BridgePlanStepInfo(
-      text: json['text'] as String? ?? '',
+      index: json['index'] as int? ?? 0,
+      title: json['title'] as String? ?? text,
+      content: json['content'] as String? ?? text,
       status: json['status'] as String? ?? 'pending',
       note: json['note'] as String?,
     );

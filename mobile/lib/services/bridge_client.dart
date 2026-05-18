@@ -1488,10 +1488,11 @@ class BridgeClient {
         final reasoning = event['reasoning'] as String?;
         final stepsList = event['steps'] as List<dynamic>? ?? [];
         final planSteps = stepsList
-            .map((s) => BridgePlanStepInfo(
-                  text: s as String,
-                  status: 'pending',
-                ))
+            .map((s) {
+              if (s is String) return BridgePlanStepInfo(title: s, content: s, status: 'pending');
+              if (s is Map) return BridgePlanStepInfo.fromJson(Map<String, dynamic>.from(s));
+              return BridgePlanStepInfo(title: s.toString(), content: s.toString(), status: 'pending');
+            })
             .toList();
         final activePlan = BridgeActivePlan(
           summary: summary,
@@ -1512,18 +1513,22 @@ class BridgeClient {
         return;
 
       case 'plan_progress':
-        // 计划进度
+        // 计划进度：按 index 字段查找步骤（不是数组下标）
         final stepIndex = event['stepIndex'] as int? ?? 0;
         final status = event['status'] as String? ?? 'pending';
         final note = event['note'] as String?;
         if (old.activePlan != null) {
           final plan = old.activePlan!;
           final updatedSteps = List<BridgePlanStepInfo>.from(plan.steps);
-          if (stepIndex < updatedSteps.length) {
-            updatedSteps[stepIndex] = BridgePlanStepInfo(
-              text: updatedSteps[stepIndex].text,
+          final targetIdx = updatedSteps.indexWhere((s) => s.index == stepIndex);
+          if (targetIdx >= 0) {
+            final oldStep = updatedSteps[targetIdx];
+            updatedSteps[targetIdx] = BridgePlanStepInfo(
+              index: oldStep.index,
+              title: oldStep.title,
+              content: oldStep.content,
               status: status,
-              note: note ?? updatedSteps[stepIndex].note,
+              note: note ?? oldStep.note,
             );
           }
           _messages[idx] = BridgeChatMessage(
