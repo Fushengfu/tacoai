@@ -158,6 +158,11 @@ export class BridgeManager {
     }
   }
 
+  /** 获取当前 Token（用于网关接口调用） */
+  getToken(): string | null {
+    return this.token
+  }
+
   /** 断开连接 */
   disconnect(): void {
     this.clearTimers()

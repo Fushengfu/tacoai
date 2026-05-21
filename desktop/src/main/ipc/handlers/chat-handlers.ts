@@ -6,7 +6,7 @@
 
 import { ipcMain, BrowserWindow } from 'electron'
 import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron'
-import { IpcChannel } from '../../shared/ipc'
+import { IpcChannel } from '../../../shared/ipc'
 import type {
   AppStateProvidersPayload,
   AppStateSnapshot,
@@ -22,28 +22,28 @@ import type {
   ChatStoreSessionSummary,
   AgentEventData,
   AgentEventChunkData,
-} from '../../shared/ipc'
-import type { ProviderKey, ProviderOverrides, TokenUsage } from '../ai/llm'
-import { requestChatCompletion, requestChatCompletionStream } from '../ai/llm'
-import { runAgent, resolveConfirm } from '../agent'
-import { applyRewardScore } from '../agent/reward-score'
-import { inferIntentFromBackground, listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, maintainTaskMemoriesByAI, recordTaskLog, getMemoryScopeStats, exportMemoryScope } from '../data/notes'
-import { listChatStoreSessions, loadChatStoreSessionPage, saveChatStoreSessionPatch, deleteChatStoreSession, initMemoryDb } from '../data/memory-db'
-import { getBridgeManager } from '../bridge/bridge-manager'
+} from '../../../shared/ipc'
+import type { ProviderKey, ProviderOverrides, TokenUsage } from '../../ai/llm'
+import { requestChatCompletion, requestChatCompletionStream } from '../../ai/llm'
+import { runAgent, resolveConfirm } from '../../agent'
+import { applyRewardScore } from '../../agent/reward-score'
+import { inferIntentFromBackground, listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, maintainTaskMemoriesByAI, recordTaskLog, getMemoryScopeStats, exportMemoryScope } from '../../data/notes'
+import { listChatStoreSessions, loadChatStoreSessionPage, saveChatStoreSessionPatch, deleteChatStoreSession, initMemoryDb } from '../../data/memory-db'
+import { getBridgeManager } from '../../bridge/bridge-manager'
 import {
   extractUserQueryText,
   extractUserAssetsBlock,
-} from '../../shared/user-assets'
+} from '../../../shared/user-assets'
 import {
   stripInternalContextTags,
   stripPseudoToolCallArtifacts,
   sanitizeUserFacingText,
-} from '../../shared/sanitize'
-import { inferIntentTypeFromQuery } from '../../shared/intent'
-import { refreshSkills, buildActiveSkillsCatalogBlock, getActiveSkillEnv, applySkillEnvironment } from '../project/skills'
-import { log, logError } from '../system/logger'
-import type { RiskCategory } from '../tools'
-import { setAutoApproveCategories } from '../tools'
+} from '../../../shared/sanitize'
+import { inferIntentTypeFromQuery } from '../../../shared/intent'
+import { refreshSkills, buildActiveSkillsCatalogBlock, getActiveSkillEnv, applySkillEnvironment } from '../../project/skills'
+import { log, logError } from '../../system/logger'
+import type { RiskCategory } from '../../tools'
+import { setAutoApproveCategories } from '../../tools'
 import nodePath from 'node:path'
 
 const STREAM_SANITIZE_HOLD_BACK = 24
@@ -737,10 +737,10 @@ export async function handleAppNotify(_event: IpcMainInvokeEvent, payload: AppNo
 /*  Config handlers (GUI-Plus, AppState, PromptConfig)                 */
 /* ------------------------------------------------------------------ */
 
-import { getGuiPlusConfig, saveGuiPlusConfig } from '../automation/gui-plus'
-import type { GuiPlusConfig, PromptConfig } from '../../shared/ipc'
-import { getPromptConfig, savePromptConfig } from '../project/prompt-config'
-import { getAppState, saveAppProvidersState, saveAppThreadsState } from '../system/app-state'
+import { getGuiPlusConfig, saveGuiPlusConfig } from '../../automation/gui-plus'
+import type { GuiPlusConfig, PromptConfig } from '../../../shared/ipc'
+import { getPromptConfig, savePromptConfig } from '../../project/prompt-config'
+import { getAppState, saveAppProvidersState, saveAppThreadsState } from '../../system/app-state'
 
 export async function handleGuiPlusGet(): Promise<GuiPlusConfig> {
   return await getGuiPlusConfig()

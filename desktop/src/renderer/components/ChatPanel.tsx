@@ -7,6 +7,7 @@ import { FileEditor } from './FileEditor'
 import { ToolResultContent } from './ToolResultContent'
 import { TerminalPanel } from './TerminalPanel'
 import { useLanguage } from '../hooks/useLanguage'
+import { ProviderSelect } from './ProviderSelect'
 
 /* ------------------------------------------------------------------ */
 /*  PlanTracker — 实时计划进度追踪器                                      */
@@ -178,7 +179,7 @@ type ChatPanelProps = {
   onSelectWorkspace: () => void
   provider: string
   onProviderChange: (id: string) => void
-  configuredProviders: readonly { id: string; label: string }[]
+  configuredProviders: readonly { id: string; label: string; source?: 'custom' | 'system' }[]
   scrollRef: React.RefObject<HTMLDivElement>
   totalMessageCount?: number
   hasOlderStoredMessages?: boolean
@@ -2165,23 +2166,13 @@ export function ChatPanel({
                   <path d="M8.8 12.7l5.7-5.8a3.2 3.2 0 014.6 4.6l-7.2 7.2a5.1 5.1 0 01-7.2-7.2L12 4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
               </button>
-                <select
-                  className="provider-select"
+                <ProviderSelect
                   value={provider}
-                  onChange={(e) => onProviderChange(e.target.value)}
+                  options={configuredProviders}
+                  onChange={onProviderChange}
                   disabled={!hasProviders}
-                  aria-label="Select AI provider"
-                >
-                {!hasProviders ? (
-                  <option value="">{t('input.no_provider')}</option>
-                ) : (
-                  configuredProviders.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.label}
-                    </option>
-                  ))
-                )}
-              </select>
+                  placeholder={t('input.no_provider')}
+                />
             </div>
             <div className="composer-right">
               {sending ? (

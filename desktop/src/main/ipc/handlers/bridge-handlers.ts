@@ -6,13 +6,13 @@
 
 import { ipcMain, BrowserWindow } from 'electron'
 import type { IpcMainEvent } from 'electron'
-import { IpcChannel } from '../../shared/ipc'
-import type { BridgeStatusPayload } from '../../shared/ipc'
-import { getBridgeManager } from '../bridge/bridge-manager'
-import type { BridgeChatMessage as BridgeChatMessageType } from '../bridge/bridge-protocol'
-import { getAppState } from '../system/app-state'
-import { loadChatStoreSessionPage, initMemoryDb } from '../data/memory-db'
-import { log, logError } from '../system/logger'
+import { IpcChannel } from '../../../shared/ipc'
+import type { BridgeStatusPayload } from '../../../shared/ipc'
+import { getBridgeManager } from '../../bridge/bridge-manager'
+import type { BridgeChatMessage as BridgeChatMessageType } from '../../bridge/bridge-protocol'
+import { getAppState } from '../../system/app-state'
+import { loadChatStoreSessionPage, initMemoryDb } from '../../data/memory-db'
+import { log, logError } from '../../system/logger'
 import { agentAbortControllers } from './chat-handlers'
 
 /* ------------------------------------------------------------------ */
@@ -237,11 +237,14 @@ export function setupBridgeDataHandler(): void {
         case 'bridge:request-state': {
           try {
             const state = await getAppState()
+            // 关键修复：优先使用移动端指定的 threadId，避免使用渲染进程的 activeThreadId（可能滞后）
+            const requestedThreadId = String(msg.threadId || '').trim()
+            const resolvedThreadId = requestedThreadId || state.threadsState.activeThreadId
             const activeThread = state.threadsState.threads.find(
-              (t) => t.id === state.threadsState.activeThreadId,
+              (t) => t.id === resolvedThreadId,
             )
             if (!activeThread) {
-              respond({ type: 'bridge:state', requestId, messages: [], threadId: '' })
+              respond({ type: 'bridge:state', requestId, messages: [], threadId: requestedThreadId || '' })
               break
             }
 

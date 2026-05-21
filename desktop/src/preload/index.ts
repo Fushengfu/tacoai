@@ -27,6 +27,7 @@ import type {
   RendererErrorPayload,
   PromptConfig,
   BridgeStatusPayload,
+  GatewayModelsResponse,
 } from '../shared/ipc'
 
 // 沙盒化 preload 无法使用 os 模块，用 process 和环境变量替代
@@ -395,6 +396,10 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.PROMPT_CONFIG_GET),
     saveConfig: (config: PromptConfig): Promise<PromptConfig> =>
       ipcRenderer.invoke(IpcChannel.PROMPT_CONFIG_SAVE, config),
+  },
+  gateway: {
+    getModels: (): Promise<GatewayModelsResponse> =>
+      ipcRenderer.invoke(IpcChannel.GATEWAY_GET_MODELS),
   },
   bridge: {
     connect: (token: string): void =>

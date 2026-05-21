@@ -185,6 +185,9 @@ export const IpcChannel = {
   PROMPT_CONFIG_GET: 'prompt-config:get',
   PROMPT_CONFIG_SAVE: 'prompt-config:save',
 
+  /** renderer → main, 获取 AI 网关模型列表 */
+  GATEWAY_GET_MODELS: 'gateway:get-models',
+
   /** 窗口拖拽 — 手动实现以获取自定义光标控制 */
   WINDOW_DRAG_START: 'window:drag-start',
   WINDOW_DRAGGING: 'window:dragging',
@@ -1021,6 +1024,10 @@ export type TacoApi = {
     /** 保存 prompt 配置 */
     saveConfig: (config: PromptConfig) => Promise<PromptConfig>
   }
+  gateway: {
+    /** 从 AI 网关获取模型列表（需要已登录） */
+    getModels: () => Promise<GatewayModelsResponse>
+  }
   bridge: {
     /** 使用会员 token 连接 Relay */
     connect: (token: string) => void
@@ -1067,6 +1074,29 @@ export type TacoApi = {
 }
 
 /** 浏览器模式 */
+/** 网关模型列表项（与 AppStateModelConfig 字段对齐） */
+export type GatewayModelItem = {
+  id: string
+  provider: string
+  name: string
+  baseUrl: string
+  model: string
+  apiKey: string
+  maxTokens: string
+  temperature: string
+  contextLength: number
+  displayName: string
+  description: string
+  sortOrder: number
+  source: 'system' | 'custom'
+}
+
+/** 网关模型列表响应 */
+export type GatewayModelsResponse = {
+  data: GatewayModelItem[]
+  object: string
+}
+
 export type BrowserMode = 'embedded' | 'external'
 
 /** 浏览器控制台日志级别 */

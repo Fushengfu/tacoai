@@ -1018,10 +1018,15 @@ class BridgeSwitchProject {
 class BridgeRequestState {
   final String type = 'bridge:request-state';
   final String requestId;
+  final String? threadId;
 
-  BridgeRequestState({required this.requestId});
+  BridgeRequestState({required this.requestId, this.threadId});
 
-  Map<String, dynamic> toJson() => {'type': type, 'requestId': requestId};
+  Map<String, dynamic> toJson() => {
+    'type': type,
+    'requestId': requestId,
+    if (threadId != null && threadId!.isNotEmpty) 'threadId': threadId,
+  };
 }
 
 /// 项目切换结果

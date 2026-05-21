@@ -4,7 +4,7 @@
  * 负责将前端统一的标准格式转换为各 provider 需要的格式
  */
 
-import type { ChatMessage, ProviderKey } from '../ai/llm'
+import type { ChatMessage, BuiltinProviderKey, ProviderKey } from '../ai/llm'
 import type { StandardChatMessage, ContentPart } from './types'
 import type { ToolCall } from '../tools/definitions'
 
@@ -152,7 +152,7 @@ function transformForGLM(msg: StandardChatMessage): { role: string; content: unk
 /* ------------------------------------------------------------------ */
 
 /** Provider 转换函数映射表 */
-const transformers: Record<ProviderKey, (msg: StandardChatMessage) => { role: string; content: unknown }> = {
+const transformers: Record<string, (msg: StandardChatMessage) => { role: string; content: unknown }> = {
   qwen: transformForQwen,
   mimo: transformForMimo,
   deepseek: transformForDeepseek,
@@ -164,17 +164,20 @@ const transformers: Record<ProviderKey, (msg: StandardChatMessage) => { role: st
 /**
  * 将标准消息转换为目标 provider 格式
  * 
+ * 对于未知 provider（如网关模型的 alibaba、openai 等），
+ * 回退为 OpenAI 兼容格式（直接使用标准格式）。
+ *
  * @param msg - 标准格式消息
  * @param provider - Provider 标识
  * @returns provider-ready 消息
  */
-export function adaptForProvider(msg: StandardChatMessage, provider: ProviderKey): ChatMessage {
+export function adaptForProvider(msg: StandardChatMessage, provider: string): ChatMessage {
   const transformer = transformers[provider]
-  if (!transformer) {
-    throw new Error(`Unknown provider: ${provider}`)
+  // 未知 provider 回退为 OpenAI 兼容格式（直接传递标准格式）
+  const result = transformer ? transformer(msg) : {
+    role: msg.role,
+    content: msg.content,
   }
-
-  const result = transformer(msg)
   
   // 构建基础消息对象
   const adaptedMsg: ChatMessage = {
@@ -203,7 +206,7 @@ export function adaptForProvider(msg: StandardChatMessage, provider: ProviderKey
 /**
  * 批量转换消息
  */
-export function adaptMessagesForProvider(messages: StandardChatMessage[], provider: ProviderKey): ChatMessage[] {
+export function adaptMessagesForProvider(messages: StandardChatMessage[], provider: string): ChatMessage[] {
   return messages.map((msg) => adaptForProvider(msg, provider))
 }
 

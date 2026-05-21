@@ -14,6 +14,7 @@ import { estimateTokens, buildSystemPrompt, resolveModelConfigDisplayLabel, reso
 import { useThreads } from './hooks/useThreads'
 import { useChat } from './hooks/useChat'
 import { useProviderSettings } from './hooks/useProviderSettings'
+import { useGatewayModels } from './hooks/useGatewayModels'
 import { useGuiPlusSettings } from './hooks/useGuiPlusSettings'
 import { useAuth } from './hooks/useAuth'
 import { useLayout } from './hooks/useLayout'
@@ -33,6 +34,7 @@ export default function App() {
   const threadStore = useThreads()
   const chat = useChat()
   const providerSettings = useProviderSettings()
+  const gatewayModels = useGatewayModels()
   const guiPlusSettings = useGuiPlusSettings()
   const auth = useAuth()
   const layout = useLayout()
@@ -98,6 +100,31 @@ export default function App() {
   const currentModelConfig = providerSettings.getModelConfig(currentModelConfigId || '')
   const currentProvider: ProviderId | undefined = currentModelConfig?.provider
   const activeProviderLabel = currentModelConfig ? resolveModelConfigDisplayLabel(currentModelConfig) : ''
+
+  // Merge custom models with gateway models, marking source
+  // 未登录时不展示系统内置模型
+  const mergedModels = useMemo(() => {
+    const customModels = providerSettings.configuredModels.map((m) => ({
+      ...m,
+      source: 'custom' as const,
+    }))
+    const gatewayModelsList = auth.memberToken ? (gatewayModels.models ?? []).map((m) => ({
+      id: m.id,
+      provider: m.provider as ProviderId,
+      label: m.displayName || m.name,
+      source: 'system' as const,
+      gatewayModel: m,
+    })) : []
+    // 去重：如果自定义模型和系统模型 id 相同，优先使用自定义模型
+    const merged = [...customModels, ...gatewayModelsList]
+    const deduped = new Map<string, typeof merged[number]>()
+    for (const item of merged) {
+      if (!deduped.has(item.id)) {
+        deduped.set(item.id, item)
+      }
+    }
+    return [...deduped.values()]
+  }, [providerSettings.configuredModels, gatewayModels.models, auth.memberToken])
 
   // 同步 refs
   useEffect(() => {
@@ -383,7 +410,28 @@ export default function App() {
     const modelConfigId = String(
       target?.modelConfigId || thread?.modelConfigId || providerSettings.activeModelConfigId || '',
     ).trim()
-    const modelConfig = providerSettings.getModelConfig(modelConfigId)
+    
+    // 优先从 mergedModels 中查找（支持系统模型）
+    const mergedModel = mergedModels.find((m) => m.id === modelConfigId)
+    let modelConfig: ReturnType<typeof providerSettings.getModelConfig>
+    if (mergedModel?.source === 'system' && mergedModel.gatewayModel) {
+      const gm = mergedModel.gatewayModel
+      modelConfig = {
+        id: gm.id,
+        provider: gm.provider as ProviderId,
+        name: gm.displayName || gm.name,
+        baseUrl: gm.baseUrl,
+        apiKey: gm.apiKey,
+        model: gm.model,
+        maxTokens: gm.maxTokens,
+        temperature: gm.temperature,
+        supportsVision: false,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }
+    } else {
+      modelConfig = providerSettings.getModelConfig(modelConfigId)
+    }
     if (!modelConfig || !modelConfig.provider) return
     
     if (threadId && thread?.modelConfigId !== modelConfigId) {
@@ -420,8 +468,39 @@ export default function App() {
   
   doSendRef.current = doSend
 
+  async function resolveActiveModelConfig(): Promise<{ provider: string; modelConfig: NonNullable<ReturnType<typeof providerSettings.getModelConfig>> } | null> {
+    const configId = currentModelConfigId || ''
+    // 优先从 mergedModels 中查找（支持系统模型）
+    const mergedModel = mergedModels.find((m) => m.id === configId)
+    if (mergedModel?.source === 'system' && mergedModel.gatewayModel) {
+      const gm = mergedModel.gatewayModel
+      return {
+        provider: gm.provider,
+        modelConfig: {
+          id: gm.id,
+          provider: gm.provider as ProviderId,
+          name: gm.displayName || gm.name,
+          baseUrl: gm.baseUrl,
+          apiKey: gm.apiKey,
+          model: gm.model,
+          maxTokens: gm.maxTokens,
+          temperature: gm.temperature,
+          supportsVision: false,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      }
+    }
+    const config = providerSettings.getModelConfig(configId)
+    if (!config?.provider) return null
+    return { provider: config.provider, modelConfig: config }
+  }
+
   async function handleResend(msgId: string) {
-    if (sessionSending || !sessionId || !currentModelConfig || !currentProvider) return
+    if (sessionSending || !sessionId) return
+    const resolved = await resolveActiveModelConfig()
+    if (!resolved) return
+    const { provider, modelConfig } = resolved
     await chat.ensureSessionFullyLoaded(sessionId)
     const latestMessages = chat.getMessages(sessionId)
     const idx = latestMessages.findIndex((m) => m.id === msgId)
@@ -431,8 +510,8 @@ export default function App() {
       threadId: sessionId,
       projectId: tid,
       projectRules: currentProjectRules,
-      provider: currentProvider,
-      modelConfig: currentModelConfig,
+      provider: provider as ProviderId,
+      modelConfig,
       mode: currentMode,
       workspace: currentWorkspace,
       onComplete: () => {
@@ -443,7 +522,10 @@ export default function App() {
   }
 
   async function handleEditResend(msgId: string, newContent: string) {
-    if (sessionSending || !sessionId || !currentModelConfig || !currentProvider) return
+    if (sessionSending || !sessionId) return
+    const resolved = await resolveActiveModelConfig()
+    if (!resolved) return
+    const { provider, modelConfig } = resolved
     await chat.ensureSessionFullyLoaded(sessionId)
     const latestMessages = chat.getMessages(sessionId)
     const idx = latestMessages.findIndex((m) => m.id === msgId)
@@ -455,8 +537,8 @@ export default function App() {
       threadId: sessionId,
       projectId: tid,
       projectRules: currentProjectRules,
-      provider: currentProvider,
-      modelConfig: currentModelConfig,
+      provider: provider as ProviderId,
+      modelConfig,
       mode: currentMode,
       workspace: currentWorkspace,
       onComplete: () => {
@@ -959,7 +1041,7 @@ export default function App() {
               onSelectWorkspace={handleSelectWorkspace}
               provider={currentModelConfigId}
               onProviderChange={handleProviderChange}
-              configuredProviders={providerSettings.configuredModels}
+              configuredProviders={mergedModels}
               scrollRef={scrollRef}
               totalMessageCount={totalSessionMessageCount}
               hasOlderStoredMessages={chat.hasOlderMessages(sessionId)}

@@ -1240,7 +1240,15 @@ body.is-dragging * {
   padding: 4px 16px 8px 0;
 }
 
-.provider-select {
+.provider-select-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+.provider-select-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   background: transparent;
   border: none;
   color: var(--text);
@@ -1249,13 +1257,109 @@ body.is-dragging * {
   padding: 4px 8px;
   border-radius: 10px;
   cursor: pointer;
-  max-width: 160px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  max-width: 180px;
+  transition: background 0.15s;
 }
 
-.provider-select option {
-  color: #111;
+.provider-select-trigger:hover {
+  background: rgba(128, 128, 128, 0.1);
+}
+
+.provider-select-trigger:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.provider-select-label {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-select-arrow {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  opacity: 0.5;
+}
+
+.provider-select-dropdown {
+  position: absolute;
+  left: 0;
+  min-width: 220px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: rgba(20, 22, 28, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 6px;
+  z-index: 1000;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(12px);
+}
+
+.provider-select-dropdown--bottom {
+  top: calc(100% + 4px);
+}
+
+.provider-select-dropdown--top {
+  bottom: calc(100% + 4px);
+}
+
+.provider-select-dropdown::-webkit-scrollbar {
+  width: 4px;
+}
+
+.provider-select-dropdown::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.provider-select-dropdown::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+
+.provider-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.provider-select-option:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.provider-select-option.selected {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+}
+
+.provider-select-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 4px 8px;
+}
+
+.system-option {
+  color: var(--muted);
+}
+
+.system-badge {
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.5;
+}
+
+.brain-icon {
+  width: 16px;
+  height: 16px;
 }
 
 .composer-footer-version {

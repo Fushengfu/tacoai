@@ -383,8 +383,20 @@ class BridgeClient {
 
     _send(BridgeSwitchProject(requestId: requestId, projectId: projectId, sessionId: sessionId));
 
-    final response = await completer.future;
-    return BridgeProjectSwitchedResponse.fromJson(response);
+    // 设置超时，避免永久等待
+    Timer(const Duration(seconds: 8), () {
+      if (!completer.isCompleted) {
+        completer.completeError(TimeoutException('switchProject timeout'));
+      }
+    });
+
+    try {
+      final response = await completer.future;
+      return BridgeProjectSwitchedResponse.fromJson(response);
+    } catch (e) {
+      print('[BridgeClient] switchProject failed: $e');
+      return BridgeProjectSwitchedResponse(requestId: requestId, success: false);
+    }
   }
 
   /// 连接成功后主动同步数据：项目列表、模型列表、当前项目状态、消息差异
@@ -392,9 +404,11 @@ class BridgeClient {
     print('[BridgeClient] Starting sync on connect...');
     
     // 1. 同步项目列表
+    String? activeThreadId;
     try {
       final projectsResp = await requestProjects(forceRefresh: true);
-      print('[BridgeClient] Synced ${projectsResp.projects.length} projects');
+      activeThreadId = projectsResp.activeThreadId;
+      print('[BridgeClient] Synced ${projectsResp.projects.length} projects, activeThread: $activeThreadId');
     } catch (e) {
       print('[BridgeClient] Failed to sync projects: $e');
     }
@@ -407,7 +421,13 @@ class BridgeClient {
       print('[BridgeClient] Failed to sync models: $e');
     }
     
-    // 3. 同步当前项目状态和消息差异
+    // 3. 如果当前没有选中项目，自动使用桌面端的活跃项目
+    if ((_currentProjectId == null || _currentProjectId!.isEmpty) && activeThreadId != null && activeThreadId.isNotEmpty) {
+      print('[BridgeClient] Auto-selecting desktop active project: $activeThreadId');
+      setCurrentProject(activeThreadId);
+    }
+    
+    // 4. 同步当前项目状态和消息差异
     final sessionId = _currentProjectId;
     if (sessionId == null || sessionId.isEmpty) return;
     
@@ -420,10 +440,10 @@ class BridgeClient {
       _notifyListenersImmediately({'type': 'bridge:cache-loaded', 'threadId': sessionId, 'count': cachedMessages.length});
     }
     
-    // 3b. 请求桌面端快照，用于增量更新
+    // 3b. 请求桌面端快照，用于增量更新（携带当前项目 ID，确保桌面端返回正确项目的消息）
     final requestId = 'req-${++_requestCounter}-${DateTime.now().millisecondsSinceEpoch}';
-    print('[BridgeClient] Requesting state snapshot from desktop (requestId: $requestId)');
-    _send(BridgeRequestState(requestId: requestId));
+    print('[BridgeClient] Requesting state snapshot from desktop (requestId: $requestId, threadId: $sessionId)');
+    _send(BridgeRequestState(requestId: requestId, threadId: sessionId));
     
     // 4. 启动定时任务状态轮询（每2秒）
     _startTaskStatusPolling();
@@ -510,10 +530,10 @@ class BridgeClient {
       _notifyListenersImmediately({'type': 'bridge:cache-loaded', 'threadId': sessionId, 'count': cachedMessages.length});
     }
 
-    // 2. 再请求桌面端快照（用于增量更新）
+    // 2. 再请求桌面端快照（用于增量更新，携带当前项目 ID）
     final requestId = 'req-${++_requestCounter}-${DateTime.now().millisecondsSinceEpoch}';
-    print('[BridgeClient] Requesting state snapshot from desktop (requestId: $requestId)');
-    _send(BridgeRequestState(requestId: requestId));
+    print('[BridgeClient] Requesting state snapshot from desktop (requestId: $requestId, threadId: $sessionId)');
+    _send(BridgeRequestState(requestId: requestId, threadId: sessionId));
   }
 
   /// 请求可用模型列表
@@ -776,6 +796,12 @@ class BridgeClient {
             data: json,
             handler: () {
               final state = BridgeState.fromJson(json);
+              // 关键修复：忽略不属于当前项目的 state 快照，避免串项目
+              final stateThreadId = state.threadId;
+              if (stateThreadId != null && stateThreadId.isNotEmpty && _currentProjectId != null && stateThreadId != _currentProjectId) {
+                print('[BridgeClient] Ignoring bridge:state for different project: $stateThreadId (current: $_currentProjectId)');
+                return;
+              }
               // 增量更新消息列表，避免全量替换导致的 UI 闪烁
               _mergeMessages(state.messages);
               // 关键修复：bridge:state 不再更新 _currentProjectId

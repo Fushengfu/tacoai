@@ -56,6 +56,13 @@ export function useAuth() {
   /** 登出处理 */
   const handleLogout = useCallback(async () => {
     try {
+      // 断开桥接服务
+      window.taco.bridge.disconnect()
+    } catch (error) {
+      console.error('[useAuth] Failed to disconnect bridge:', error)
+    }
+    
+    try {
       // 使用安全存储删除
       await removeToken()
     } catch (error) {
@@ -82,7 +89,8 @@ export function useAuth() {
   useEffect(() => {
     const unsub = window.taco.bridge.onStatusChange((s) => {
       if (s.tokenExpired) {
-        // Token 过期，清除本地 token，弹出登录框
+        // Token 过期，清除本地 token 和安全存储，弹出登录框
+        removeToken().catch(() => {})
         setMemberToken(null)
         setMemberInfo(null)
         setShowLoginModal(true)

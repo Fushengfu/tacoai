@@ -59,7 +59,9 @@ export type TokenUsage = {
   cachedTokens?: number
 }
 
-export type ProviderKey = 'deepseek' | 'kimi' | 'minimax' | 'glm' | 'qwen' | 'mimo'
+export type BuiltinProviderKey = 'deepseek' | 'kimi' | 'minimax' | 'glm' | 'qwen' | 'mimo'
+/** 支持内置 6 个 provider + 网关/自定义 provider（任意字符串） */
+export type ProviderKey = BuiltinProviderKey | (string & {})
 
 export type ProviderConfig = {
   baseUrl: string
@@ -71,9 +73,9 @@ export type ProviderConfig = {
   supportsVision?: boolean
 }
 
-export type ProviderOverrides = Partial<Record<ProviderKey, Partial<ProviderConfig>>>
+export type ProviderOverrides = Record<string, Partial<ProviderConfig>>
 
-const providerConfigs: Record<ProviderKey, ProviderConfig> = {
+const builtinProviderConfigs: Record<BuiltinProviderKey, ProviderConfig> = {
   deepseek: {
     baseUrl: process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com',
     apiKey: process.env.DEEPSEEK_API_KEY ?? '',
@@ -104,6 +106,11 @@ const providerConfigs: Record<ProviderKey, ProviderConfig> = {
     apiKey: process.env.MIMO_API_KEY ?? '',
     model: process.env.MIMO_MODEL ?? ''
   }
+}
+
+/** 判断是否为内置 provider */
+export function isBuiltinProvider(provider: string): provider is BuiltinProviderKey {
+  return provider in builtinProviderConfigs
 }
 
 /** 默认模型温度（未显式配置时使用）。 */
@@ -212,10 +219,11 @@ async function fetchWith429Retry(
 }
 
 function getProviderConfig(
-  provider: ProviderKey,
+  provider: string,
   overrides?: ProviderOverrides
 ): ProviderConfig {
-  const base = providerConfigs[provider]
+  const builtinKey = provider as BuiltinProviderKey
+  const base = builtinProviderConfigs[builtinKey] ?? { baseUrl: '', apiKey: '', model: '' }
   const patch = overrides?.[provider]
   return {
     ...base,
@@ -1069,23 +1077,27 @@ async function buildRequest(
   }
   if (options?.tools && options.tools.length > 0) {
     body.tools = options.tools
-    // qwen 在 thinking mode 下不支持 tool_choice: 'required'，需要改为 'auto'
-    let toolChoice = options.toolChoice ?? 'auto'
-    if (provider === 'qwen' && toolChoice === 'required') {
-      toolChoice = 'auto'
+    if (isBuiltinProvider(provider)) {
+      // qwen 在 thinking mode 下不支持 tool_choice: 'required'，需要改为 'auto'
+      let toolChoice = options.toolChoice ?? 'auto'
+      if (provider === 'qwen' && toolChoice === 'required') {
+        toolChoice = 'auto'
+      }
+      body.tool_choice = toolChoice
     }
-    body.tool_choice = toolChoice
   }
   if (stream) {
     // 请求 provider 在流式响应中返回 usage（尤其 total_tokens）
     body.stream_options = { include_usage: true }
   }
 
-  if (provider === 'deepseek') {
-    body.reasoning_effort = 'max'
-  } else if (provider === 'mimo') {
-    // Mimo只支持 'low', 'medium', 'high'
-    body.reasoning_effort = 'high'
+  if (isBuiltinProvider(provider)) {
+    if (provider === 'deepseek') {
+      body.reasoning_effort = 'max'
+    } else if (provider === 'mimo') {
+      // Mimo只支持 'low', 'medium', 'high'
+      body.reasoning_effort = 'high'
+    }
   }
 
   // console.log('REQUEST_BUILD', {

@@ -37,10 +37,9 @@ function compactList(items: string[], limit: number): string {
 function collectPendingPlanSteps(plan: ContextBuildState['currentPlan']): Array<{ index: number; step: PlanStep }> {
   if (!plan) return []
   const out: Array<{ index: number; step: PlanStep }> = []
-  for (let i = 0; i < plan.steps.length; i++) {
-    const step = plan.steps[i]
+  for (const step of plan.steps) {
     if (step.status === 'pending' || step.status === 'in_progress') {
-      out.push({ index: i, step })
+      out.push({ index: step.index, step })
     }
   }
   return out
@@ -49,10 +48,9 @@ function collectPendingPlanSteps(plan: ContextBuildState['currentPlan']): Array<
 function collectResolvedPlanSteps(plan: ContextBuildState['currentPlan']): Array<{ index: number; step: PlanStep }> {
   if (!plan) return []
   const out: Array<{ index: number; step: PlanStep }> = []
-  for (let i = 0; i < plan.steps.length; i++) {
-    const step = plan.steps[i]
+  for (const step of plan.steps) {
     if (step.status === 'done' || step.status === 'failed') {
-      out.push({ index: i, step })
+      out.push({ index: step.index, step })
     }
   }
   return out

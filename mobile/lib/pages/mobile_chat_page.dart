@@ -72,6 +72,10 @@ class _MobileChatPageState extends State<MobileChatPage> {
 
   // 切换项目加载状态
   bool _isSwitchingProject = false;
+  // 切换项目超时保护（防止响应丢失导致永久加载）
+  Timer? _switchProjectTimeout;
+  // 最近一次切换的项目 ID（用于快速连续切换时只响应最新一次）
+  String? _pendingSwitchProjectId;
 
   @override
   void initState() {
@@ -95,6 +99,7 @@ class _MobileChatPageState extends State<MobileChatPage> {
     _textController.dispose();
     _messagesNotifier.dispose();
     _deltaUpdateTimer?.cancel();
+    _switchProjectTimeout?.cancel();
     super.dispose();
   }
 
@@ -170,8 +175,6 @@ class _MobileChatPageState extends State<MobileChatPage> {
     // 增量更新：只更新变化的部分，避免全量替换
     if (type == 'bridge:state') {
       final state = BridgeState.fromJson(json);
-      // 关键修复：不在 bridge:state 中清除 _isSwitchingProject
-      // 只在 bridge:project-switched 中清除，避免快照先于响应到达导致提前清除
       // 只更新变化的字段，减少 setState 范围
       bool needUpdate = false;
       if (_workspace != state.workspace) { _workspace = state.workspace; needUpdate = true; }
@@ -191,6 +194,13 @@ class _MobileChatPageState extends State<MobileChatPage> {
       // 首次连接或切换项目后自动加载模型列表
       if (_availableModels.isEmpty) {
         _loadModels();
+      }
+      // bridge:state 到达且有消息时，清除切换项目加载状态
+      if (_isSwitchingProject && widget.client.messages.isNotEmpty) {
+        _switchProjectTimeout?.cancel();
+        setState(() {
+          _isSwitchingProject = false;
+        });
       }
     } else if (type == 'bridge:agent-event') {
       // Agent 事件：立即更新消息列表（不触发 setState，仅更新 ValueNotifier）
@@ -213,18 +223,46 @@ class _MobileChatPageState extends State<MobileChatPage> {
       // 切换项目时清空消息列表，显示加载状态
       _messagesNotifier.value = [];
       // 不清除待确认弹窗，保留所有项目的确认请求
-      setState(() {
-        _isSwitchingProject = true;
+      if (!_isSwitchingProject) {
+        setState(() {
+          _isSwitchingProject = true;
+        });
+      }
+      // 记录待切换的项目 ID（用于快速连续切换时只响应最新一次）
+      _pendingSwitchProjectId = json['threadId'] as String? ?? _pendingSwitchProjectId;
+      // 启动超时保护（5秒后自动清除加载状态，避免永久卡住）
+      _switchProjectTimeout?.cancel();
+      _switchProjectTimeout = Timer(const Duration(seconds: 5), () {
+        if (_isSwitchingProject && mounted) {
+          setState(() {
+            _isSwitchingProject = false;
+          });
+        }
       });
     } else if (type == 'bridge:project-switched') {
       // 切换项目完成，隐藏加载指示器
+      _switchProjectTimeout?.cancel();
+      _pendingSwitchProjectId = null;
       if (_isSwitchingProject) {
         setState(() => _isSwitchingProject = false);
       }
       _messagesNotifier.value = List.from(widget.client.messages);
-    } else {
-      // 其他消息类型，更新消息列表
+    } else if (type == 'bridge:cache-loaded') {
+      // 缓存加载完成，如果有消息则隐藏加载指示器
+      final count = json['count'] as int? ?? 0;
+      if (count > 0 && _isSwitchingProject) {
+        _switchProjectTimeout?.cancel();
+        setState(() => _isSwitchingProject = false);
+      }
       _messagesNotifier.value = List.from(widget.client.messages);
+    } else {
+      // 其他消息类型（包括 bridge:chat-completed 等），更新消息列表
+      _messagesNotifier.value = List.from(widget.client.messages);
+      // 如果有消息到达且正在切换项目，说明数据已同步完成
+      if (_isSwitchingProject && widget.client.messages.isNotEmpty) {
+        _switchProjectTimeout?.cancel();
+        setState(() => _isSwitchingProject = false);
+      }
     }
 
     // 全量状态同步（切换项目/首次连接）时始终滚动到底部
