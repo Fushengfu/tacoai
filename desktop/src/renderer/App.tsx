@@ -8,7 +8,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AttachedAsset, AttachedImage, ChatMsg, FileChangeInfo, ProviderId, ThemeMode, ThreadMode } from './types'
+import type { AttachedAsset, AttachedImage, ChatMsg, FileChangeInfo, ProviderId, ThemeMode } from './types'
 import type { AppUpdateCheckResult, EditorId } from '../shared/ipc'
 import { estimateTokens, buildSystemPrompt, resolveModelConfigDisplayLabel, resolveModelConfigMaxTokens } from './constants'
 import { useThreads } from './hooks/useThreads'
@@ -91,9 +91,7 @@ export default function App() {
   const sessionQueue = hasValidActiveSession ? chat.getQueue(sessionId) : []
   const activeTaskStartedAt = hasValidActiveSession ? chat.getActiveTaskStartedAt(sessionId) : undefined
 
-  const currentMode: ThreadMode = 'agent'
   const currentProjectRules = activeThread?.projectRules ?? ''
-  const showStreamBubble = sessionSending && currentMode !== 'agent'
   const currentWorkspace: string = activeThread?.workspace ?? ''
 
   const currentModelConfigId = threadStore.activeThread?.modelConfigId ?? providerSettings.activeModelConfigId
@@ -134,7 +132,6 @@ export default function App() {
   // Token 上下文计算
   const estimatedTokens = estimateTokens(
     buildSystemPrompt({
-      mode: currentMode,
       workspace: currentWorkspace,
       provider: currentProvider ?? 'deepseek',
       model: currentModelConfig?.model,
@@ -384,13 +381,12 @@ export default function App() {
 
   /* ---- 消息发送 ---- */
   const notifyTaskCompleted = useCallback((threadTitle?: string) => {
-    if (currentMode !== 'agent') return
     const title = 'Taco AI 任务完成'
     const body = threadTitle?.trim()
       ? `项目「${threadTitle.trim()}」已执行完成`
       : '当前任务已执行完成'
     void window.taco.shell.notify({ title, body, silent: false })
-  }, [currentMode])
+  }, [])
 
   type MessageContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } } | { type: 'video_url'; video_url: { url: string } } | { type: 'audio_url'; audio_url: { url: string } }
 
@@ -448,7 +444,6 @@ export default function App() {
       content: contentParts,
       provider: modelConfig.provider,
       modelConfig,
-      mode: currentMode,
       workspace,
       maxTokens: targetMaxTokens,
       onFirstMessage: (title) => {
@@ -512,7 +507,6 @@ export default function App() {
       projectRules: currentProjectRules,
       provider: provider as ProviderId,
       modelConfig,
-      mode: currentMode,
       workspace: currentWorkspace,
       onComplete: () => {
         threadStore.updateThread(tid, { updatedAt: Date.now() })
@@ -539,7 +533,6 @@ export default function App() {
       projectRules: currentProjectRules,
       provider: provider as ProviderId,
       modelConfig,
-      mode: currentMode,
       workspace: currentWorkspace,
       onComplete: () => {
         threadStore.updateThread(tid, { updatedAt: Date.now() })
@@ -595,37 +588,14 @@ export default function App() {
     }
   }, [viewingFile])
 
-  /* ---- 智能自动滚动 ---- */
-  const isNearBottomRef = useRef(true)
-
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    // 增加阈值到 100px，更宽松地判断是否在底部
-    const threshold = 100
-    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    isNearBottomRef.current = distanceToBottom < threshold
-  }, [])
-
+  // 切换会话时滚动到底部
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
-    el.addEventListener('scroll', handleScroll, { passive: true })
-    return () => el.removeEventListener('scroll', handleScroll)
-  }, [handleScroll])
-
-  // 只在用户已经滚动到底部时才自动跟随新消息滚动
-  useEffect(() => {
-    if (!scrollRef.current || !isNearBottomRef.current) return
-    scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-  }, [messages, sessionStreamingContent])
-
-  useEffect(() => {
-    isNearBottomRef.current = true
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-    }
-  }, [sessionId])
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight
+    })
+  }, [sessionId, scrollRef])
 
   /* ---- 错误报告 ---- */
   const reportPaneRenderError = useCallback((pane: string, error: Error, info: any) => {
@@ -640,14 +610,14 @@ export default function App() {
         pane,
         threadId: tid || undefined,
         sessionId: sessionId || undefined,
-        mode: currentMode,
+        mode: 'agent',
         middleView,
         sidebarVisible: layout.sidebarVisible,
       },
     }).catch(() => {
       // ignore
     })
-  }, [tid, currentWorkspace, sessionId, currentMode, middleView, layout.sidebarVisible])
+  }, [tid, currentWorkspace, sessionId, middleView, layout.sidebarVisible])
 
   /* ---- 移动端桥接监听 ---- */
   // (省略部分桥接代码以节省空间,实际应包含完整实现)
@@ -1024,7 +994,7 @@ export default function App() {
           >
             <ChatPanel
               messages={messages}
-              showStreamBubble={showStreamBubble}
+              showStreamBubble={false}
               streamingContent={sessionStreamingContent}
               draft={draft}
               onDraftChange={setDraft}

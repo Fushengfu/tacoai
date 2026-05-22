@@ -37,11 +37,7 @@ import type { FileTreeEntry } from '../../shared/ipc'
 
 // Import from split modules
 import {
-  chatAbortControllers,
   agentAbortControllers,
-  handleChatSend,
-  handleChatStream,
-  handleChatAbort,
   handleAgentStream,
   handleAgentConfirm,
   handleAgentAbort,
@@ -125,13 +121,10 @@ export function registerIpcHandlers() {
   ipcMain.handle(IpcChannel.GATEWAY_GET_MODELS, handleGatewayGetModels)
 
   // Chat / Agent
-  ipcMain.handle(IpcChannel.CHAT_SEND, handleChatSend)
   ipcMain.handle(IpcChannel.CHAT_STORE_LIST, handleChatStoreList)
   ipcMain.handle(IpcChannel.CHAT_STORE_LOAD_PAGE, handleChatStoreLoadPage)
   ipcMain.handle(IpcChannel.CHAT_STORE_SAVE, handleChatStoreSave)
   ipcMain.handle(IpcChannel.CHAT_STORE_DELETE_SESSION, handleChatStoreDeleteSession)
-  ipcMain.on(IpcChannel.CHAT_STREAM, handleChatStream)
-  ipcMain.on(IpcChannel.CHAT_ABORT, handleChatAbort)
   ipcMain.on(IpcChannel.AGENT_STREAM, handleAgentStream)
   ipcMain.on(IpcChannel.AGENT_CONFIRM, handleAgentConfirm)
   ipcMain.on(IpcChannel.AGENT_ABORT, handleAgentAbort)

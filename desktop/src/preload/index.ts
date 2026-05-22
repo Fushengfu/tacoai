@@ -4,11 +4,9 @@ import type {
   AppStateProvidersPayload,
   AppStateSnapshot,
   AppStateThreadsPayload,
-  ChatSendPayload,
   ChatStoreSessionPatch,
   ChatStoreSessionPage,
   ChatStoreSessionSummary,
-  ChatStreamPayload,
   ChatChunkData,
   AgentStreamPayload,
   AgentEventData,
@@ -90,15 +88,6 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.APP_GET_UPDATE_STATUS),
   },
   chat: {
-    send: (payload: ChatSendPayload) =>
-      ipcRenderer.invoke(IpcChannel.CHAT_SEND, payload),
-
-    stream: (payload: ChatStreamPayload) =>
-      ipcRenderer.send(IpcChannel.CHAT_STREAM, payload),
-
-    abort: (requestId: string) =>
-      ipcRenderer.send(IpcChannel.CHAT_ABORT, requestId),
-
     onChunk: (callback: (data: ChatChunkData) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, data: ChatChunkData) => callback(data)
       ipcRenderer.on(IpcChannel.CHAT_CHUNK, handler)

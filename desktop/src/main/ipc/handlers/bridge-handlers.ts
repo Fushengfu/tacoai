@@ -140,7 +140,7 @@ export function setupBridgeDataHandler(): void {
             respond({ type: 'bridge:workspace-tree', requestId, tree: [], error: 'path required' })
             break
           }
-          const { getWorkspaceTree } = await import('../tools')
+          const { getWorkspaceTree } = await import('../../tools')
           const tree = await getWorkspaceTree(cwd)
           respond({ type: 'bridge:workspace-tree', requestId, tree })
           break

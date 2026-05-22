@@ -1,4 +1,4 @@
-export type ThreadMode = 'chat' | 'agent'
+export type ThreadMode = 'agent'
 export type ThemeMode = 'dark' | 'ocean' | 'graphite'
 
 /** 项目内的一个会话 */
@@ -19,7 +19,7 @@ export type Thread = {
   modelConfigId?: string
   /** 兼容历史字段（已弃用） */
   provider?: ProviderId
-  /** 会话模式：统一固定为 agent（带工具调用） */
+  /** 会话模式：固定为 agent（带工具调用） */
   mode?: ThreadMode
   /** Agent 模式的工作空间目录 */
   workspace?: string

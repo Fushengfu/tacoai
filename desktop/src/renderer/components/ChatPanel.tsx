@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ActivePlan, AgentStep, AttachedAsset, AttachedImage, ChatMsg, FileChangeInfo, FileChangeStatus, QueuedMessage, Session } from '../types'
 import type { EditorId } from '../../shared/ipc'
 import { MarkdownBubble } from './MarkdownBubble'
@@ -278,6 +278,9 @@ export function ChatPanel({
   onOpenFileView,
 }: Readonly<ChatPanelProps>) {
   const hasProviders = configuredProviders.length > 0
+  const isNearBottomRef = useRef<boolean>(true)
+  const wasAtBottomBeforeRenderRef = useRef<boolean>(true)
+  const BOTTOM_THRESHOLD = 240
   const [visibleMessageCount, setVisibleMessageCount] = useState(() => Math.min(messages.length, INITIAL_VISIBLE_MESSAGE_COUNT))
   const prependAnchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
   
@@ -824,6 +827,46 @@ export function ChatPanel({
       el.removeEventListener('scroll', handleHistoryScroll)
     }
   }, [hasHiddenHistory, loadOlderMessages, scrollRef])
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+
+    const check = () => {
+      const distanceToBottom = Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight)
+      isNearBottomRef.current = distanceToBottom < BOTTOM_THRESHOLD
+    }
+
+    check()
+    el.addEventListener('scroll', check, { passive: true })
+    return () => el.removeEventListener('scroll', check)
+  }, [scrollRef])
+
+  // 记录本次渲染前用户是否在底部（DOM 更新前快照）
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const distanceToBottom = Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight)
+    wasAtBottomBeforeRenderRef.current = distanceToBottom < BOTTOM_THRESHOLD
+  })
+
+  // 跟踪最后一条 AI 消息的内容长度（用于触发滚动）
+  const lastAssistantContentLen = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.role === 'assistant') {
+        return (messages[i].content ?? '').length
+      }
+    }
+    return 0
+  }, [messages])
+
+  // 滚动到底部：在 DOM 更新后同步执行
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    if (!wasAtBottomBeforeRenderRef.current) return
+    el.scrollTop = el.scrollHeight
+  }, [messages.length, lastAssistantContentLen, scrollRef])
 
   function isWindowsAbsolutePath(text: string): boolean {
     return /^[a-zA-Z]:[\\/]/.test(text) || text.startsWith('\\\\')

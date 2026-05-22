@@ -4,7 +4,8 @@ import path from 'node:path'
 import os from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
 
-export type RewardChannel = 'agent' | 'chat'
+export type RewardChannel = 'agent'
+
 export type RewardOutcome = 'success' | 'aborted' | 'error'
 
 type RewardBreakdownItem = {
@@ -42,7 +43,6 @@ type RewardScoreState = {
 }
 
 export type RewardApplyInput = {
-  channel: RewardChannel
   outcome: RewardOutcome
   workspace?: string
   projectId?: string
@@ -127,7 +127,7 @@ function normalizeState(raw: unknown): RewardScoreState {
         })
         .filter((v): v is RewardBreakdownItem => Boolean(v))
 
-      const channel = String(r.channel) === 'chat' ? 'chat' : 'agent'
+      const channel = String(r.channel) === 'agent' ? 'agent' : 'agent'
       const outcomeText = String(r.outcome)
       const outcome: RewardOutcome = outcomeText === 'aborted' ? 'aborted' : outcomeText === 'error' ? 'error' : 'success'
       const base: Omit<RewardLedgerEntry, 'meta'> = {
@@ -196,61 +196,44 @@ function computeTurnDelta(input: RewardApplyInput): { delta: number; breakdown: 
   const elapsedMs = clampNonNegative(input.elapsedMs ?? 0)
 
   const base = input.outcome === 'success'
-    ? (input.channel === 'agent' ? 8 : 3)
+    ? 8
     : input.outcome === 'aborted'
       ? -4
       : -10
-  parts.push({ label: `base:${input.channel}:${input.outcome}`, delta: base })
+  parts.push({ label: `base:${input.outcome}`, delta: base })
 
-  if (input.channel === 'agent') {
-    if (toolCalls > 0) {
-      parts.push({ label: 'evidence:tool_calls', delta: Math.min(6, toolCalls) })
-    } else if (input.outcome === 'success') {
-      // agent 成功但没有工具证据，按低质量结算
-      parts.push({ label: 'penalty:missing_tool_evidence', delta: -6 })
-    }
+  if (toolCalls > 0) {
+    parts.push({ label: 'evidence:tool_calls', delta: Math.min(6, toolCalls) })
+  } else if (input.outcome === 'success') {
+    // agent 成功但没有工具证据，按低质量结算
+    parts.push({ label: 'penalty:missing_tool_evidence', delta: -6 })
+  }
 
-    if (changedFiles > 0) {
-      parts.push({ label: 'evidence:changed_files', delta: Math.min(4, changedFiles) })
-    }
+  if (changedFiles > 0) {
+    parts.push({ label: 'evidence:changed_files', delta: Math.min(4, changedFiles) })
+  }
 
-    if (failures > 0) {
-      parts.push({ label: 'penalty:failures', delta: -Math.min(12, failures * 2) })
-    }
+  if (failures > 0) {
+    parts.push({ label: 'penalty:failures', delta: -Math.min(12, failures * 2) })
+  }
 
-    // 使用了工具但没有有效解决问题（最终非 success）时追加扣分
-    if (toolCalls > 0 && input.outcome !== 'success') {
-      const ineffectivePenalty = Math.min(12, 2 + Math.ceil(toolCalls / 2) * 2)
-      parts.push({ label: 'penalty:tools_without_effective_resolution', delta: -ineffectivePenalty })
-    }
-  } else if (input.channel === 'chat') {
-    if (input.outcome === 'error') {
-      parts.push({ label: 'penalty:chat_error', delta: -2 })
-    }
+  // 使用了工具但没有有效解决问题（最终非 success）时追加扣分
+  if (toolCalls > 0 && input.outcome !== 'success') {
+    const ineffectivePenalty = Math.min(12, 2 + Math.ceil(toolCalls / 2) * 2)
+    parts.push({ label: 'penalty:tools_without_effective_resolution', delta: -ineffectivePenalty })
   }
 
   // 用时效率奖励：仅在成功轮次生效
   if (input.outcome === 'success' && elapsedMs > 0) {
     const elapsedSec = elapsedMs / 1000
-    if (input.channel === 'agent') {
-      // agent 按“每个执行单元耗时”评估，避免任务复杂度差异过大
-      const executionUnits = Math.max(1, toolCalls)
-      const secPerUnit = elapsedSec / executionUnits
-      if (secPerUnit <= 18) {
-        parts.push({ label: 'bonus:speed_fast', delta: 6 })
-      } else if (secPerUnit <= 35) {
-        parts.push({ label: 'bonus:speed_good', delta: 4 })
-      } else if (secPerUnit <= 60) {
-        parts.push({ label: 'bonus:speed_ok', delta: 2 })
-      }
-    } else {
-      if (elapsedSec <= 8) {
-        parts.push({ label: 'bonus:speed_fast', delta: 3 })
-      } else if (elapsedSec <= 20) {
-        parts.push({ label: 'bonus:speed_good', delta: 2 })
-      } else if (elapsedSec <= 40) {
-        parts.push({ label: 'bonus:speed_ok', delta: 1 })
-      }
+    const executionUnits = Math.max(1, toolCalls)
+    const secPerUnit = elapsedSec / executionUnits
+    if (secPerUnit <= 18) {
+      parts.push({ label: 'bonus:speed_fast', delta: 6 })
+    } else if (secPerUnit <= 35) {
+      parts.push({ label: 'bonus:speed_good', delta: 4 })
+    } else if (secPerUnit <= 60) {
+      parts.push({ label: 'bonus:speed_ok', delta: 2 })
     }
   }
 
@@ -283,7 +266,7 @@ export async function applyRewardScore(input: RewardApplyInput): Promise<RewardA
   const entry: RewardLedgerEntry = {
     id: randomUUID(),
     createdAt: now,
-    channel: input.channel,
+    channel: 'agent' as const,
     outcome: input.outcome,
     delta,
     pointsAfter: nextPoints,

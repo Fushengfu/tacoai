@@ -989,68 +989,11 @@ function buildCompactMemorySummary(input: TaskLogInput): string {
   return shortText(lines.join('\n'), TASK_MEMORY_SUMMARY_MAX_CHARS)
 }
 
-function normalizeHistoricalField(input: string, max: number): string {
-  return shortText(
-    stripControlChars(
-      stripPseudoToolCallArtifacts(stripInternalContextTags(String(input ?? '')))
-        .replace(/\r/g, '')
-        .replace(/\n+/g, '；')
-        .trim(),
-    ),
-    max,
-  )
-}
 
-function extractHistoricalFollowUpHint(summary: string): string {
-  const cleaned = stripPseudoToolCallArtifacts(stripInternalContextTags(String(summary ?? '')))
-    .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(/\r/g, '')
-    .trim()
-  if (!cleaned) return ''
-
-  const lines = cleaned
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-  const pattern = /(是否需要|要不要|需不需要|还需要|如果需要|如需|需要我|继续吗|是否继续|可继续|要我继续|让我继续|\?|？)/i
-
-  let candidate = ''
-  for (const line of lines) {
-    if (pattern.test(line)) candidate = line
-  }
-  return normalizeHistoricalField(candidate, 220)
-}
 
 function buildHistoricalTaskResultBlock(item: TaskMemoryEntry): string {
   const lines = ['[HISTORICAL_TASK_RESULT]']
-  lines.push(`outcome: ${item.outcome}`)
-
-  const tools = compactJoin(item.tools ?? [], 6)
-  if (tools) lines.push(`tools: ${tools}`)
-
-  const changedFiles = compactJoin(item.changedFiles ?? [], 6)
-  if (changedFiles) lines.push(`changed_files: ${changedFiles}`)
-
-  const sourceSessionId = normalizeHistoricalField(String(item.sourceSessionId || ''), 120)
-  if (sourceSessionId) lines.push(`source_session_id: ${sourceSessionId}`)
-  const sourceStartSeq = Number.isFinite(Number(item.sourceStartSeq)) ? Math.floor(Number(item.sourceStartSeq)) : undefined
-  const sourceEndSeq = Number.isFinite(Number(item.sourceEndSeq)) ? Math.floor(Number(item.sourceEndSeq)) : undefined
-  if (typeof sourceStartSeq === 'number' || typeof sourceEndSeq === 'number') {
-    lines.push(`source_seq_range: ${typeof sourceStartSeq === 'number' ? sourceStartSeq : '?'}-${typeof sourceEndSeq === 'number' ? sourceEndSeq : '?'}`)
-  }
-
-  const failures = compactJoin((item.failures ?? []).slice(0, 3), 3)
-  if (failures) lines.push(`failures: ${failures}`)
-
-  // 完整回放 assistantResult，不截断
-  const fullAssistantResult = String(item.assistantResult || '').trim()
-  if (fullAssistantResult) {
-    lines.push(`assistant_result: ${fullAssistantResult}`)
-  }
-
-  const followUpHint = extractHistoricalFollowUpHint(String(item.assistantResult || ''))
-  if (followUpHint) lines.push(`follow_up_hint: ${followUpHint}`)
-
+  lines.push(`outcome: ${item.assistantResult}`)
   lines.push('[/HISTORICAL_TASK_RESULT]')
   return lines.join('\n')
 }
@@ -1536,9 +1479,7 @@ export type RecallMeta = {
   selectedCount: number
   budgetChars: number
   droppedByBudget: number
-  selectionMethod?: 'tool_call' | 'heuristic'
-  toolSelectionReason?: string
-  toolSelectedCount?: number
+
 }
 
 export type RecallDebugCandidate = {
@@ -1602,31 +1543,7 @@ function daysAgoScore(ts: number): number {
   return 0
 }
 
-function tokenize(text: string): string[] {
-  const lower = String(text ?? '').toLowerCase()
-  const set = new Set<string>()
 
-  const en = lower.match(/[a-z0-9_./:-]{2,}/g) ?? []
-  en.forEach((token) => set.add(token))
-
-  const zh = lower.match(/[\u4e00-\u9fff]{2,}/g) ?? []
-  zh.forEach((token) => set.add(token))
-
-  return Array.from(set).slice(0, 120)
-}
-
-function scoreByTokenOverlap(queryTokens: string[], targetText: string): { score: number; hits: string[] } {
-  if (queryTokens.length === 0) return { score: 0, hits: [] }
-  const text = targetText.toLowerCase()
-  const hits: string[] = []
-  for (const token of queryTokens) {
-    if (!token || token.length < 2) continue
-    if (text.includes(token)) hits.push(token)
-  }
-  const uniqueHits = Array.from(new Set(hits))
-  const score = uniqueHits.length * 7 + (uniqueHits.length > 0 ? Math.min(20, Math.round((uniqueHits.length / queryTokens.length) * 20)) : 0)
-  return { score, hits: uniqueHits.slice(0, 12) }
-}
 
 function estimateBudgetChars(maxTokens?: number, usageTotalTokens?: number): { budgetChars: number; mode: 'normal' | 'high_pressure'; ratio?: number } {
   if (typeof maxTokens !== 'number' || !Number.isFinite(maxTokens) || maxTokens <= 0) {
@@ -1669,139 +1586,12 @@ function safeParseObject(raw: string): Record<string, unknown> | null {
   }
 }
 
-type RecallSelectionIndexItem = {
-  key: string
-  source: RecallSource
-  title: string
-  digest: string
-  updatedAt: string
-  scoreHint: number
-}
 
-const RECALL_SELECTION_TOOL_NAME = 'select_background_memory'
-const recallSelectionTools: ToolDefinition[] = [
-  {
-    type: 'function',
-    function: {
-      name: RECALL_SELECTION_TOOL_NAME,
-      description: '从记忆索引中选择与当前用户问题最相关的背景记忆条目 key 列表（严格结构化返回）。',
-      parameters: {
-        type: 'object',
-        properties: {
-          selected_item_keys: {
-            type: 'array',
-            items: { type: 'string' },
-            description: '按优先级排序的记忆条目 key 列表（格式: source:id）',
-          },
-          reason: {
-            type: 'string',
-            description: '简要说明选择依据（可选）',
-          },
-        },
-        required: ['selected_item_keys'],
-      },
-    },
-  },
-]
-
-async function selectRecallCandidatesByTool(
-  userQuery: string,
-  indexItems: RecallSelectionIndexItem[],
-  options?: BuildBackgroundContextOptions,
-): Promise<{ selectedKeys: string[]; reason?: string } | null> {
-  const provider = options?.provider
-  if (!provider || indexItems.length === 0) return null
-
-  const safeUserQuery = extractUserQueryText(userQuery)
-  const payload = {
-    user_query: safeUserQuery,
-    memory_index: indexItems,
-    rules: [
-      '仅返回与当前用户问题强相关的 key',
-      '如果无相关项也必须调用工具，selected_item_keys 可为空数组',
-      '优先保留能够补全上下文链路的最近条目',
-      '禁止返回不存在的 key',
-    ],
-  }
-  const promptMessages: ChatMessage[] = [
-    {
-      role: 'system',
-      content: [
-        '你是记忆召回选择器。',
-        `你必须调用工具 ${RECALL_SELECTION_TOOL_NAME} 返回结构化结果。`,
-        '不要输出任何普通文本答案。',
-      ].join('\n'),
-    },
-    {
-      role: 'user',
-      content: JSON.stringify(payload, null, 2),
-    },
-  ]
-
-  let seenToolCall = false
-  let selectedKeys: string[] = []
-  let selectedReason = ''
-
-  try {
-    for await (const event of requestStreamWithTools(
-      provider,
-      promptMessages,
-      options?.overrides,
-      { tools: recallSelectionTools, toolChoice: 'required' },
-      options?.signal,
-      options?.logScope,
-    )) {
-      if (event.type !== 'tool_calls') continue
-      const target = event.toolCalls.find((call) => call.function.name === RECALL_SELECTION_TOOL_NAME)
-      if (!target) continue
-      seenToolCall = true
-      const parsed = safeParseObject(target.function.arguments)
-      if (!parsed) continue
-      selectedKeys = normalizeStringArray(parsed.selected_item_keys ?? parsed.selectedItemKeys, 24)
-      selectedReason = shortText(String(parsed.reason ?? ''), 260)
-      break
-    }
-  } catch (err) {
-    log('BACKGROUND_CONTEXT_TOOL_SELECTION_FAIL', { error: err instanceof Error ? err.message : String(err) }, options?.logScope)
-    return null
-  }
-
-  if (!seenToolCall) return null
-  return { selectedKeys, ...(selectedReason ? { reason: selectedReason } : {}) }
-}
 
 function toText(value: unknown): string {
   if (typeof value === 'string') return value
   if (typeof value === 'number' || typeof value === 'boolean') return String(value)
   return ''
-}
-
-function inferIntentTypeByQuery(query: string): string {
-  const text = String(query ?? '').trim().toLowerCase()
-  if (!text) return 'other'
-
-  const patterns: Array<{ type: string; words: string[] }> = [
-    { type: 'debug', words: ['报错', '错误', '异常', '排查', '调试', 'debug', 'error', 'bug', '失败', 'trace', '崩溃'] },
-    { type: 'implement', words: ['实现', '新增', '开发', '编写', '添加', 'create', 'implement', 'build', '完成功能'] },
-    { type: 'refactor', words: ['重构', '优化', '整理', '抽离', 'refactor', 'optimize', 'cleanup', '性能'] },
-    { type: 'ops', words: ['删除', '重命名', '移动', '部署', '发布', '配置', '运行', '执行', '删除文件', 'remove', 'delete', 'rm ', 'mv ', 'deploy'] },
-    { type: 'qa', words: ['是什么', '为什么', '怎么', '如何', '请解释', '是否', '吗', '?', '？', 'what', 'why', 'how', 'can you'] },
-  ]
-
-  for (const row of patterns) {
-    if (row.words.some((word) => text.includes(word))) return row.type
-  }
-  return 'other'
-}
-
-function isLikelyFollowUpQuery(query: string): boolean {
-  const text = String(query ?? '').trim()
-  if (!text) return false
-  if (text.length > 64) return false
-  const inferred = inferIntentTypeByQuery(text)
-  // “other”或非常短的补充信息，通常是接续上文意图（如“xxx 文件”）
-  if (inferred === 'other') return true
-  return text.length <= 20 && inferred !== 'qa'
 }
 
 function toRecalledItem(candidate: RecallCandidate): RecalledItem {
@@ -1894,13 +1684,10 @@ async function recallBackgroundContext(
     }))
 
   const query = extractUserQueryText(userQuery)
-  const queryTokens = tokenize(query)
-  const hasQueryTokens = queryTokens.length > 0
 
   const candidates: RecallCandidate[] = []
   const allCandidates = new Map<string, RecallCandidate>()
   let intentSource: 'llm' | 'heuristic' = 'heuristic'
-  let intentType = inferIntentTypeByQuery(query)
   let intentSummary = shortText(query, 220)
   let intentGoal = shortText(query, 220)
 
@@ -1958,20 +1745,6 @@ async function recallBackgroundContext(
     candidates.push(candidate)
   }
 
-  // 不再为每轮提问额外发起“意图理解请求”；仅保留本地启发式意图继承。
-  const shouldCarryFromHistory = isLikelyFollowUpQuery(query) || intentType === 'other'
-  if (shouldCarryFromHistory && taskMemories.length > 0) {
-    const recent = [...taskMemories]
-      .sort((a, b) => {
-        const ta = Date.parse(a.updatedAt || a.createdAt || '')
-        const tb = Date.parse(b.updatedAt || b.createdAt || '')
-        return (Number.isFinite(tb) ? tb : 0) - (Number.isFinite(ta) ? ta : 0)
-      })
-      .find((task) => task.userQuery)
-
-    // 不再继承旧意图,直接使用当前查询
-  }
-
   // 去重：保留每个候选的最新版本（评分都是0，按时间）
   const dedupedCandidateMap = new Map<string, RecallCandidate>()
   for (const candidate of candidates) {
@@ -1984,66 +1757,11 @@ async function recallBackgroundContext(
   candidates.length = 0
   candidates.push(...dedupedCandidateMap.values())
 
-  // 排序：先按评分（仅笔记和快照有分），再按时间（最新优先）
+  // 排序：按时间最新优先
   candidates.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score
     return (Number.isFinite(b.timestamp) ? b.timestamp : 0) - (Number.isFinite(a.timestamp) ? a.timestamp : 0)
   })
 
-  let selectionMethod: 'tool_call' | 'heuristic' = 'heuristic'
-  let toolSelectionReason = ''
-  let toolSelectedCount = 0
-
-  const shouldUseToolSelection = options?.recallSelectionMode === 'tool_call'
-
-  if (candidates.length > 0 && shouldUseToolSelection && options?.provider) {
-    const topForSelection = candidates.slice(0, 80)
-    const selectionIndex: RecallSelectionIndexItem[] = topForSelection.map((candidate) => {
-      const key = toCandidateKey(candidate.source, candidate.id)
-      const data = candidate.data as Record<string, unknown>
-      const digest = candidate.source === 'note'
-        ? shortText(`${toText(data.category)} ${toText(data.content)}`, 220)
-        : candidate.source === 'snapshot'
-          ? shortText(toText(data.summary), 220)
-          : shortText(`${toText(data.goal)} ${toText(data.summary)} ${toText((data.changedFiles as string[] | undefined)?.join('、') || '')}`, 240)
-      return {
-        key,
-        source: candidate.source,
-        title: shortText(candidate.title, 80) || '记忆条目',
-        digest,
-        updatedAt: toText(data.updatedAt) || toText(data.createdAt),
-        scoreHint: candidate.score,
-      }
-    })
-
-    const toolSelection = await selectRecallCandidatesByTool(query, selectionIndex, options)
-    if (toolSelection) {
-      const selectedByTool = normalizeStringArray(toolSelection.selectedKeys, 24)
-      const selectedSet = new Set(selectedByTool)
-      const candidateMap = new Map<string, RecallCandidate>(
-        candidates.map((candidate) => [toCandidateKey(candidate.source, candidate.id), candidate]),
-      )
-      const reordered: RecallCandidate[] = []
-      for (const key of selectedByTool) {
-        const item = candidateMap.get(key)
-        if (item) reordered.push(item)
-      }
-      if (reordered.length > 0) {
-        const rest = candidates.filter((candidate) => !selectedSet.has(toCandidateKey(candidate.source, candidate.id)))
-        candidates.length = 0
-        candidates.push(...reordered, ...rest)
-        selectionMethod = 'tool_call'
-        toolSelectedCount = reordered.length
-        toolSelectionReason = toolSelection.reason || ''
-      } else if (selectedByTool.length === 0) {
-        // 工具显式返回空选中：允许“无相关记忆”继续执行
-        candidates.length = 0
-        selectionMethod = 'tool_call'
-        toolSelectedCount = 0
-        toolSelectionReason = toolSelection.reason || ''
-      }
-    }
-  }
 
   const pressure = estimateBudgetChars(options?.maxTokens, options?.usageTotalTokens)
   const selected: RecalledItem[] = []
@@ -2106,16 +1824,12 @@ async function recallBackgroundContext(
       maxTokens: options?.maxTokens,
       pressureRatio: pressure.ratio,
       intentSource,
-      intentType,
       intentSummary,
       intentGoal,
       candidateCount: candidates.length,
       selectedCount: selected.length,
       budgetChars: pressure.budgetChars,
       droppedByBudget,
-      selectionMethod,
-      ...(selectionMethod === 'tool_call' ? { toolSelectionReason } : {}),
-      ...(selectionMethod === 'tool_call' ? { toolSelectedCount } : {}),
     },
   }
 }

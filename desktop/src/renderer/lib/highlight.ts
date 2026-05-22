@@ -102,6 +102,22 @@ export function getLang(filePath: string): string {
 }
 
 /**
+ * 根据语言标识直接高亮代码（不依赖文件路径）。
+ * 用于 MarkdownBubble 中代码块的语法高亮。
+ */
+export function highlightByLang(code: string, lang: string): string {
+  if (!lang || lang === 'plaintext' || lang === 'text') {
+    return escapeHtml(code)
+  }
+  try {
+    const result = hljs.highlight(code, { language: lang, ignoreIllegals: true })
+    return result.value
+  } catch {
+    return escapeHtml(code)
+  }
+}
+
+/**
  * 对代码文本进行语法高亮，返回带 <span> 标签的 HTML 字符串。
  * 每一行独立返回（方便 diff 视图逐行渲染）。
  */

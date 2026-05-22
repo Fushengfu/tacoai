@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ActivePlan, AgentStep, AttachedAsset, AttachedImage, ChatMsg, ModelConfig, ProviderId, QueuedMessage, TaskTiming, ThreadMode, ToolCallInfo, ToolResultInfo } from '../types'
+import type { ActivePlan, AgentStep, AttachedAsset, AttachedImage, ChatMsg, ModelConfig, ProviderId, QueuedMessage, TaskTiming, ToolCallInfo, ToolResultInfo } from '../types'
 import type { ChatStoreSessionPage, ChatStoreSessionPatch, ChatStoreSessionSummary, PromptConfig } from '../../shared/ipc'
 import { buildSystemPrompt } from '../constants'
 import { loadJson, saveJson, uid } from '../lib/storage'
@@ -209,27 +209,23 @@ function mapMessageForApi(msg: ChatMsg): ApiChatMessage {
 /**
  * 构建 API 消息数组
  */
-function buildMessagesForApi(messages: ChatMsg[], mode: ThreadMode | undefined): ApiChatMessage[] {
-  if (mode === 'agent') {
-    // Agent 模式优先发送最近上下文
-    const MAX_RECENT_MESSAGES = 8
-    const MAX_RECENT_USER_TURNS = 3
-    const recent: ChatMsg[] = []
-    let userTurns = 0
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i]
-      if (msg.role === 'system') continue
-      recent.push(msg)
-      if (msg.role === 'user') userTurns++
-      if (recent.length >= MAX_RECENT_MESSAGES || userTurns >= MAX_RECENT_USER_TURNS) break
-    }
-    if (recent.length > 0) {
-      return recent.reverse().map((msg) => mapMessageForApi(msg))
-    }
-    const last = messages[messages.length - 1]
-    return last ? [mapMessageForApi(last)] : []
+function buildMessagesForApi(messages: ChatMsg[]): ApiChatMessage[] {
+  const MAX_RECENT_MESSAGES = 8
+  const MAX_RECENT_USER_TURNS = 3
+  const recent: ChatMsg[] = []
+  let userTurns = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.role === 'system') continue
+    recent.push(msg)
+    if (msg.role === 'user') userTurns++
+    if (recent.length >= MAX_RECENT_MESSAGES || userTurns >= MAX_RECENT_USER_TURNS) break
   }
-  return messages.map((m) => mapMessageForApi(m))
+  if (recent.length > 0) {
+    return recent.reverse().map((msg) => mapMessageForApi(msg))
+  }
+  const last = messages[messages.length - 1]
+  return last ? [mapMessageForApi(last)] : []
 }
 
 function isRecallDebugEnabled(): boolean {
@@ -506,8 +502,6 @@ export type SendMessageParams = {
   attachments?: AttachedAsset[]
   provider: ProviderId
   modelConfig: ModelConfig
-  /** 会话模式 */
-  mode?: ThreadMode
   /** Agent 模式的工作空间目录 */
   workspace?: string
   /** 模型上下文窗口大小（token 数），用于自动压缩 */
@@ -949,16 +943,11 @@ export function useChat() {
     return completedThreads[threadId] ?? false
   }
 
-  /** 终止某 thread 的当前流式请求，保留队列等待继续发送 */
   function stopSending(threadId: string) {
-    // 严格停止语义：仅发送 abort，请求必须等待后端 done/结束确认后才会 finally -> processQueue。
-    // 不在前端本地强制 reject，也不提前移除监听，避免“未确认已停就发送下一个”。
     const requestId = requestIdRefs.current.get(threadId)
     if (requestId) {
-      window.taco.chat.abort(requestId)
       window.taco.agent.abort(requestId)
     }
-    // 不清空队列：后端确认停止后，finally 中会继续 processQueue
   }
 
   function getStreamingContent(threadId: string): string {
@@ -1206,7 +1195,7 @@ export function useChat() {
   /* ------------------------------------------------------------------ */
 
   async function sendMessage(params: SendMessageParams) {
-    const { threadId, projectId, projectRules, content, images, attachments, provider, modelConfig, mode, workspace, maxTokens, onFirstMessage, onComplete } = params
+    const { threadId, projectId, projectRules, content, images, attachments, provider, modelConfig, workspace, maxTokens, onFirstMessage, onComplete } = params
     
     // 处理 content 参数：支持字符串或数组
     const contentText = Array.isArray(content) 
@@ -1298,7 +1287,6 @@ export function useChat() {
       projectRules,
       provider,
       modelConfig,
-      mode,
       workspace,
       onFirstMessage,
       onComplete,
@@ -1344,7 +1332,6 @@ export function useChat() {
     const promptConfig = await ensurePromptConfigLoaded()
     const model = String(modelConfig.model ?? '').trim() || undefined
     const systemContent = buildSystemPrompt({
-      mode,
       workspace,
       provider,
       model,
@@ -1352,8 +1339,7 @@ export function useChat() {
       projectRules,
       promptConfig,
     })
-    const isAgent = mode === 'agent'
-    const chatMsgs = buildMessagesForApi(updatedMsgs, mode)
+    const chatMsgs = buildMessagesForApi(updatedMsgs)
 
     const apiMessages = [
       { role: 'system' as const, content: systemContent },
@@ -1435,9 +1421,8 @@ export function useChat() {
       // 记录当前 requestId 以便 stopSending 能发送 abort IPC
       requestIdRefs.current.set(threadId, requestId)
 
-      if (isAgent) {
-        // ── Agent 模式：整合为单条 assistant 消息，步骤折叠显示 ──
-        await new Promise<void>((resolve, reject) => {
+      // ── Agent 模式：整合为单条 assistant 消息，步骤折叠显示 ──
+      await new Promise<void>((resolve, reject) => {
           abortRejectRefs.current.set(threadId, reject)
 
           // Agent 唯一的 assistant 消息 ID（与主进程记忆来源指针保持一致）
@@ -1633,7 +1618,6 @@ export function useChat() {
           
           executeStreamWithRetry(0).catch(reject)
         })
-      }
 
       abortRejectRefs.current.delete(threadId)
       requestIdRefs.current.delete(threadId)
@@ -1643,24 +1627,22 @@ export function useChat() {
       requestIdRefs.current.delete(threadId)
       const errMsg = error instanceof Error ? error.message : '请求失败'
       if (errMsg === '__stopped__') {
-        if (isAgent) {
-          // Agent 模式：消息已在事件流中维护，追加 [已停止] 标记
-          const timing = buildTaskTiming(taskStartedAt)
-          setMessages(threadId, (prev) => {
-            for (let i = prev.length - 1; i >= 0; i--) {
-              if (prev[i]?.role !== 'assistant') continue
-              const updated = [...prev]
-              const tail = updated[i]
-              const stoppedContent = (tail.content || accumulated).includes('*[已停止]*')
-                ? (tail.content || accumulated)
-                : `${tail.content || accumulated}\n\n*[已停止]*`
-              updated[i] = { ...tail, content: stoppedContent, taskTiming: timing }
-              return updated
-            }
-            if (!accumulated) return prev
-            return [...prev, { id: streamAssistantMessageId, role: 'assistant', content: accumulated + '\n\n*[已停止]*', taskTiming: timing }]
-          })
-        }
+        // Agent 模式：消息已在事件流中维护，追加 [已停止] 标记
+        const timing = buildTaskTiming(taskStartedAt)
+        setMessages(threadId, (prev) => {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (prev[i]?.role !== 'assistant') continue
+            const updated = [...prev]
+            const tail = updated[i]
+            const stoppedContent = (tail.content || accumulated).includes('*[已停止]*')
+              ? (tail.content || accumulated)
+              : `${tail.content || accumulated}\n\n*[已停止]*`
+            updated[i] = { ...tail, content: stoppedContent, taskTiming: timing }
+            return updated
+          }
+          if (!accumulated) return prev
+          return [...prev, { id: streamAssistantMessageId, role: 'assistant', content: accumulated + '\n\n*[已停止]*', taskTiming: timing }]
+        })
       } else {
         const errChatMsg: ChatMsg = {
           id: streamAssistantMessageId,
@@ -1703,7 +1685,7 @@ export function useChat() {
    * 用于「编辑后重发」或「原样重发」场景：先由外部修改好 messages，再调用此方法。
    */
   async function resendFromExisting(params: Omit<SendMessageParams, 'content'>) {
-    const { threadId, projectId, projectRules, provider, modelConfig, mode, workspace, maxTokens, onFirstMessage, onComplete } = params
+    const { threadId, projectId, projectRules, provider, modelConfig, workspace, maxTokens, onFirstMessage, onComplete } = params
     rememberSessionStoreMeta(threadId, { projectId, workspace })
 
     const currentMsgs = threadMessagesRef.current[threadId] ?? []
@@ -1715,7 +1697,7 @@ export function useChat() {
     inFlightThreadsRef.current.add(threadId)
     const taskStartedAt = Date.now()
 
-    sendParamsRefs.current.set(threadId, { threadId, projectId, projectRules, provider, modelConfig, mode, workspace, onFirstMessage, onComplete })
+    sendParamsRefs.current.set(threadId, { threadId, projectId, projectRules, provider, modelConfig, workspace, onFirstMessage, onComplete })
 
     setSendingThreads((prev) => ({ ...prev, [threadId]: true }))
     setStreamingContents((prev) => ({ ...prev, [threadId]: '' }))
@@ -1724,12 +1706,10 @@ export function useChat() {
 
     const promptConfig = await ensurePromptConfigLoaded()
     const model = String(modelConfig.model ?? '').trim() || undefined
-    const isAgent = mode === 'agent'
     const apiMessages = [
       {
         role: 'system' as const,
         content: buildSystemPrompt({
-          mode,
           workspace,
           provider,
           model,
@@ -1738,7 +1718,7 @@ export function useChat() {
           promptConfig,
         }),
       },
-      ...buildMessagesForApi(currentMsgs, mode)
+      ...buildMessagesForApi(currentMsgs)
     ]
 
     const overrides = {
@@ -1805,8 +1785,8 @@ export function useChat() {
       const requestId = `req-${Date.now()}-${threadId}`
       requestIdRefs.current.set(threadId, requestId)
 
-      if (isAgent) {
-        await new Promise<void>((resolve, reject) => {
+      // ── Agent 模式：整合为单条 assistant 消息，步骤折叠显示 ──
+      await new Promise<void>((resolve, reject) => {
           abortRejectRefs.current.set(threadId, reject)
 
           const agentMsgId = streamAssistantMessageId
@@ -1964,7 +1944,6 @@ export function useChat() {
             sourceAssistantMessageId: streamAssistantMessageId,
           })
         })
-      }
 
       abortRejectRefs.current.delete(threadId)
       requestIdRefs.current.delete(threadId)
@@ -1974,9 +1953,8 @@ export function useChat() {
       requestIdRefs.current.delete(threadId)
       const errMsg = error instanceof Error ? error.message : '请求失败'
       if (errMsg === '__stopped__') {
-        if (isAgent) {
-          const timing = buildTaskTiming(taskStartedAt)
-          setMessages(threadId, (prev) => {
+        const timing = buildTaskTiming(taskStartedAt)
+        setMessages(threadId, (prev) => {
             for (let i = prev.length - 1; i >= 0; i--) {
               if (prev[i]?.role !== 'assistant') continue
               const updated = [...prev]
@@ -1989,8 +1967,7 @@ export function useChat() {
             }
             if (!accumulated) return prev
             return [...prev, { id: streamAssistantMessageId, role: 'assistant', content: accumulated + '\n\n*[已停止]*', taskTiming: timing }]
-          })
-        }
+        })
       } else {
         const errChatMsg: ChatMsg = {
           id: streamAssistantMessageId,

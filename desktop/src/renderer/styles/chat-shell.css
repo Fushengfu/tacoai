@@ -729,6 +729,12 @@ body.is-dragging * {
   white-space: pre;
 }
 
+/* 语法高亮样式：确保 <span> 标签内的文本正确显示 */
+.code-block code span {
+  font-family: inherit;
+  white-space: pre;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Typing indicator                                                   */
 /* ------------------------------------------------------------------ */

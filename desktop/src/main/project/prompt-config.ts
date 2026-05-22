@@ -3,17 +3,12 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import type { PromptConfig, PromptLayerConfig } from '../../shared/ipc'
 import { DEFAULT_MODEL_PROMPT_LAYER_MAP, DEFAULT_PROVIDER_PROMPT_LAYER_MAP } from '../../shared/prompt-defaults'
-import { DEFAULT_BALANCED_CHAT_EXTRA, DEFAULT_STRICT_AGENT_EXTRA } from '../../shared/prompt-profile-texts'
 
 const TACO_DIR = path.join(app.getPath('home'), '.taco')
 const PROMPT_CONFIG_FILE = path.join(TACO_DIR, 'prompt-config.json')
 const PROMPT_CONFIG_VERSION = 3
 const DEFAULT_PROMPT_CONFIG: PromptConfig = {
   version: PROMPT_CONFIG_VERSION,
-  common: {
-    chatExtra: DEFAULT_BALANCED_CHAT_EXTRA,
-    agentExtra: DEFAULT_STRICT_AGENT_EXTRA,
-  },
   provider: { ...DEFAULT_PROVIDER_PROMPT_LAYER_MAP },
   model: { ...DEFAULT_MODEL_PROMPT_LAYER_MAP },
 }
@@ -30,15 +25,11 @@ function sanitizeLayer(raw: unknown): PromptLayerConfig | undefined {
   const layer: PromptLayerConfig = {}
 
   const allExtra = asString(obj.allExtra)
-  const chatExtra = asString(obj.chatExtra)
   const agentExtra = asString(obj.agentExtra)
-  const chatOverride = asString(obj.chatOverride)
   const agentOverride = asString(obj.agentOverride)
 
   if (allExtra) layer.allExtra = allExtra
-  if (chatExtra) layer.chatExtra = chatExtra
   if (agentExtra) layer.agentExtra = agentExtra
-  if (chatOverride) layer.chatOverride = chatOverride
   if (agentOverride) layer.agentOverride = agentOverride
 
   return Object.keys(layer).length > 0 ? layer : undefined

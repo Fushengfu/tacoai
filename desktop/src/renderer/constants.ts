@@ -1,49 +1,6 @@
-import type { ModelConfig, ProviderId, ProviderForm, ProviderForms, ThreadMode } from './types'
+import type { ModelConfig, ProviderId, ProviderForm, ProviderForms } from './types'
 import type { PromptConfig, PromptLayerConfig } from '../shared/ipc'
 import { DEFAULT_MODEL_PROMPT_LAYER_MAP, DEFAULT_PROVIDER_PROMPT_LAYER_MAP } from '../shared/prompt-defaults'
-import { DEFAULT_BALANCED_CHAT_EXTRA, DEFAULT_STRICT_AGENT_EXTRA } from '../shared/prompt-profile-texts'
-
-/* ------------------------------------------------------------------ */
-/*  System environment block（共享，Chat / Agent 都用）                  */
-/* ------------------------------------------------------------------ */
-
-function buildEnvBlock(): string {
-  const sys = globalThis.window?.taco?.system
-  if (!sys) return ''
-  return [
-    '',
-    '# 当前环境',
-    `- 操作系统: ${sys.osVersion} (${sys.platform}/${sys.arch})`,
-    `- Shell: ${sys.shell}`,
-    `- 主目录: ${sys.homeDir}`,
-    `- 语言/地区: ${sys.locale}`,
-    `- 运行时: Node ${sys.nodeVersion} / Electron ${sys.electronVersion}`,
-    `- 当前时间: ${new Date().toLocaleString()}`,
-    '',
-  ].join('\n')
-}
-
-/* ------------------------------------------------------------------ */
-/*  Chat 模式 system prompt                                            */
-/* ------------------------------------------------------------------ */
-
-const CHAT_SYSTEM_PROMPT = `你是 Taco AI，一个运行在桌面端的智能助手。你和用户共享同一台计算机环境，目标是快速、准确地解决问题。
-
-# 职责边界
-- Chat 模式用于问答、解释、方案建议和代码思路整理。
-
-# 回答原则
-- 先给结论，再给关键依据与下一步。
-- 不确定时明确不确定点，并给最小验证路径。
-- 避免空话和重复；默认简洁，必要时再展开细节。
-- 使用用户当前语言回复。
-- 不要出现“根据项目历史记录/根据历史记忆/根据背景上下文”等来源措辞，直接给结论与动作。
-- 禁止输出任何 Emoji 符号（包括表情、图标表情、emoji 组合字符）。
-
-# 输出规范
-- 使用 Markdown；代码块带语言标识。
-- 命令、路径、变量名使用反引号。
-- 多步骤问题使用有序列表。`
 
 /* ------------------------------------------------------------------ */
 /*  Agent 模式 system prompt                                           */
@@ -59,7 +16,7 @@ function buildAgentImageRoutingRule(supportsVision: boolean): string {
 function buildAgentImageAnalysisRules(supportsVision: boolean): string {
   if (supportsVision) {
     return [
-      '- 当模型配置已开启“支持视觉理解”且用户提供图片时，可直接基于图片完成理解。',
+      '- 当模型配置已开启"支持视觉理解"且用户提供图片时，可直接基于图片完成理解。',
       '- 若任务需要 MCP 图像工具（例如用户明确要求或模型视觉能力不足），先调用 `mcp_list_tools` 确认参数定义，再调用 `mcp_call`。',
     ].join('\n')
   }
@@ -101,6 +58,31 @@ function buildAgentSystemPrompt(workspace: string, supportsVision: boolean): str
   4. 评估修改的连带影响，避免修复一个问题却遗漏关联点或引发新问题
   5. 明确列出所有需要修改的文件和具体位置
   6. 只有在完成以上所有步骤后，才能开始实际修改
+
+## 完成门禁（最高优先级，每轮结束前 MUST 自检）
+
+在输出"已完成/已修复/已解决/搞定"之前，必须逐项检查：
+
+- [ ] 是否实际调用了工具？（不能仅凭历史总结宣称完成）
+- [ ] 是否有文件变更证据？（write_file/edit_file/delete_file 的执行结果）
+- [ ] 是否回读了修改的文件确认落盘？（read_file 验证关键片段）
+- [ ] 是否执行了验证命令？（测试/构建/lint，至少一种）
+- [ ] 是否所有计划步骤都已完成？（如有 propose_plan）
+
+**任何一项未通过，禁止输出完成声明。继续执行直到全部通过。**
+
+## 禁止模糊暗示完成（MUST）
+
+以下行为等同于编造完成，一律禁止：
+
+- 禁止使用"已修改"、"已调整"、"已优化"、"已处理"、"已更新"等措辞暗示已执行，除非有对应工具调用证据
+- 禁止使用"现在应该可以了"、"试试看"、"理论上没问题"等模糊措辞代替验证结果
+- 禁止在工具调用失败后，仍宣称"已修复"或"已完成"
+- 禁止将"计划要做的事"描述为"已经做完的事"
+- 禁止在只读取了文件但未修改时，声称"已修改"或"已调整"
+- 禁止在命令执行失败后，编造成功的输出或忽略失败继续宣称完成
+
+**所有"已完成"类表述必须附带至少一项可验证证据（工具调用结果、文件变更、命令输出）。**
 
 ## 绝对禁止（红线）
 - 禁止伪造执行结果或编造"已完成"
@@ -256,6 +238,15 @@ ${buildAgentImageAnalysisRules(supportsVision)}
 - 改代码/改文件任务：在完成逻辑检查与文件回读校验前，禁止输出"已完成/已修复"
 - 验证/测试/构建任务：在给出最终完成结论前必须附上对应命令结果要点
 
+# 测试与验收（MUST）
+- 只要本轮产生了代码/配置/脚本改动，结束前必须执行至少一种验证：
+  - 优先运行与改动直接相关的测试（最小作用域）
+  - 若无针对性测试，执行构建/编译/lint/typecheck 等替代验证
+- 用户明确要求"测试/验证/构建/编译/lint"时，必须执行对应 run_command 并基于真实结果汇报。
+- 因环境限制无法执行测试时，必须说明阻塞原因，并给出可执行的手工验证步骤与预期结果。
+- 汇报测试时必须包含：执行命令、结果（通过/失败）、关键证据（失败摘要或通过要点）。
+- 若用户明确要求"只排查不修改"，则只做测试取证，不得私自修改文件。
+
 # 项目管理
 
 ## 工作空间边界
@@ -295,39 +286,25 @@ ${buildAgentImageAnalysisRules(supportsVision)}
 - 禁止将自己与其他AI模型/助手对比`
 }
 
-const AGENT_TEST_REQUIREMENTS_BLOCK = `# 测试与验收（MUST）
-- 只要本轮产生了代码/配置/脚本改动，结束前必须执行至少一种验证：
-  - 优先运行与改动直接相关的测试（最小作用域）
-  - 若无针对性测试，执行构建/编译/lint/typecheck 等替代验证
-- 用户明确要求“测试/验证/构建/编译/lint”时，必须执行对应 run_command 并基于真实结果汇报。
-- 因环境限制无法执行测试时，必须说明阻塞原因，并给出可执行的手工验证步骤与预期结果。
-- 汇报测试时必须包含：执行命令、结果（通过/失败）、关键证据（失败摘要或通过要点）。
-- 若用户明确要求“只排查不修改”，则只做测试取证，不得私自修改文件。`
-
 /* ------------------------------------------------------------------ */
 /*  Public: 构建 system prompt                                          */
 /* ------------------------------------------------------------------ */
-
-type PromptMode = 'chat' | 'agent'
 
 function cleanText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
-function applyLayer(base: string, mode: PromptMode, layer?: PromptLayerConfig): string {
+function applyLayer(base: string, layer?: PromptLayerConfig): string {
   if (!layer) return base
-  const modeOverride = mode === 'agent' ? layer.agentOverride : layer.chatOverride
-  let current = cleanText(modeOverride) || base
+  const modeOverride = cleanText(layer.agentOverride)
+  let current = modeOverride || base
   const allExtra = cleanText(layer.allExtra)
-  const modeExtra = cleanText(mode === 'agent' ? layer.agentExtra : layer.chatExtra)
+  const modeExtra = cleanText(layer.agentExtra)
   // 防止把完整系统提示词再次注入，造成重复规则与上下文污染。
   const looksLikeFullPrompt = (text: string): boolean => {
     if (!text) return false
     const t = text.toLowerCase()
-    if (mode === 'agent') {
-      return t.includes('你是 taco 的执行代理') || t.includes('# 总控路由') || t.includes('## 1) 基础角色')
-    }
-    return t.includes('你是 taco 的聊天助手') || t.includes('chat 模式') || t.includes('## 1) 范围')
+    return t.includes('你是 taco 的执行代理') || t.includes('# 总控路由') || t.includes('## 1) 基础角色')
   }
   if (allExtra && !current.includes(allExtra) && !looksLikeFullPrompt(allExtra)) current += `\n${allExtra}`
   if (modeExtra && !current.includes(modeExtra) && !looksLikeFullPrompt(modeExtra)) current += `\n${modeExtra}`
@@ -344,7 +321,6 @@ function resolveConfigLayerMap(
 
 /** 构建包含系统环境的 system prompt */
 export function buildSystemPrompt(options?: {
-  mode?: ThreadMode
   workspace?: string
   provider?: ProviderId
   model?: string
@@ -352,7 +328,6 @@ export function buildSystemPrompt(options?: {
   projectRules?: string
   promptConfig?: PromptConfig | null
 }): string {
-  const mode = options?.mode ?? 'agent'
   const workspace = options?.workspace ?? ''
   const provider = options?.provider
   const model = cleanText(options?.model)
@@ -360,31 +335,19 @@ export function buildSystemPrompt(options?: {
   const projectRules = cleanText(options?.projectRules)
   const promptConfig = options?.promptConfig ?? undefined
 
-  const isAgentPrompt = mode === 'agent' && Boolean(workspace)
-  const modeKey: PromptMode = isAgentPrompt ? 'agent' : 'chat'
-  let prompt = isAgentPrompt
-    ? buildAgentSystemPrompt(workspace, supportsVision)
-    : CHAT_SYSTEM_PROMPT + buildEnvBlock() + '\n根据以上环境信息自适应回答：使用对应操作系统的路径格式、Shell 语法和包管理器命令。'
+  let prompt = buildAgentSystemPrompt(workspace, supportsVision)
 
   // 配置文件层：common -> provider -> model
   // 若配置文件缺失，使用共享默认层作为兜底。
   const fallbackConfig: PromptConfig = {
-    common: {
-      chatExtra: DEFAULT_BALANCED_CHAT_EXTRA,
-      agentExtra: DEFAULT_STRICT_AGENT_EXTRA,
-    },
     provider: DEFAULT_PROVIDER_PROMPT_LAYER_MAP,
     model: DEFAULT_MODEL_PROMPT_LAYER_MAP,
   }
   const resolvedConfig = promptConfig ?? fallbackConfig
 
-  prompt = applyLayer(prompt, modeKey, resolvedConfig.common)
-  prompt = applyLayer(prompt, modeKey, resolveConfigLayerMap(resolvedConfig.provider, provider))
-  prompt = applyLayer(prompt, modeKey, resolveConfigLayerMap(resolvedConfig.model, model))
-
-  if (modeKey === 'agent' && !prompt.includes('# 测试与验收（MUST）')) {
-    prompt += `\n\n${AGENT_TEST_REQUIREMENTS_BLOCK}`
-  }
+  prompt = applyLayer(prompt, resolvedConfig.common)
+  prompt = applyLayer(prompt, resolveConfigLayerMap(resolvedConfig.provider, provider))
+  prompt = applyLayer(prompt, resolveConfigLayerMap(resolvedConfig.model, model))
 
   if (projectRules) {
     prompt += `\n\n# 项目规则（用户自定义）\n${projectRules}\n\n执行要求：在不违反安全边界与系统约束的前提下，优先遵守以上项目规则。`

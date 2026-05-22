@@ -78,7 +78,7 @@ function estimateReplayBudgetChars(maxTokens?: number, replayMode: 'full' | 'com
 function extractReplayAssistantResult(item: TaskMemoryEntry): string {
   // 直接使用AI完整回复,不再从摘要提取
   const assistantResult = String(item.assistantResult || '').trim()
-  return assistantResult
+  return `[HISTORICAL_TASK_RESULT]\n${assistantResult}\n[/HISTORICAL_TASK_RESULT]`
 }
 
 /* ------------------------------------------------------------------ */
@@ -203,14 +203,15 @@ export async function buildBackgroundContextConversationMessages(
       continue
     }
     
-    // 按照设计方案: 使用[历史任务]标注,而非直接回放原始对话
+    // 历史用户提问（按 role=user 注入）
     messages.push({
       role: 'user',
-      content: `[历史任务] 用户提问:\n${userText}`,
+      content: userText,
     })
+    // 历史处理总结（按 role=assistant 注入，用 [HISTORICAL_TASK_RESULT] 标签包裹）
     messages.push({
       role: 'assistant',
-      content: `[历史任务] AI回复:\n${assistantText}`,
+      content: assistantText,
     })
   }
   messages.push({ role: 'user', content: wrapUserQueryText(normalizedQuery) })

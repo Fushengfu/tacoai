@@ -275,6 +275,7 @@ export type ImageUploadPayload = {
   uploadConfig: IpcUploadConfig
 }
 
+/** chat:send 请求体（已废弃，仅保留类型定义） */
 export type ChatSendPayload = {
   provider: string
   messages: IpcChatMessage[]
@@ -283,7 +284,7 @@ export type ChatSendPayload = {
   projectId?: string
 }
 
-/** chat:stream 请求体 */
+/** chat:stream 请求体（已废弃，仅保留类型定义） */
 export type ChatStreamPayload = {
   requestId: string
   provider: string
@@ -452,14 +453,10 @@ export type SystemInfo = {
 
 /** Prompt 配置层 */
 export type PromptLayerConfig = {
-  /** 所有模式通用追加文本 */
+  /** 通用追加文本 */
   allExtra?: string
-  /** chat 模式追加文本 */
-  chatExtra?: string
   /** agent 模式追加文本 */
   agentExtra?: string
-  /** chat 模式完整覆盖（可选） */
-  chatOverride?: string
   /** agent 模式完整覆盖（可选） */
   agentOverride?: string
 }
@@ -790,7 +787,7 @@ export type AppStateThread = {
   modelConfigId?: string
   /** 兼容历史字段（已弃用） */
   provider?: AppStateProviderId
-  mode?: 'chat' | 'agent'
+  mode?: 'agent'
   workspace?: string
   projectRules?: string
   sessions: AppStateSession[]
@@ -840,12 +837,6 @@ export type TacoApi = {
     getStatus: () => Promise<AppUpdateCheckResult | null>
   }
   chat: {
-    /** 非流式请求，返回完整回复 */
-    send: (payload: ChatSendPayload) => Promise<string>
-    /** 发起流式请求 */
-    stream: (payload: ChatStreamPayload) => void
-    /** 终止当前 chat 流式请求 */
-    abort: (requestId: string) => void
     /** 监听流式数据块，返回取消订阅函数 */
     onChunk: (callback: (data: ChatChunkData) => void) => () => void
   }

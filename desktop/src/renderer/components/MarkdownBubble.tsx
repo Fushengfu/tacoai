@@ -1,10 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { highlightByLang } from '../lib/highlight'
 
 /** 提取代码块纯文本（去掉末尾换行） */
 function extractText(children: React.ReactNode): string {
-  return String(children).replace(/\n$/, '')
+  // 处理 ReactNode 数组的情况
+  const flatten = (node: React.ReactNode): string => {
+    if (typeof node === 'string' || typeof node === 'number') return String(node)
+    if (Array.isArray(node)) return node.map(flatten).join('')
+    if (node && typeof node === 'object' && 'props' in node) {
+      return flatten((node as React.ReactElement).props?.children)
+    }
+    return ''
+  }
+  return flatten(children).replace(/\n$/, '')
 }
 
 function normalizeSlashPath(input: string): string {
@@ -234,16 +244,19 @@ export function MarkdownBubble({ content, streaming, workspace, onOpenProjectFil
               const isBlock = /language-/.test(className ?? '')
               if (isBlock) {
                 const lang = (className ?? '').replace('language-', '')
+                const rawCode = extractText(children)
+                const highlighted = highlightByLang(rawCode, lang)
                 return (
                   <div className="code-block-wrapper">
                     <div className="code-block-header">
                       {lang && <span className="code-block-lang">{lang}</span>}
-                      <CopyButton text={extractText(children)} />
+                      <CopyButton text={rawCode} />
                     </div>
                     <pre className="code-block">
-                      <code className={className} {...rest}>
-                        {children}
-                      </code>
+                      <code
+                        className={className}
+                        dangerouslySetInnerHTML={{ __html: highlighted }}
+                      />
                     </pre>
                   </div>
                 )

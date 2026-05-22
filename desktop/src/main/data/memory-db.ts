@@ -966,9 +966,9 @@ function normalizeProviderId(value: unknown, fallback: AppStateProviderId = 'dee
   return APP_PROVIDER_IDS.includes(text) ? text : fallback
 }
 
-function normalizeMode(value: unknown): 'chat' | 'agent' | undefined {
+function normalizeMode(value: unknown): 'agent' | undefined {
   const text = asTrimmedString(value)
-  if (text === 'chat' || text === 'agent') return text
+  if (text === 'agent') return text
   return undefined
 }
 

@@ -13,8 +13,6 @@ import type {
   AppStateThreadsPayload,
   AppNotifyPayload,
   RendererErrorPayload,
-  ChatSendPayload,
-  ChatStreamPayload,
   AgentStreamPayload,
   AgentConfirmPayload,
   ChatStoreSessionPatch,
@@ -23,30 +21,18 @@ import type {
   AgentEventData,
   AgentEventChunkData,
 } from '../../../shared/ipc'
-import type { ProviderKey, ProviderOverrides, TokenUsage } from '../../ai/llm'
-import { requestChatCompletion, requestChatCompletionStream } from '../../ai/llm'
+import type { ProviderKey, ProviderOverrides } from '../../ai/llm'
 import { runAgent, resolveConfirm } from '../../agent'
-import { applyRewardScore } from '../../agent/reward-score'
-import { inferIntentFromBackground, listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, maintainTaskMemoriesByAI, recordTaskLog, getMemoryScopeStats, exportMemoryScope } from '../../data/notes'
 import { listChatStoreSessions, loadChatStoreSessionPage, saveChatStoreSessionPatch, deleteChatStoreSession, initMemoryDb } from '../../data/memory-db'
-import { getBridgeManager } from '../../bridge/bridge-manager'
 import {
-  extractUserQueryText,
-  extractUserAssetsBlock,
-} from '../../../shared/user-assets'
-import {
-  stripInternalContextTags,
-  stripPseudoToolCallArtifacts,
   sanitizeUserFacingText,
 } from '../../../shared/sanitize'
-import { inferIntentTypeFromQuery } from '../../../shared/intent'
-import { refreshSkills, buildActiveSkillsCatalogBlock, getActiveSkillEnv, applySkillEnvironment } from '../../project/skills'
 import { log, logError } from '../../system/logger'
+import { getBridgeManager } from '../../bridge/bridge-manager'
 import type { RiskCategory } from '../../tools'
 import { setAutoApproveCategories } from '../../tools'
 import nodePath from 'node:path'
 
-const STREAM_SANITIZE_HOLD_BACK = 24
 const AGENT_EVENT_CHUNK_THRESHOLD_BYTES = 180 * 1024
 const AGENT_EVENT_CHUNK_SIZE_CHARS = 48 * 1024
 
@@ -58,27 +44,6 @@ function buildLogScope(projectId?: string, workspace?: string): string | undefin
   if (projectId && projectId.trim()) return `project:${projectId.trim()}`
   if (workspace && workspace.trim()) return `workspace:${nodePath.resolve(workspace.trim())}`
   return undefined
-}
-
-function cleanupAssistantMemoryText(text: string): string {
-  return stripPseudoToolCallArtifacts(
-    stripInternalContextTags(String(text ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '')),
-  ).trim()
-}
-
-function withActiveSkillsPrompt<T extends { role: string; content?: string | Array<{ type: string; [key: string]: any }> }>(messages: T[]): T[] {
-  const skillCatalog = buildActiveSkillsCatalogBlock()
-  if (!skillCatalog.trim()) return messages
-
-  const systemIdx = messages.findIndex((m) => m.role === 'system')
-  if (systemIdx < 0) return messages
-
-  const current = String(messages[systemIdx].content ?? '')
-  if (current.includes('[SKILLS_CATALOG]')) return messages
-
-  const next = [...messages]
-  next[systemIdx] = { ...next[systemIdx], content: `${current}\n\n${skillCatalog}` }
-  return next
 }
 
 function sendAgentEventSafely(
@@ -135,376 +100,11 @@ function sendAgentEventSafely(
 }
 
 /* ------------------------------------------------------------------ */
-/*  Abort controllers                                                  */
+/*  Agent handlers                                                     */
 /* ------------------------------------------------------------------ */
-
-/** 当前正在运行的 chat 流式 AbortController 集合：requestId → AbortController */
-export const chatAbortControllers = new Map<string, AbortController>()
 
 /** 当前正在运行的 agent AbortController 集合：requestId → AbortController */
 export const agentAbortControllers = new Map<string, AbortController>()
-
-/* ------------------------------------------------------------------ */
-/*  Chat handlers                                                      */
-/* ------------------------------------------------------------------ */
-
-/** 非流式：renderer invoke → main handle → 返回完整回复 */
-export async function handleChatSend(_event: IpcMainInvokeEvent, payload: ChatSendPayload) {
-  const logScope = buildLogScope(payload.projectId, undefined)
-  try {
-    await refreshSkills()
-  } catch (err) {
-    log('SKILLS_REFRESH_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
-  }
-  const messages = withActiveSkillsPrompt(payload.messages)
-  const restoreSkillEnv = applySkillEnvironment(getActiveSkillEnv())
-  try {
-    const raw = await requestChatCompletion(
-      payload.provider as ProviderKey,
-      messages,
-      payload.overrides as ProviderOverrides | undefined,
-      undefined,
-      logScope,
-    )
-    return sanitizeUserFacingText(raw)
-  } finally {
-    restoreSkillEnv()
-  }
-}
-
-/** 流式：renderer send → main on → 逐块 send 回 renderer */
-export async function handleChatStream(event: IpcMainEvent, payload: ChatStreamPayload) {
-  const {
-    requestId,
-    provider,
-    overrides,
-    projectId,
-    workspace,
-    maxTokens,
-    sessionId,
-    sourceUserMessageId,
-    sourceAssistantMessageId,
-  } = payload
-  const logScope = buildLogScope(projectId, workspace)
-  try {
-    await refreshSkills(workspace)
-  } catch (err) {
-    log('SKILLS_REFRESH_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
-  }
-  const messages = withActiveSkillsPrompt(payload.messages)
-  const restoreSkillEnv = applySkillEnvironment(getActiveSkillEnv())
-  const turnStartedAt = Date.now()
-  const abortController = new AbortController()
-  let lastUsage: TokenUsage | undefined
-  let assistantFullText = ''
-  let rawAssistantFullText = ''
-  let emittedSanitizedText = ''
-  
-  // 提取用户消息内容（处理数组和字符串两种情况）
-  const lastUserMessageObj = [...messages].reverse().find((m) => m.role === 'user')
-  let lastUserGoal = ''
-  if (lastUserMessageObj?.content) {
-    if (Array.isArray(lastUserMessageObj.content)) {
-      // 从数组中提取文本
-      for (const part of lastUserMessageObj.content) {
-        if (part.type === 'text') {
-          lastUserGoal += part.text
-        }
-      }
-    } else {
-      lastUserGoal = lastUserMessageObj.content
-    }
-  }
-  lastUserGoal = lastUserGoal.trim()
-  
-  const plainUserQuery = extractUserQueryText(lastUserGoal)
-  const userAssetsBlock = extractUserAssetsBlock(lastUserGoal)
-
-  async function persistChatTurnMemory(
-    outcome: 'success' | 'aborted' | 'error',
-    summaryText: string,
-    errorMessage?: string,
-  ): Promise<void> {
-    const cleaned = cleanupAssistantMemoryText(summaryText)
-    const summary = (errorMessage
-      ? [cleaned, `错误信息: ${errorMessage}`].filter(Boolean).join('\n')
-      : cleaned
-    ) || (outcome === 'aborted' ? '(用户中止，未产出完整回复)' : '(无最终文本)')
-
-    try {
-      let intentType = inferIntentTypeFromQuery(plainUserQuery || lastUserGoal)
-      let intentSummary = plainUserQuery || lastUserGoal
-      let intentGoal = plainUserQuery || lastUserGoal
-      let intentSource: 'llm' | 'heuristic' = 'heuristic'
-
-      try {
-        const inferred = await inferIntentFromBackground(
-          workspace?.trim() ?? '',
-          plainUserQuery || lastUserGoal,
-          projectId,
-          {
-            usageTotalTokens: lastUsage?.totalTokens,
-            logScope,
-          },
-        )
-        intentType = inferred.intentType || intentType
-        intentSummary = inferred.intentSummary || intentSummary
-        intentGoal = inferred.intentGoal || intentGoal
-        intentSource = inferred.intentSource || intentSource
-      } catch (err) {
-        log('CHAT_TASK_MEMORY_INTENT_INFER_FAIL', {
-          error: err instanceof Error ? err.message : String(err),
-        }, logScope)
-      }
-
-      await recordTaskLog(
-        workspace?.trim() ?? '',
-        {
-          goal: plainUserQuery || lastUserGoal || '(未提取到用户提问)',
-          userQuery: plainUserQuery || lastUserGoal,
-          ...(userAssetsBlock ? { userAssetsBlock } : {}),
-          assistantResult: summary,
-          intentType,
-          intentSummary,
-          intentGoal,
-          summary,
-          outcome,
-          tools: [],
-          changedFiles: [],
-          fileDiffs: [],
-          identifiers: [],
-          failures: errorMessage ? [errorMessage] : [],
-          sourceRef: {
-            ...(String(sessionId || projectId || '').trim() ? { sessionId: String(sessionId || projectId || '').trim() } : {}),
-            ...(String(sourceUserMessageId || '').trim() ? { userMessageId: String(sourceUserMessageId || '').trim() } : {}),
-            ...(String(sourceAssistantMessageId || '').trim() ? { assistantMessageId: String(sourceAssistantMessageId || '').trim() } : {}),
-          },
-        },
-        projectId,
-      )
-      try {
-        await maintainTaskMemoriesByAI(workspace?.trim() ?? '', projectId, {
-          provider: provider as ProviderKey,
-          overrides: overrides as ProviderOverrides | undefined,
-          usageTotalTokens: lastUsage?.totalTokens,
-          maxTokens,
-          logScope,
-        })
-      } catch (maintainErr) {
-        log('CHAT_TASK_MEMORY_MAINTAIN_FAIL', {
-          error: maintainErr instanceof Error ? maintainErr.message : String(maintainErr),
-        }, logScope)
-      }
-      log('CHAT_TASK_MEMORY_SAVED', {
-        outcome,
-        hasGoal: Boolean(plainUserQuery || lastUserGoal),
-        intentType,
-        intentSource,
-        summaryLength: summary.length,
-      }, logScope)
-
-      try {
-        const scored = await applyRewardScore({
-          channel: 'chat',
-          outcome,
-          workspace,
-          projectId,
-          requestId,
-          failures: errorMessage ? 1 : 0,
-          elapsedMs: Math.max(0, Date.now() - turnStartedAt),
-        })
-      } catch (scoreErr) {
-        log('REWARD_SCORE_APPLY_FAIL', {
-          channel: 'chat',
-          error: scoreErr instanceof Error ? scoreErr.message : String(scoreErr),
-        }, logScope)
-      }
-    } catch (err) {
-      log('CHAT_TASK_MEMORY_SAVE_FAIL', {
-        error: err instanceof Error ? err.message : String(err),
-      }, logScope)
-    }
-  }
-
-  chatAbortControllers.set(requestId, abortController)
-
-  // Bridge: 开始任务时，立即更新项目状态并推送给移动端
-  try {
-    const mgr = getBridgeManager()
-    mgr.updateProjectStateAndPush(String(projectId ?? ''), {
-      isProcessing: true,
-      activeTaskId: requestId,
-    })
-  } catch (_) { /* bridge 未初始化时忽略 */ }
-
-  // Bridge: 发送用户消息到移动端
-  try {
-    const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user')
-    if (lastUserMessage) {
-      // 提取 content：如果是数组，提取文本和图片；如果是字符串，直接使用
-      let contentText = ''
-      let imageUrls: string[] = []
-      
-      if (Array.isArray(lastUserMessage.content)) {
-        for (const part of lastUserMessage.content) {
-          if (part.type === 'text') {
-            contentText += part.text
-          } else if (part.type === 'image_url') {
-            imageUrls.push(part.image_url.url)
-          }
-        }
-      } else {
-        contentText = lastUserMessage.content || ''
-      }
-      
-      getBridgeManager().sendHostMessage({
-        type: 'bridge:chat-user-message',
-        messageId: sourceUserMessageId || `user-${requestId}`,
-        content: contentText,
-        images: imageUrls.length > 0 ? imageUrls : undefined,
-        threadId: projectId,
-        timestamp: Date.now(),
-      })
-    }
-  } catch (_) { /* ignore bridge errors */ }
-
-  try {
-    for await (const chunk of requestChatCompletionStream(
-      provider as ProviderKey,
-      messages,
-      overrides as ProviderOverrides | undefined,
-      abortController.signal,
-      logScope,
-      (usage) => {
-        lastUsage = usage
-      },
-    )) {
-      rawAssistantFullText += chunk
-      const sanitizedFull = sanitizeUserFacingText(rawAssistantFullText)
-      if (sanitizedFull.length < emittedSanitizedText.length) {
-        emittedSanitizedText = sanitizedFull
-      }
-      const safeRawLen = Math.max(0, rawAssistantFullText.length - STREAM_SANITIZE_HOLD_BACK)
-      const safeRaw = rawAssistantFullText.slice(0, safeRawLen)
-      const sanitizedSafe = sanitizeUserFacingText(safeRaw)
-      const delta = sanitizedSafe.slice(emittedSanitizedText.length)
-      emittedSanitizedText = sanitizedSafe
-      assistantFullText = sanitizedFull
-      if (event.sender.isDestroyed()) return
-      if (delta) {
-        event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk: delta, done: false })
-        try {
-          getBridgeManager().sendHostMessage({
-            type: 'bridge:chat-delta',
-            messageId: sourceAssistantMessageId || requestId,
-            delta,
-            done: false,
-            threadId: projectId,
-          })
-          
-          // 关键修复：使用 updateProjectStateAndPush 实时推送状态变更
-          // 避免移动端因状态延迟而显示错误的发送按钮状态
-          const mgr = getBridgeManager()
-          const projectIdStr = String(projectId ?? '')
-          const assistantMessageId = sourceAssistantMessageId || requestId
-          mgr.updateProjectStateAndPush(projectIdStr, {
-            lastMessageId: assistantMessageId,
-            lastMessageRole: 'assistant',
-            lastMessageHasContent: true,
-            lastMessageIsStreaming: true,
-          })
-        } catch (_) { /* ignore bridge errors */ }
-      }
-    }
-    const finalSanitized = sanitizeUserFacingText(rawAssistantFullText)
-    const tailStart = Math.min(emittedSanitizedText.length, finalSanitized.length)
-    const tailDelta = finalSanitized.slice(tailStart)
-    assistantFullText = finalSanitized
-    if (tailDelta && !event.sender.isDestroyed()) {
-      event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk: tailDelta, done: false })
-      try {
-        getBridgeManager().sendHostMessage({
-          type: 'bridge:chat-delta',
-          messageId: sourceAssistantMessageId || requestId,
-          delta: tailDelta,
-          done: false,
-          threadId: projectId,
-        })
-      } catch (_) { /* ignore bridge errors */ }
-    }
-    if (!event.sender.isDestroyed()) {
-      event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk: '', done: true, usage: lastUsage })
-      try {
-        getBridgeManager().sendHostMessage({
-          type: 'bridge:chat-delta',
-          messageId: sourceAssistantMessageId || requestId,
-          delta: '',
-          done: true,
-          threadId: projectId,
-        })
-      } catch (_) { /* ignore bridge errors */ }
-    }
-    await persistChatTurnMemory('success', assistantFullText)
-  } catch (error) {
-    const aborted = abortController.signal.aborted || (error instanceof Error && error.name === 'AbortError')
-    if (aborted) {
-      if (!event.sender.isDestroyed()) {
-        event.sender.send(IpcChannel.CHAT_CHUNK, { requestId, chunk: '', done: true, usage: lastUsage })
-      }
-      try {
-        getBridgeManager().sendHostMessage({
-          type: 'bridge:chat-delta',
-          messageId: sourceAssistantMessageId || requestId,
-          delta: '',
-          done: true,
-          threadId: projectId,
-        })
-      } catch (_) { /* ignore bridge errors */ }
-      await persistChatTurnMemory('aborted', assistantFullText)
-      return
-    }
-    if (!event.sender.isDestroyed()) {
-      event.sender.send(IpcChannel.CHAT_CHUNK, {
-        requestId,
-        chunk: '',
-        done: true,
-        error: error instanceof Error ? error.message : 'Stream failed'
-      })
-    }
-    try {
-      getBridgeManager().sendHostMessage({
-        type: 'bridge:chat-delta',
-        messageId: sourceAssistantMessageId || requestId,
-        delta: '',
-        done: true,
-        threadId: projectId,
-      })
-    } catch (_) { /* ignore bridge errors */ }
-    await persistChatTurnMemory('error', assistantFullText, error instanceof Error ? error.message : 'Stream failed')
-  } finally {
-    chatAbortControllers.delete(requestId)
-    restoreSkillEnv()
-    try {
-      const mgr = getBridgeManager()
-      mgr.updateProjectStateAndPush(String(projectId ?? ''), {
-        isProcessing: false,
-        activeTaskId: undefined,
-      })
-    } catch (_) { /* bridge 未初始化时忽略 */ }
-  }
-}
-
-export function handleChatAbort(_event: IpcMainEvent, requestId: string) {
-  const controller = chatAbortControllers.get(requestId)
-  if (controller) {
-    controller.abort()
-    chatAbortControllers.delete(requestId)
-  }
-}
-
-/* ------------------------------------------------------------------ */
-/*  Agent handlers                                                     */
-/* ------------------------------------------------------------------ */
 
 export async function handleAgentStream(event: IpcMainEvent, payload: AgentStreamPayload): Promise<void> {
   const {

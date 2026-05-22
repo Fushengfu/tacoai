@@ -115,9 +115,9 @@ export function normalizeProviderId(value: unknown, fallback: AppStateProviderId
   return APP_PROVIDER_IDS.includes(text) ? text : fallback
 }
 
-export function normalizeMode(value: unknown): 'chat' | 'agent' | undefined {
+export function normalizeMode(value: unknown): 'agent' | undefined {
   const text = asTrimmedString(value)
-  if (text === 'chat' || text === 'agent') return text
+  if (text === 'agent') return text
   return undefined
 }
 

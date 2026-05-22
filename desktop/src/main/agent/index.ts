@@ -1068,7 +1068,6 @@ export async function runAgent(
     try {
       const toolCalls = [...toolUsageCount.values()].reduce((sum, count) => sum + count, 0)
       const scored = await applyRewardScore({
-        channel: 'agent',
         outcome,
         workspace,
         projectId,

@@ -202,7 +202,7 @@ function sanitizeThread(raw: unknown): AppStateThread | null {
     updatedAt: asTimestamp(obj.updatedAt),
     ...(modelConfigId ? { modelConfigId } : {}),
     ...(legacyProvider ? { provider: legacyProvider } : {}),
-    mode: modeRaw === 'chat' || modeRaw === 'agent' ? modeRaw : undefined,
+    mode: modeRaw === 'agent' ? 'agent' : undefined,
     workspace: asOptionalString(obj.workspace),
     projectRules: asOptionalString(obj.projectRules),
     sessions,
