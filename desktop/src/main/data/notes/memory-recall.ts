@@ -48,7 +48,7 @@ export type RecalledItem = {
 export type RecallMeta = {
   mode: 'normal' | 'high_pressure'
   usageTotalTokens?: number
-  maxTokens?: number
+  contextLength?: number
   pressureRatio?: number
   intentSource?: 'llm' | 'heuristic'
   intentType?: string
@@ -76,7 +76,7 @@ export type RecallDebugCandidate = {
 
 export type BuildBackgroundContextOptions = {
   usageTotalTokens?: number
-  maxTokens?: number
+  contextLength?: number
   reason?: 'initial' | 'post_compress'
   provider?: ProviderKey
   overrides?: ProviderOverrides
@@ -142,15 +142,15 @@ function tokenize(text: string): string[] {
   return Array.from(set).slice(0, 120)
 }
 
-function estimateBudgetChars(maxTokens?: number, usageTotalTokens?: number): { budgetChars: number; mode: 'normal' | 'high_pressure'; ratio?: number } {
-  if (typeof maxTokens !== 'number' || !Number.isFinite(maxTokens) || maxTokens <= 0) {
+function estimateBudgetChars(contextLength?: number, usageTotalTokens?: number): { budgetChars: number; mode: 'normal' | 'high_pressure'; ratio?: number } {
+  if (typeof contextLength !== 'number' || !Number.isFinite(contextLength) || contextLength <= 0) {
     return { budgetChars: 12000, mode: 'normal' }
   }
   const usage = (typeof usageTotalTokens === 'number' && Number.isFinite(usageTotalTokens) && usageTotalTokens > 0)
     ? usageTotalTokens
     : undefined
   if (!usage) return { budgetChars: 12000, mode: 'normal' }
-  const ratio = usage / maxTokens
+  const ratio = usage / contextLength
   if (ratio >= 0.8) return { budgetChars: 8000, mode: 'high_pressure', ratio }
   if (ratio >= 0.6) return { budgetChars: 12000, mode: 'normal', ratio }
   return { budgetChars: 18000, mode: 'normal', ratio }
@@ -213,7 +213,7 @@ function toRecalledItem(candidate: RecallCandidate): RecalledItem {
         summary: snapshot.summary,
         sourceMessageCount: snapshot.sourceMessageCount,
         usageTotalTokens: snapshot.usageTotalTokens ?? null,
-        maxTokens: snapshot.maxTokens ?? null,
+        contextLength: snapshot.contextLength ?? null,
         createdAt: snapshot.createdAt,
         updatedAt: snapshot.updatedAt,
       },
@@ -499,7 +499,7 @@ export async function recallBackgroundContext(
   }
 
   // 预算裁剪
-  const pressure = estimateBudgetChars(options?.maxTokens, options?.usageTotalTokens)
+  const pressure = estimateBudgetChars(options?.contextLength, options?.usageTotalTokens)
   const selected: RecalledItem[] = []
   const selectedKeys = new Set<string>()
   const droppedByBudgetKeys = new Set<string>()
@@ -557,7 +557,7 @@ export async function recallBackgroundContext(
     meta: {
       mode: pressure.mode,
       usageTotalTokens: options?.usageTotalTokens,
-      maxTokens: options?.maxTokens,
+      contextLength: options?.contextLength,
       pressureRatio: pressure.ratio,
       intentSource,
       intentType,

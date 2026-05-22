@@ -36,7 +36,7 @@ function upsertSnapshotRows(scope: MemoryScope, items: MemorySnapshotEntry[]): v
       String(item.summary || ''),
       Number(item.sourceMessageCount || 0),
       Number.isFinite(Number(item.usageTotalTokens)) ? Number(item.usageTotalTokens) : null,
-      Number.isFinite(Number(item.maxTokens)) ? Number(item.maxTokens) : null,
+      Number.isFinite(Number(item.contextLength)) ? Number(item.contextLength) : null,
       String(item.createdAt || ''),
       String(item.updatedAt || ''),
     )

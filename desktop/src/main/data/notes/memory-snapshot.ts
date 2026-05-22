@@ -27,7 +27,7 @@ export type MemorySnapshotEntry = {
   summary: string
   sourceMessageCount: number
   usageTotalTokens?: number
-  maxTokens?: number
+  contextLength?: number
   createdAt: string
   updatedAt: string
 }
@@ -42,7 +42,7 @@ type SnapshotLogInput = {
   summary: string
   sourceMessageCount: number
   usageTotalTokens?: number
-  maxTokens?: number
+  contextLength?: number
 }
 
 /* ------------------------------------------------------------------ */
@@ -82,7 +82,8 @@ export function normalizeMemorySnapshotEntry(raw: Partial<MemorySnapshotEntry>, 
     summary,
     sourceMessageCount,
     ...(Number.isFinite(Number(raw.usageTotalTokens)) ? { usageTotalTokens: Number(raw.usageTotalTokens) } : {}),
-    ...(Number.isFinite(Number(raw.maxTokens)) ? { maxTokens: Number(raw.maxTokens) } : {}),
+    ...(Number.isFinite(Number(raw.contextLength)) ? { contextLength: Number(raw.contextLength) } : {}),
+    ...(!Number.isFinite(Number(raw.contextLength)) && Number.isFinite(Number((raw as Record<string, unknown>).maxTokens)) ? { contextLength: Number((raw as Record<string, unknown>).maxTokens) } : {}),
     createdAt,
     updatedAt,
   }
@@ -123,7 +124,7 @@ export async function recordMemorySnapshot(workspace: string, input: SnapshotLog
     summary,
     sourceMessageCount,
     ...(Number.isFinite(Number(input.usageTotalTokens)) ? { usageTotalTokens: Number(input.usageTotalTokens) } : {}),
-    ...(Number.isFinite(Number(input.maxTokens)) ? { maxTokens: Number(input.maxTokens) } : {}),
+    ...(Number.isFinite(Number(input.contextLength)) ? { contextLength: Number(input.contextLength) } : {}),
     createdAt: now,
     updatedAt: now,
   }

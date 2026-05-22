@@ -36,7 +36,7 @@ type SettingsPageProps = {
 }
 
 type SettingsTab = 'general' | 'models' | 'upload' | 'gui_plus' | 'skills' | 'notes' | 'mcp'
-type ModelConfigDraft = Pick<ModelConfig, 'provider' | 'baseUrl' | 'apiKey' | 'model' | 'maxTokens' | 'temperature' | 'supportsVision'>
+type ModelConfigDraft = Pick<ModelConfig, 'provider' | 'baseUrl' | 'apiKey' | 'model' | 'contextLength' | 'temperature' | 'supportsVision'>
 
 function toModelDraft(model: ModelConfig): ModelConfigDraft {
   return {
@@ -44,7 +44,7 @@ function toModelDraft(model: ModelConfig): ModelConfigDraft {
     baseUrl: model.baseUrl,
     apiKey: model.apiKey,
     model: model.model,
-    maxTokens: model.maxTokens,
+    contextLength: model.contextLength,
     temperature: model.temperature ?? '',
     supportsVision: Boolean(model.supportsVision),
   }
@@ -499,7 +499,7 @@ export function SettingsPage({
       || selectedModel.baseUrl !== modelDraft.baseUrl
       || selectedModel.apiKey !== modelDraft.apiKey
       || selectedModel.model !== modelDraft.model
-      || selectedModel.maxTokens !== modelDraft.maxTokens
+      || selectedModel.contextLength !== modelDraft.contextLength
       || (selectedModel.temperature ?? '') !== modelDraft.temperature
       || Boolean(selectedModel.supportsVision) !== Boolean(modelDraft.supportsVision)
     ),

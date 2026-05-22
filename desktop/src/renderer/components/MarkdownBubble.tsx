@@ -240,7 +240,11 @@ export function MarkdownBubble({ content, streaming, workspace, onOpenProjectFil
                 </a>
               )
             },
-            code({ className, children, ...rest }) {
+            // 覆盖 pre 元素：避免 react-markdown v10 自动包裹 <pre> 导致嵌套
+            pre({ children }) {
+              return <>{children}</>
+            },
+            code({ className, children, node, ...rest }) {
               const isBlock = /language-/.test(className ?? '')
               if (isBlock) {
                 const lang = (className ?? '').replace('language-', '')

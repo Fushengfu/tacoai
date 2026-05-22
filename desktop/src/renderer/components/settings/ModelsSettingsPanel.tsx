@@ -170,13 +170,13 @@ export function ModelsSettingsPanel({
                     />
                   </label>
                   <label className="settings-field">
-                    <span>Max Tokens</span>
+                    <span>上下文长度</span>
                     <input
                       type="number"
                       min={1}
                       step={1}
-                      value={modelDraft.maxTokens}
-                      onChange={(e) => onModelDraftFieldChange('maxTokens', e.target.value)}
+                      value={modelDraft.contextLength}
+                      onChange={(e) => onModelDraftFieldChange('contextLength', e.target.value)}
                       placeholder="131072（示例）"
                     />
                   </label>

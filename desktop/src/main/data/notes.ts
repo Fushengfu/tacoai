@@ -247,7 +247,7 @@ export type MemoryMaintainOptions = {
   provider?: ProviderKey
   overrides?: ProviderOverrides
   usageTotalTokens?: number
-  maxTokens?: number
+  contextLength?: number
   signal?: AbortSignal
   logScope?: string
 }
@@ -257,7 +257,7 @@ export type MemorySnapshotEntry = {
   summary: string
   sourceMessageCount: number
   usageTotalTokens?: number
-  maxTokens?: number
+  contextLength?: number
   createdAt: string
   updatedAt: string
 }
@@ -266,7 +266,7 @@ type SnapshotLogInput = {
   summary: string
   sourceMessageCount: number
   usageTotalTokens?: number
-  maxTokens?: number
+  contextLength?: number
 }
 
 const TASK_MEMORY_MAX_ENTRIES = 400
@@ -717,7 +717,8 @@ function normalizeMemorySnapshotEntry(raw: Partial<MemorySnapshotEntry>, index: 
     summary,
     sourceMessageCount,
     ...(Number.isFinite(Number(raw.usageTotalTokens)) ? { usageTotalTokens: Number(raw.usageTotalTokens) } : {}),
-    ...(Number.isFinite(Number(raw.maxTokens)) ? { maxTokens: Number(raw.maxTokens) } : {}),
+    ...(Number.isFinite(Number(raw.contextLength)) ? { contextLength: Number(raw.contextLength) } : {}),
+    ...(!Number.isFinite(Number(raw.contextLength)) && Number.isFinite(Number((raw as Record<string, unknown>).maxTokens)) ? { contextLength: Number((raw as Record<string, unknown>).maxTokens) } : {}),
     createdAt,
     updatedAt,
   }
@@ -846,7 +847,7 @@ export async function recordMemorySnapshot(workspace: string, input: SnapshotLog
     summary,
     sourceMessageCount,
     ...(Number.isFinite(Number(input.usageTotalTokens)) ? { usageTotalTokens: Number(input.usageTotalTokens) } : {}),
-    ...(Number.isFinite(Number(input.maxTokens)) ? { maxTokens: Number(input.maxTokens) } : {}),
+    ...(Number.isFinite(Number(input.contextLength)) ? { contextLength: Number(input.contextLength) } : {}),
     createdAt: now,
     updatedAt: now,
   }
@@ -1226,8 +1227,8 @@ function shouldRunMemoryMaintain(scope: string, options?: MemoryMaintainOptions)
   const usage = typeof options?.usageTotalTokens === 'number' && Number.isFinite(options.usageTotalTokens) && options.usageTotalTokens > 0
     ? options.usageTotalTokens
     : undefined
-  const max = typeof options?.maxTokens === 'number' && Number.isFinite(options.maxTokens) && options.maxTokens > 0
-    ? options.maxTokens
+  const max = typeof options?.contextLength === 'number' && Number.isFinite(options.contextLength) && options.contextLength > 0
+    ? options.contextLength
     : undefined
   if (!usage || !max) return { run: false, reason: 'missing_usage_or_budget' }
   const ratio = usage / max
@@ -1412,9 +1413,9 @@ export async function maintainTaskMemoriesByAI(
       { workspace, projectId },
       {
         usageTotalTokens: options?.usageTotalTokens,
-        maxTokens: options?.maxTokens,
-        pressureRatio: (typeof options?.usageTotalTokens === 'number' && typeof options?.maxTokens === 'number' && options.maxTokens > 0)
-          ? options.usageTotalTokens / options.maxTokens
+        contextLength: options?.contextLength,
+        pressureRatio: (typeof options?.usageTotalTokens === 'number' && typeof options?.contextLength === 'number' && options.contextLength > 0)
+          ? options.usageTotalTokens / options.contextLength
           : undefined,
         totalCandidates: candidates.length,
         mergedCount,
@@ -1469,7 +1470,7 @@ export type RecalledItem = {
 export type RecallMeta = {
   mode: 'normal' | 'high_pressure'
   usageTotalTokens?: number
-  maxTokens?: number
+  contextLength?: number
   pressureRatio?: number
   intentSource?: 'llm' | 'heuristic'
   intentType?: string
@@ -1495,7 +1496,7 @@ export type RecallDebugCandidate = {
 
 type BuildBackgroundContextOptions = {
   usageTotalTokens?: number
-  maxTokens?: number
+  contextLength?: number
   reason?: 'initial' | 'post_compress'
   provider?: ProviderKey
   overrides?: ProviderOverrides
@@ -1545,8 +1546,8 @@ function daysAgoScore(ts: number): number {
 
 
 
-function estimateBudgetChars(maxTokens?: number, usageTotalTokens?: number): { budgetChars: number; mode: 'normal' | 'high_pressure'; ratio?: number } {
-  if (typeof maxTokens !== 'number' || !Number.isFinite(maxTokens) || maxTokens <= 0) {
+function estimateBudgetChars(contextLength?: number, usageTotalTokens?: number): { budgetChars: number; mode: 'normal' | 'high_pressure'; ratio?: number } {
+  if (typeof contextLength !== 'number' || !Number.isFinite(contextLength) || contextLength <= 0) {
     return { budgetChars: 12000, mode: 'normal' }
   }
   const usage = (typeof usageTotalTokens === 'number' && Number.isFinite(usageTotalTokens) && usageTotalTokens > 0)
@@ -1554,7 +1555,7 @@ function estimateBudgetChars(maxTokens?: number, usageTotalTokens?: number): { b
     : undefined
   if (!usage) return { budgetChars: 12000, mode: 'normal' }
 
-  const ratio = usage / maxTokens
+  const ratio = usage / contextLength
   if (ratio >= 0.8) return { budgetChars: 8000, mode: 'high_pressure', ratio }
   if (ratio >= 0.6) return { budgetChars: 12000, mode: 'normal', ratio }
   return { budgetChars: 18000, mode: 'normal', ratio }
@@ -1622,7 +1623,7 @@ function toRecalledItem(candidate: RecallCandidate): RecalledItem {
         summary: snapshot.summary,
         sourceMessageCount: snapshot.sourceMessageCount,
         usageTotalTokens: snapshot.usageTotalTokens ?? null,
-        maxTokens: snapshot.maxTokens ?? null,
+        contextLength: snapshot.contextLength ?? null,
         createdAt: snapshot.createdAt,
         updatedAt: snapshot.updatedAt,
       },
@@ -1763,7 +1764,7 @@ async function recallBackgroundContext(
   })
 
 
-  const pressure = estimateBudgetChars(options?.maxTokens, options?.usageTotalTokens)
+  const pressure = estimateBudgetChars(options?.contextLength, options?.usageTotalTokens)
   const selected: RecalledItem[] = []
   const selectedKeys = new Set<string>()
   const droppedByBudgetKeys = new Set<string>()
@@ -1821,7 +1822,7 @@ async function recallBackgroundContext(
     meta: {
       mode: pressure.mode,
       usageTotalTokens: options?.usageTotalTokens,
-      maxTokens: options?.maxTokens,
+      contextLength: options?.contextLength,
       pressureRatio: pressure.ratio,
       intentSource,
       intentSummary,
@@ -1862,13 +1863,13 @@ function sortMemorySnapshotsAsc(items: MemorySnapshotEntry[]): MemorySnapshotEnt
   })
 }
 
-function estimateReplayBudgetChars(maxTokens?: number, replayMode: 'full' | 'compact' = 'full'): number {
+function estimateReplayBudgetChars(contextLength?: number, replayMode: 'full' | 'compact' = 'full'): number {
   const defaultBudget = replayMode === 'compact' ? 9000 : 18000
-  if (typeof maxTokens !== 'number' || !Number.isFinite(maxTokens) || maxTokens <= 0) {
+  if (typeof contextLength !== 'number' || !Number.isFinite(contextLength) || contextLength <= 0) {
     return defaultBudget
   }
   const ratio = replayMode === 'compact' ? 0.12 : 0.2
-  const approxChars = Math.floor(maxTokens * 3.4 * ratio)
+  const approxChars = Math.floor(contextLength * 3.4 * ratio)
   const min = replayMode === 'compact' ? 5000 : 12000
   const max = replayMode === 'compact' ? 32000 : 64000
   return Math.max(min, Math.min(max, approxChars))
@@ -1923,7 +1924,7 @@ export async function buildBackgroundContextConversationMessages(
   
   const recalled = await recallBackgroundContext(workspace, projectId, normalizedQuery, options)
   const replayMode = options?.replayMode ?? (options?.reason === 'post_compress' ? 'compact' : 'full')
-  const replayBudgetChars = estimateReplayBudgetChars(options?.maxTokens, replayMode)
+  const replayBudgetChars = estimateReplayBudgetChars(options?.contextLength, replayMode)
   const safeUserQuery = extractUserQueryText(normalizedQuery)
   const userAssetsBlock = extractUserAssetsBlock(normalizedQuery)
 

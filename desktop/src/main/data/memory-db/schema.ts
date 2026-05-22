@@ -70,7 +70,7 @@ export type MemorySnapshotEntry = {
   summary: string
   sourceMessageCount: number
   usageTotalTokens?: number
-  maxTokens?: number
+  contextLength?: number
   createdAt: string
   updatedAt: string
 }

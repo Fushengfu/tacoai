@@ -109,7 +109,7 @@ function normalizeModelConfig(raw: unknown, index: number): AppStateModelConfig 
     baseUrl: asString(obj.baseUrl).trim(),
     apiKey: asString(obj.apiKey).trim(),
     model,
-    maxTokens: asString(obj.maxTokens).trim(),
+    contextLength: asString(obj.contextLength).trim(),
     temperature: asString(obj.temperature).trim(),
     supportsVision: asBoolean(obj.supportsVision),
     ...(typeof asOptionalTimestamp(obj.createdAt) === 'number' ? { createdAt: asOptionalTimestamp(obj.createdAt) } : {}),
@@ -127,9 +127,9 @@ function legacyProviderFormsToModelConfigs(raw: unknown): AppStateModelConfig[] 
     const baseUrl = asString(formObj.baseUrl).trim()
     const apiKey = asString(formObj.apiKey).trim()
     const model = asString(formObj.model).trim()
-    const maxTokens = asString(formObj.maxTokens).trim()
+    const contextLength = asString(formObj.contextLength).trim()
     const temperature = asString(formObj.temperature).trim()
-    if (!baseUrl && !apiKey && !model && !maxTokens && !temperature) continue
+    if (!baseUrl && !apiKey && !model && !contextLength && !temperature) continue
     out.push({
       id: `legacy-${provider}-0`,
       provider,
@@ -137,7 +137,7 @@ function legacyProviderFormsToModelConfigs(raw: unknown): AppStateModelConfig[] 
       baseUrl,
       apiKey,
       model,
-      maxTokens,
+      contextLength,
       temperature,
       supportsVision: false,
       createdAt: now,

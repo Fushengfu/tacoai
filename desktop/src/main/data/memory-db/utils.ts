@@ -188,7 +188,7 @@ export function rowToSnapshotEntry(row: Record<string, unknown>): MemorySnapshot
     summary: String(row.summary || ''),
     sourceMessageCount: Number(row.source_message_count || 0),
     ...(Number.isFinite(Number(row.usage_total_tokens)) ? { usageTotalTokens: Number(row.usage_total_tokens) } : {}),
-    ...(Number.isFinite(Number(row.max_tokens)) ? { maxTokens: Number(row.max_tokens) } : {}),
+    ...(Number.isFinite(Number(row.max_tokens)) ? { contextLength: Number(row.max_tokens) } : {}),
     createdAt: String(row.created_at || ''),
     updatedAt: String(row.updated_at || ''),
   }
@@ -298,7 +298,7 @@ export function normalizeModelConfigForStorage(raw: unknown, index: number, nowT
     baseUrl: asTrimmedString(item.baseUrl),
     apiKey: asTrimmedString(item.apiKey),
     model,
-    maxTokens: asTrimmedString(item.maxTokens),
+    contextLength: asTrimmedString(item.contextLength),
     temperature: asTrimmedString(item.temperature),
     supportsVision: asBooleanFlag(item.supportsVision),
     ...(typeof parseOptionalTimestamp(item.createdAt) === 'number'
@@ -319,9 +319,9 @@ export function normalizeLegacyProviderFormsForStorage(raw: unknown, nowTs: numb
     const baseUrl = asTrimmedString(formObj.baseUrl)
     const apiKey = asTrimmedString(formObj.apiKey)
     const model = asTrimmedString(formObj.model)
-    const maxTokens = asTrimmedString(formObj.maxTokens)
+    const contextLength = asTrimmedString(formObj.contextLength)
     const temperature = asTrimmedString(formObj.temperature)
-    if (!baseUrl && !apiKey && !model && !maxTokens && !temperature) return
+    if (!baseUrl && !apiKey && !model && !contextLength && !temperature) return
     configs.push({
       id: `legacy-${provider}-0`,
       provider,
@@ -329,7 +329,7 @@ export function normalizeLegacyProviderFormsForStorage(raw: unknown, nowTs: numb
       baseUrl,
       apiKey,
       model,
-      maxTokens,
+      contextLength,
       temperature,
       supportsVision: false,
       createdAt: nowTs + index,

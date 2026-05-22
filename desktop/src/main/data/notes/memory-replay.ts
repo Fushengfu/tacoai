@@ -63,13 +63,13 @@ function sortTaskMemoriesAsc(items: TaskMemoryEntry[]): TaskMemoryEntry[] {
   })
 }
 
-function estimateReplayBudgetChars(maxTokens?: number, replayMode: 'full' | 'compact' = 'full'): number {
+function estimateReplayBudgetChars(contextLength?: number, replayMode: 'full' | 'compact' = 'full'): number {
   const defaultBudget = replayMode === 'compact' ? 9000 : 18000
-  if (typeof maxTokens !== 'number' || !Number.isFinite(maxTokens) || maxTokens <= 0) {
+  if (typeof contextLength !== 'number' || !Number.isFinite(contextLength) || contextLength <= 0) {
     return defaultBudget
   }
   const ratio = replayMode === 'compact' ? 0.12 : 0.2
-  const approxChars = Math.floor(maxTokens * 3.4 * ratio)
+  const approxChars = Math.floor(contextLength * 3.4 * ratio)
   const min = replayMode === 'compact' ? 5000 : 12000
   const max = replayMode === 'compact' ? 32000 : 64000
   return Math.max(min, Math.min(max, approxChars))
@@ -125,7 +125,7 @@ export async function buildBackgroundContextConversationMessages(
   
   const recalled = await recallBackgroundContext(workspace, projectId, normalizedQuery, options)
   const replayMode = options?.replayMode ?? (options?.reason === 'post_compress' ? 'compact' : 'full')
-  const replayBudgetChars = estimateReplayBudgetChars(options?.maxTokens, replayMode)
+  const replayBudgetChars = estimateReplayBudgetChars(options?.contextLength, replayMode)
   const safeUserQuery = extractUserQueryText(normalizedQuery)
   const userAssetsBlock = extractUserAssetsBlock(normalizedQuery)
 

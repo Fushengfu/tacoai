@@ -8,7 +8,7 @@ import { normalizeScope } from './schema'
 
 export function insertMemoryMaintainRun(scope: MemoryScope, input: {
   usageTotalTokens?: number
-  maxTokens?: number
+  contextLength?: number
   pressureRatio?: number
   totalCandidates: number
   mergedCount: number
@@ -29,7 +29,7 @@ export function insertMemoryMaintainRun(scope: MemoryScope, input: {
     normalized.projectId,
     normalized.scopeKey,
     Number.isFinite(Number(input.usageTotalTokens)) ? Number(input.usageTotalTokens) : null,
-    Number.isFinite(Number(input.maxTokens)) ? Number(input.maxTokens) : null,
+    Number.isFinite(Number(input.contextLength)) ? Number(input.contextLength) : null,
     Number.isFinite(Number(input.pressureRatio)) ? Number(input.pressureRatio) : null,
     Number(input.totalCandidates || 0),
     Number(input.mergedCount || 0),

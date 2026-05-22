@@ -283,6 +283,7 @@ export function ChatPanel({
   const BOTTOM_THRESHOLD = 240
   const [visibleMessageCount, setVisibleMessageCount] = useState(() => Math.min(messages.length, INITIAL_VISIBLE_MESSAGE_COUNT))
   const prependAnchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
+  const prevSessionIdRef = useRef<string | null>(activeSessionId ?? null)
   
   // ── 语言切换 ──
   const { language, toggleLanguage, t, isZhCN } = useLanguage()
@@ -842,14 +843,6 @@ export function ChatPanel({
     return () => el.removeEventListener('scroll', check)
   }, [scrollRef])
 
-  // 记录本次渲染前用户是否在底部（DOM 更新前快照）
-  useLayoutEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const distanceToBottom = Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight)
-    wasAtBottomBeforeRenderRef.current = distanceToBottom < BOTTOM_THRESHOLD
-  })
-
   // 跟踪最后一条 AI 消息的内容长度（用于触发滚动）
   const lastAssistantContentLen = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -860,13 +853,48 @@ export function ChatPanel({
     return 0
   }, [messages])
 
+  // 检测会话切换，强制标记需要滚动到底部
+  useEffect(() => {
+    const prevSessionId = prevSessionIdRef.current
+    if (prevSessionId !== activeSessionId) {
+      prevSessionIdRef.current = activeSessionId ?? null
+      // 会话切换，强制标记滚动到底部
+      isNearBottomRef.current = true
+      wasAtBottomBeforeRenderRef.current = true
+    }
+  }, [activeSessionId])
+
+  // 记录本次渲染前用户是否在底部（DOM 更新前快照）
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const distanceToBottom = Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight)
+    wasAtBottomBeforeRenderRef.current = distanceToBottom < BOTTOM_THRESHOLD
+  })
+
   // 滚动到底部：在 DOM 更新后同步执行
+  // - 用户在底部时，流式输出自动跟随滚动
+  // - 用户向上查看历史时，不自动滚动
+  // - 会话切换时，强制滚动到底部
   useLayoutEffect(() => {
     const el = scrollRef.current
     if (!el) return
     if (!wasAtBottomBeforeRenderRef.current) return
     el.scrollTop = el.scrollHeight
   }, [messages.length, lastAssistantContentLen, scrollRef])
+
+  // 挂载时（切换项目/会话）强制滚动到底部
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    // 使用 requestAnimationFrame 确保 DOM 已渲染完成
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight
+      isNearBottomRef.current = true
+      wasAtBottomBeforeRenderRef.current = true
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   function isWindowsAbsolutePath(text: string): boolean {
     return /^[a-zA-Z]:[\\/]/.test(text) || text.startsWith('\\\\')

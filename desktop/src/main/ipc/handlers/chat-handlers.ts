@@ -113,7 +113,7 @@ export async function handleAgentStream(event: IpcMainEvent, payload: AgentStrea
     messages,
     overrides,
     workspace,
-    maxTokens,
+    contextLength,
     images,
     projectId,
     recallDebug,
@@ -207,7 +207,7 @@ export async function handleAgentStream(event: IpcMainEvent, payload: AgentStrea
           }
         } catch (_) { /* ignore bridge errors */ }
       },
-      maxTokens,
+      contextLength,
       abortController.signal,
       projectId,
       sessionId,

@@ -263,7 +263,7 @@ function validateModelConfig(config: {
   baseUrl?: string
   apiKey?: string
   model?: string
-  maxTokens?: string
+  contextLength?: string
   temperature?: string | number
 }): ModelConfigValidation {
   const errors: string[] = []
@@ -307,14 +307,14 @@ function validateModelConfig(config: {
     }
   }
 
-  // 5. Max Tokens 验证
-  const maxTokens = String(config.maxTokens ?? '').trim()
-  if (maxTokens) {
-    const tokens = Number(maxTokens)
+  // 5. 上下文长度验证
+  const contextLength = String(config.contextLength ?? '').trim()
+  if (contextLength) {
+    const tokens = Number(contextLength)
     if (!Number.isInteger(tokens) || tokens <= 0) {
-      errors.push('Max Tokens 必须是正整数')
-    } else if (tokens > 1000000) {
-      errors.push('Max Tokens 不能超过 1000000')
+      errors.push('上下文长度必须是正整数')
+    } else if (tokens > 10000000) {
+      errors.push('上下文长度不能超过 10000000')
     }
   }
 
@@ -504,8 +504,8 @@ export type SendMessageParams = {
   modelConfig: ModelConfig
   /** Agent 模式的工作空间目录 */
   workspace?: string
-  /** 模型上下文窗口大小（token 数），用于自动压缩 */
-  maxTokens?: number
+  /** 上下文窗口大小（token 数），用于自动压缩 */
+  contextLength?: number
   /** 首条消息时回调，用于自动命名线程 */
   onFirstMessage?: (autoTitle: string) => void
   /** 完成后回调，用于更新线程时间戳 */
@@ -1195,7 +1195,7 @@ export function useChat() {
   /* ------------------------------------------------------------------ */
 
   async function sendMessage(params: SendMessageParams) {
-    const { threadId, projectId, projectRules, content, images, attachments, provider, modelConfig, workspace, maxTokens, onFirstMessage, onComplete } = params
+    const { threadId, projectId, projectRules, content, images, attachments, provider, modelConfig, workspace, contextLength, onFirstMessage, onComplete } = params
     
     // 处理 content 参数：支持字符串或数组
     const contentText = Array.isArray(content) 
@@ -1259,7 +1259,7 @@ export function useChat() {
       baseUrl: modelConfig.baseUrl,
       apiKey: modelConfig.apiKey,
       model: modelConfig.model,
-      maxTokens: modelConfig.maxTokens,
+      contextLength: modelConfig.contextLength,
       temperature: modelConfig.temperature,
     })
     
@@ -1597,7 +1597,7 @@ export function useChat() {
                 overrides,
                 projectId,
                 workspace: params.workspace ?? '',
-                maxTokens,
+                contextLength,
                 recallDebug: isRecallDebugEnabled(),
                 sessionId: threadId,
                 sourceUserMessageId,
@@ -1685,7 +1685,7 @@ export function useChat() {
    * 用于「编辑后重发」或「原样重发」场景：先由外部修改好 messages，再调用此方法。
    */
   async function resendFromExisting(params: Omit<SendMessageParams, 'content'>) {
-    const { threadId, projectId, projectRules, provider, modelConfig, workspace, maxTokens, onFirstMessage, onComplete } = params
+    const { threadId, projectId, projectRules, provider, modelConfig, workspace, contextLength, onFirstMessage, onComplete } = params
     rememberSessionStoreMeta(threadId, { projectId, workspace })
 
     const currentMsgs = threadMessagesRef.current[threadId] ?? []
@@ -1937,7 +1937,7 @@ export function useChat() {
             overrides,
             projectId,
             workspace: workspace ?? '',
-            maxTokens,
+            contextLength,
             recallDebug: isRecallDebugEnabled(),
             sessionId: threadId,
             sourceUserMessageId,

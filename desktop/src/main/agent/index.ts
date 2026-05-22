@@ -437,7 +437,7 @@ async function compressAgentContext(
         summary,
         sourceMessageCount: compressCount,
         usageTotalTokens: usageTotalTokensHint,
-        maxTokens: tokenBudget,
+        contextLength: tokenBudget,
       },
       projectId,
     )
@@ -450,7 +450,7 @@ async function compressAgentContext(
     provider,
     overrides,
     usageTotalTokens: usageTotalTokensHint,
-    maxTokens: tokenBudget,
+    contextLength: tokenBudget,
     signal,
     logScope,
   }).catch((err) => {
@@ -481,7 +481,7 @@ async function compressAgentContext(
  * @param overrides    provider 配置覆盖
  * @param workspace    工作空间目录（工具操作的安全边界）
  * @param onEvent      事件回调，每次有新事件时调用
- * @param maxTokens    模型上下文窗口大小（token 数），用于自动压缩
+ * @param contextLength 上下文窗口大小（token 数），用于自动压缩
  * @param signal       AbortSignal，外部可通过它终止 agent 循环
  */
 export async function runAgent(
@@ -490,7 +490,7 @@ export async function runAgent(
   overrides: ProviderOverrides | undefined,
   workspace: string,
   onEvent?: (event: AgentEvent) => void,
-  maxTokens?: number,
+  contextLength?: number,
   signal?: AbortSignal,
   projectId?: string,
   sessionId?: string,
@@ -628,7 +628,7 @@ export async function runAgent(
         userContent,
         projectId,
         {
-          maxTokens,
+          contextLength,
           reason: 'initial',
           replayMode: 'full',
           provider,
@@ -987,7 +987,7 @@ export async function runAgent(
             provider,
             overrides,
             usageTotalTokens: lastUsageTotalTokens,
-            maxTokens,
+            contextLength,
             signal,
             logScope,
           })
@@ -1037,7 +1037,7 @@ export async function runAgent(
     }
   }
 
-  const tokenBudget = maxTokens ?? 131072
+  const tokenBudget = contextLength ?? 131072
   let lastUsageTotalTokens: number | undefined
   let contextRetries = 0
   let lastAssistantText = ''

@@ -29,7 +29,7 @@ export type MemoryMaintainOptions = {
   provider?: ProviderKey
   overrides?: ProviderOverrides
   usageTotalTokens?: number
-  maxTokens?: number
+  contextLength?: number
   signal?: AbortSignal
   logScope?: string
 }
@@ -153,8 +153,8 @@ function shouldRunMemoryMaintain(scope: string, options?: MemoryMaintainOptions)
   const usage = typeof options?.usageTotalTokens === 'number' && Number.isFinite(options.usageTotalTokens) && options.usageTotalTokens > 0
     ? options.usageTotalTokens
     : undefined
-  const max = typeof options?.maxTokens === 'number' && Number.isFinite(options.maxTokens) && options.maxTokens > 0
-    ? options.maxTokens
+  const max = typeof options?.contextLength === 'number' && Number.isFinite(options.contextLength) && options.contextLength > 0
+    ? options.contextLength
     : undefined
   if (!usage || !max) return { run: false, reason: 'missing_usage_or_budget' }
   const ratio = usage / max
@@ -364,9 +364,9 @@ export async function maintainTaskMemoriesByAI(
       { workspace, projectId },
       {
         usageTotalTokens: options?.usageTotalTokens,
-        maxTokens: options?.maxTokens,
-        pressureRatio: (typeof options?.usageTotalTokens === 'number' && typeof options?.maxTokens === 'number' && options.maxTokens > 0)
-          ? options.usageTotalTokens / options.maxTokens
+        contextLength: options?.contextLength,
+        pressureRatio: (typeof options?.usageTotalTokens === 'number' && typeof options?.contextLength === 'number' && options.contextLength > 0)
+          ? options.usageTotalTokens / options.contextLength
           : undefined,
         totalCandidates: candidates.length,
         mergedCount,

@@ -294,8 +294,8 @@ export type ChatStreamPayload = {
   projectId?: string
   /** 当前工作空间（用于日志隔离） */
   workspace?: string
-  /** 模型上下文窗口大小（token 数），用于记忆整理阈值判定 */
-  maxTokens?: number
+  /** 上下文窗口大小（token 数），用于记忆整理阈值判定 */
+  contextLength?: number
   /** 会话 ID（通常等于 threadId），用于任务记忆指向原始会话 */
   sessionId?: string
   /** 本轮用户消息 ID（用于任务记忆定位原始提问） */
@@ -335,8 +335,8 @@ export type AgentStreamPayload = {
   projectId?: string
   /** Agent 工作空间目录 */
   workspace: string
-  /** 模型上下文窗口大小（token 数），用于 agent 循环内自动压缩 */
-  maxTokens?: number
+  /** 上下文窗口大小（token 数），用于 agent 循环内自动压缩 */
+  contextLength?: number
   /** 是否开启召回调试日志（默认 false） */
   recallDebug?: boolean
   /**
@@ -765,7 +765,8 @@ export type AppStateModelConfig = {
   baseUrl: string
   apiKey: string
   model: string
-  maxTokens: string
+  /** 上下文窗口大小（token 数） */
+  contextLength: string
   temperature?: string
   supportsVision?: boolean
   createdAt?: number
@@ -1076,6 +1077,7 @@ export type GatewayModelItem = {
   maxTokens: string
   temperature: string
   contextLength: number
+  supportsVision: boolean
   displayName: string
   description: string
   sortOrder: number

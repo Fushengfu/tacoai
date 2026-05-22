@@ -33,7 +33,7 @@ function nowTs(): number {
 function hasLegacyProviderState(forms: ProviderForms): boolean {
   return providers.some((provider) => {
     const form = forms[provider.id]
-    return Boolean(form?.baseUrl || form?.apiKey || form?.model || form?.maxTokens || form?.temperature)
+    return Boolean(form?.baseUrl || form?.apiKey || form?.model || form?.contextLength || form?.temperature)
   })
 }
 
@@ -42,7 +42,7 @@ function fromLegacyProviderForms(forms: ProviderForms): ModelConfig[] {
   return providers
     .map((item, index) => {
       const form = forms[item.id]
-      const hasAnyValue = Boolean(form?.baseUrl || form?.apiKey || form?.model || form?.maxTokens || form?.temperature)
+      const hasAnyValue = Boolean(form?.baseUrl || form?.apiKey || form?.model || form?.contextLength || form?.temperature)
       if (!hasAnyValue) return null
       const fallbackName = form?.model?.trim() || item.label
       return {
@@ -52,7 +52,7 @@ function fromLegacyProviderForms(forms: ProviderForms): ModelConfig[] {
         baseUrl: asText(form?.baseUrl),
         apiKey: asText(form?.apiKey),
         model: asText(form?.model),
-        maxTokens: asText(form?.maxTokens),
+        contextLength: asText(form?.contextLength),
         temperature: asText(form?.temperature),
         supportsVision: false,
         createdAt,
@@ -84,7 +84,7 @@ function normalizeModelConfig(raw: unknown, index: number): ModelConfig | null {
     baseUrl: asText(obj.baseUrl),
     apiKey: asText(obj.apiKey),
     model,
-    maxTokens: asText(obj.maxTokens),
+    contextLength: asText(obj.contextLength),
     temperature: asText(obj.temperature),
     supportsVision: asBoolean(obj.supportsVision),
     ...(Number.isFinite(createdAt) ? { createdAt: Math.max(0, Math.floor(createdAt)) } : {}),
@@ -120,7 +120,7 @@ function toPersistPayload(configs: ModelConfig[], activeModelConfigId: string): 
     baseUrl: item.baseUrl,
     apiKey: item.apiKey,
     model: item.model,
-    maxTokens: item.maxTokens,
+    contextLength: item.contextLength,
     temperature: asText(item.temperature),
     supportsVision: Boolean(item.supportsVision),
     ...(typeof item.createdAt === 'number' ? { createdAt: item.createdAt } : {}),
@@ -224,7 +224,7 @@ export function useProviderSettings() {
       baseUrl: asText(initial?.baseUrl),
       apiKey: asText(initial?.apiKey),
       model: asText(initial?.model),
-      maxTokens: asText(initial?.maxTokens),
+      contextLength: asText(initial?.contextLength),
       temperature: asText(initial?.temperature),
       supportsVision: Boolean(initial?.supportsVision),
       createdAt: ts,
@@ -257,7 +257,7 @@ export function useProviderSettings() {
         baseUrl: typeof patch.baseUrl === 'string' ? patch.baseUrl : item.baseUrl,
         apiKey: typeof patch.apiKey === 'string' ? patch.apiKey : item.apiKey,
         model: typeof patch.model === 'string' ? patch.model : item.model,
-        maxTokens: typeof patch.maxTokens === 'string' ? patch.maxTokens : item.maxTokens,
+        contextLength: typeof patch.contextLength === 'string' ? patch.contextLength : item.contextLength,
         temperature: typeof patch.temperature === 'string' ? patch.temperature : item.temperature,
         supportsVision: typeof patch.supportsVision === 'boolean' ? patch.supportsVision : item.supportsVision,
         updatedAt: nowTs(),

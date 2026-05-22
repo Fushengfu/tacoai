@@ -57,7 +57,7 @@ export type MemorySnapshotEntry = {
   summary: string
   sourceMessageCount: number
   usageTotalTokens?: number
-  maxTokens?: number
+  contextLength?: number
   createdAt: string
   updatedAt: string
 }
@@ -566,7 +566,7 @@ function rowToSnapshotEntry(row: Record<string, unknown>): MemorySnapshotEntry {
     summary: String(row.summary || ''),
     sourceMessageCount: Number(row.source_message_count || 0),
     ...(Number.isFinite(Number(row.usage_total_tokens)) ? { usageTotalTokens: Number(row.usage_total_tokens) } : {}),
-    ...(Number.isFinite(Number(row.max_tokens)) ? { maxTokens: Number(row.max_tokens) } : {}),
+    ...(Number.isFinite(Number(row.max_tokens)) ? { contextLength: Number(row.max_tokens) } : {}),
     createdAt: String(row.created_at || ''),
     updatedAt: String(row.updated_at || ''),
   }
@@ -832,7 +832,7 @@ function upsertSnapshotRows(scope: MemoryScope, items: MemorySnapshotEntry[]): v
       String(item.summary || ''),
       Number(item.sourceMessageCount || 0),
       Number.isFinite(Number(item.usageTotalTokens)) ? Number(item.usageTotalTokens) : null,
-      Number.isFinite(Number(item.maxTokens)) ? Number(item.maxTokens) : null,
+      Number.isFinite(Number(item.contextLength)) ? Number(item.contextLength) : null,
       String(item.createdAt || ''),
       String(item.updatedAt || ''),
     )
@@ -881,7 +881,7 @@ export function importMemorySnapshots(scope: MemoryScope, items: MemorySnapshotE
 
 export function insertMemoryMaintainRun(scope: MemoryScope, input: {
   usageTotalTokens?: number
-  maxTokens?: number
+  contextLength?: number
   pressureRatio?: number
   totalCandidates: number
   mergedCount: number
@@ -902,7 +902,7 @@ export function insertMemoryMaintainRun(scope: MemoryScope, input: {
     normalized.projectId,
     normalized.scopeKey,
     Number.isFinite(Number(input.usageTotalTokens)) ? Number(input.usageTotalTokens) : null,
-    Number.isFinite(Number(input.maxTokens)) ? Number(input.maxTokens) : null,
+    Number.isFinite(Number(input.contextLength)) ? Number(input.contextLength) : null,
     Number.isFinite(Number(input.pressureRatio)) ? Number(input.pressureRatio) : null,
     Number(input.totalCandidates || 0),
     Number(input.mergedCount || 0),
@@ -1112,7 +1112,7 @@ function normalizeModelConfigForStorage(raw: unknown, index: number, nowTs: numb
     baseUrl: asTrimmedString(item.baseUrl),
     apiKey: asTrimmedString(item.apiKey),
     model,
-    maxTokens: asTrimmedString(item.maxTokens),
+    contextLength: asTrimmedString(item.contextLength),
     temperature: asTrimmedString(item.temperature),
     supportsVision: asBooleanFlag(item.supportsVision),
     ...(typeof parseOptionalTimestamp(item.createdAt) === 'number'
@@ -1133,9 +1133,9 @@ function normalizeLegacyProviderFormsForStorage(raw: unknown, nowTs: number): Ap
     const baseUrl = asTrimmedString(formObj.baseUrl)
     const apiKey = asTrimmedString(formObj.apiKey)
     const model = asTrimmedString(formObj.model)
-    const maxTokens = asTrimmedString(formObj.maxTokens)
+    const contextLength = asTrimmedString(formObj.contextLength)
     const temperature = asTrimmedString(formObj.temperature)
-    if (!baseUrl && !apiKey && !model && !maxTokens && !temperature) return
+    if (!baseUrl && !apiKey && !model && !contextLength && !temperature) return
     configs.push({
       id: `legacy-${provider}-0`,
       provider,
@@ -1143,7 +1143,7 @@ function normalizeLegacyProviderFormsForStorage(raw: unknown, nowTs: number): Ap
       baseUrl,
       apiKey,
       model,
-      maxTokens,
+      contextLength,
       temperature,
       supportsVision: false,
       createdAt: nowTs + index,
@@ -1246,7 +1246,7 @@ function ensureAppStateRecordMigration(database: DatabaseSync): void {
           model.baseUrl ?? null,
           model.apiKey ?? null,
           model.model ?? null,
-          model.maxTokens ?? null,
+          model.contextLength ?? null,
           model.temperature ?? null,
           model.supportsVision ? 1 : 0,
           parseOptionalTimestamp(model.createdAt) ?? null,
@@ -1450,7 +1450,7 @@ export function loadAppProvidersStateFromDb(): AppStateStoreEntry<AppStateProvid
       baseUrl: row.base_url,
       apiKey: row.api_key,
       model: row.model,
-      maxTokens: row.max_tokens,
+      contextLength: row.max_tokens,
       temperature: row.temperature,
       supportsVision: Number(row.supports_vision || 0) > 0,
       createdAt: row.created_at,
@@ -1511,7 +1511,7 @@ export function saveAppProvidersStateToDb(payload: AppStateProvidersPayload): Ap
         model.baseUrl ?? null,
         model.apiKey ?? null,
         model.model ?? null,
-        model.maxTokens ?? null,
+        model.contextLength ?? null,
         model.temperature ?? null,
         model.supportsVision ? 1 : 0,
         parseOptionalTimestamp(model.createdAt) ?? null,

@@ -356,13 +356,13 @@ export function buildSystemPrompt(options?: {
   return prompt
 }
 
-export const providers: readonly { id: ProviderId; label: string; maxTokens: number }[] = [
-  { id: 'deepseek', label: 'DeepSeek', maxTokens: 131072 },
-  { id: 'kimi', label: 'Kimi', maxTokens: 131072 },
-  { id: 'minimax', label: 'MiniMax', maxTokens: 1048576 },
-  { id: 'glm', label: 'GLM', maxTokens: 131072 },
-  { id: 'qwen', label: 'Qwen', maxTokens: 131072 },
-  { id: 'mimo', label: 'MiMo', maxTokens: 1048576 }
+export const providers: readonly { id: ProviderId; label: string; contextLength: number }[] = [
+  { id: 'deepseek', label: 'DeepSeek', contextLength: 131072 },
+  { id: 'kimi', label: 'Kimi', contextLength: 131072 },
+  { id: 'minimax', label: 'MiniMax', contextLength: 1048576 },
+  { id: 'glm', label: 'GLM', contextLength: 131072 },
+  { id: 'qwen', label: 'Qwen', contextLength: 131072 },
+  { id: 'mimo', label: 'MiMo', contextLength: 1048576 }
 ]
 
 export function resolveProviderDisplayLabel(providerId: ProviderId, form?: Partial<ProviderForm>): string {
@@ -393,28 +393,28 @@ export function estimateTokens(text: string): number {
 }
 
 export const providerPlaceholders: Record<ProviderId, ProviderForm> = {
-  deepseek: { baseUrl: 'https://api.deepseek.com', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '131072（示例）', temperature: '0.05（可选）' },
-  kimi: { baseUrl: 'https://api.moonshot.cn/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '131072（示例）', temperature: '0.05（可选）' },
-  minimax: { baseUrl: 'https://api.minimaxi.com/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '1048576（示例）', temperature: '0.05（可选）' },
-  glm: { baseUrl: 'https://open.bigmodel.cn/api/paas/v4', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '131072（示例）', temperature: '0.05（可选）' },
-  qwen: { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '131072（示例）', temperature: '0.05（可选）' },
-  mimo: { baseUrl: 'https://api.xiaomimimo.com/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', maxTokens: '1048576（示例）', temperature: '0.05（可选）' }
+  deepseek: { baseUrl: 'https://api.deepseek.com', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '131072（示例）', temperature: '0.05（可选）' },
+  kimi: { baseUrl: 'https://api.moonshot.cn/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '131072（示例）', temperature: '0.05（可选）' },
+  minimax: { baseUrl: 'https://api.minimaxi.com/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '1048576（示例）', temperature: '0.05（可选）' },
+  glm: { baseUrl: 'https://open.bigmodel.cn/api/paas/v4', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '131072（示例）', temperature: '0.05（可选）' },
+  qwen: { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '131072（示例）', temperature: '0.05（可选）' },
+  mimo: { baseUrl: 'https://api.xiaomimimo.com/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '1048576（示例）', temperature: '0.05（可选）' }
 }
 
 export function defaultProviderForms(): ProviderForms {
   return {
-    deepseek: { baseUrl: '', apiKey: '', model: '', maxTokens: '', temperature: '' },
-    kimi: { baseUrl: '', apiKey: '', model: '', maxTokens: '', temperature: '' },
-    minimax: { baseUrl: '', apiKey: '', model: '', maxTokens: '', temperature: '' },
-    glm: { baseUrl: '', apiKey: '', model: '', maxTokens: '', temperature: '' },
-    qwen: { baseUrl: '', apiKey: '', model: '', maxTokens: '', temperature: '' },
-    mimo: { baseUrl: '', apiKey: '', model: '', maxTokens: '', temperature: '' }
+    deepseek: { baseUrl: '', apiKey: '', model: '', contextLength: '', temperature: '' },
+    kimi: { baseUrl: '', apiKey: '', model: '', contextLength: '', temperature: '' },
+    minimax: { baseUrl: '', apiKey: '', model: '', contextLength: '', temperature: '' },
+    glm: { baseUrl: '', apiKey: '', model: '', contextLength: '', temperature: '' },
+    qwen: { baseUrl: '', apiKey: '', model: '', contextLength: '', temperature: '' },
+    mimo: { baseUrl: '', apiKey: '', model: '', contextLength: '', temperature: '' }
   }
 }
 
-export function resolveProviderMaxTokens(providerId: ProviderId, form?: Partial<ProviderForm>): number {
-  const fallback = providers.find((p) => p.id === providerId)?.maxTokens ?? 65536
-  const raw = String(form?.maxTokens ?? '').trim()
+export function resolveProviderContextLength(providerId: ProviderId, form?: Partial<ProviderForm>): number {
+  const fallback = providers.find((p) => p.id === providerId)?.contextLength ?? 65536
+  const raw = String(form?.contextLength ?? '').trim()
   if (!raw) return fallback
   const parsed = Number(raw)
   if (!Number.isFinite(parsed)) return fallback
@@ -423,7 +423,7 @@ export function resolveProviderMaxTokens(providerId: ProviderId, form?: Partial<
   return n
 }
 
-export function resolveModelConfigMaxTokens(config?: Pick<ModelConfig, 'provider' | 'maxTokens'> | null): number {
+export function resolveModelConfigContextLength(config?: Pick<ModelConfig, 'provider' | 'contextLength'> | null): number {
   if (!config) return 65536
-  return resolveProviderMaxTokens(config.provider, { maxTokens: config.maxTokens })
+  return resolveProviderContextLength(config.provider, { contextLength: config.contextLength })
 }

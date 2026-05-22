@@ -7,7 +7,7 @@ type ChatStatusOverlayProps = {
   providerLabel?: string
   contextPercent: number
   usedTokens: number
-  maxTokens: number
+  contextLength: number
   projectTokenStats?: ProjectTokenStats
 }
 
@@ -23,7 +23,7 @@ export function ChatStatusOverlay({
   providerLabel,
   contextPercent,
   usedTokens,
-  maxTokens,
+  contextLength,
   projectTokenStats,
 }: ChatStatusOverlayProps) {
   const panelRef = useRef<HTMLDivElement>(null)
@@ -84,7 +84,7 @@ export function ChatStatusOverlay({
           )}
 
           <div className="context-bar-label" style={{ marginTop: 8 }}>
-            <span>上下文 ~{formatTokens(usedTokens)}/{formatTokens(maxTokens)}</span>
+            <span>上下文 ~{formatTokens(usedTokens)}/{formatTokens(contextLength)}</span>
             <span>{contextPercent}%</span>
           </div>
           <div className="context-bar-track" style={{ marginBottom: 4 }}>

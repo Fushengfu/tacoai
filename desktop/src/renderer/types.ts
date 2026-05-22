@@ -180,7 +180,8 @@ export type ModelConfig = {
   baseUrl: string
   apiKey: string
   model: string
-  maxTokens: string
+  /** 上下文窗口大小（token 数） */
+  contextLength: string
   temperature: string
   supportsVision?: boolean
   createdAt?: number
@@ -192,7 +193,8 @@ export type ProviderForm = {
   baseUrl: string
   apiKey: string
   model: string
-  maxTokens: string
+  /** 上下文窗口大小（token 数） */
+  contextLength: string
   temperature: string
 }
 

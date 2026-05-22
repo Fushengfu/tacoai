@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AttachedAsset, AttachedImage, ChatMsg, FileChangeInfo, ProviderId, ThemeMode } from './types'
 import type { AppUpdateCheckResult, EditorId } from '../shared/ipc'
-import { estimateTokens, buildSystemPrompt, resolveModelConfigDisplayLabel, resolveModelConfigMaxTokens } from './constants'
+import { estimateTokens, buildSystemPrompt, resolveModelConfigDisplayLabel, resolveModelConfigContextLength } from './constants'
 import { useThreads } from './hooks/useThreads'
 import { useChat } from './hooks/useChat'
 import { useProviderSettings } from './hooks/useProviderSettings'
@@ -95,7 +95,24 @@ export default function App() {
   const currentWorkspace: string = activeThread?.workspace ?? ''
 
   const currentModelConfigId = threadStore.activeThread?.modelConfigId ?? providerSettings.activeModelConfigId
-  const currentModelConfig = providerSettings.getModelConfig(currentModelConfigId || '')
+  // 优先从本地自定义模型查找，找不到则从网关模型查找
+  const localModelConfig = providerSettings.getModelConfig(currentModelConfigId || '')
+  const gatewayModelMatch = !localModelConfig && currentModelConfigId
+    ? (gatewayModels.models ?? []).find((m) => m.id === currentModelConfigId)
+    : null
+  const currentModelConfig = localModelConfig ?? (gatewayModelMatch ? {
+    id: gatewayModelMatch.id,
+    provider: gatewayModelMatch.provider as ProviderId,
+    name: gatewayModelMatch.displayName || gatewayModelMatch.name,
+    baseUrl: gatewayModelMatch.baseUrl,
+    apiKey: gatewayModelMatch.apiKey,
+    model: gatewayModelMatch.model,
+    contextLength: String(gatewayModelMatch.contextLength ?? ''),
+    temperature: gatewayModelMatch.temperature,
+    supportsVision: Boolean(gatewayModelMatch.supportsVision),
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  } : undefined)
   const currentProvider: ProviderId | undefined = currentModelConfig?.provider
   const activeProviderLabel = currentModelConfig ? resolveModelConfigDisplayLabel(currentModelConfig) : ''
 
@@ -142,8 +159,8 @@ export default function App() {
   
   const usageTotalTokens = chat.getUsageTotalTokens(sessionId)
   const usedTokens = typeof usageTotalTokens === 'number' ? usageTotalTokens : estimatedTokens
-  const maxTokens = resolveModelConfigMaxTokens(currentModelConfig)
-  const contextPercent = Math.min(Math.round((usedTokens / maxTokens) * 100), 100)
+  const contextLength = resolveModelConfigContextLength(currentModelConfig)
+  const contextPercent = Math.min(Math.round((usedTokens / contextLength) * 100), 100)
   const projectTokenStats = tid ? chat.getProjectTokenStats(tid) : undefined
 
   // 主题持久化
@@ -419,9 +436,9 @@ export default function App() {
         baseUrl: gm.baseUrl,
         apiKey: gm.apiKey,
         model: gm.model,
-        maxTokens: gm.maxTokens,
+        contextLength: String(gm.contextLength),
         temperature: gm.temperature,
-        supportsVision: false,
+        supportsVision: Boolean(gm.supportsVision),
         createdAt: Date.now(),
         updatedAt: Date.now(),
       }
@@ -435,7 +452,7 @@ export default function App() {
     }
     
     const workspace = thread?.workspace ?? ''
-    const targetMaxTokens = resolveModelConfigMaxTokens(modelConfig)
+    const targetContextLength = resolveModelConfigContextLength(modelConfig)
 
     chat.sendMessage({
       threadId: sid,
@@ -445,7 +462,7 @@ export default function App() {
       provider: modelConfig.provider,
       modelConfig,
       workspace,
-      maxTokens: targetMaxTokens,
+      contextLength: targetContextLength,
       onFirstMessage: (title) => {
         const latestThread = threadStore.threads.find((t) => t.id === threadId)
         if (latestThread?.titleLocked) {
@@ -478,9 +495,9 @@ export default function App() {
           baseUrl: gm.baseUrl,
           apiKey: gm.apiKey,
           model: gm.model,
-          maxTokens: gm.maxTokens,
+          contextLength: String(gm.contextLength),
           temperature: gm.temperature,
-          supportsVision: false,
+          supportsVision: Boolean(gm.supportsVision),
           createdAt: Date.now(),
           updatedAt: Date.now(),
         },
@@ -588,14 +605,7 @@ export default function App() {
     }
   }, [viewingFile])
 
-  // 切换会话时滚动到底部
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight
-    })
-  }, [sessionId, scrollRef])
+  // 滚动逻辑已移至 ChatPanel 内部统一管理（App.tsx 不再管理滚动）
 
   /* ---- 错误报告 ---- */
   const reportPaneRenderError = useCallback((pane: string, error: Error, info: any) => {
@@ -1052,7 +1062,7 @@ export default function App() {
           }
           contextPercent={contextPercent}
           usedTokens={usedTokens}
-          maxTokens={maxTokens}
+          contextLength={contextLength}
           projectTokenStats={projectTokenStats}
         />
 
