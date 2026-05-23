@@ -460,20 +460,31 @@ export function ChatPanel({
 
   /** 粘贴事件处理：提取图片 */
   function handlePaste(e: React.ClipboardEvent) {
-    if (!supportsVision) return
-    const items = e.clipboardData?.items
-    if (!items) return
-    const imageFiles: File[] = []
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i]
-      if (item.type.startsWith('image/')) {
-        const file = item.getAsFile()
-        if (file) imageFiles.push(file)
+    // 1. 处理图片粘贴
+    if (supportsVision) {
+      const items = e.clipboardData?.items
+      if (items) {
+        const imageFiles: File[] = []
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i]
+          if (item.type.startsWith('image/')) {
+            const file = item.getAsFile()
+            if (file) imageFiles.push(file)
+          }
+        }
+        if (imageFiles.length > 0) {
+          e.preventDefault()
+          addImages(imageFiles)
+          return
+        }
       }
     }
-    if (imageFiles.length > 0) {
+
+    // 2. 处理文本粘贴：强制纯文本，去除样式
+    const text = e.clipboardData?.getData('text/plain')
+    if (text) {
       e.preventDefault()
-      addImages(imageFiles)
+      document.execCommand('insertText', false, text)
     }
   }
 

@@ -127,12 +127,12 @@ function isMediaFile(filePath: string): boolean {
 /**
  * 将 ChatMsg 转换为统一的标准 API 消息格式
  */
-function mapMessageForApi(msg: ChatMsg): ApiChatMessage {
+function mapMessageForApi(msg: ChatMsg, isLastUserMessage = false): ApiChatMessage {
   // system 和 assistant 消息也使用数组格式
   if (msg.role !== 'user') {
     return {
       role: msg.role,
-      content: [{ type: 'text', text: msg.content }]
+      content: [{ type: 'text', text: `[HISTORICAL_TASK_RESULT]\n${msg.content}\n[/HISTORICAL_TASK_RESULT]` }]
     }
   }
 
@@ -142,9 +142,16 @@ function mapMessageForApi(msg: ChatMsg): ApiChatMessage {
   // 1. 构建文本内容
   const raw = stripUserAssetsBlock(String(msg.content ?? ''))
   const wrapped = raw.match(/\[USER_QUERY\]([\s\S]*?)\[\/USER_QUERY\]/i)
-  let textContent = wrapped && wrapped[1] !== undefined
-    ? raw.trim()
-    : `[USER_QUERY]\n${raw.trim()}\n[/USER_QUERY]`
+  let textContent: string
+  if (wrapped && wrapped[1] !== undefined) {
+    textContent = raw.trim()
+  } else if (isLastUserMessage) {
+    // 最后一条最新用户消息：不包裹 USER_QUERY 标签
+    textContent = raw.trim()
+  } else {
+    // 历史用户消息：使用 USER_QUERY 标签包裹
+    textContent = `[USER_QUERY]\n${raw.trim()}\n[/USER_QUERY]`
+  }
 
   // 2. 处理附件：媒体文件加入数组，非媒体文件用标签包裹插入文本
   const mediaFiles: Array<{ type: string; url: string }> = []
@@ -222,10 +229,19 @@ function buildMessagesForApi(messages: ChatMsg[]): ApiChatMessage[] {
     if (recent.length >= MAX_RECENT_MESSAGES || userTurns >= MAX_RECENT_USER_TURNS) break
   }
   if (recent.length > 0) {
-    return recent.reverse().map((msg) => mapMessageForApi(msg))
+    const reversed = recent.reverse()
+    // 找到最后一条用户消息的索引
+    let lastUserIndex = -1
+    for (let i = reversed.length - 1; i >= 0; i--) {
+      if (reversed[i].role === 'user') {
+        lastUserIndex = i
+        break
+      }
+    }
+    return reversed.map((msg, idx) => mapMessageForApi(msg, idx === lastUserIndex))
   }
   const last = messages[messages.length - 1]
-  return last ? [mapMessageForApi(last)] : []
+  return last ? [mapMessageForApi(last, last.role === 'user')] : []
 }
 
 function isRecallDebugEnabled(): boolean {
