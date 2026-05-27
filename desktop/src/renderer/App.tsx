@@ -9,12 +9,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AttachedAsset, AttachedImage, ChatMsg, FileChangeInfo, ProviderId, ThemeMode } from './types'
-import type { AppUpdateCheckResult, EditorId } from '../shared/ipc'
-import { estimateTokens, buildSystemPrompt, resolveModelConfigDisplayLabel, resolveModelConfigContextLength } from './constants'
+import type { EditorId } from '../shared/ipc'
+import { estimateTokens, buildSystemPrompt, resolveModelConfigContextLength } from './constants'
 import { useThreads } from './hooks/useThreads'
 import { useChat } from './hooks/useChat'
 import { useProviderSettings } from './hooks/useProviderSettings'
 import { useGatewayModels } from './hooks/useGatewayModels'
+import { useResolvedModel } from './hooks/useResolvedModel'
 import { useGuiPlusSettings } from './hooks/useGuiPlusSettings'
 import { useAuth } from './hooks/useAuth'
 import { useLayout } from './hooks/useLayout'
@@ -28,6 +29,9 @@ import { BridgePanel } from './components/BridgePanel'
 import { LoginModal, type MemberInfo } from './components/LoginModal'
 import { PaneErrorBoundary } from './components/PaneErrorBoundary'
 import { useDrag } from './hooks/useDrag'
+import { useUpdateCheck } from './hooks/useUpdateCheck'
+import { useBridgeInit } from './hooks/useBridgeInit'
+import { useFileViewer } from './hooks/useFileViewer'
 
 export default function App() {
   /* ---- 业务 hooks ---- */
@@ -39,18 +43,18 @@ export default function App() {
   const auth = useAuth()
   const layout = useLayout()
   
+  /* ---- 抽取的 hooks ---- */
+  const { updateStatus, updateChecking, handleOpenUpdateDialog } = useUpdateCheck()
+  useBridgeInit()
+  const fileViewer = useFileViewer({ onSwitchToChat: () => setMiddleView('chat') })
+  
   /* ---- 本地 UI 状态 ---- */
   const [draft, setDraft] = useState('')
   const [showSettings, setShowSettings] = useState(false)
   const [showTokenReport, setShowTokenReport] = useState(false)
-  const [selectedFile, setSelectedFile] = useState<string | null>(null)
-  const [viewingFile, setViewingFile] = useState<string | null>(null)
-  const [viewingSelection, setViewingSelection] = useState<{ line: number; column: number } | null>(null)
   const [showTerminal, setShowTerminal] = useState(false)
   const [showStatusOverlay, setShowStatusOverlay] = useState(false)
   const [showBridgePanel, setShowBridgePanel] = useState(false)
-  const [updateStatus, setUpdateStatus] = useState<AppUpdateCheckResult | null>(null)
-  const [updateChecking, setUpdateChecking] = useState(false)
   const [editor, setEditor] = useState<EditorId>(() =>
     (localStorage.getItem('taco.editor') as EditorId) || 'cursor'
   )
@@ -95,51 +99,18 @@ export default function App() {
   const currentWorkspace: string = activeThread?.workspace ?? ''
 
   const currentModelConfigId = threadStore.activeThread?.modelConfigId ?? providerSettings.activeModelConfigId
-  // 优先从本地自定义模型查找，找不到则从网关模型查找
-  const localModelConfig = providerSettings.getModelConfig(currentModelConfigId || '')
-  const gatewayModelMatch = !localModelConfig && currentModelConfigId
-    ? (gatewayModels.models ?? []).find((m) => m.id === currentModelConfigId)
-    : null
-  const currentModelConfig = localModelConfig ?? (gatewayModelMatch ? {
-    id: gatewayModelMatch.id,
-    provider: gatewayModelMatch.provider as ProviderId,
-    name: gatewayModelMatch.displayName || gatewayModelMatch.name,
-    baseUrl: gatewayModelMatch.baseUrl,
-    apiKey: gatewayModelMatch.apiKey,
-    model: gatewayModelMatch.model,
-    contextLength: String(gatewayModelMatch.contextLength ?? ''),
-    temperature: gatewayModelMatch.temperature,
-    supportsVision: Boolean(gatewayModelMatch.supportsVision),
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  } : undefined)
-  const currentProvider: ProviderId | undefined = currentModelConfig?.provider
-  const activeProviderLabel = currentModelConfig ? resolveModelConfigDisplayLabel(currentModelConfig) : ''
-
-  // Merge custom models with gateway models, marking source
-  // 未登录时不展示系统内置模型
-  const mergedModels = useMemo(() => {
-    const customModels = providerSettings.configuredModels.map((m) => ({
-      ...m,
-      source: 'custom' as const,
-    }))
-    const gatewayModelsList = auth.memberToken ? (gatewayModels.models ?? []).map((m) => ({
-      id: m.id,
-      provider: m.provider as ProviderId,
-      label: m.displayName || m.name,
-      source: 'system' as const,
-      gatewayModel: m,
-    })) : []
-    // 去重：如果自定义模型和系统模型 id 相同，优先使用自定义模型
-    const merged = [...customModels, ...gatewayModelsList]
-    const deduped = new Map<string, typeof merged[number]>()
-    for (const item of merged) {
-      if (!deduped.has(item.id)) {
-        deduped.set(item.id, item)
-      }
-    }
-    return [...deduped.values()]
-  }, [providerSettings.configuredModels, gatewayModels.models, auth.memberToken])
+  
+  // 解析当前模型配置（优先本地自定义，回退到网关模型）
+  const { currentModelConfig, currentProvider, activeProviderLabel, mergedModels } = useResolvedModel({
+    currentModelConfigId,
+    providerSettings: {
+      getModelConfig: providerSettings.getModelConfig.bind(providerSettings),
+      configuredModels: providerSettings.configuredModels,
+      activeModelConfigId: providerSettings.activeModelConfigId,
+    },
+    gatewayModels,
+    memberToken: auth.memberToken,
+  })
 
   // 同步 refs
   useEffect(() => {
@@ -168,61 +139,6 @@ export default function App() {
     localStorage.setItem('taco.themeMode', themeMode)
     document.documentElement.setAttribute('data-theme', themeMode)
   }, [themeMode])
-
-  // 更新检查
-  const refreshUpdateStatus = useCallback(async () => {
-    try {
-      const status = await window.taco.updater.getStatus()
-      setUpdateStatus(status)
-    } catch {
-      // ignore
-    }
-  }, [])
-
-  const handleOpenUpdateDialog = useCallback(async () => {
-    if (updateChecking) return
-    setUpdateChecking(true)
-    try {
-      const result = await window.taco.updater.check(true)
-      setUpdateStatus(result)
-    } catch {
-      // ignore
-    } finally {
-      setUpdateChecking(false)
-    }
-  }, [updateChecking])
-
-  useEffect(() => {
-    let cancelled = false
-    let retryTimer: ReturnType<typeof setTimeout> | null = null
-    let retries = 0
-
-    const pull = async () => {
-      if (cancelled) return
-      try {
-        const status = await window.taco.updater.getStatus()
-        if (cancelled) return
-        setUpdateStatus(status)
-        if (!status && retries < 20) {
-          retries += 1
-          retryTimer = setTimeout(() => { void pull() }, 800)
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    void pull()
-    const interval = window.setInterval(() => {
-      void refreshUpdateStatus()
-    }, 30_000)
-
-    return () => {
-      cancelled = true
-      if (retryTimer) clearTimeout(retryTimer)
-      window.clearInterval(interval)
-    }
-  }, [refreshUpdateStatus])
 
   // 浏览器相关
   const browser = useBrowser(tid)
@@ -265,9 +181,7 @@ export default function App() {
       
       // 清空 UI 状态
       setDraft('')
-      setSelectedFile(null)
-      setViewingFile(null)
-      setViewingSelection(null)
+      fileViewer.reset()
       setShowTerminal(false)
     })
     return unsubscribe
@@ -317,18 +231,14 @@ export default function App() {
   function handleNewThread() {
     threadStore.createThread('新项目', providerSettings.activeModelConfigId || undefined)
     setDraft('')
-    setSelectedFile(null)
-    setViewingFile(null)
-    setViewingSelection(null)
+    fileViewer.reset()
     setShowTerminal(false)
   }
 
   function handleSwitchThread(id: string) {
     threadStore.switchThread(id)
     setDraft('')
-    setSelectedFile(null)
-    setViewingFile(null)
-    setViewingSelection(null)
+    fileViewer.reset()
   }
 
   function handleDeleteThread(threadId: string) {
@@ -346,18 +256,14 @@ export default function App() {
     if (!tid) return
     threadStore.createSession(tid)
     setDraft('')
-    setSelectedFile(null)
-    setViewingFile(null)
-    setViewingSelection(null)
+    fileViewer.reset()
   }
 
   function handleSwitchSession(sid: string) {
     if (!tid) return
     threadStore.switchSession(tid, sid)
     setDraft('')
-    setSelectedFile(null)
-    setViewingFile(null)
-    setViewingSelection(null)
+    fileViewer.reset()
   }
 
   function handleDeleteSession(sid: string) {
@@ -570,41 +476,6 @@ export default function App() {
     }
   }
 
-  /* ---- 文件查看 ---- */
-  const handleOpenFileView = useCallback((filePath: string, forceDiff?: boolean, selection?: { line: number; column: number } | null) => {
-    setMiddleView('chat')
-    if (forceDiff) {
-      setSelectedFile(selectedFile === filePath ? null : filePath)
-      setViewingFile(null)
-      setViewingSelection(null)
-    } else {
-      if (selection) {
-        setViewingFile(filePath)
-        setViewingSelection({
-          line: Math.max(1, Math.floor(selection.line)),
-          column: Math.max(1, Math.floor(selection.column)),
-        })
-      } else {
-        setViewingFile(viewingFile === filePath ? null : filePath)
-        setViewingSelection(null)
-      }
-      setSelectedFile(null)
-    }
-  }, [selectedFile, viewingFile])
-
-  const handleCloseFileEditor = useCallback(() => {
-    setViewingFile(null)
-    setViewingSelection(null)
-  }, [])
-
-  const handleViewDiffFromEditor = useCallback(() => {
-    if (viewingFile) {
-      setSelectedFile(viewingFile)
-      setViewingFile(null)
-      setViewingSelection(null)
-    }
-  }, [viewingFile])
-
   // 滚动逻辑已移至 ChatPanel 内部统一管理（App.tsx 不再管理滚动）
 
   /* ---- 错误报告 ---- */
@@ -628,28 +499,6 @@ export default function App() {
       // ignore
     })
   }, [tid, currentWorkspace, sessionId, middleView, layout.sidebarVisible])
-
-  /* ---- 移动端桥接监听 ---- */
-  // (省略部分桥接代码以节省空间,实际应包含完整实现)
-  useEffect(() => {
-    const saved = localStorage.getItem('taco.browserAutoTakeover') === 'true'
-    if (saved) window.taco.browser.setAutoTakeover(true)
-    const debugSaved = localStorage.getItem('taco.browserDebugMode') === 'true'
-    if (debugSaved) window.taco.browser.setDebugMode(true)
-    const hiddenSavedRaw = localStorage.getItem('taco.browserHiddenMode')
-    const hiddenSaved = hiddenSavedRaw === null ? true : hiddenSavedRaw === 'true'
-    window.taco.browser.setHiddenMode(hiddenSaved)
-    if (hiddenSavedRaw === null) {
-      localStorage.setItem('taco.browserHiddenMode', 'true')
-    }
-    try {
-      const autoApprove = localStorage.getItem('taco.autoApproveCategories')
-      if (autoApprove) {
-        const categories = JSON.parse(autoApprove) as string[]
-        if (categories.length > 0) window.taco.agent.setAutoApprove(categories)
-      }
-    } catch { /* ignore */ }
-  }, [])
 
   /* ---- Render ---- */
   const drag = useDrag()
@@ -999,7 +848,7 @@ export default function App() {
             key={tid}
             pane="chat"
             title="聊天面板"
-            resetKey={`${sessionId}:${messages.length}:${selectedFile ?? ''}:${viewingFile ?? ''}`}
+            resetKey={`${sessionId}:${messages.length}:${fileViewer.selectedFile ?? ''}:${fileViewer.viewingFile ?? ''}`}
             onError={reportPaneRenderError}
           >
             <ChatPanel
@@ -1032,7 +881,7 @@ export default function App() {
               editor={editor}
               isSessionSending={(sid) => chat.isSending(sid)}
               selectedFileChange={null}
-              onCloseDiff={() => setSelectedFile(null)}
+              onCloseDiff={() => fileViewer.reset()}
               selectedFileStatus={undefined}
               onAcceptFile={async () => {}}
               onRejectFile={async () => {}}
@@ -1041,14 +890,14 @@ export default function App() {
               terminalCwd={currentWorkspace || undefined}
               onRollbackBeforeMsg={async () => {}}
               supportsVision={Boolean(currentModelConfig?.supportsVision)}
-              viewingFile={viewingFile}
-              viewingSelection={viewingSelection}
+              viewingFile={fileViewer.viewingFile}
+              viewingSelection={fileViewer.viewingSelection}
               viewingWorkspace={currentWorkspace || undefined}
-              onCloseFileEditor={handleCloseFileEditor}
+              onCloseFileEditor={fileViewer.handleCloseFileEditor}
               onFileSaved={() => {}}
               onFileEdited={() => {}}
-              onViewDiffFromEditor={handleViewDiffFromEditor}
-              onOpenFileView={handleOpenFileView}
+              onViewDiffFromEditor={fileViewer.handleViewDiffFromEditor}
+              onOpenFileView={fileViewer.handleOpenFileView}
               activeTaskStartedAt={activeTaskStartedAt}
             />
           </PaneErrorBoundary>

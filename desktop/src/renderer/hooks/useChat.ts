@@ -4,7 +4,8 @@ import type { ChatStoreSessionPage, ChatStoreSessionPatch, ChatStoreSessionSumma
 import { buildSystemPrompt } from '../constants'
 import { loadJson, saveJson, uid } from '../lib/storage'
 import { loadUploadSettings, toIpcUploadConfig } from '../lib/upload-config'
-import { buildUserAssetsBlockFromAttachments, inferAttachmentType, stripUserAssetsBlock } from '../../shared/user-assets'
+import { buildUserAssetsBlockFromAttachments, inferAttachmentType, stripUserAssetsBlock, isMediaFile, inferMediaSubtype } from '../../shared/user-assets'
+import { validateModelConfig, parseConfiguredTemperature } from '../../shared/validation'
 
 type SessionStoreMeta = {
   projectId?: string
@@ -112,18 +113,6 @@ type ApiChatMessage = {
   >
 }
 
-/** 判断文件是否为媒体类型（图片、视频、音频） */
-function isMediaFile(filePath: string): boolean {
-  const ext = filePath.split('.').pop()?.toLowerCase()
-  if (!ext) return false
-  
-  const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'ico']
-  const videoExts = ['mp4', 'webm', 'ogg', 'mov', 'avi', 'mkv']
-  const audioExts = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a']
-  
-  return imageExts.includes(ext) || videoExts.includes(ext) || audioExts.includes(ext)
-}
-
 /**
  * 将 ChatMsg 转换为统一的标准 API 消息格式
  */
@@ -159,19 +148,10 @@ function mapMessageForApi(msg: ChatMsg, isLastUserMessage = false): ApiChatMessa
 
   if (msg.attachments && msg.attachments.length > 0) {
     for (const asset of msg.attachments) {
-      if (isMediaFile(asset.path)) {
-        // 媒体文件：判断类型并加入数组
-        const ext = asset.path.split('.').pop()?.toLowerCase()
-        const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'ico']
-        const videoExts = ['mp4', 'webm', 'ogg', 'mov', 'avi', 'mkv']
-        
-        if (imageExts.includes(ext || '')) {
-          mediaFiles.push({ type: 'image_url', url: asset.path })
-        } else if (videoExts.includes(ext || '')) {
-          mediaFiles.push({ type: 'video_url', url: asset.path })
-        } else {
-          mediaFiles.push({ type: 'audio_url', url: asset.path })
-        }
+      const subtype = inferMediaSubtype(asset.path)
+      if (subtype) {
+        // 媒体文件：加入数组
+        mediaFiles.push({ type: subtype, url: asset.path })
       } else {
         // 非媒体文件：用标签包裹
         nonMediaFiles.push(asset.path)
@@ -261,105 +241,6 @@ function isRetryableError(error: Error): boolean {
  */
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-/**
- * 模型配置验证结果
- */
-type ModelConfigValidation = {
-  valid: boolean
-  errors: string[]
-}
-
-/**
- * 验证模型配置
- */
-function validateModelConfig(config: {
-  provider: string
-  baseUrl?: string
-  apiKey?: string
-  model?: string
-  contextLength?: string
-  temperature?: string | number
-}): ModelConfigValidation {
-  const errors: string[] = []
-
-  // 1. 提供商不能为空
-  if (!config.provider || !config.provider.trim()) {
-    errors.push('未选择 AI 提供商')
-  }
-
-  // 2. API Key 验证
-  const apiKey = String(config.apiKey ?? '').trim()
-  if (!apiKey) {
-    errors.push('API Key 不能为空')
-  } else if (apiKey.length < 10) {
-    errors.push('API Key 格式不正确（过短）')
-  } else if (apiKey.includes(' ')) {
-    errors.push('API Key 不能包含空格')
-  }
-
-  // 3. Base URL 验证（如果提供）
-  const baseUrl = String(config.baseUrl ?? '').trim()
-  if (baseUrl) {
-    try {
-      new URL(baseUrl)
-      if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
-        errors.push('Base URL 必须以 http:// 或 https:// 开头')
-      }
-    } catch {
-      errors.push('Base URL 格式不正确')
-    }
-  }
-
-  // 4. Model 验证（如果提供）
-  const model = String(config.model ?? '').trim()
-  if (model) {
-    if (model.length > 200) {
-      errors.push('Model 名称过长')
-    }
-    if (/[^a-zA-Z0-9._\/\-]/.test(model)) {
-      errors.push('Model 名称包含非法字符')
-    }
-  }
-
-  // 5. 上下文长度验证
-  const contextLength = String(config.contextLength ?? '').trim()
-  if (contextLength) {
-    const tokens = Number(contextLength)
-    if (!Number.isInteger(tokens) || tokens <= 0) {
-      errors.push('上下文长度必须是正整数')
-    } else if (tokens > 10000000) {
-      errors.push('上下文长度不能超过 10000000')
-    }
-  }
-
-  // 6. Temperature 验证
-  const temp = typeof config.temperature === 'string' 
-    ? String(config.temperature).trim() 
-    : config.temperature
-  if (temp !== undefined && temp !== '') {
-    const temperature = Number(temp)
-    if (Number.isNaN(temperature)) {
-      errors.push('Temperature 必须是数字')
-    } else if (temperature < 0 || temperature > 2) {
-      errors.push('Temperature 必须在 0-2 之间')
-    }
-  }
-
-  return {
-    valid: errors.length === 0,
-    errors,
-  }
-}
-
-function parseConfiguredTemperature(raw: unknown): number | undefined {
-  const text = String(raw ?? '').trim()
-  if (!text) return undefined
-  const value = Number(text)
-  if (!Number.isFinite(value)) return undefined
-  if (value < 0 || value > 2) return undefined
-  return value
 }
 
 function resolveUploadOverrideForProvider(provider: ProviderId) {

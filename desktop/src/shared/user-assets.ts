@@ -30,6 +30,27 @@ export const VIDEO_EXTENSIONS = new Set([
   '.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi', '.wmv', '.flv', '.mpeg', '.mpg', '.3gp', '.ts', '.m2ts',
 ])
 
+export const AUDIO_EXTENSIONS = new Set([
+  '.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a',
+])
+
+/** 判断文件路径是否为媒体类型（图片、视频、音频） */
+export function isMediaFile(filePath: string): boolean {
+  const ext = extname(filePath)
+  if (!ext) return false
+  return IMAGE_EXTENSIONS.has(ext) || VIDEO_EXTENSIONS.has(ext) || AUDIO_EXTENSIONS.has(ext)
+}
+
+/** 推断媒体文件的子类型 */
+export function inferMediaSubtype(filePath: string): 'image_url' | 'video_url' | 'audio_url' | null {
+  const ext = extname(filePath)
+  if (!ext) return null
+  if (IMAGE_EXTENSIONS.has(ext)) return 'image_url'
+  if (VIDEO_EXTENSIONS.has(ext)) return 'video_url'
+  if (AUDIO_EXTENSIONS.has(ext)) return 'audio_url'
+  return null
+}
+
 /* ------------------------------------------------------------------ */
 /*  类型                                                                */
 /* ------------------------------------------------------------------ */

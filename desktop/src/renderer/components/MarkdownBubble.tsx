@@ -245,9 +245,14 @@ export function MarkdownBubble({ content, streaming, workspace, onOpenProjectFil
               return <>{children}</>
             },
             code({ className, children, node, ...rest }) {
-              const isBlock = /language-/.test(className ?? '')
+              const rawCode = extractText(children)
+              // 判断是否为代码块：
+              // 1. 有 language- 前缀 → 代码块
+              // 2. 无 className 但内容包含换行 → 代码块（无语言标识的多行代码块）
+              // 3. 其他情况 → 行内代码（如表格中的 `code`）
+              const isBlock = (className && /language-/.test(className)) || (!className && rawCode.includes('\n'))
               if (isBlock) {
-                const lang = (className ?? '').replace('language-', '')
+                const lang = className ? className.replace('language-', '') : ''
                 const rawCode = extractText(children)
                 const highlighted = highlightByLang(rawCode, lang)
                 return (

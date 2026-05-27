@@ -1878,7 +1878,7 @@ function estimateReplayBudgetChars(contextLength?: number, replayMode: 'full' | 
 function extractReplayAssistantResult(item: TaskMemoryEntry): string {
   // 直接使用原始的助手回复
   const assistantResult = String(item.assistantResult || '').trim()
-  return assistantResult
+  return assistantResult !== '' ? `[HISTORICAL_TASK_RESULT]\n${assistantResult}\n[/HISTORICAL_TASK_RESULT]` : ''
 }
 
 export async function buildBackgroundContextConversationMessages(
