@@ -187,6 +187,16 @@ export default function App() {
     return unsubscribe
   }, [threadStore])
 
+  // 监听移动端请求切换模型
+  useEffect(() => {
+    const unsubscribe = window.taco.bridge.onSwitchModel((data) => {
+      const modelConfigId = String(data.modelConfigId || '').trim()
+      if (!modelConfigId) return
+      handleProviderChangeRef.current(modelConfigId)
+    })
+    return unsubscribe
+  }, [])
+
   // 监听移动端发来的消息（chat-send / agent-confirm / agent-abort）
   useEffect(() => {
     const unsubscribe = window.taco.bridge.onClientMessage((msg) => {

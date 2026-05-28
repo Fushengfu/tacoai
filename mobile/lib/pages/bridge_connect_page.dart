@@ -348,7 +348,7 @@ class _BridgeConnectPageState extends State<BridgeConnectPage> {
           ),
         ],
       ),
-      body: Padding(
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
