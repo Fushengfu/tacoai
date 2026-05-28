@@ -97,7 +97,7 @@ const CONFIRM_TIMEOUT_MS = 10 * 60 * 1000 // 10分钟超时
 
 /** 待处理的重试请求：retryId → resolve(shouldRetry) */
 const pendingRetries = new Map<string, { resolve: (shouldRetry: boolean) => void; timer: NodeJS.Timeout }>()
-const RETRY_TIMEOUT_MS = 2 * 60 * 1000 // 重试确认 2 分钟超时（比操作确认短，避免长时间卡住）
+const RETRY_TIMEOUT_MS = 24 * 60 * 60 * 1000 // 重试确认 24 小时超时
 
 function isAbortError(err: unknown): boolean {
   if (!(err instanceof Error)) return false
