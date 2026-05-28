@@ -1055,6 +1055,7 @@ class BridgeModelConfig {
   final String id;
   final String provider;
   final String name;
+  final String displayName;
   final String model;
   final bool supportsVision;
 
@@ -1062,18 +1063,23 @@ class BridgeModelConfig {
     required this.id,
     required this.provider,
     required this.name,
+    this.displayName = '',
     required this.model,
     this.supportsVision = false,
   });
 
-  /// 显示标签：优先使用 model 名称
-  String get displayLabel => model.isNotEmpty ? model : name;
+  /// 显示标签：优先使用 displayName，其次 model，最后 name
+  String get displayLabel {
+    if (displayName.isNotEmpty) return displayName;
+    return model.isNotEmpty ? model : name;
+  }
 
   factory BridgeModelConfig.fromJson(Map<String, dynamic> json) {
     return BridgeModelConfig(
       id: json['id'] as String? ?? '',
       provider: json['provider'] as String? ?? '',
       name: json['name'] as String? ?? '',
+      displayName: json['displayName'] as String? ?? '',
       model: json['model'] as String? ?? '',
       supportsVision: json['supportsVision'] as bool? ?? false,
     );

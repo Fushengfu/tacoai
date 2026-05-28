@@ -216,8 +216,11 @@ export async function handleAgentStream(event: IpcMainEvent, payload: AgentStrea
               lastMessageIsStreaming: false,
             })
           } else if (agentEvent.type === 'done') {
-            // 任务完成 - 实时推送状态变更
+            // 任务完成 - 立即推送 isProcessing=false，与 done 事件同时到达移动端
+            // 不再等待 finally 块，避免移动端收到 done 事件后仍显示处理中状态
             mgr.updateProjectStateAndPush(projectIdStr, {
+              isProcessing: false,
+              activeTaskId: undefined,
               lastMessageId: assistantMessageId,
               lastMessageRole: 'assistant',
               lastMessageHasContent: true,
@@ -225,8 +228,10 @@ export async function handleAgentStream(event: IpcMainEvent, payload: AgentStrea
               lastMessageHasPlan: false,
             })
           } else if (agentEvent.type === 'error') {
-            // 任务出错 - 实时推送状态变更
+            // 任务出错 - 立即推送 isProcessing=false
             mgr.updateProjectStateAndPush(projectIdStr, {
+              isProcessing: false,
+              activeTaskId: undefined,
               lastMessageId: assistantMessageId,
               lastMessageRole: 'assistant',
               lastMessageHasContent: true,

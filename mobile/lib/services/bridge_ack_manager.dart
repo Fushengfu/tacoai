@@ -98,16 +98,10 @@ class BridgeAckManager {
   /// 限制缓存大小
   void _limitCacheSize() {
     if (_receivedMessageIds.length > _maxCacheSize) {
-      // 删除最早的10%缓存
+      // 先收集要删除的元素，再统一删除（避免迭代中修改集合）
       final toRemove = (_maxCacheSize * 0.1).round();
-      final iterator = _receivedMessageIds.iterator;
-      for (int i = 0; i < toRemove; i++) {
-        if (iterator.moveNext()) {
-          _receivedMessageIds.remove(iterator.current);
-        } else {
-          break;
-        }
-      }
+      final toRemoveList = _receivedMessageIds.take(toRemove).toList();
+      _receivedMessageIds.removeAll(toRemoveList);
     }
   }
 

@@ -187,10 +187,9 @@ class _MessageBubbleState extends State<MessageBubble> {
                                 ),
                               ),
 
-                            // Agent 步骤（仅 assistant 消息，且至少有一个步骤包含工具调用）
+                            // Agent 步骤（仅 assistant 消息，有任意步骤即显示，包括 thinking 阶段）
                             if (widget.message.agentSteps != null &&
-                                widget.message.agentSteps!.isNotEmpty &&
-                                widget.message.agentSteps!.any((step) => step.toolCalls.isNotEmpty))
+                                widget.message.agentSteps!.isNotEmpty)
                               AgentStepWidget(
                                 steps: widget.message.agentSteps!,
                                 colorScheme: colorScheme,

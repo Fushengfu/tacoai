@@ -77,6 +77,9 @@ class _MobileChatPageState extends State<MobileChatPage> {
   // 最近一次切换的项目 ID（用于快速连续切换时只响应最新一次）
   String? _pendingSwitchProjectId;
 
+  // 处理状态追踪（用于检测发送按钮是否需要更新）
+  bool _wasProcessing = false;
+
   @override
   void initState() {
     super.initState();
@@ -87,6 +90,9 @@ class _MobileChatPageState extends State<MobileChatPage> {
     widget.client.onStatusChange(_onStatusChange);
     widget.client.onMessage(_onMessage);
     widget.client.onConfirmChange(_onConfirmChange);
+
+    // 初始化处理状态追踪
+    _wasProcessing = _isCurrentProjectSending();
 
     // 监听滚动位置，控制"滚动到顶部"按钮显示
     _scrollController.addListener(_onScroll);
@@ -111,6 +117,9 @@ class _MobileChatPageState extends State<MobileChatPage> {
     if (show != _showScrollToTop) {
       setState(() => _showScrollToTop = show);
     }
+    // 实时更新 _isAtBottom 状态
+    final distanceToBottom = maxOffset - offset;
+    _isAtBottom = distanceToBottom < 200; // 距离底部 200px 以内视为在底部
   }
 
   void _showToast(String message) {
@@ -172,6 +181,10 @@ class _MobileChatPageState extends State<MobileChatPage> {
     // 判断是否是切换项目导致的全量状态同步
     final isFullStateSync = type == 'bridge:state';
 
+    // 关键：在更新消息列表之前记录用户是否在底部
+    // 因为更新消息列表后 maxScrollExtent 会变化，导致 _isAtBottom 可能变为 false
+    final wasAtBottom = _isAtBottom;
+
     // 增量更新：只更新变化的部分，避免全量替换
     if (type == 'bridge:state') {
       final state = BridgeState.fromJson(json);
@@ -188,6 +201,13 @@ class _MobileChatPageState extends State<MobileChatPage> {
       // 消息列表通过 ValueNotifier 更新，不触发 setState
       _messagesNotifier.value = List.from(widget.client.messages);
       
+      // 同步处理状态（bridge:state 可能携带 activeAgentRequestId）
+      final isNowProcessing = _isCurrentProjectSending();
+      if (isNowProcessing != _wasProcessing) {
+        _wasProcessing = isNowProcessing;
+        needUpdate = true;
+      }
+      
       if (needUpdate) {
         setState(() {});
       }
@@ -203,8 +223,14 @@ class _MobileChatPageState extends State<MobileChatPage> {
         });
       }
     } else if (type == 'bridge:agent-event') {
-      // Agent 事件：立即更新消息列表（不触发 setState，仅更新 ValueNotifier）
+      // Agent 事件：立即更新消息列表
       _messagesNotifier.value = List.from(widget.client.messages);
+      // 检查处理状态是否变化，如果变化则触发 setState 更新发送按钮
+      final isNowProcessing = _isCurrentProjectSending();
+      if (isNowProcessing != _wasProcessing) {
+        _wasProcessing = isNowProcessing;
+        setState(() {});
+      }
     } else if (type == 'bridge:chat-delta') {
       // 聊天流增量：使用 Future.delayed(0) 合并同一帧内的多次 delta 更新
       // 避免高频 delta 导致 UI 过度重建
@@ -214,6 +240,12 @@ class _MobileChatPageState extends State<MobileChatPage> {
         if (_pendingDeltaUpdate && mounted) {
           _pendingDeltaUpdate = false;
           _messagesNotifier.value = List.from(widget.client.messages);
+          // 检查处理状态是否变化（delta done=true 时清除处理状态）
+          final isNowProcessing = _isCurrentProjectSending();
+          if (isNowProcessing != _wasProcessing) {
+            _wasProcessing = isNowProcessing;
+            setState(() {});
+          }
         }
       });
     } else if (type == 'bridge:chat-user-message') {
@@ -247,6 +279,11 @@ class _MobileChatPageState extends State<MobileChatPage> {
         setState(() => _isSwitchingProject = false);
       }
       _messagesNotifier.value = List.from(widget.client.messages);
+      // 切换项目完成后自动滚动到底部
+      if (!_userIsScrolling) {
+        _isAtBottom = true;
+        _scrollToBottom();
+      }
     } else if (type == 'bridge:cache-loaded') {
       // 缓存加载完成，如果有消息则隐藏加载指示器
       final count = json['count'] as int? ?? 0;
@@ -255,13 +292,24 @@ class _MobileChatPageState extends State<MobileChatPage> {
         setState(() => _isSwitchingProject = false);
       }
       _messagesNotifier.value = List.from(widget.client.messages);
+      // 缓存加载完成后自动滚动到底部
+      if (count > 0 && !_userIsScrolling) {
+        _isAtBottom = true;
+        _scrollToBottom();
+      }
     } else {
-      // 其他消息类型（包括 bridge:chat-completed 等），更新消息列表
+      // 其他消息类型（包括 bridge:project-states、bridge:task-status-polled 等），更新消息列表
       _messagesNotifier.value = List.from(widget.client.messages);
       // 如果有消息到达且正在切换项目，说明数据已同步完成
       if (_isSwitchingProject && widget.client.messages.isNotEmpty) {
         _switchProjectTimeout?.cancel();
         setState(() => _isSwitchingProject = false);
+      }
+      // 检查处理状态是否变化（bridge:project-states / bridge:task-status-polled 可能改变处理状态）
+      final isNowProcessing = _isCurrentProjectSending();
+      if (isNowProcessing != _wasProcessing) {
+        _wasProcessing = isNowProcessing;
+        setState(() {});
       }
     }
 
@@ -271,8 +319,11 @@ class _MobileChatPageState extends State<MobileChatPage> {
         _isAtBottom = true;
         _scrollToBottom();
       }
-    } else if (_isAtBottom && !_userIsScrolling) {
-      // 仅当用户在底部且未手动滚动时才自动跟随
+    } else if (wasAtBottom && !_userIsScrolling) {
+      // 关键修复：使用更新前的 wasAtBottom 状态判断
+      // 因为消息列表更新后 maxScrollExtent 增大，_isAtBottom 可能已变为 false
+      // 但用户之前在底部，新内容到达时应该自动跟随
+      _isAtBottom = true;
       _scrollToBottom();
     }
   }
@@ -313,15 +364,29 @@ class _MobileChatPageState extends State<MobileChatPage> {
   }
 
   void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients && _scrollController.position.maxScrollExtent > 0) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOut,
-        );
-      }
-    });
+    // 使用多次尝试机制，确保消息列表更新后能正确滚动到底部
+    // 因为消息加载后 ListView 需要一帧来重新布局
+    int attempts = 0;
+    const maxAttempts = 5;
+    
+    void tryScroll() {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (_scrollController.hasClients && _scrollController.position.maxScrollExtent > 0) {
+          _scrollController.animateTo(
+            _scrollController.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOut,
+          );
+        } else if (attempts < maxAttempts) {
+          // 如果 ListView 还没有布局完成，延迟一帧后重试
+          attempts++;
+          tryScroll();
+        }
+      });
+    }
+    
+    tryScroll();
   }
 
   void _scrollToTop() {
@@ -628,14 +693,14 @@ class _MobileChatPageState extends State<MobileChatPage> {
                     if (_scrollController.hasClients) {
                       final maxScroll = _scrollController.position.maxScrollExtent;
                       final currentScroll = _scrollController.position.pixels;
-                      _isAtBottom = (maxScroll - currentScroll) < 100;
+                      _isAtBottom = (maxScroll - currentScroll) < 200;
                     }
                   } else if (notification is ScrollUpdateNotification) {
                     // 滚动过程中实时更新状态
                     if (_scrollController.hasClients) {
                       final maxScroll = _scrollController.position.maxScrollExtent;
                       final currentScroll = _scrollController.position.pixels;
-                      _isAtBottom = (maxScroll - currentScroll) < 100;
+                      _isAtBottom = (maxScroll - currentScroll) < 200;
                     }
                   } else if (notification is OverscrollNotification) {
                     // 滚动到顶部边缘时触发加载更早消息

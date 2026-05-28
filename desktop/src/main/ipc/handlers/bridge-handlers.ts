@@ -4,16 +4,17 @@
  * 包含 Bridge 跨端桥接相关的所有 handler：连接、状态转发、数据查询、项目切换等。
  */
 
-import { ipcMain, BrowserWindow, net } from 'electron'
+import { ipcMain, BrowserWindow } from 'electron'
 import type { IpcMainEvent } from 'electron'
 import { IpcChannel } from '../../../shared/ipc'
 import type { BridgeStatusPayload } from '../../../shared/ipc'
 import { getBridgeManager } from '../../bridge/bridge-manager'
 import type { BridgeChatMessage as BridgeChatMessageType } from '../../bridge/bridge-protocol'
 import { getAppState } from '../../system/app-state'
-import { loadChatStoreSessionPage, initMemoryDb } from '../../data/memory-db'
+import { loadChatStoreSessionPage } from '../../data/memory-db'
 import { log, logError } from '../../system/logger'
 import { agentAbortControllers } from './chat-handlers'
+import { handleGatewayGetModels } from './gateway-handlers'
 
 /* ------------------------------------------------------------------ */
 /*  Bridge connection handlers                                         */
@@ -377,54 +378,27 @@ export function setupBridgeDataHandler(): void {
             source: 'custom' as const,
           }))
 
-          // 网关内置模型（通过 API 获取）
+          // 网关内置模型：复用桌面端已有的 handleGatewayGetModels，保持逻辑完全一致
           let gatewayModels: Array<{
             id: string; provider: string; name: string; displayName: string;
             model: string; supportsVision: boolean; source: string;
           }> = []
           try {
-            const mgr = getBridgeManager()
-            const token = mgr.getToken()
-            if (token) {
-              const gwData = await new Promise<unknown>((resolve, reject) => {
-                const request = net.request({
-                  method: 'GET',
-                  url: 'https://agent.bjctykj.com/api/member/models',
-                })
-                request.setHeader('Authorization', `Bearer ${token}`)
-                request.setHeader('Content-Type', 'application/json')
-                request.on('response', (response: Electron.IncomingMessage) => {
-                  let body = ''
-                  response.on('data', (chunk: Buffer) => { body += chunk.toString() })
-                  response.on('end', () => {
-                    try {
-                      const json = JSON.parse(body)
-                      if (response.statusCode >= 200 && response.statusCode < 300) {
-                        resolve(json.data ?? json)
-                      } else {
-                        reject(new Error(json.message || json.error || `HTTP ${response.statusCode}`))
-                      }
-                    } catch {
-                      reject(new Error(`解析响应失败 (${response.statusCode})`))
-                    }
-                  })
-                })
-                request.on('error', (err: Error) => reject(err))
-                request.end()
-              })
-
-              if (Array.isArray(gwData)) {
-                gatewayModels = (gwData as Array<Record<string, unknown>>).map((m) => ({
-                  id: String(m.id ?? ''),
-                  provider: String(m.provider ?? ''),
-                  name: String(m.name ?? ''),
-                  displayName: String(m.displayName ?? m.name ?? ''),
-                  model: String(m.model ?? ''),
-                  supportsVision: Boolean(m.supportsVision),
-                  source: 'system' as const,
-                }))
-              }
-            }
+            const gwResult = await handleGatewayGetModels(null as any)
+            // handleGatewayGetModels 返回 json.data ?? json，可能是数组或包含 data 字段的对象
+            const gwList = Array.isArray(gwResult) ? gwResult
+              : (gwResult && typeof gwResult === 'object' && Array.isArray((gwResult as any).data))
+                ? (gwResult as any).data
+                : []
+            gatewayModels = (gwList as Array<Record<string, unknown>>).map((m) => ({
+              id: String(m.id ?? ''),
+              provider: String(m.provider ?? ''),
+              name: String(m.name ?? ''),
+              displayName: String(m.displayName ?? m.name ?? ''),
+              model: String(m.model ?? ''),
+              supportsVision: Boolean(m.supportsVision),
+              source: 'system' as const,
+            }))
           } catch (gwErr) {
             // 网关获取失败不阻塞，只返回本地模型
             logError('bridge', '获取网关模型失败（降级为仅本地模型）', {
