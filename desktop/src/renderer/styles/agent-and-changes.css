@@ -792,6 +792,14 @@
   border: 1px solid rgba(245, 158, 11, 0.3);
   background: rgba(245, 158, 11, 0.06);
 }
+/* 重试确认卡片 — 橙红色主题 */
+.agent-confirm-card.retry {
+  border-color: rgba(255, 107, 53, 0.35);
+  background: rgba(255, 107, 53, 0.08);
+}
+.agent-confirm-card.retry .agent-confirm-title {
+  color: #ff8c5a;
+}
 /* 计划确认卡片 — 蓝色主题 */
 .agent-confirm-card.plan {
   border-color: rgba(76, 123, 255, 0.3);

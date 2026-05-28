@@ -4,7 +4,7 @@
  * 包含 Bridge 跨端桥接相关的所有 handler：连接、状态转发、数据查询、项目切换等。
  */
 
-import { ipcMain, BrowserWindow } from 'electron'
+import { ipcMain, BrowserWindow, net } from 'electron'
 import type { IpcMainEvent } from 'electron'
 import { IpcChannel } from '../../../shared/ipc'
 import type { BridgeStatusPayload } from '../../../shared/ipc'
@@ -224,12 +224,53 @@ export function setupBridgeDataHandler(): void {
               win.webContents.send('bridge:switch-project-from-mobile', { projectId, sessionId })
             }
           }
-          // 不再主动推送全量快照，改为等待手机端发送 bridge:request-state 请求
-          // 手机端优先从本地 SQLite 缓存加载消息，按需请求快照
-          log('BRIDGE_PROJECT_SWITCHED_NO_SNAPSHOT', {
-            threadId: projectId,
-            sessionId: sessionId || '(default)',
-          }, 'bridge')
+          
+          // 关键修复：等待 renderer 完成切换后，主动推送 bridge:state 快照给移动端
+          // renderer 切换项目需要时间（加载消息、更新 UI），等待 1.5 秒后推送
+          setTimeout(async () => {
+            try {
+              const state = await getAppState()
+              const activeThread = state.threadsState.threads.find((t) => t.id === projectId)
+              if (!activeThread) return
+              
+              const resolvedSessionId = activeThread.activeSessionId || activeThread.sessions[0]?.id || ''
+              if (!resolvedSessionId) return
+              
+              const page = loadChatStoreSessionPage(resolvedSessionId, { limit: 50 })
+              if (!page || !Array.isArray(page.messages)) return
+              
+              const modelConfig = state.providersState.modelConfigs.find(
+                (m) => m.id === activeThread.modelConfigId,
+              )
+              const hasActiveTask = agentAbortControllers.size > 0 &&
+                Array.from(agentAbortControllers.keys()).some(key => {
+                  return key.includes(resolvedSessionId) || key.includes(activeThread.id)
+                })
+              const activeAgentRequestId = hasActiveTask ? `agent-${resolvedSessionId}` : undefined
+              
+              const mgr = getBridgeManager()
+              mgr.sendHostMessage({
+                type: 'bridge:state',
+                messages: page.messages as BridgeChatMessageType[],
+                threadId: activeThread.id,
+                workspace: activeThread.workspace,
+                modelLabel: modelConfig?.model || modelConfig?.name || '',
+                modelConfigId: activeThread.modelConfigId,
+                threadTitle: activeThread.title,
+                projectTitle: activeThread.title,
+                ...(activeAgentRequestId ? { activeAgentRequestId } : {}),
+              } as any)
+              log('BRIDGE_STATE_PUSHED_AFTER_SWITCH', {
+                threadId: activeThread.id,
+                sessionId: resolvedSessionId,
+                messageCount: page.messages.length,
+              }, 'bridge')
+            } catch (err) {
+              logError('bridge', '切换项目后推送 bridge:state 失败', {
+                error: err instanceof Error ? err.message : String(err),
+              })
+            }
+          }, 1500)
           break
         }
 
@@ -275,6 +316,7 @@ export function setupBridgeDataHandler(): void {
                 modelLabel: modelConfig?.model || modelConfig?.name || '',
                 modelConfigId: activeThread.modelConfigId,
                 threadTitle: activeThread.title,
+                projectTitle: activeThread.title,
                 ...(activeAgentRequestId ? { activeAgentRequestId } : {}),
               })
               log('BRIDGE_STATE_REQUEST_HANDLED', {
@@ -319,20 +361,94 @@ export function setupBridgeDataHandler(): void {
           break
         }
 
-        /* ---- 模型列表 ---- */
+        /* ---- 模型列表（合并本地自定义模型 + 网关内置模型） ---- */
         case 'bridge:get-models': {
           const state = await getAppState()
           const providersState = state.providersState
+
+          // 本地自定义模型
+          const localModels = providersState.modelConfigs.map((m) => ({
+            id: m.id,
+            provider: m.provider,
+            name: m.name,
+            displayName: m.name,
+            model: m.model,
+            supportsVision: Boolean(m.supportsVision),
+            source: 'custom' as const,
+          }))
+
+          // 网关内置模型（通过 API 获取）
+          let gatewayModels: Array<{
+            id: string; provider: string; name: string; displayName: string;
+            model: string; supportsVision: boolean; source: string;
+          }> = []
+          try {
+            const mgr = getBridgeManager()
+            const token = mgr.getToken()
+            if (token) {
+              const gwData = await new Promise<unknown>((resolve, reject) => {
+                const request = net.request({
+                  method: 'GET',
+                  url: 'https://agent.bjctykj.com/api/member/models',
+                })
+                request.setHeader('Authorization', `Bearer ${token}`)
+                request.setHeader('Content-Type', 'application/json')
+                request.on('response', (response: Electron.IncomingMessage) => {
+                  let body = ''
+                  response.on('data', (chunk: Buffer) => { body += chunk.toString() })
+                  response.on('end', () => {
+                    try {
+                      const json = JSON.parse(body)
+                      if (response.statusCode >= 200 && response.statusCode < 300) {
+                        resolve(json.data ?? json)
+                      } else {
+                        reject(new Error(json.message || json.error || `HTTP ${response.statusCode}`))
+                      }
+                    } catch {
+                      reject(new Error(`解析响应失败 (${response.statusCode})`))
+                    }
+                  })
+                })
+                request.on('error', (err: Error) => reject(err))
+                request.end()
+              })
+
+              if (Array.isArray(gwData)) {
+                gatewayModels = (gwData as Array<Record<string, unknown>>).map((m) => ({
+                  id: String(m.id ?? ''),
+                  provider: String(m.provider ?? ''),
+                  name: String(m.name ?? ''),
+                  displayName: String(m.displayName ?? m.name ?? ''),
+                  model: String(m.model ?? ''),
+                  supportsVision: Boolean(m.supportsVision),
+                  source: 'system' as const,
+                }))
+              }
+            }
+          } catch (gwErr) {
+            // 网关获取失败不阻塞，只返回本地模型
+            logError('bridge', '获取网关模型失败（降级为仅本地模型）', {
+              error: gwErr instanceof Error ? gwErr.message : String(gwErr),
+            })
+          }
+
+          // 合并去重：本地模型优先（id 相同时保留本地）
+          type ModelItem = { id: string; provider: string; name: string; displayName: string; model: string; supportsVision: boolean; source: string }
+          const mergedMap = new Map<string, ModelItem>()
+          for (const m of localModels) {
+            mergedMap.set(m.id, m)
+          }
+          for (const m of gatewayModels) {
+            if (!mergedMap.has(m.id)) {
+              mergedMap.set(m.id, m)
+            }
+          }
+          const mergedModels = [...mergedMap.values()]
+
           respond({
             type: 'bridge:models',
             requestId,
-            models: providersState.modelConfigs.map((m) => ({
-              id: m.id,
-              provider: m.provider,
-              name: m.name,
-              model: m.model,
-              supportsVision: m.supportsVision,
-            })),
+            models: mergedModels.map(({ source, ...m }) => m),
             activeModelConfigId: providersState.activeModelConfigId,
           })
           break

@@ -407,6 +407,10 @@ export type BridgeClientMessage =
   | BridgeRequestState
   | BridgeAck
   | BridgeRetransmitRequest
+  | BridgeGetModels
+  | BridgeSwitchModel
+  | BridgeLoadOlderMessages
+  | BridgePollTaskStatus
 
 /** 移动端主动请求当前状态快照（连接/重连后使用） */
 export interface BridgeRequestState {
@@ -436,6 +440,7 @@ export interface BridgeProjectSwitched {
 export interface BridgeProjectStates {
   type: 'bridge:project-states'
   states: BridgeProjectState[]
+  activeThreadId?: string
   timestamp: number
 }
 
@@ -452,6 +457,35 @@ export interface BridgeProjectState {
   lastMessageHasContent?: boolean  // 最后一条消息是否有内容
   lastMessageIsStreaming?: boolean  // 最后一条消息是否正在流式输出
   lastMessageHasPlan?: boolean     // 最后一条消息是否有执行计划
+}
+
+/** 获取模型列表 */
+export interface BridgeGetModels {
+  type: 'bridge:get-models'
+  requestId?: string
+}
+
+/** 切换模型 */
+export interface BridgeSwitchModel {
+  type: 'bridge:switch-model'
+  modelConfigId: string
+  requestId?: string
+}
+
+/** 加载更早消息 */
+export interface BridgeLoadOlderMessages {
+  type: 'bridge:load-older-messages'
+  sessionId: string
+  beforeSeq?: number
+  limit?: number
+  requestId?: string
+}
+
+/** 轮询任务状态 */
+export interface BridgePollTaskStatus {
+  type: 'bridge:poll-task-status'
+  sessionId?: string
+  requestId?: string
 }
 
 /** 所有 WebSocket 消息 */
@@ -471,6 +505,7 @@ export interface BridgeStatus {
   status: BridgeConnectionStatus
   clientCount: number
   error?: string
+  tokenExpired?: boolean
 }
 
 /* ------------------------------------------------------------------ */

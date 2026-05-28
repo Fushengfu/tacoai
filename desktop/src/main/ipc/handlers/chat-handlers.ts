@@ -22,7 +22,7 @@ import type {
   AgentEventChunkData,
 } from '../../../shared/ipc'
 import type { ProviderKey, ProviderOverrides } from '../../ai/llm'
-import { runAgent, resolveConfirm } from '../../agent'
+import { runAgent, resolveConfirm, resolveRetry } from '../../agent'
 import { listChatStoreSessions, loadChatStoreSessionPage, saveChatStoreSessionPatch, deleteChatStoreSession, initMemoryDb } from '../../data/memory-db'
 import {
   sanitizeUserFacingText,
@@ -138,6 +138,35 @@ export async function handleAgentStream(event: IpcMainEvent, payload: AgentStrea
     })
   } catch (_) { /* bridge 未初始化时忽略 */ }
 
+  // 推送用户消息到桥接（让移动端实时显示用户消息）
+  try {
+    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')
+    if (lastUserMsg) {
+      let userText = ''
+      let userImages: string[] = []
+      if (typeof lastUserMsg.content === 'string') {
+        userText = lastUserMsg.content
+      } else if (Array.isArray(lastUserMsg.content)) {
+        const textParts: string[] = []
+        for (const part of lastUserMsg.content) {
+          if (part.type === 'text') textParts.push(part.text)
+          else if (part.type === 'image_url' && part.image_url?.url) userImages.push(part.image_url.url)
+        }
+        userText = textParts.join('\n')
+      }
+      if (userText || userImages.length > 0) {
+        getBridgeManager().sendHostMessage({
+          type: 'bridge:chat-user-message',
+          messageId: sourceUserMessageId || `user-${requestId}`,
+          content: userText,
+          images: userImages.length > 0 ? userImages : undefined,
+          threadId: projectId,
+          timestamp: Date.now(),
+        } as any)
+      }
+    }
+  } catch (_) { /* bridge 未初始化时忽略 */ }
+
   try {
     await runAgent(
       provider as ProviderKey,
@@ -154,7 +183,7 @@ export async function handleAgentStream(event: IpcMainEvent, payload: AgentStrea
             originalRequestId: requestId,
             threadId: projectId,
             event: agentEvent,
-          } as any)
+          } as any, 'high')
           
           // 新增：根据事件类型更新项目状态
           const mgr = getBridgeManager()
@@ -243,6 +272,17 @@ export function handleAgentConfirm(_event: IpcMainEvent, payload: AgentConfirmPa
       type: 'bridge:agent-confirm-resolved',
       confirmId: payload.confirmId,
       approved: payload.approved,
+    } as any)
+  } catch (_) { /* bridge 未初始化时忽略 */ }
+}
+
+export function handleAgentRetryResponse(_event: IpcMainEvent, payload: { retryId: string; shouldRetry: boolean }) {
+  resolveRetry(payload.retryId, payload.shouldRetry)
+  try {
+    getBridgeManager().sendHostMessage({
+      type: 'bridge:agent-retry-resolved',
+      retryId: payload.retryId,
+      shouldRetry: payload.shouldRetry,
     } as any)
   } catch (_) { /* bridge 未初始化时忽略 */ }
 }

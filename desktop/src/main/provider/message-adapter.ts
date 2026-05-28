@@ -73,7 +73,8 @@ export function extractAudioUrls(parts: ContentPart[]): string[] {
 function transformForQwen(msg: StandardChatMessage): { role: string; content: unknown } {
   return {
     role: msg.role,
-    content: msg.content,  // 直接使用数组
+    // 空 content 数组 → 空字符串，否则直接使用数组
+    content: msg.content.length === 0 ? '' : msg.content,
   }
 }
 
@@ -83,7 +84,8 @@ function transformForQwen(msg: StandardChatMessage): { role: string; content: un
 function transformForMimo(msg: StandardChatMessage): { role: string; content: unknown; tool_call_id?: string; name?: string; tool_calls?: unknown[]; reasoning_content?: string } {
   const result: { role: string; content: unknown; tool_call_id?: string; name?: string; tool_calls?: unknown[]; reasoning_content?: string } = {
     role: msg.role,
-    content: msg.content,  // 直接使用数组
+    // 空 content 数组 → 空字符串，否则直接使用数组
+    content: msg.content.length === 0 ? '' : msg.content,
   }
   
   // tool 消息需要保留 tool_call_id 和 name
@@ -174,9 +176,10 @@ const transformers: Record<string, (msg: StandardChatMessage) => { role: string;
 export function adaptForProvider(msg: StandardChatMessage, provider: string): ChatMessage {
   const transformer = transformers[provider]
   // 未知 provider 回退为 OpenAI 兼容格式（直接传递标准格式）
+  // 空 content 数组 → 空字符串
   const result = transformer ? transformer(msg) : {
     role: msg.role,
-    content: msg.content,
+    content: msg.content.length === 0 ? '' : msg.content,
   }
   
   // 构建基础消息对象
@@ -246,8 +249,10 @@ export function parseToStandard(msg: { role: string; content: string | unknown[]
   // 旧格式：字符串 + images
   const parts: ContentPart[] = []
   
-  // 添加文本
-  if (msg.content && typeof msg.content === 'string') {
+  // 添加文本 — 只对非空字符串才创建 text part
+  // 空字符串表示"无文本内容"（如 assistant 只返回 tool_calls，不返回文本），
+  // 不应转换为 [{ type: 'text', text: '' }]，而应保持空数组
+  if (typeof msg.content === 'string' && msg.content.length > 0) {
     parts.push({ type: 'text', text: msg.content })
   }
 
@@ -260,7 +265,8 @@ export function parseToStandard(msg: { role: string; content: string | unknown[]
 
   const standardMsg: StandardChatMessage = {
     role: msg.role as StandardChatMessage['role'],
-    content: parts.length > 0 ? parts : [{ type: 'text', text: '' }],
+    // 空字符串 + 无图片 → content 为空数组（不是 [{ type: 'text', text: '' }]）
+    content: parts.length > 0 ? parts : [],
   }
   
   // 保留 assistant 消息的 tool_calls

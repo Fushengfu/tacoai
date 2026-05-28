@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ActivePlan, AgentStep, AttachedAsset, AttachedImage, ChatMsg, ModelConfig, ProviderId, QueuedMessage, TaskTiming, ToolCallInfo, ToolResultInfo } from '../types'
-import type { ChatStoreSessionPage, ChatStoreSessionPatch, ChatStoreSessionSummary, PromptConfig } from '../../shared/ipc'
+import type { ChatStoreSessionPage, ChatStoreSessionPatch, ChatStoreSessionSummary, IpcChatMessage, IpcChatOverrides, PromptConfig } from '../../shared/ipc'
 import { buildSystemPrompt } from '../constants'
 import { loadJson, saveJson, uid } from '../lib/storage'
 import { loadUploadSettings, toIpcUploadConfig } from '../lib/upload-config'
@@ -1088,198 +1088,51 @@ export function useChat() {
   }
 
   /* ------------------------------------------------------------------ */
-  /*  Send message (per-thread, non-blocking)                            */
+  /*  Agent Stream 执行器（sendMessage / resendFromExisting 共用）        */
   /* ------------------------------------------------------------------ */
 
-  async function sendMessage(params: SendMessageParams) {
-    const { threadId, projectId, projectRules, content, images, attachments, provider, modelConfig, workspace, contextLength, onFirstMessage, onComplete } = params
-    
-    // 处理 content 参数：支持字符串或数组
-    const contentText = Array.isArray(content) 
-      ? (content.find(p => p.type === 'text') as { type: 'text'; text: string } | undefined)?.text || ''
-      : String(content ?? '')
-    
-    // 从 content 数组中提取图片和附件（如果是数组格式）
-    let effectiveImages = images
-    let effectiveAttachments = attachments
-    
-    if (Array.isArray(content)) {
-      const extractedImages: AttachedImage[] = []
-      const extractedAttachments: AttachedAsset[] = []
-      
-      console.log('[sendMessage] 开始从 content 数组提取图片，content.length:', content.length)
-      console.log('[sendMessage] content 数组内容:', JSON.stringify(content, null, 2))
-      
-      for (const part of content) {
-        if (part.type === 'image_url') {
-          const url = part.image_url.url
-          console.log('[sendMessage] 检测到 image_url part, url:', url)
-          if (url.startsWith('http://') || url.startsWith('https://')) {
-            extractedImages.push({
-              id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-              dataUrl: '',
-              cloudUrl: url,
-              name: 'image',
-              uploadStatus: 'done',
-            })
-            console.log('[sendMessage] 成功提取云端图片:', url)
-          } else {
-            extractedAttachments.push({
-              id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-              name: url.split('/').pop() || 'image',
-              path: url,
-            })
-            console.log('[sendMessage] URL 不是 http(s)，作为附件处理:', url)
-          }
-        } else if (part.type === 'video_url' || part.type === 'audio_url') {
-          const url = part.type === 'video_url' ? part.video_url.url : part.audio_url.url
-          extractedAttachments.push({
-            id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            name: url.split('/').pop() || 'media',
-            path: url,
-          })
-        }
-      }
-      
-      console.log('[sendMessage] 提取完成 - extractedImages:', extractedImages.length, 'extractedAttachments:', extractedAttachments.length)
-      
-      // 如果传入了 content 数组，优先使用提取的结果
-      effectiveImages = extractedImages.length > 0 ? extractedImages : images
-      effectiveAttachments = extractedAttachments.length > 0 ? extractedAttachments : attachments
-      
-      console.log('[sendMessage] effectiveImages:', effectiveImages?.length, 'effectiveAttachments:', effectiveAttachments?.length)
-    }
-    
-    // 验证模型配置
-    const validation = validateModelConfig({
-      provider,
-      baseUrl: modelConfig.baseUrl,
-      apiKey: modelConfig.apiKey,
-      model: modelConfig.model,
-      contextLength: modelConfig.contextLength,
-      temperature: modelConfig.temperature,
-    })
-    
-    if (!validation.valid) {
-      const errorMsg = `模型配置验证失败: ${validation.errors.join('; ')}`
-      console.error('[sendMessage]', errorMsg)
-      
-      // 显示错误消息
-      const errChatMsg: ChatMsg = {
-        id: uid(),
-        role: 'assistant',
-        content: `[Error] ${errorMsg}`,
-        taskTiming: buildTaskTiming(Date.now()),
-      }
-      setMessages(threadId, (prev) => [...prev, errChatMsg])
-      return
-    }
-    
-    rememberSessionStoreMeta(threadId, { projectId, workspace })
-
-    // 保存参数供队列重发
-    sendParamsRefs.current.set(threadId, {
-      threadId,
-      projectId,
-      projectRules,
-      provider,
-      modelConfig,
-      workspace,
-      onFirstMessage,
-      onComplete,
-    })
-
-    // 同一会话绝对串行：若已有在途请求，本次直接入队
-    if (inFlightThreadsRef.current.has(threadId)) {
-      const queueText = contentText.trim()
-        || (effectiveImages && effectiveImages.length > 0 ? '(图片消息)' : '')
-        || (effectiveAttachments && effectiveAttachments.length > 0 ? '(附件消息)' : '')
-      if (queueText) addToQueue(threadId, queueText)
-      return
-    }
-    inFlightThreadsRef.current.add(threadId)
-    const taskStartedAt = Date.now()
-
-    // 用 ref 读取最新消息，避免闭包过期
-    const currentMsgs = threadMessagesRef.current[threadId] ?? []
-    const userMsg: ChatMsg = {
-      id: uid(),
-      role: 'user',
-      content: contentText,
-      ...(effectiveImages && effectiveImages.length > 0 ? { images: effectiveImages } : {}),
-      ...(effectiveAttachments && effectiveAttachments.length > 0 ? { attachments: effectiveAttachments } : {}),
-    }
-    const sourceUserMessageId = userMsg.id
-    const streamAssistantMessageId = uid()
-    const updatedMsgs = [...currentMsgs, userMsg]
-
-    setMessages(threadId, updatedMsgs)
-    setSendingThreads((prev) => ({ ...prev, [threadId]: true }))
-    setStreamingContents((prev) => ({ ...prev, [threadId]: '' }))
-    setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: undefined }))
-    setActiveTaskStartedAtByThread((prev) => ({ ...prev, [threadId]: taskStartedAt }))
-
-    // 首条消息 → 自动命名
-    if (currentMsgs.length === 0 && onFirstMessage) {
-      const title = contentText.length > 30 ? contentText.slice(0, 30) + '...' : contentText
-      onFirstMessage(title)
-    }
-
-    // 构造 API 消息（支持 provider/model 差异化 + 配置文件可选覆盖）
-    const promptConfig = await ensurePromptConfigLoaded()
-    const model = String(modelConfig.model ?? '').trim() || undefined
-    const systemContent = buildSystemPrompt({
-      workspace,
-      provider,
-      model,
-      supportsVision: Boolean(modelConfig.supportsVision),
-      projectRules,
-      promptConfig,
-    })
-    const chatMsgs = buildMessagesForApi(updatedMsgs)
-
-    const apiMessages = [
-      { role: 'system' as const, content: systemContent },
-      ...chatMsgs
-    ]
-
-    const overrides = {
-      [provider]: {
-        baseUrl: modelConfig.baseUrl || undefined,
-        apiKey: modelConfig.apiKey || undefined,
-        model: modelConfig.model || undefined,
-        temperature: parseConfiguredTemperature(modelConfig.temperature),
-        upload: resolveUploadOverrideForProvider(provider),
-        supportsVision: Boolean(modelConfig.supportsVision),
-      }
-    }
+  /**
+   * 公共的 Agent 流式执行逻辑。
+   * 封装了：事件监听、消息渲染、Token 统计、重试、错误处理、状态清理。
+   */
+  async function executeAgentStream(params: {
+    threadId: string
+    requestId: string
+    provider: ProviderId
+    apiMessages: IpcChatMessage[]
+    overrides: IpcChatOverrides
+    projectId?: string
+    workspace?: string
+    contextLength?: number
+    sourceUserMessageId: string
+    streamAssistantMessageId: string
+    taskStartedAt: number
+    lastUserImages?: string[]
+    enableRetry?: boolean
+    onComplete?: () => void
+  }) {
+    const {
+      threadId, requestId, provider, apiMessages, overrides,
+      projectId, workspace, contextLength,
+      sourceUserMessageId, streamAssistantMessageId, taskStartedAt,
+      lastUserImages, enableRetry, onComplete,
+    } = params
 
     let accumulated = ''
-    let requestUsage: TokenUsageSnapshot | null = null
     let usageTurnCounted = false
     const projectKey = String(projectId ?? threadId ?? '').trim()
-    
-    /** 累加单轮API调用的token成本到项目统计 */
+
+    /** 累加单轮 API 调用的 token 成本到项目统计 */
     const applyProjectUsage = (usage: TokenUsageSnapshot | null) => {
       if (!usage || !projectKey) return
       const currentAgg = usageToAggregate(usage)
-      
-      // 检查是否有真实token消耗
       const hasCost = currentAgg.totalTokens > 0 || currentAgg.inputTokens > 0 || currentAgg.outputTokens > 0
       if (!hasCost) return
-      
-      // 判断是否计数为1轮对话
       const shouldCountTurn = !usageTurnCounted
-      
       setProjectTokenStatsByThread((prev) => {
         const base = prev[projectKey] ?? {
-          inputTokens: 0,
-          outputTokens: 0,
-          hitTokens: 0,
-          missTokens: 0,
-          totalTokens: 0,
-          turns: 0,
-          updatedAt: Date.now(),
+          inputTokens: 0, outputTokens: 0, hitTokens: 0, missTokens: 0,
+          totalTokens: 0, turns: 0, updatedAt: Date.now(),
         }
         return {
           ...prev,
@@ -1294,227 +1147,187 @@ export function useChat() {
           }
         }
       })
-      
       if (shouldCountTurn) usageTurnCounted = true
     }
-    
-    /** 追踪每次API调用的token使用(累加模式,用于成本统计) */
+
+    /** 追踪每次 API 调用的 token 使用 */
     const trackRequestUsage = (usage?: TokenUsageSnapshot) => {
       if (!usage) return
-      
-      const currentAgg = usageToAggregate(usage)
-      
-      // 上下文占比:只使用当前AI回复的usage(不累加历史轮次)
       const currentTotal = resolveUsageTotalTokens(usage)
       if (typeof currentTotal === 'number' && Number.isFinite(currentTotal)) {
         setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: currentTotal }))
       }
-      
-      // 项目统计:仍然累加所有轮次(用于成本核算)
       applyProjectUsage(usage)
     }
+
     try {
-      const requestId = `req-${Date.now()}-${threadId}`
-      // 记录当前 requestId 以便 stopSending 能发送 abort IPC
       requestIdRefs.current.set(threadId, requestId)
 
-      // ── Agent 模式：整合为单条 assistant 消息，步骤折叠显示 ──
       await new Promise<void>((resolve, reject) => {
-          abortRejectRefs.current.set(threadId, reject)
+        abortRejectRefs.current.set(threadId, reject)
 
-          // Agent 唯一的 assistant 消息 ID（与主进程记忆来源指针保持一致）
-          const agentMsgId = streamAssistantMessageId
-          const steps: AgentStep[] = []
-          let currentRound = 0
-          let commitHash: string | undefined
-          let activePlan: ActivePlan | undefined
-          let reasoningAccumulated = ''
+        const agentMsgId = streamAssistantMessageId
+        const steps: AgentStep[] = []
+        let currentRound = 0
+        let commitHash: string | undefined
+        let activePlan: ActivePlan | undefined
+        let reasoningAccumulated = ''
 
-          // 辅助：更新 agent 消息（追加或更新）
-          const flushAgentMsg = (finalContent?: string, taskTiming?: TaskTiming) => {
-            const nextContent = finalContent ?? accumulated
-            const hasRenderableContent = Boolean(nextContent.trim())
-            const hasRenderableMeta = steps.length > 0 || Boolean(activePlan) || Boolean(commitHash)
-            setMessages(threadId, (prev) => {
-              const idx = prev.findIndex((m) => m.id === agentMsgId)
-              if (idx === -1 && !hasRenderableContent && !hasRenderableMeta) {
-                return prev
-              }
-              const msg: ChatMsg = {
-                id: agentMsgId,
-                role: 'assistant',
-                content: nextContent,
-                agentSteps: steps.length > 0 ? [...steps] : undefined,
-                gitCommitHash: commitHash,
-                activePlan: activePlan ? { ...activePlan, steps: activePlan.steps.map((s) => ({ ...s })) } : undefined,
-                taskTiming,
-              }
-              if (idx === -1) return [...prev, msg]
-              const next = [...prev]
-              next[idx] = msg
-              return next
-            })
-          }
-
-          const runningTaskTiming: TaskTiming = { startedAt: taskStartedAt }
-          const cleanup = globalThis.window.taco.agent.onEvent((event) => {
-            if (event.requestId !== requestId) return
-
-            if (event.type === 'text') {
-              accumulated += event.content
-              // Agent 模式下直接更新消息内容，不使用独立的 streamingContent
-              flushAgentMsg(undefined, runningTaskTiming)
-            } else if (event.type === 'reasoning') {
-              reasoningAccumulated += event.content
-            } else if (event.type === 'usage') {
-              trackRequestUsage(event.usage)
-            } else if (event.type === 'tool_calls') {
-              // AI 决定调用工具 → 当前文本作为该步骤的 thinking
-              currentRound++
-              const toolThinking = String(event.thinking ?? '').trim()
-              const toolCalls: ToolCallInfo[] = event.toolCalls.map((tc) => ({
-                id: tc.id,
-                name: tc.function.name,
-                arguments: tc.function.arguments,
-              }))
-              steps.push({
-                round: currentRound,
-                thinking: toolThinking || reasoningAccumulated.trim() || accumulated,
-                toolCalls,
-                toolResults: [],
-                status: 'running',
-              })
-              // 清空累积文本，后续文本属于下一轮或最终回复
-              accumulated = ''
-              reasoningAccumulated = ''
-              flushAgentMsg(undefined, runningTaskTiming)
-            } else if (event.type === 'system_notice') {
-              currentRound++
-              steps.push({
-                round: currentRound,
-                systemTitle: event.title,
-                systemDetail: event.message || '',
-                thinking: event.message || event.title,
-                toolCalls: [],
-                toolResults: [],
-                status: 'done',
-              })
-              flushAgentMsg(undefined, runningTaskTiming)
-            } else if (event.type === 'confirm') {
-              // 风险操作需要用户确认 → 更新当前步骤状态
-              const lastStep = steps[steps.length - 1]
-              if (lastStep) {
-                lastStep.status = 'confirm'
-                lastStep.confirmId = event.confirmId
-                lastStep.risks = event.risks.map((r) => ({
-                  toolCallId: r.toolCallId,
-                  toolName: r.toolName,
-                  level: r.level,
-                  reason: r.reason,
-                  detail: r.detail,
-                }))
-              }
-              flushAgentMsg(undefined, runningTaskTiming)
-            } else if (event.type === 'tool_results') {
-              const results: ToolResultInfo[] = event.results.map((r) => ({
-                tool_call_id: r.tool_call_id,
-                name: r.name,
-                content: r.content,
-                success: r.success,
-                fileChange: r.fileChange ? {
-                  filePath: r.fileChange.filePath,
-                  oldContent: r.fileChange.oldContent,
-                  newContent: r.fileChange.newContent,
-                } : undefined,
-              }))
-              // 将结果写入当前步骤
-              const lastStep = steps[steps.length - 1]
-              if (lastStep) {
-                lastStep.toolResults = results
-                lastStep.status = 'done'
-              }
-              flushAgentMsg(undefined, runningTaskTiming)
-            } else if (event.type === 'git_commit') {
-              // Agent 自动提交完成，记录 commit hash
-              commitHash = event.hash
-              flushAgentMsg(undefined, runningTaskTiming)
-            } else if (event.type === 'plan_init') {
-              // 计划初始化：用户确认了执行计划
-              activePlan = {
-                summary: event.summary,
-                reasoning: event.reasoning,
-                steps: event.steps.map((s) => ({ index: s.index, title: s.title, content: s.content, status: 'pending' as const })),
-                startedAt: Date.now(),
-              }
-              flushAgentMsg(undefined, runningTaskTiming)
-            } else if (event.type === 'plan_progress') {
-              // 计划步骤进度更新
-              if (activePlan) {
-                const targetStep = activePlan.steps.find((s) => s.index === event.stepIndex)
-                if (targetStep) {
-                  targetStep.status = normalizePlanStatus(event.status)
-                  if (event.note) targetStep.note = event.note
-                }
-              }
-              flushAgentMsg(undefined, runningTaskTiming)
-            } else if (event.type === 'done') {
-              // 最终回复写入 content
-              const finishedAt = Date.now()
-              if (typeof event.finalText === 'string') {
-                accumulated = event.finalText
-              }
-              if (activePlan && !activePlan.endedAt) activePlan.endedAt = finishedAt
-              flushAgentMsg(accumulated, buildTaskTiming(taskStartedAt, finishedAt))
-              cleanup()
-              resolve()
-            } else if (event.type === 'error') {
-              const finishedAt = Date.now()
-              if (activePlan && !activePlan.endedAt) activePlan.endedAt = finishedAt
-              flushAgentMsg(accumulated, buildTaskTiming(taskStartedAt, finishedAt))
-              cleanup()
-              reject(new Error(event.message))
+        /** 更新 agent 消息（追加或更新） */
+        const flushAgentMsg = (finalContent?: string, taskTiming?: TaskTiming) => {
+          const nextContent = finalContent ?? accumulated
+          const hasRenderableContent = Boolean(nextContent.trim())
+          const hasRenderableMeta = steps.length > 0 || Boolean(activePlan) || Boolean(commitHash)
+          setMessages(threadId, (prev) => {
+            const idx = prev.findIndex((m) => m.id === agentMsgId)
+            if (idx === -1 && !hasRenderableContent && !hasRenderableMeta) return prev
+            const msg: ChatMsg = {
+              id: agentMsgId,
+              role: 'assistant',
+              content: nextContent,
+              agentSteps: steps.length > 0 ? [...steps] : undefined,
+              gitCommitHash: commitHash,
+              activePlan: activePlan ? { ...activePlan, steps: activePlan.steps.map((s) => ({ ...s })) } : undefined,
+              taskTiming,
             }
+            if (idx === -1) return [...prev, msg]
+            const next = [...prev]
+            next[idx] = msg
+            return next
           })
-          streamCleanupRefs.current.set(threadId, cleanup)
-          // 找到最新用户消息中的图片 (使用cloudUrl)
-          // 如果 cloudUrl 为空，说明上传失败或未完成，此时不应发送图片，保持原逻辑 filter(Boolean)
-          console.log('[sendMessage] 准备提取 lastUserImages, effectiveImages:', effectiveImages?.length)
-          const lastUserImages = effectiveImages
-            ?.map((img) => img.cloudUrl)
-            .filter((url): url is string => Boolean(url))
-          console.log('[sendMessage] lastUserImages 结果:', lastUserImages)
-          
-          // 执行流式请求（带重试）
-          const executeStreamWithRetry = async (attempt: number): Promise<void> => {
-            try {
-              globalThis.window.taco.agent.stream({
-                requestId,
-                provider,
-                messages: apiMessages,
-                overrides,
-                projectId,
-                workspace: params.workspace ?? '',
-                contextLength,
-                recallDebug: isRecallDebugEnabled(),
-                sessionId: threadId,
-                sourceUserMessageId,
-                sourceAssistantMessageId: streamAssistantMessageId,
-                // 如果图片数组非空，传递图片
-                ...(lastUserImages && lastUserImages.length > 0 ? { images: lastUserImages } : {}),
-              })
-            } catch (error) {
-              // 如果是可重试错误且还有重试次数
-              if (isRetryableError(error as Error) && attempt < MAX_RETRY_ATTEMPTS) {
-                console.log(`[sendMessage] 请求失败，正在重试 (${attempt + 1}/${MAX_RETRY_ATTEMPTS})`, error)
-                await delay(RETRY_DELAY_MS * (attempt + 1)) // 指数退避
-                return executeStreamWithRetry(attempt + 1)
-              }
-              throw error
+        }
+
+        const runningTaskTiming: TaskTiming = { startedAt: taskStartedAt }
+        const cleanup = window.taco.agent.onEvent((event) => {
+          if (event.requestId !== requestId) return
+
+          if (event.type === 'text') {
+            accumulated += event.content
+            flushAgentMsg(undefined, runningTaskTiming)
+          } else if (event.type === 'reasoning') {
+            reasoningAccumulated += event.content
+          } else if (event.type === 'usage') {
+            trackRequestUsage(event.usage)
+          } else if (event.type === 'tool_calls') {
+            currentRound++
+            const toolThinking = String(event.thinking ?? '').trim()
+            const toolCalls: ToolCallInfo[] = event.toolCalls.map((tc) => ({
+              id: tc.id, name: tc.function.name, arguments: tc.function.arguments,
+            }))
+            steps.push({
+              round: currentRound,
+              thinking: toolThinking || reasoningAccumulated.trim() || accumulated,
+              toolCalls, toolResults: [], status: 'running',
+            })
+            accumulated = ''
+            reasoningAccumulated = ''
+            flushAgentMsg(undefined, runningTaskTiming)
+          } else if (event.type === 'system_notice') {
+            currentRound++
+            steps.push({
+              round: currentRound, systemTitle: event.title,
+              systemDetail: event.message || '',
+              thinking: event.message || event.title,
+              toolCalls: [], toolResults: [], status: 'done',
+            })
+            flushAgentMsg(undefined, runningTaskTiming)
+          } else if (event.type === 'confirm') {
+            const lastStep = steps[steps.length - 1]
+            if (lastStep) {
+              lastStep.status = 'confirm'
+              lastStep.confirmId = event.confirmId
+              lastStep.risks = event.risks.map((r) => ({
+                toolCallId: r.toolCallId, toolName: r.toolName,
+                level: r.level, reason: r.reason, detail: r.detail,
+              }))
             }
+            flushAgentMsg(undefined, runningTaskTiming)
+          } else if (event.type === 'retry_confirm') {
+            // 可恢复错误：创建新的步骤用于显示重试确认 UI
+            steps.push({
+              round: event.round,
+              thinking: '',
+              toolCalls: [],
+              toolResults: [],
+              status: 'retry_confirm',
+              retryId: event.retryId,
+              retryErrorType: event.errorType,
+              retryErrorMessage: event.errorMessage,
+            })
+            flushAgentMsg(undefined, runningTaskTiming)
+          } else if (event.type === 'tool_results') {
+            const results: ToolResultInfo[] = event.results.map((r) => ({
+              tool_call_id: r.tool_call_id, name: r.name, content: r.content,
+              success: r.success,
+              fileChange: r.fileChange ? {
+                filePath: r.fileChange.filePath,
+                oldContent: r.fileChange.oldContent,
+                newContent: r.fileChange.newContent,
+              } : undefined,
+            }))
+            const lastStep = steps[steps.length - 1]
+            if (lastStep) {
+              lastStep.toolResults = results
+              lastStep.status = 'done'
+            }
+            flushAgentMsg(undefined, runningTaskTiming)
+          } else if (event.type === 'git_commit') {
+            commitHash = event.hash
+            flushAgentMsg(undefined, runningTaskTiming)
+          } else if (event.type === 'plan_init') {
+            activePlan = {
+              summary: event.summary, reasoning: event.reasoning,
+              steps: event.steps.map((s) => ({ index: s.index, title: s.title, content: s.content, status: 'pending' as const })),
+              startedAt: Date.now(),
+            }
+            flushAgentMsg(undefined, runningTaskTiming)
+          } else if (event.type === 'plan_progress') {
+            if (activePlan) {
+              const targetStep = activePlan.steps.find((s) => s.index === event.stepIndex)
+              if (targetStep) {
+                targetStep.status = normalizePlanStatus(event.status)
+                if (event.note) targetStep.note = event.note
+              }
+            }
+            flushAgentMsg(undefined, runningTaskTiming)
+          } else if (event.type === 'done') {
+            const finishedAt = Date.now()
+            if (typeof event.finalText === 'string') accumulated = event.finalText
+            if (activePlan && !activePlan.endedAt) activePlan.endedAt = finishedAt
+            flushAgentMsg(accumulated, buildTaskTiming(taskStartedAt, finishedAt))
+            cleanup()
+            resolve()
+          } else if (event.type === 'error') {
+            const finishedAt = Date.now()
+            if (activePlan && !activePlan.endedAt) activePlan.endedAt = finishedAt
+            flushAgentMsg(accumulated, buildTaskTiming(taskStartedAt, finishedAt))
+            cleanup()
+            reject(new Error(event.message))
           }
-          
-          executeStreamWithRetry(0).catch(reject)
         })
+        streamCleanupRefs.current.set(threadId, cleanup)
+
+        // 执行流式请求（可选重试）
+        const executeStream = async (attempt: number): Promise<void> => {
+          try {
+            window.taco.agent.stream({
+              requestId, provider, messages: apiMessages, overrides,
+              projectId, workspace: workspace ?? '', contextLength,
+              recallDebug: isRecallDebugEnabled(),
+              sessionId: threadId, sourceUserMessageId,
+              sourceAssistantMessageId: streamAssistantMessageId,
+              ...(lastUserImages && lastUserImages.length > 0 ? { images: lastUserImages } : {}),
+            })
+          } catch (error) {
+            if (enableRetry && isRetryableError(error as Error) && attempt < MAX_RETRY_ATTEMPTS) {
+              await delay(RETRY_DELAY_MS * (attempt + 1))
+              return executeStream(attempt + 1)
+            }
+            throw error
+          }
+        }
+        executeStream(0).catch(reject)
+      })
 
       abortRejectRefs.current.delete(threadId)
       requestIdRefs.current.delete(threadId)
@@ -1524,7 +1337,6 @@ export function useChat() {
       requestIdRefs.current.delete(threadId)
       const errMsg = error instanceof Error ? error.message : '请求失败'
       if (errMsg === '__stopped__') {
-        // Agent 模式：消息已在事件流中维护，追加 [已停止] 标记
         const timing = buildTaskTiming(taskStartedAt)
         setMessages(threadId, (prev) => {
           for (let i = prev.length - 1; i >= 0; i--) {
@@ -1542,39 +1354,166 @@ export function useChat() {
         })
       } else {
         const errChatMsg: ChatMsg = {
-          id: streamAssistantMessageId,
-          role: 'assistant',
-          content: `[Error] ${errMsg}`,
-          taskTiming: buildTaskTiming(taskStartedAt),
+          id: streamAssistantMessageId, role: 'assistant',
+          content: `[Error] ${errMsg}`, taskTiming: buildTaskTiming(taskStartedAt),
         }
         setMessages(threadId, (prev) => [...prev, errChatMsg])
       }
     } finally {
       inFlightThreadsRef.current.delete(threadId)
       setSendingThreads((prev) => ({ ...prev, [threadId]: false }))
-      setStreamingContents((prev) => {
-        const next = { ...prev }
-        delete next[threadId]
-        return next
-      })
-      setActiveTaskStartedAtByThread((prev) => {
-        const next = { ...prev }
-        delete next[threadId]
-        return next
-      })
+      setStreamingContents((prev) => { const next = { ...prev }; delete next[threadId]; return next })
+      setActiveTaskStartedAtByThread((prev) => { const next = { ...prev }; delete next[threadId]; return next })
       streamCleanupRefs.current.delete(threadId)
-
       setCompletedThreads((prev) => ({ ...prev, [threadId]: true }))
       setTimeout(() => {
-        setCompletedThreads((prev) => {
-          const next = { ...prev }
-          delete next[threadId]
-          return next
-        })
+        setCompletedThreads((prev) => { const next = { ...prev }; delete next[threadId]; return next })
       }, 3000)
-
       processQueue(threadId)
     }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Send message (per-thread, non-blocking)                            */
+  /* ------------------------------------------------------------------ */
+
+  async function sendMessage(params: SendMessageParams) {
+    const { threadId, projectId, projectRules, content, images, attachments, provider, modelConfig, workspace, contextLength, onFirstMessage, onComplete } = params
+
+    // 处理 content 参数：支持字符串或数组
+    const contentText = Array.isArray(content)
+      ? (content.find(p => p.type === 'text') as { type: 'text'; text: string } | undefined)?.text || ''
+      : String(content ?? '')
+
+    // 从 content 数组中提取图片和附件（如果是数组格式）
+    let effectiveImages = images
+    let effectiveAttachments = attachments
+
+    if (Array.isArray(content)) {
+      const extractedImages: AttachedImage[] = []
+      const extractedAttachments: AttachedAsset[] = []
+
+      for (const part of content) {
+        if (part.type === 'image_url') {
+          const url = part.image_url.url
+          if (url.startsWith('http://') || url.startsWith('https://')) {
+            extractedImages.push({
+              id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              dataUrl: '', cloudUrl: url, name: 'image', uploadStatus: 'done',
+            })
+          } else {
+            extractedAttachments.push({
+              id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              name: url.split('/').pop() || 'image', path: url,
+            })
+          }
+        } else if (part.type === 'video_url' || part.type === 'audio_url') {
+          const url = part.type === 'video_url' ? part.video_url.url : part.audio_url.url
+          extractedAttachments.push({
+            id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            name: url.split('/').pop() || 'media', path: url,
+          })
+        }
+      }
+
+      effectiveImages = extractedImages.length > 0 ? extractedImages : images
+      effectiveAttachments = extractedAttachments.length > 0 ? extractedAttachments : attachments
+    }
+
+    // 验证模型配置
+    const validation = validateModelConfig({
+      provider, baseUrl: modelConfig.baseUrl, apiKey: modelConfig.apiKey,
+      model: modelConfig.model, contextLength: modelConfig.contextLength,
+      temperature: modelConfig.temperature,
+    })
+    if (!validation.valid) {
+      const errorMsg = `模型配置验证失败: ${validation.errors.join('; ')}`
+      console.error('[sendMessage]', errorMsg)
+      const errChatMsg: ChatMsg = {
+        id: uid(), role: 'assistant', content: `[Error] ${errorMsg}`,
+        taskTiming: buildTaskTiming(Date.now()),
+      }
+      setMessages(threadId, (prev) => [...prev, errChatMsg])
+      return
+    }
+
+    rememberSessionStoreMeta(threadId, { projectId, workspace })
+    sendParamsRefs.current.set(threadId, {
+      threadId, projectId, projectRules, provider, modelConfig, workspace, onFirstMessage, onComplete,
+    })
+
+    // 同一会话绝对串行：若已有在途请求，本次直接入队
+    if (inFlightThreadsRef.current.has(threadId)) {
+      const queueText = contentText.trim()
+        || (effectiveImages && effectiveImages.length > 0 ? '(图片消息)' : '')
+        || (effectiveAttachments && effectiveAttachments.length > 0 ? '(附件消息)' : '')
+      if (queueText) addToQueue(threadId, queueText)
+      return
+    }
+    inFlightThreadsRef.current.add(threadId)
+    const taskStartedAt = Date.now()
+
+    // 创建用户消息
+    const currentMsgs = threadMessagesRef.current[threadId] ?? []
+    const userMsg: ChatMsg = {
+      id: uid(), role: 'user', content: contentText,
+      ...(effectiveImages && effectiveImages.length > 0 ? { images: effectiveImages } : {}),
+      ...(effectiveAttachments && effectiveAttachments.length > 0 ? { attachments: effectiveAttachments } : {}),
+    }
+    const updatedMsgs = [...currentMsgs, userMsg]
+    setMessages(threadId, updatedMsgs)
+    setSendingThreads((prev) => ({ ...prev, [threadId]: true }))
+    setStreamingContents((prev) => ({ ...prev, [threadId]: '' }))
+    setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: undefined }))
+    setActiveTaskStartedAtByThread((prev) => ({ ...prev, [threadId]: taskStartedAt }))
+
+    // 首条消息 → 自动命名
+    if (currentMsgs.length === 0 && onFirstMessage) {
+      const title = contentText.length > 30 ? contentText.slice(0, 30) + '...' : contentText
+      onFirstMessage(title)
+    }
+
+    // 构造 API 消息
+    const promptConfig = await ensurePromptConfigLoaded()
+    const model = String(modelConfig.model ?? '').trim() || undefined
+    const systemContent = buildSystemPrompt({
+      workspace, provider, model,
+      supportsVision: Boolean(modelConfig.supportsVision),
+      projectRules, promptConfig,
+    })
+    const apiMessages = [
+      { role: 'system' as const, content: systemContent },
+      ...buildMessagesForApi(updatedMsgs),
+ ]
+    const overrides = {
+      [provider]: {
+        baseUrl: modelConfig.baseUrl || undefined,
+        apiKey: modelConfig.apiKey || undefined,
+        model: modelConfig.model || undefined,
+        temperature: parseConfiguredTemperature(modelConfig.temperature),
+        upload: resolveUploadOverrideForProvider(provider),
+        supportsVision: Boolean(modelConfig.supportsVision),
+      }
+    }
+
+    // 提取图片用于 API
+    const lastUserImages = effectiveImages
+      ?.map((img) => img.cloudUrl)
+      .filter((url): url is string => Boolean(url))
+
+    // 执行 Agent 流式请求（公共逻辑）
+    await executeAgentStream({
+      threadId,
+      requestId: `req-${Date.now()}-${threadId}`,
+      provider, apiMessages, overrides,
+      projectId, workspace: params.workspace ?? '', contextLength,
+      sourceUserMessageId: userMsg.id,
+      streamAssistantMessageId: uid(),
+      taskStartedAt,
+      lastUserImages: lastUserImages && lastUserImages.length > 0 ? lastUserImages : undefined,
+      enableRetry: true,
+      onComplete,
+    })
   }
 
   /**
@@ -1588,36 +1527,31 @@ export function useChat() {
     const currentMsgs = threadMessagesRef.current[threadId] ?? []
     if (currentMsgs.length === 0) return
     const sourceUserMessageId = [...currentMsgs].reverse().find((msg) => msg.role === 'user')?.id || ''
-    const streamAssistantMessageId = uid()
 
     if (inFlightThreadsRef.current.has(threadId)) return
     inFlightThreadsRef.current.add(threadId)
     const taskStartedAt = Date.now()
 
     sendParamsRefs.current.set(threadId, { threadId, projectId, projectRules, provider, modelConfig, workspace, onFirstMessage, onComplete })
-
     setSendingThreads((prev) => ({ ...prev, [threadId]: true }))
     setStreamingContents((prev) => ({ ...prev, [threadId]: '' }))
     setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: undefined }))
     setActiveTaskStartedAtByThread((prev) => ({ ...prev, [threadId]: taskStartedAt }))
 
+    // 构造 API 消息
     const promptConfig = await ensurePromptConfigLoaded()
     const model = String(modelConfig.model ?? '').trim() || undefined
     const apiMessages = [
       {
         role: 'system' as const,
         content: buildSystemPrompt({
-          workspace,
-          provider,
-          model,
+          workspace, provider, model,
           supportsVision: Boolean(modelConfig.supportsVision),
-          projectRules,
-          promptConfig,
+          projectRules, promptConfig,
         }),
       },
-      ...buildMessagesForApi(currentMsgs)
-    ]
-
+      ...buildMessagesForApi(currentMsgs),
+ ]
     const overrides = {
       [provider]: {
         baseUrl: modelConfig.baseUrl || undefined,
@@ -1629,269 +1563,18 @@ export function useChat() {
       }
     }
 
-    let accumulated = ''
-    let requestUsage: TokenUsageSnapshot | null = null
-    let usageTurnCounted = false
-    const projectKey = String(projectId ?? threadId ?? '').trim()
-    
-    const applyProjectUsage = (usage: TokenUsageSnapshot | null) => {
-      if (!usage || !projectKey) return
-      const currentAgg = usageToAggregate(usage)
-      const hasCost = currentAgg.totalTokens > 0 || currentAgg.inputTokens > 0 || currentAgg.outputTokens > 0
-      if (!hasCost) return
-      const shouldCountTurn = !usageTurnCounted
-      setProjectTokenStatsByThread((prev) => {
-        const base = prev[projectKey] ?? {
-          inputTokens: 0,
-          outputTokens: 0,
-          hitTokens: 0,
-          missTokens: 0,
-          totalTokens: 0,
-          turns: 0,
-          updatedAt: Date.now(),
-        }
-        return {
-          ...prev,
-          [projectKey]: {
-            inputTokens: base.inputTokens + currentAgg.inputTokens,
-            outputTokens: base.outputTokens + currentAgg.outputTokens,
-            hitTokens: base.hitTokens + currentAgg.hitTokens,
-            missTokens: base.missTokens + currentAgg.missTokens,
-            totalTokens: base.totalTokens + currentAgg.totalTokens,
-            turns: base.turns + (shouldCountTurn ? 1 : 0),
-            updatedAt: Date.now(),
-          }
-        }
-      })
-      if (shouldCountTurn) usageTurnCounted = true
-    }
-    
-    const trackRequestUsage = (usage?: TokenUsageSnapshot) => {
-      if (!usage) return
-      
-      // 上下文占比:只使用当前AI回复的usage(不累加历史轮次)
-      const currentTotal = resolveUsageTotalTokens(usage)
-      if (typeof currentTotal === 'number' && Number.isFinite(currentTotal)) {
-        setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: currentTotal }))
-      }
-      
-      // 项目统计:仍然累加所有轮次(用于成本核算)
-      applyProjectUsage(usage)
-    }
-    try {
-      const requestId = `req-${Date.now()}-${threadId}`
-      requestIdRefs.current.set(threadId, requestId)
-
-      // ── Agent 模式：整合为单条 assistant 消息，步骤折叠显示 ──
-      await new Promise<void>((resolve, reject) => {
-          abortRejectRefs.current.set(threadId, reject)
-
-          const agentMsgId = streamAssistantMessageId
-          const steps: AgentStep[] = []
-          let currentRound = 0
-          let commitHash: string | undefined
-          let activePlan: ActivePlan | undefined
-          let reasoningAccumulated = ''
-
-          const flushAgentMsg = (finalContent?: string, taskTiming?: TaskTiming) => {
-            const nextContent = finalContent ?? accumulated
-            const hasRenderableContent = Boolean(nextContent.trim())
-            const hasRenderableMeta = steps.length > 0 || Boolean(activePlan) || Boolean(commitHash)
-            setMessages(threadId, (prev) => {
-              const idx = prev.findIndex((m) => m.id === agentMsgId)
-              if (idx === -1 && !hasRenderableContent && !hasRenderableMeta) return prev
-              const msg: ChatMsg = {
-                id: agentMsgId,
-                role: 'assistant',
-                content: nextContent,
-                agentSteps: steps.length > 0 ? [...steps] : undefined,
-                gitCommitHash: commitHash,
-                activePlan: activePlan ? { ...activePlan, steps: activePlan.steps.map((s) => ({ ...s })) } : undefined,
-                taskTiming,
-              }
-              if (idx === -1) return [...prev, msg]
-              const next = [...prev]
-              next[idx] = msg
-              return next
-            })
-          }
-
-          const runningTaskTiming: TaskTiming = { startedAt: taskStartedAt }
-          const cleanup = window.taco.agent.onEvent((evt) => {
-            if (evt.requestId !== requestId) return
-
-            if (evt.type === 'text') {
-              accumulated += evt.content
-              flushAgentMsg(undefined, runningTaskTiming)
-            } else if (evt.type === 'reasoning') {
-              reasoningAccumulated += evt.content
-            } else if (evt.type === 'usage') {
-              trackRequestUsage(evt.usage)
-            } else if (evt.type === 'tool_calls') {
-              currentRound++
-              const toolThinking = String(evt.thinking ?? '').trim()
-              const toolCalls: ToolCallInfo[] = evt.toolCalls.map((tc) => ({
-                id: tc.id,
-                name: tc.function.name,
-                arguments: tc.function.arguments,
-              }))
-              steps.push({
-                round: currentRound,
-                thinking: toolThinking || reasoningAccumulated.trim() || accumulated,
-                toolCalls,
-                toolResults: [],
-                status: 'running',
-              })
-              accumulated = ''
-              reasoningAccumulated = ''
-              flushAgentMsg(undefined, runningTaskTiming)
-            } else if (evt.type === 'system_notice') {
-              currentRound++
-              steps.push({
-                round: currentRound,
-                systemTitle: evt.title,
-                systemDetail: evt.message || '',
-                thinking: evt.message || evt.title,
-                toolCalls: [],
-                toolResults: [],
-                status: 'done',
-              })
-              flushAgentMsg(undefined, runningTaskTiming)
-            } else if (evt.type === 'confirm') {
-              const lastStep = steps[steps.length - 1]
-              if (lastStep) {
-                lastStep.status = 'confirm'
-                lastStep.confirmId = evt.confirmId
-                lastStep.risks = evt.risks.map((r) => ({
-                  toolCallId: r.toolCallId,
-                  toolName: r.toolName,
-                  level: r.level,
-                  reason: r.reason,
-                  detail: r.detail,
-                }))
-              }
-              flushAgentMsg(undefined, runningTaskTiming)
-            } else if (evt.type === 'tool_results') {
-              const results: ToolResultInfo[] = evt.results.map((r) => ({
-                tool_call_id: r.tool_call_id,
-                name: r.name,
-                content: r.content,
-                success: r.success,
-                fileChange: r.fileChange ? {
-                  filePath: r.fileChange.filePath,
-                  oldContent: r.fileChange.oldContent,
-                  newContent: r.fileChange.newContent,
-                } : undefined,
-              }))
-              const lastStep = steps[steps.length - 1]
-              if (lastStep) {
-                lastStep.toolResults = results
-                lastStep.status = 'done'
-              }
-              flushAgentMsg(undefined, runningTaskTiming)
-            } else if (evt.type === 'git_commit') {
-              commitHash = evt.hash
-              flushAgentMsg(undefined, runningTaskTiming)
-            } else if (evt.type === 'plan_init') {
-              activePlan = {
-                summary: evt.summary,
-                reasoning: evt.reasoning,
-                steps: evt.steps.map((s) => ({ index: s.index, title: s.title, content: s.content, status: 'pending' as const })),
-                startedAt: Date.now(),
-              }
-              flushAgentMsg(undefined, runningTaskTiming)
-            } else if (evt.type === 'plan_progress') {
-              if (activePlan) {
-                const targetStep = activePlan.steps.find((s) => s.index === evt.stepIndex)
-                if (targetStep) {
-                  targetStep.status = normalizePlanStatus(evt.status)
-                  if (evt.note) targetStep.note = evt.note
-                }
-              }
-              flushAgentMsg(undefined, runningTaskTiming)
-            } else if (evt.type === 'done') {
-              const finishedAt = Date.now()
-              if (typeof evt.finalText === 'string') {
-                accumulated = evt.finalText
-              }
-              if (activePlan && !activePlan.endedAt) activePlan.endedAt = finishedAt
-              flushAgentMsg(accumulated, buildTaskTiming(taskStartedAt, finishedAt))
-              cleanup()
-              resolve()
-            } else if (evt.type === 'error') {
-              const finishedAt = Date.now()
-              if (activePlan && !activePlan.endedAt) activePlan.endedAt = finishedAt
-              flushAgentMsg(accumulated, buildTaskTiming(taskStartedAt, finishedAt))
-              cleanup()
-              reject(new Error(evt.message))
-            }
-          })
-          streamCleanupRefs.current.set(threadId, cleanup)
-          window.taco.agent.stream({
-            requestId,
-            provider,
-            messages: apiMessages,
-            overrides,
-            projectId,
-            workspace: workspace ?? '',
-            contextLength,
-            recallDebug: isRecallDebugEnabled(),
-            sessionId: threadId,
-            sourceUserMessageId,
-            sourceAssistantMessageId: streamAssistantMessageId,
-          })
-        })
-
-      abortRejectRefs.current.delete(threadId)
-      requestIdRefs.current.delete(threadId)
-      onComplete?.()
-    } catch (error) {
-      abortRejectRefs.current.delete(threadId)
-      requestIdRefs.current.delete(threadId)
-      const errMsg = error instanceof Error ? error.message : '请求失败'
-      if (errMsg === '__stopped__') {
-        const timing = buildTaskTiming(taskStartedAt)
-        setMessages(threadId, (prev) => {
-            for (let i = prev.length - 1; i >= 0; i--) {
-              if (prev[i]?.role !== 'assistant') continue
-              const updated = [...prev]
-              const tail = updated[i]
-              const stoppedContent = (tail.content || accumulated).includes('*[已停止]*')
-                ? (tail.content || accumulated)
-                : `${tail.content || accumulated}\n\n*[已停止]*`
-              updated[i] = { ...tail, content: stoppedContent, taskTiming: timing }
-              return updated
-            }
-            if (!accumulated) return prev
-            return [...prev, { id: streamAssistantMessageId, role: 'assistant', content: accumulated + '\n\n*[已停止]*', taskTiming: timing }]
-        })
-      } else {
-        const errChatMsg: ChatMsg = {
-          id: streamAssistantMessageId,
-          role: 'assistant',
-          content: `[Error] ${errMsg}`,
-          taskTiming: buildTaskTiming(taskStartedAt),
-        }
-        setMessages(threadId, (prev) => [...prev, errChatMsg])
-      }
-    } finally {
-      inFlightThreadsRef.current.delete(threadId)
-      setSendingThreads((prev) => ({ ...prev, [threadId]: false }))
-      setStreamingContents((prev) => { const next = { ...prev }; delete next[threadId]; return next })
-      setActiveTaskStartedAtByThread((prev) => {
-        const next = { ...prev }
-        delete next[threadId]
-        return next
-      })
-      streamCleanupRefs.current.delete(threadId)
-
-      setCompletedThreads((prev) => ({ ...prev, [threadId]: true }))
-      setTimeout(() => {
-        setCompletedThreads((prev) => { const next = { ...prev }; delete next[threadId]; return next })
-      }, 3000)
-
-      processQueue(threadId)
-    }
+    // 执行 Agent 流式请求（公共逻辑）
+    await executeAgentStream({
+      threadId,
+      requestId: `req-${Date.now()}-${threadId}`,
+      provider, apiMessages, overrides,
+      projectId, workspace: workspace ?? '', contextLength,
+      sourceUserMessageId,
+      streamAssistantMessageId: uid(),
+      taskStartedAt,
+      enableRetry: false,
+      onComplete,
+    })
   }
 
   // 保持 ref 指向最新函数

@@ -74,6 +74,14 @@ export type AgentEvent =
   | { type: 'plan_init'; summary: string; steps: Array<{ index: number; title: string; content: string }>; reasoning?: string }
   /** 计划步骤进度更新 */
   | { type: 'plan_progress'; stepIndex: number; status: PlanStepStatus; note?: string }
+  /** 可恢复错误：需要用户确认是否重试（网络超时、连接失败、空响应等） */
+  | {
+      type: 'retry_confirm'
+      retryId: string
+      errorType: 'network' | 'timeout' | 'empty_response' | 'interrupted'
+      errorMessage: string
+      round: number
+    }
   /** Agent 循环完成 */
   | { type: 'done'; finalText?: string }
   /** 错误 */
@@ -87,6 +95,10 @@ export type AgentEvent =
 const pendingConfirms = new Map<string, { resolve: (approved: boolean) => void; timer: NodeJS.Timeout }>()
 const CONFIRM_TIMEOUT_MS = 10 * 60 * 1000 // 10分钟超时
 
+/** 待处理的重试请求：retryId → resolve(shouldRetry) */
+const pendingRetries = new Map<string, { resolve: (shouldRetry: boolean) => void; timer: NodeJS.Timeout }>()
+const RETRY_TIMEOUT_MS = 2 * 60 * 1000 // 重试确认 2 分钟超时（比操作确认短，避免长时间卡住）
+
 function isAbortError(err: unknown): boolean {
   if (!(err instanceof Error)) return false
   return err.name === 'AbortError' || err.message === 'AbortError' || err.message === 'Aborted'
@@ -99,6 +111,16 @@ export function resolveConfirm(confirmId: string, approved: boolean) {
     clearTimeout(pending.timer)
     pending.resolve(approved)
     pendingConfirms.delete(confirmId)
+  }
+}
+
+/** 外部调用：用户响应了重试请求 */
+export function resolveRetry(retryId: string, shouldRetry: boolean) {
+  const pending = pendingRetries.get(retryId)
+  if (pending) {
+    clearTimeout(pending.timer)
+    pending.resolve(shouldRetry)
+    pendingRetries.delete(retryId)
   }
 }
 
@@ -124,6 +146,32 @@ function waitForConfirm(confirmId: string, signal?: AbortSignal): Promise<boolea
     const onAbort = () => {
       clearTimeout(timer)
       pendingConfirms.delete(confirmId)
+      resolve(false)
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+/** 创建一个重试确认请求并等待用户响应 */
+function waitForRetry(retryId: string, signal?: AbortSignal): Promise<boolean> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      log('RETRY_TIMEOUT', { retryId, timeout: RETRY_TIMEOUT_MS }, 'agent')
+      pendingRetries.delete(retryId)
+      resolve(false) // 超时默认取消重试
+    }, RETRY_TIMEOUT_MS)
+
+    pendingRetries.set(retryId, { resolve, timer })
+
+    if (signal?.aborted) {
+      clearTimeout(timer)
+      pendingRetries.delete(retryId)
+      resolve(false)
+      return
+    }
+    const onAbort = () => {
+      clearTimeout(timer)
+      pendingRetries.delete(retryId)
       resolve(false)
     }
     signal?.addEventListener('abort', onAbort, { once: true })
@@ -1266,7 +1314,7 @@ export async function runAgent(
         provider,
         requestMessages,
         overrides,
-        { tools: getFilteredToolDefinitions(allowedToolNames), toolChoice: 'required' },
+        { tools: getFilteredToolDefinitions(allowedToolNames), toolChoice: 'auto' },
         signal,
         logScope,
       )) {
@@ -1376,6 +1424,57 @@ export async function runAgent(
         }
       }
 
+      // 可恢复错误分类：网络超时、连接失败等
+      const isRecoverableNetworkError = (
+        msg.includes('ETIMEDOUT') ||
+        msg.includes('timeout') ||
+        msg.includes('ECONNRESET') ||
+        msg.includes('ECONNREFUSED') ||
+        msg.includes('fetch failed') ||
+        msg.includes('socket hang up') ||
+        msg.includes('network') ||
+        msg.includes('Request failed') ||
+        msg.includes('连接') ||
+        msg.includes('超时')
+      )
+
+      // 可恢复错误：发射 retry_confirm 事件，等待用户确认
+      if (isRecoverableNetworkError) {
+        const retryId = `retry-${Date.now()}-${++confirmCounter}`
+        const errorType = (msg.includes('timeout') || msg.includes('超时') || msg.includes('ETIMEDOUT'))
+          ? 'timeout' as const
+          : 'network' as const
+        log('AGENT_RETRYABLE_ERROR', { round, retryId, errorType, error: msg }, logScope)
+
+        onEvent?.({
+          type: 'retry_confirm',
+          retryId,
+          errorType,
+          errorMessage: msg,
+          round,
+        })
+
+        const shouldRetry = await waitForRetry(retryId, signal)
+        log('AGENT_RETRY_DECISION', { retryId, shouldRetry }, logScope)
+
+        if (signal?.aborted) {
+          log('AGENT_ABORTED', { round, reason: 'signal aborted during retry confirm' }, logScope)
+          await finalizeAndDone(lastAssistantText, 'aborted')
+          return
+        }
+
+        if (shouldRetry) {
+          round-- // 不消耗轮次
+          continue // 重新发起相同的 LLM 请求
+        }
+
+        // 用户选择不重试 → 正常终止
+        await persistTaskCoreLogWithOutcome(textContent || lastAssistantText, 'error', msg)
+        onEvent?.({ type: 'error', message: `用户取消重试：${msg}` })
+        return
+      }
+
+      // 不可恢复错误：直接终止
       await persistTaskCoreLogWithOutcome(textContent || lastAssistantText, 'error', msg)
       onEvent?.({ type: 'error', message: msg })
       return
@@ -1439,9 +1538,37 @@ export async function runAgent(
       }
 
       const reason = '模型未返回可用文本或标准工具调用。'
-      await persistTaskCoreLogWithOutcome(textContent || lastAssistantText, 'error', reason)
-      onEvent?.({ type: 'error', message: reason })
-      return
+      {
+        const retryId = `retry-${Date.now()}-${++confirmCounter}`
+        log('AGENT_EMPTY_RESPONSE', { round, retryId, rawPreview: rawTextContent.slice(0, 200) }, logScope)
+
+        onEvent?.({
+          type: 'retry_confirm',
+          retryId,
+          errorType: 'empty_response',
+          errorMessage: reason,
+          round,
+        })
+
+        const shouldRetry = await waitForRetry(retryId, signal)
+        log('AGENT_RETRY_DECISION', { retryId, shouldRetry }, logScope)
+
+        if (signal?.aborted) {
+          log('AGENT_ABORTED', { round, reason: 'signal aborted during retry confirm' }, logScope)
+          await finalizeAndDone(lastAssistantText, 'aborted')
+          return
+        }
+
+        if (shouldRetry) {
+          round-- // 不消耗轮次
+          continue // 重新发起相同的 LLM 请求
+        }
+
+        // 用户选择不重试 → 正常终止
+        await persistTaskCoreLogWithOutcome(textContent || lastAssistantText, 'error', reason)
+        onEvent?.({ type: 'error', message: `用户取消重试：${reason}` })
+        return
+      }
     }
 
     // ── 有 tool_calls：检查 propose_plan / 风险评估 → 可能需要确认 → 执行工具 ──

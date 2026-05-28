@@ -1080,7 +1080,7 @@ async function buildRequest(
     if (isBuiltinProvider(provider)) {
       // qwen 在 thinking mode 下不支持 tool_choice: 'required'，需要改为 'auto'
       let toolChoice = options.toolChoice ?? 'auto'
-      if (provider === 'qwen' && toolChoice === 'required') {
+      if ((provider === 'qwen' || provider === 'deepseek') && toolChoice === 'required') {
         toolChoice = 'auto'
       }
       body.tool_choice = toolChoice

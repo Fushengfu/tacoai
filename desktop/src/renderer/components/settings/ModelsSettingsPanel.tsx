@@ -13,7 +13,7 @@ type ModelsSettingsPanelProps = {
   onSelectModel: (id: string) => void
   onRemoveModelWithConfirm: (id: string, title: string) => void
   onSetActiveModelConfigId: (id: string) => void
-  onModelDraftFieldChange: <K extends keyof Partial<ModelConfig>>(key: K, value: Partial<ModelConfig>[K]) => void
+  onModelDraftFieldChange: <K extends keyof Pick<ModelConfig, 'provider' | 'baseUrl' | 'apiKey' | 'model' | 'contextLength' | 'temperature' | 'supportsVision'>>(key: K, value: Pick<ModelConfig, 'provider' | 'baseUrl' | 'apiKey' | 'model' | 'contextLength' | 'temperature' | 'supportsVision'>[K]) => void
   onSaveModelDraft: () => void
   onToggleApiKeyReveal: (id: string) => void
 }

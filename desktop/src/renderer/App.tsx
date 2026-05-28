@@ -313,6 +313,36 @@ export default function App() {
 
   type MessageContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } } | { type: 'video_url'; video_url: { url: string } } | { type: 'audio_url'; audio_url: { url: string } }
 
+  /**
+   * 根据模型配置 ID 解析完整的 ModelConfig。
+   * 优先从 mergedModels（网关系统模型）中查找，再回退到本地自定义模型。
+   */
+  function resolveModelConfigFromId(configId: string): { provider: ProviderId; modelConfig: NonNullable<ReturnType<typeof providerSettings.getModelConfig>> } | null {
+    const mergedModel = mergedModels.find((m) => m.id === configId)
+    if (mergedModel?.source === 'system' && mergedModel.gatewayModel) {
+      const gm = mergedModel.gatewayModel
+      return {
+        provider: gm.provider as ProviderId,
+        modelConfig: {
+          id: gm.id,
+          provider: gm.provider as ProviderId,
+          name: gm.displayName || gm.name,
+          baseUrl: gm.baseUrl,
+          apiKey: gm.apiKey,
+          model: gm.model,
+          contextLength: String(gm.contextLength),
+          temperature: gm.temperature,
+          supportsVision: Boolean(gm.supportsVision),
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      }
+    }
+    const config = providerSettings.getModelConfig(configId)
+    if (!config?.provider) return null
+    return { provider: config.provider as ProviderId, modelConfig: config }
+  }
+
   function doSend(contentParts: MessageContentPart[], target?: any) {
     const threadId = target?.threadId ?? threadStore.ensureActiveThread()
     const thread = threadStore.threads.find((t) => t.id === threadId)
@@ -330,28 +360,9 @@ export default function App() {
       target?.modelConfigId || thread?.modelConfigId || providerSettings.activeModelConfigId || '',
     ).trim()
     
-    // 优先从 mergedModels 中查找（支持系统模型）
-    const mergedModel = mergedModels.find((m) => m.id === modelConfigId)
-    let modelConfig: ReturnType<typeof providerSettings.getModelConfig>
-    if (mergedModel?.source === 'system' && mergedModel.gatewayModel) {
-      const gm = mergedModel.gatewayModel
-      modelConfig = {
-        id: gm.id,
-        provider: gm.provider as ProviderId,
-        name: gm.displayName || gm.name,
-        baseUrl: gm.baseUrl,
-        apiKey: gm.apiKey,
-        model: gm.model,
-        contextLength: String(gm.contextLength),
-        temperature: gm.temperature,
-        supportsVision: Boolean(gm.supportsVision),
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      }
-    } else {
-      modelConfig = providerSettings.getModelConfig(modelConfigId)
-    }
-    if (!modelConfig || !modelConfig.provider) return
+    const resolved = resolveModelConfigFromId(modelConfigId)
+    if (!resolved) return
+    const { provider, modelConfig } = resolved
     
     if (threadId && thread?.modelConfigId !== modelConfigId) {
       threadStore.updateThread(threadId, { modelConfigId })
@@ -388,57 +399,14 @@ export default function App() {
 
   async function resolveActiveModelConfig(): Promise<{ provider: string; modelConfig: NonNullable<ReturnType<typeof providerSettings.getModelConfig>> } | null> {
     const configId = currentModelConfigId || ''
-    // 优先从 mergedModels 中查找（支持系统模型）
-    const mergedModel = mergedModels.find((m) => m.id === configId)
-    if (mergedModel?.source === 'system' && mergedModel.gatewayModel) {
-      const gm = mergedModel.gatewayModel
-      return {
-        provider: gm.provider,
-        modelConfig: {
-          id: gm.id,
-          provider: gm.provider as ProviderId,
-          name: gm.displayName || gm.name,
-          baseUrl: gm.baseUrl,
-          apiKey: gm.apiKey,
-          model: gm.model,
-          contextLength: String(gm.contextLength),
-          temperature: gm.temperature,
-          supportsVision: Boolean(gm.supportsVision),
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        },
-      }
-    }
-    const config = providerSettings.getModelConfig(configId)
-    if (!config?.provider) return null
-    return { provider: config.provider, modelConfig: config }
+    return resolveModelConfigFromId(configId)
   }
 
-  async function handleResend(msgId: string) {
-    if (sessionSending || !sessionId) return
-    const resolved = await resolveActiveModelConfig()
-    if (!resolved) return
-    const { provider, modelConfig } = resolved
-    await chat.ensureSessionFullyLoaded(sessionId)
-    const latestMessages = chat.getMessages(sessionId)
-    const idx = latestMessages.findIndex((m) => m.id === msgId)
-    if (idx === -1) return
-    chat.setMessages(sessionId, latestMessages.slice(0, idx + 1))
-    chat.resendFromExisting({
-      threadId: sessionId,
-      projectId: tid,
-      projectRules: currentProjectRules,
-      provider: provider as ProviderId,
-      modelConfig,
-      workspace: currentWorkspace,
-      onComplete: () => {
-        threadStore.updateThread(tid, { updatedAt: Date.now() })
-        notifyTaskCompleted(threadStore.activeThread?.title)
-      },
-    })
-  }
-
-  async function handleEditResend(msgId: string, newContent: string) {
+  /**
+   * 重发消息（支持可选的内容修改）。
+   * newContent 为空时原样重发，非空时先修改消息内容再重发。
+   */
+  async function handleResend(msgId: string, newContent?: string) {
     if (sessionSending || !sessionId) return
     const resolved = await resolveActiveModelConfig()
     if (!resolved) return
@@ -448,7 +416,9 @@ export default function App() {
     const idx = latestMessages.findIndex((m) => m.id === msgId)
     if (idx === -1) return
     const updated = latestMessages.slice(0, idx + 1)
-    updated[idx] = { ...updated[idx], content: newContent }
+    if (newContent !== undefined) {
+      updated[idx] = { ...updated[idx], content: newContent }
+    }
     chat.setMessages(sessionId, updated)
     chat.resendFromExisting({
       threadId: sessionId,
@@ -865,7 +835,7 @@ export default function App() {
               sessions={sessions}
               activeSessionId={sessionId}
               onResend={handleResend}
-              onEditResend={handleEditResend}
+              onEditResend={(msgId, newContent) => handleResend(msgId, newContent)}
               workspace={currentWorkspace}
               onSelectWorkspace={handleSelectWorkspace}
               provider={currentModelConfigId}

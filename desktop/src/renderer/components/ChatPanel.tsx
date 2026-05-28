@@ -736,6 +736,9 @@ export function ChatPanel({
   // 已响应的确认请求（防止重复点击）
   const [respondedConfirms, setRespondedConfirms] = useState<Map<string, boolean>>(new Map())
 
+  // 已响应的重试请求（防止重复点击）
+  const [respondedRetries, setRespondedRetries] = useState<Map<string, boolean>>(new Map())
+
   // 监听移动端用户的确认响应，同步到桌面端 UI
   useEffect(() => {
     const handler = (e: Event) => {
@@ -1036,6 +1039,7 @@ export function ChatPanel({
     if (step.status === 'calling') return '⏳'
     if (step.status === 'running') return '⚡'
     if (step.status === 'confirm') return '🔒'
+    if (step.status === 'retry_confirm') return '⚠'
     const allSuccess = step.toolResults.every((r) => r.success)
     return allSuccess ? '✓' : '⚠'
   }
@@ -1045,6 +1049,13 @@ export function ChatPanel({
     if (respondedConfirms.has(confirmId)) return // 已响应，忽略
     setRespondedConfirms((prev) => new Map(prev).set(confirmId, approved))
     globalThis.window.taco.agent.confirmResponse(confirmId, approved)
+  }
+
+  /** 用户对可恢复错误的重试响应（防重复点击） */
+  function handleRetryResponse(retryId: string, shouldRetry: boolean) {
+    if (respondedRetries.has(retryId)) return // 已响应，忽略
+    setRespondedRetries((prev) => new Map(prev).set(retryId, shouldRetry))
+    globalThis.window.taco.agent.retryResponse(retryId, shouldRetry)
   }
 
   /** 解析工具参数 JSON */
@@ -1193,6 +1204,18 @@ export function ChatPanel({
     if (step.systemTitle) {
       return { label: step.systemTitle, detail: step.systemDetail || '' }
     }
+    if (step.status === 'retry_confirm') {
+      const errorTypeLabels: Record<string, string> = {
+        network: '网络连接异常',
+        timeout: '请求超时',
+        empty_response: '模型未返回有效数据',
+        interrupted: '请求中断',
+      }
+      return {
+        label: errorTypeLabels[step.retryErrorType ?? 'network'] || '可恢复错误',
+        detail: '等待用户确认是否重试',
+      }
+    }
     if (step.toolCalls.length === 0) return { label: '思考中', detail: '...' }
     if (step.toolCalls.length === 1) {
       const tc = step.toolCalls[0]
@@ -1223,7 +1246,7 @@ export function ChatPanel({
   function stepGroupOperationSummary(steps: AgentStep[]): string {
     if (steps.length === 0) return '暂无操作'
     const active = [...steps].reverse().find((s) =>
-      s.status === 'running' || s.status === 'calling' || s.status === 'confirm'
+      s.status === 'running' || s.status === 'calling' || s.status === 'confirm' || s.status === 'retry_confirm'
     )
     const recent = active
       ?? [...steps].reverse().find((s) => s.toolCalls.length > 0 || s.toolResults.length > 0)
@@ -1510,6 +1533,89 @@ export function ChatPanel({
     )
   }
 
+  /** 渲染重试确认 UI（网络超时、空响应等可恢复错误） */
+  function renderStepRetryConfirm(step: AgentStep, isStepRunning: boolean) {
+    if (!step.retryId) return null
+
+    const responded = respondedRetries.get(step.retryId)
+    const isPending = responded === undefined
+
+    const errorTypeLabels: Record<string, string> = {
+      network: '网络连接异常',
+      timeout: '请求超时',
+      empty_response: '模型未返回有效数据',
+      interrupted: '请求中断',
+    }
+    const errorLabel = errorTypeLabels[step.retryErrorType ?? 'network'] || '未知错误'
+
+    const resolveRetryStatus = (): 'pending' | 'retried' | 'cancelled' => {
+      if (responded === true) return 'retried'
+      if (responded === false) return 'cancelled'
+      return 'pending'
+    }
+    const retryStatus = resolveRetryStatus()
+
+    const renderRetryStatusUI = () => {
+      if (retryStatus === 'retried') {
+        return (
+          <div className="agent-confirm-responded">
+            {isStepRunning
+              ? <span className="agent-confirm-responded-icon spinning">⏳</span>
+              : <span className="agent-confirm-responded-icon">✓</span>}
+            {isStepRunning ? '正在重试中...' : '已重试'}
+          </div>
+        )
+      }
+      if (retryStatus === 'cancelled') {
+        return (
+          <div className="agent-confirm-responded denied">
+            <span className="agent-confirm-responded-icon">✗</span>
+            已取消重试
+          </div>
+        )
+      }
+      return (
+        <div className="agent-confirm-actions">
+          <button type="button" className="agent-confirm-btn approve" onClick={() => handleRetryResponse(step.retryId!, true)}>
+            重试
+          </button>
+          <button type="button" className="agent-confirm-btn deny" onClick={() => handleRetryResponse(step.retryId!, false)}>
+            取消
+          </button>
+        </div>
+      )
+    }
+
+    // 错误消息截取摘要
+    const errorSummary = (step.retryErrorMessage || '').length > 200
+      ? `${(step.retryErrorMessage || '').slice(0, 200)}...`
+      : (step.retryErrorMessage || '')
+
+    return (
+      <div className="agent-confirm-card retry">
+        <div className="agent-confirm-title">
+          <span className="agent-confirm-icon">⚠</span>
+          {retryStatus === 'pending' ? `${errorLabel} — 需要你的确认` : errorLabel}
+        </div>
+        <div className="agent-confirm-risks">
+          <div className="agent-confirm-risk warning">
+            <span className="agent-confirm-risk-badge">错误</span>
+            <span className="agent-confirm-risk-reason">{errorLabel}</span>
+            {errorSummary && (
+              <pre className="agent-confirm-risk-detail">{errorSummary}</pre>
+            )}
+          </div>
+        </div>
+        {retryStatus === 'pending' && (
+          <div className="agent-retry-hint" style={{ fontSize: '12px', color: 'var(--text-secondary, #888)', marginTop: '8px', lineHeight: '1.5' }}>
+            任务遇到可恢复的错误，是否重新发起请求？选择"重试"将继续当前任务，选择"取消"将终止任务。
+          </div>
+        )}
+        {renderRetryStatusUI()}
+      </div>
+    )
+  }
+
   function renderStepToolResults(msg: ChatMsg, step: AgentStep, isStepRunning: boolean) {
     if (step.toolCalls.length === 1) {
       const tc = step.toolCalls[0]
@@ -1720,7 +1826,7 @@ export function ChatPanel({
                     {/* Agent 步骤 + PlanTracker 插入在计划确认和执行步骤之间 */}
                     {msg.agentSteps && msg.agentSteps.length > 0 && (() => {
                       const stepCount = msg.agentSteps.length
-                      const activeCount = msg.agentSteps.filter((s) => s.status === 'running' || s.status === 'calling' || s.status === 'confirm').length
+                      const activeCount = msg.agentSteps.filter((s) => s.status === 'running' || s.status === 'calling' || s.status === 'confirm' || s.status === 'retry_confirm').length
                       const doneCount = msg.agentSteps.filter((s) => s.status === 'done').length
                       const failedCount = msg.agentSteps.filter((s) => s.status === 'done' && s.toolResults.some((r) => !r.success)).length
                       const hasActiveSteps = activeCount > 0
@@ -1747,7 +1853,8 @@ export function ChatPanel({
                         const stepKey = `${msg.id}-${step.round}`
                         const isStepRunning = step.status === 'running' || step.status === 'calling'
                         const isStepConfirm = step.status === 'confirm'
-                        const isStepExpanded = isStepRunning || isStepConfirm || expandedSteps.has(stepKey)
+                        const isStepRetryConfirm = step.status === 'retry_confirm'
+                        const isStepExpanded = isStepRunning || isStepConfirm || isStepRetryConfirm || expandedSteps.has(stepKey)
                         const summary = stepHeaderSummary(step)
                         return (
                           <div key={stepKey} className={`agent-step ${step.status}`}>
@@ -1769,6 +1876,7 @@ export function ChatPanel({
                               <div className="agent-step-body">
                                 {renderStepThinking(msg, step, isStepRunning)}
                                 {renderStepConfirm(msg, step, isStepRunning, isStepConfirm)}
+                                {renderStepRetryConfirm(step, isStepRunning)}
                                 {renderStepToolResults(msg, step, isStepRunning)}
                               </div>
                             )}

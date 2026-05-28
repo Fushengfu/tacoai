@@ -40,6 +40,8 @@ export const IpcChannel = {
   AGENT_EVENT_CHUNK: 'agent:event-chunk',
   /** renderer → main (send/on, 用户对风险操作的确认响应) */
   AGENT_CONFIRM: 'agent:confirm',
+  /** renderer → main (send/on, 用户对可恢复错误的重试响应) */
+  AGENT_RETRY_RESPONSE: 'agent:retry-response',
   /** renderer → main (send/on, 终止当前 agent 执行) */
   AGENT_ABORT: 'agent:abort',
 
@@ -396,6 +398,7 @@ export type AgentEventData = {
   | { type: 'tool_calls'; toolCalls: IpcToolCall[]; thinking?: string }
   | { type: 'system_notice'; title: string; message?: string }
   | { type: 'confirm'; confirmId: string; toolCalls: IpcToolCall[]; risks: IpcRiskInfo[] }
+  | { type: 'retry_confirm'; retryId: string; errorType: 'network' | 'timeout' | 'empty_response' | 'interrupted'; errorMessage: string; round: number }
   | { type: 'tool_results'; results: IpcToolResult[] }
   | { type: 'git_commit'; hash: string; message: string }
   | { type: 'usage'; usage: IpcTokenUsage }
@@ -866,6 +869,8 @@ export type TacoApi = {
     onEvent: (callback: (data: AgentEventData) => void) => () => void
     /** 用户对风险操作的确认/拒绝响应 */
     confirmResponse: (confirmId: string, approved: boolean) => void
+    /** 用户对可恢复错误的重试响应 */
+    retryResponse: (retryId: string, shouldRetry: boolean) => void
     /** 终止当前正在运行的 agent */
     abort: (requestId: string) => void
     /** 设置自动授权分类（不需要用户确认的操作类型） */

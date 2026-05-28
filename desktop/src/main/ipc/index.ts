@@ -40,6 +40,7 @@ import {
   agentAbortControllers,
   handleAgentStream,
   handleAgentConfirm,
+  handleAgentRetryResponse,
   handleAgentAbort,
   handleRendererError,
   handleChatStoreList,
@@ -127,6 +128,7 @@ export function registerIpcHandlers() {
   ipcMain.handle(IpcChannel.CHAT_STORE_DELETE_SESSION, handleChatStoreDeleteSession)
   ipcMain.on(IpcChannel.AGENT_STREAM, handleAgentStream)
   ipcMain.on(IpcChannel.AGENT_CONFIRM, handleAgentConfirm)
+  ipcMain.on(IpcChannel.AGENT_RETRY_RESPONSE, handleAgentRetryResponse)
   ipcMain.on(IpcChannel.AGENT_ABORT, handleAgentAbort)
   ipcMain.on(IpcChannel.AGENT_AUTO_APPROVE, (_e, categories: RiskCategory[]) => {
     setAutoApproveCategories(categories)

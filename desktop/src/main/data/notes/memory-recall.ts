@@ -293,7 +293,7 @@ async function selectRecallCandidatesByTool(
       provider,
       promptMessages,
       options?.overrides,
-      { tools: recallSelectionTools, toolChoice: 'required' },
+      { tools: recallSelectionTools, toolChoice: 'auto' },
       options?.signal,
       options?.logScope,
     )) {

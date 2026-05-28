@@ -192,6 +192,9 @@ const tacoApi: TacoApi = {
     confirmResponse: (confirmId: string, approved: boolean) =>
       ipcRenderer.send(IpcChannel.AGENT_CONFIRM, { confirmId, approved }),
 
+    retryResponse: (retryId: string, shouldRetry: boolean) =>
+      ipcRenderer.send(IpcChannel.AGENT_RETRY_RESPONSE, { retryId, shouldRetry }),
+
     abort: (requestId: string) =>
       ipcRenderer.send(IpcChannel.AGENT_ABORT, requestId),
 

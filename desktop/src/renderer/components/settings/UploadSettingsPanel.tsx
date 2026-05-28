@@ -4,8 +4,8 @@ type UploadSettingsPanelProps = {
   uploadDraft: UploadSettingsState
   uploadHasChanges: boolean
   onUpdateProvider: (provider: UploadSettingsState['provider']) => void
-  onUpdateAliyunField: (key: string, value: string) => void
-  onUpdateQiniuField: (key: string, value: string) => void
+  onUpdateAliyunField: <K extends keyof UploadSettingsState['aliyunOss']>(key: K, value: UploadSettingsState['aliyunOss'][K]) => void
+  onUpdateQiniuField: <K extends keyof UploadSettingsState['qiniu']>(key: K, value: UploadSettingsState['qiniu'][K]) => void
   onSave: () => void
   revealUploadSecrets: Record<string, boolean>
   onToggleSecret: (key: string) => void

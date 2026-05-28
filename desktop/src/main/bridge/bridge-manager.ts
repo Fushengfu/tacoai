@@ -22,6 +22,9 @@ import {
   type BridgeClientMessage,
   type BridgeMessage,
   type BridgeMessagePriority,
+  type BridgeAck,
+  type BridgeRetransmitRequest,
+  type BridgeError,
 } from './bridge-protocol'
 import { BridgeSyncManager } from './bridge-sync-manager'
 
@@ -238,7 +241,9 @@ export class BridgeManager {
       this.projectStates.set(projectId, {
         ...existing,
         ...updates,
-        activeTaskId: updates.activeTaskId, // 显式覆盖，包括 undefined（清除）
+        // 关键修复：只在 updates 中显式包含 activeTaskId 时才覆盖
+        // 防止 agent event 回调（只传 lastMessage* 字段）意外清除 activeTaskId
+        activeTaskId: ('activeTaskId' in updates) ? updates.activeTaskId : existing.activeTaskId,
         lastActivityAt: now,
       })
     } else {
@@ -354,7 +359,7 @@ export class BridgeManager {
       states,
       activeThreadId: this._activeThreadId || '',
       timestamp: Date.now(),
-    } as any)
+    })
   }
 
   /** 按需立即推送项目列表（不等定时器），用于项目变更时即时通知移动端 */
@@ -401,7 +406,7 @@ export class BridgeManager {
       states,
       activeThreadId: this._activeThreadId || '',
       timestamp: Date.now(),
-    } as any, 'critical')
+    }, 'critical')
     logBridge(`Pushed project states on demand (${states.length} projects, activeThread: ${this._activeThreadId})`)
   }
 
@@ -481,9 +486,9 @@ export class BridgeManager {
   /* ------------------------------------------------------------------ */
 
   private handleRelayMessage(msg: BridgeMessage): void {
-    if (!msg || typeof (msg as any).type !== 'string') return
+    if (!msg || typeof msg.type !== 'string') return
 
-    switch ((msg as any).type) {
+    switch (msg.type) {
       /* ---- connection established ---- */
       case 'connected': {
         this.setStatus('connected')
@@ -525,13 +530,13 @@ export class BridgeManager {
 
       /* ---- ACK 确认消息 ---- */
       case 'bridge:ack': {
-        this.syncManager.handleAck(msg as any)
+        this.syncManager.handleAck(msg as BridgeAck)
         break
       }
 
       /* ---- 重传请求 ---- */
       case 'bridge:retransmit-request': {
-        this.syncManager.handleRetransmitRequest(msg as any)
+        this.syncManager.handleRetransmitRequest(msg as BridgeRetransmitRequest)
         break
       }
 
@@ -555,11 +560,13 @@ export class BridgeManager {
             this.dataHandler(msg as unknown as Record<string, unknown>, respond)
           } catch (err) {
             logBridgeError('dataHandler error', err)
-            respond({
-              type: (msg as any).type?.toString().replace(/^bridge:/, 'bridge:') || 'error',
-              requestId: (msg as any).requestId || '',
+            const msgRecord = msg as unknown as Record<string, unknown>
+            const errorResponse: Record<string, unknown> = {
+              type: msg.type?.toString().replace(/^bridge:/, 'bridge:') || 'error',
+              requestId: msgRecord.requestId || '',
               error: err instanceof Error ? err.message : String(err),
-            })
+            }
+            respond(errorResponse)
           }
         }
         break
@@ -573,7 +580,7 @@ export class BridgeManager {
 
       /* ---- error ---- */
       case 'error': {
-        const errMsg = (msg as any).message || ''
+        const errMsg = 'message' in msg ? String((msg as BridgeError).message) : ''
         this.error = errMsg
         logBridge(`Relay error: ${errMsg}`)
         // 401 错误：Token 过期，停止重连，上报 token 失效事件
@@ -584,7 +591,7 @@ export class BridgeManager {
           // 通知渲染进程 Token 失效
           const status = this.getStatus()
           for (const cb of this.statusCallbacks) {
-            try { cb({ ...status, tokenExpired: true } as any) } catch (err) { logBridgeError('status callback error', err) }
+            try { cb({ ...status, tokenExpired: true }) } catch (err) { logBridgeError('status callback error', err) }
           }
         }
         break
@@ -766,7 +773,7 @@ export class BridgeManager {
     // 通知渲染进程弹出登录框
     const status = this.getStatus()
     for (const cb of this.statusCallbacks) {
-      try { cb({ ...status, tokenExpired: true } as any) } catch (err) { logBridgeError('status callback error', err) }
+      try { cb({ ...status, tokenExpired: true }) } catch (err) { logBridgeError('status callback error', err) }
     }
   }
 

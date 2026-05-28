@@ -89,12 +89,18 @@ export type AgentStep = {
   toolCalls: ToolCallInfo[]
   /** 工具执行结果 */
   toolResults: ToolResultInfo[]
-  /** 步骤状态: confirm 表示等待用户确认 */
-  status: 'calling' | 'running' | 'confirm' | 'done'
+  /** 步骤状态: confirm 表示等待用户确认，retry_confirm 表示可恢复错误等待重试确认 */
+  status: 'calling' | 'running' | 'confirm' | 'retry_confirm' | 'done'
   /** 需要确认时的风险信息 */
   risks?: RiskInfo[]
   /** 确认请求 ID */
   confirmId?: string
+  /** 重试请求 ID */
+  retryId?: string
+  /** 重试错误类型 */
+  retryErrorType?: 'network' | 'timeout' | 'empty_response' | 'interrupted'
+  /** 重试错误消息 */
+  retryErrorMessage?: string
 }
 
 /** 计划步骤信息（实时追踪用） */
