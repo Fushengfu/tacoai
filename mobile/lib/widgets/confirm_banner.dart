@@ -170,10 +170,15 @@ class _ConfirmCardState extends State<_ConfirmCard> {
   @override
   void initState() {
     super.initState();
-    // 高危权限确认默认自动展开，让用户立即看到确认按钮
-    final hasDangerRisks = widget.confirm.risks.any((r) => r.level == 'danger');
-    if (hasDangerRisks && !widget.confirm.isPlanConfirm) {
+    // 执行计划确认默认自动展开，让用户立即看到计划内容和确认按钮
+    // 高危权限确认也默认自动展开
+    if (widget.confirm.isPlanConfirm) {
       _expanded = true;
+    } else {
+      final hasDangerRisks = widget.confirm.risks.any((r) => r.level == 'danger');
+      if (hasDangerRisks) {
+        _expanded = true;
+      }
     }
   }
 
@@ -283,127 +288,222 @@ class _ConfirmCardState extends State<_ConfirmCard> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // 风险列表
-                  if (confirm.risks.isNotEmpty) ...[
-                    ...confirm.risks.map((risk) => Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: risk.level == 'danger'
-                              ? Colors.red.withValues(alpha: 0.1)
-                              : Colors.amber.withValues(alpha: 0.1),
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(
-                            color: risk.level == 'danger'
-                                ? Colors.red.withValues(alpha: 0.3)
-                                : Colors.amber.withValues(alpha: 0.3),
-                          ),
+                  // ── 执行计划确认 ──
+                  if (confirm.isPlanConfirm) ...[
+                    // 计划摘要
+                    if (confirm.summary.isNotEmpty) ...[
+                      Text(
+                        confirm.summary,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: colorScheme.onSurface,
                         ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 6,
-                                    vertical: 2,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: risk.level == 'danger'
-                                        ? Colors.red
-                                        : Colors.amber,
-                                    borderRadius: BorderRadius.circular(4),
-                                  ),
-                                  child: Text(
-                                    risk.level == 'danger' ? '危险' : '注意',
-                                    style: const TextStyle(
-                                      fontSize: 10,
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                    // 计划步骤列表
+                    if (confirm.planSteps.isNotEmpty) ...[
+                      ...confirm.planSteps.asMap().entries.map((entry) {
+                        final stepNum = entry.key + 1;
+                        final stepText = entry.value;
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 4),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Container(
+                                width: 20,
+                                height: 20,
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  color: colorScheme.primary.withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(10),
                                 ),
-                                const SizedBox(width: 6),
-                                Expanded(
-                                  child: Text(
-                                    risk.reason,
-                                    style: const TextStyle(fontSize: 12),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            if (risk.detail.isNotEmpty)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 4),
                                 child: Text(
-                                  risk.detail,
+                                  '$stepNum',
                                   style: TextStyle(
                                     fontSize: 11,
-                                    fontFamily: 'monospace',
-                                    color: colorScheme.onSurface.withValues(alpha: 0.7),
+                                    fontWeight: FontWeight.w600,
+                                    color: colorScheme.primary,
                                   ),
                                 ),
                               ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  stepText,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: colorScheme.onSurface,
+                                    height: 1.4,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      }),
+                      const SizedBox(height: 4),
+                    ],
+                    // 计划理由
+                    if (confirm.planReasoning != null && confirm.planReasoning!.isNotEmpty) ...[
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '理由：',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                            Expanded(
+                              child: Text(
+                                confirm.planReasoning!,
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ),
                           ],
                         ),
                       ),
-                    )),
-                  ],
-                  // 工具调用列表
-                  if (confirm.toolCalls.isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      '即将执行 ${confirm.toolCalls.length} 个操作：',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    ...confirm.toolCalls.map((tc) => Padding(
-                      padding: const EdgeInsets.only(bottom: 2),
-                      child: Row(
-                        children: [
-                          Icon(Icons.circle, size: 6, color: colorScheme.onSurfaceVariant),
-                          const SizedBox(width: 6),
-                          Text(
-                            tc.name,
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontFamily: 'monospace',
-                              color: colorScheme.onSurface,
+                      const SizedBox(height: 8),
+                    ],
+                  ]
+                  // ── 操作授权确认 ──
+                  else ...[
+                    // 风险列表
+                    if (confirm.risks.isNotEmpty) ...[
+                      ...confirm.risks.map((risk) => Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: risk.level == 'danger'
+                                ? Colors.red.withValues(alpha: 0.1)
+                                : Colors.amber.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: risk.level == 'danger'
+                                  ? Colors.red.withValues(alpha: 0.3)
+                                  : Colors.amber.withValues(alpha: 0.3),
                             ),
                           ),
-                        ],
-                      ),
-                    )),
-                  ],
-                  // 思考内容
-                  if (confirm.thinking != null && confirm.thinking!.isNotEmpty) ...[
-                    const SizedBox(height: 8),
-                    Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Text(
-                        confirm.thinking!,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 2,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: risk.level == 'danger'
+                                          ? Colors.red
+                                          : Colors.amber,
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Text(
+                                      risk.level == 'danger' ? '危险' : '注意',
+                                      style: const TextStyle(
+                                        fontSize: 10,
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Expanded(
+                                    child: Text(
+                                      risk.reason,
+                                      style: const TextStyle(fontSize: 12),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              if (risk.detail.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 4),
+                                  child: Text(
+                                    risk.detail,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontFamily: 'monospace',
+                                      color: colorScheme.onSurface.withValues(alpha: 0.7),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      )),
+                    ],
+                    // 工具调用列表
+                    if (confirm.toolCalls.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        '即将执行 ${confirm.toolCalls.length} 个操作：',
                         style: TextStyle(
                           fontSize: 12,
+                          fontWeight: FontWeight.w500,
                           color: colorScheme.onSurfaceVariant,
-                          fontStyle: FontStyle.italic,
                         ),
-                        maxLines: 3,
-                        overflow: TextOverflow.ellipsis,
                       ),
-                    ),
+                      const SizedBox(height: 4),
+                      ...confirm.toolCalls.map((tc) => Padding(
+                        padding: const EdgeInsets.only(bottom: 2),
+                        child: Row(
+                          children: [
+                            Icon(Icons.circle, size: 6, color: colorScheme.onSurfaceVariant),
+                            const SizedBox(width: 6),
+                            Text(
+                              tc.name,
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontFamily: 'monospace',
+                                color: colorScheme.onSurface,
+                              ),
+                            ),
+                          ],
+                        ),
+                      )),
+                    ],
+                    // 思考内容
+                    if (confirm.thinking != null && confirm.thinking!.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          confirm.thinking!,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: colorScheme.onSurfaceVariant,
+                            fontStyle: FontStyle.italic,
+                          ),
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
                   ],
                   const SizedBox(height: 12),
-                  // 操作按钮
+                  // 操作按钮（计划确认和授权确认共用）
                   Row(
                     children: [
                       Expanded(

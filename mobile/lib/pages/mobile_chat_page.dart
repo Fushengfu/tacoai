@@ -51,6 +51,9 @@ class _MobileChatPageState extends State<MobileChatPage> {
   // 待确认列表（顶部弹窗）
   List<BridgePendingConfirm> _pendingConfirms = [];
 
+  // 待重试确认列表（网络超时/空响应等可恢复错误）
+  List<BridgePendingRetry> _pendingRetries = [];
+
   // Agent 确认已整合到消息气泡内的 AgentStepWidget 中
 
   // 滚动到顶部按钮可见性
@@ -90,9 +93,16 @@ class _MobileChatPageState extends State<MobileChatPage> {
     widget.client.onStatusChange(_onStatusChange);
     widget.client.onMessage(_onMessage);
     widget.client.onConfirmChange(_onConfirmChange);
+    widget.client.onRetryChange(_onRetryChange);
 
     // 初始化处理状态追踪
     _wasProcessing = _isCurrentProjectSending();
+
+    // 初始化时立即从缓存解析项目标题和模型信息（不等 bridge:state）
+    // 使用 addPostFrameCallback 确保 build 完成后再调用 setState
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _resolveProjectHeaderInfo(widget.client.currentProjectId);
+    });
 
     // 监听滚动位置，控制"滚动到顶部"按钮显示
     _scrollController.addListener(_onScroll);
@@ -106,6 +116,7 @@ class _MobileChatPageState extends State<MobileChatPage> {
     _messagesNotifier.dispose();
     _deltaUpdateTimer?.cancel();
     _switchProjectTimeout?.cancel();
+    widget.client.removeRetryListener(_onRetryChange);
     super.dispose();
   }
 
@@ -166,9 +177,17 @@ class _MobileChatPageState extends State<MobileChatPage> {
   void _onConfirmChange(List<BridgePendingConfirm> confirms) {
     if (!mounted) return;
     setState(() {
-      // 显示所有项目的确认请求（不过滤）
-      // 确认发送时会验证项目隔离，确保安全
-      _pendingConfirms = confirms;
+      // 只显示当前项目的确认请求，其他项目的暂存但不显示
+      // 当切换回来时仍可看到并操作
+      _pendingConfirms = confirms.where((c) => c.projectId == widget.client.currentProjectId).toList();
+    });
+  }
+
+  void _onRetryChange(List<BridgePendingRetry> retries) {
+    if (!mounted) return;
+    setState(() {
+      // 只显示当前项目的重试请求
+      _pendingRetries = retries.where((r) => r.projectId == widget.client.currentProjectId).toList();
     });
   }
 
@@ -198,6 +217,12 @@ class _MobileChatPageState extends State<MobileChatPage> {
       if (_threadId != state.threadId) { _threadId = state.threadId; needUpdate = true; }
       if (_tokenUsage != state.tokenUsage) { _tokenUsage = state.tokenUsage; needUpdate = true; }
       
+      // 如果 modelLabel 为空但有 modelConfigId，从缓存的模型列表中查找显示名称
+      if ((_modelLabel == null || _modelLabel!.isEmpty) && _modelConfigId != null && _modelConfigId!.isNotEmpty) {
+        _modelLabel = _resolveModelDisplayName(_modelConfigId!);
+        if (_modelLabel != null && _modelLabel!.isNotEmpty) needUpdate = true;
+      }
+
       // 消息列表通过 ValueNotifier 更新，不触发 setState
       _messagesNotifier.value = List.from(widget.client.messages);
       
@@ -262,6 +287,10 @@ class _MobileChatPageState extends State<MobileChatPage> {
       }
       // 记录待切换的项目 ID（用于快速连续切换时只响应最新一次）
       _pendingSwitchProjectId = json['threadId'] as String? ?? _pendingSwitchProjectId;
+
+      // 立即从缓存查找项目名称和模型信息（不等 bridge:state 到达）
+      _resolveProjectHeaderInfo(_pendingSwitchProjectId ?? widget.client.currentProjectId);
+
       // 启动超时保护（5秒后自动清除加载状态，避免永久卡住）
       _switchProjectTimeout?.cancel();
       _switchProjectTimeout = Timer(const Duration(seconds: 5), () {
@@ -279,6 +308,20 @@ class _MobileChatPageState extends State<MobileChatPage> {
         setState(() => _isSwitchingProject = false);
       }
       _messagesNotifier.value = List.from(widget.client.messages);
+
+      // 立即更新项目标题和模型信息（bridge:project-switched 比 bridge:state 先到达）
+      _resolveProjectHeaderInfo(widget.client.currentProjectId);
+
+      // 重新过滤确认和重试请求（显示当前项目的）
+      setState(() {
+        final currentProjectId = widget.client.currentProjectId;
+        _pendingConfirms = widget.client.pendingConfirms
+            .where((c) => c.projectId == currentProjectId)
+            .toList();
+        _pendingRetries = widget.client.pendingRetries
+            .where((r) => r.projectId == currentProjectId)
+            .toList();
+      });
       // 切换项目完成后自动滚动到底部
       if (!_userIsScrolling) {
         _isAtBottom = true;
@@ -310,6 +353,10 @@ class _MobileChatPageState extends State<MobileChatPage> {
       if (isNowProcessing != _wasProcessing) {
         _wasProcessing = isNowProcessing;
         setState(() {});
+      }
+      // 如果模型名称为空，尝试从缓存解析（bridge:project-states 可能已更新 modelConfigId）
+      if (_modelLabel == null || _modelLabel!.isEmpty) {
+        _resolveProjectHeaderInfo(widget.client.currentProjectId);
       }
     }
 
@@ -444,6 +491,50 @@ class _MobileChatPageState extends State<MobileChatPage> {
     return widget.client.activeAgentRequestId != null && widget.client.activeAgentRequestId!.isNotEmpty;
   }
 
+  /// 立即从缓存查找项目名称和模型信息（用于切换项目时即时显示，不等 bridge:state）
+  void _resolveProjectHeaderInfo(String? projectId) {
+    if (projectId == null || projectId.isEmpty) return;
+
+    String? newProjectTitle;
+    String? newModelConfigId;
+
+    // 从缓存的项目列表中查找项目信息
+    final projects = widget.client.cachedProjects;
+    if (projects != null) {
+      try {
+        final project = projects.firstWhere((p) => p.id == projectId);
+        newProjectTitle = project.title.isNotEmpty ? project.title : null;
+        newModelConfigId = project.modelConfigId;
+      } catch (_) {}
+    }
+
+    // 从缓存的模型列表中查找模型显示名称
+    String? newModelLabel;
+    if (newModelConfigId != null && newModelConfigId.isNotEmpty) {
+      newModelLabel = _resolveModelDisplayName(newModelConfigId);
+    }
+
+    // 仅在有变化时更新 UI
+    if (_projectTitle != newProjectTitle || _modelLabel != newModelLabel || _modelConfigId != newModelConfigId) {
+      setState(() {
+        if (newProjectTitle != null) _projectTitle = newProjectTitle;
+        if (newModelLabel != null && newModelLabel.isNotEmpty) _modelLabel = newModelLabel;
+        if (newModelConfigId != null && newModelConfigId.isNotEmpty) _modelConfigId = newModelConfigId;
+      });
+    }
+  }
+
+  /// 从缓存的模型列表中查找指定模型的显示名称
+  String? _resolveModelDisplayName(String modelConfigId) {
+    if (_availableModels.isNotEmpty) {
+      try {
+        final model = _availableModels.firstWhere((m) => m.id == modelConfigId);
+        return model.displayLabel;
+      } catch (_) {}
+    }
+    return null;
+  }
+
   Future<void> _loadModels() async {
     try {
       final modelsList = await widget.client.requestModels();
@@ -453,6 +544,11 @@ class _MobileChatPageState extends State<MobileChatPage> {
         // 如果当前 modelConfigId 为空，使用活跃的
         if (_modelConfigId == null || _modelConfigId!.isEmpty) {
           _modelConfigId = modelsList.activeModelConfigId;
+        }
+        // 模型列表加载完成后，尝试解析当前模型的显示名称
+        // 解决系统内置模型在本地 modelConfigs 中找不到导致 modelLabel 为空的问题
+        if ((_modelLabel == null || _modelLabel!.isEmpty) && _modelConfigId != null && _modelConfigId!.isNotEmpty) {
+          _modelLabel = _resolveModelDisplayName(_modelConfigId!);
         }
       });
     } catch (_) {
@@ -665,6 +761,28 @@ class _MobileChatPageState extends State<MobileChatPage> {
               },
               getProjectTitle: (projectId) {
                 // 从缓存的项目列表中查找项目名称
+                if (projectId == null) return null;
+                try {
+                  final projects = widget.client.cachedProjects;
+                  if (projects != null) {
+                    final project = projects.firstWhere(
+                      (p) => p.id == projectId,
+                      orElse: () => BridgeProjectInfo(id: projectId, title: '', workspace: null, sessions: []),
+                    );
+                    return project.title.isNotEmpty ? project.title : null;
+                  }
+                } catch (_) {}
+                return null;
+              },
+            ),
+
+            // 顶部重试确认弹窗
+            _RetryBanner(
+              retries: _pendingRetries,
+              onRetry: (retryId, shouldRetry) {
+                widget.client.sendRetryResponse(retryId, shouldRetry);
+              },
+              getProjectTitle: (projectId) {
                 if (projectId == null) return null;
                 try {
                   final projects = widget.client.cachedProjects;
@@ -1032,6 +1150,276 @@ class _MobileChatPageState extends State<MobileChatPage> {
 
     return Scaffold(
       body: chatContent,
+    );
+  }
+}
+
+/// 重试确认弹窗组件
+/// 用于展示网络超时/空响应等可恢复错误的重试确认
+class _RetryBanner extends StatefulWidget {
+  final List<BridgePendingRetry> retries;
+  final void Function(String retryId, bool shouldRetry) onRetry;
+  final String? Function(String? projectId)? getProjectTitle;
+
+  const _RetryBanner({
+    required this.retries,
+    required this.onRetry,
+    this.getProjectTitle,
+  });
+
+  @override
+  State<_RetryBanner> createState() => _RetryBannerState();
+}
+
+class _RetryBannerState extends State<_RetryBanner>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _animationController;
+  late Animation<Offset> _slideAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _animationController = AnimationController(
+      duration: const Duration(milliseconds: 300),
+      vsync: this,
+    );
+    _slideAnimation = Tween<Offset>(
+      begin: const Offset(0, -1),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(
+      parent: _animationController,
+      curve: Curves.easeOutCubic,
+    ));
+
+    if (widget.retries.isNotEmpty) {
+      _animationController.forward();
+    }
+  }
+
+  @override
+  void didUpdateWidget(_RetryBanner oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.retries.isEmpty && widget.retries.isNotEmpty) {
+      _animationController.forward(from: 0);
+    } else if (oldWidget.retries.isNotEmpty && widget.retries.isEmpty) {
+      _animationController.reverse();
+    }
+  }
+
+  @override
+  void dispose() {
+    _animationController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.retries.isEmpty) return const SizedBox.shrink();
+
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return SlideTransition(
+      position: _slideAnimation,
+      child: Material(
+        elevation: 8,
+        color: colorScheme.surface,
+        child: SafeArea(
+          bottom: false,
+          child: Container(
+            constraints: const BoxConstraints(maxHeight: 250),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // 标题栏
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withValues(alpha: 0.15),
+                    border: Border(
+                      bottom: BorderSide(
+                        color: colorScheme.outline.withValues(alpha: 0.2),
+                      ),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.refresh,
+                        size: 20,
+                        color: Colors.orange.shade700,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        '异常重试',
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          color: colorScheme.onSurface,
+                        ),
+                      ),
+                      const Spacer(),
+                      Text(
+                        '${widget.retries.length} 个待确认',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                // 重试列表
+                Flexible(
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: widget.retries.length,
+                    itemBuilder: (context, index) {
+                      final retry = widget.retries[index];
+                      return _RetryCard(
+                        retry: retry,
+                        colorScheme: colorScheme,
+                        onRetry: widget.onRetry,
+                        projectTitle: widget.getProjectTitle?.call(retry.projectId),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 单个重试卡片
+class _RetryCard extends StatelessWidget {
+  final BridgePendingRetry retry;
+  final ColorScheme colorScheme;
+  final void Function(String retryId, bool shouldRetry) onRetry;
+  final String? projectTitle;
+
+  const _RetryCard({
+    required this.retry,
+    required this.colorScheme,
+    required this.onRetry,
+    this.projectTitle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: Colors.orange.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: Colors.orange.withValues(alpha: 0.3),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 标题行
+            Row(
+              children: [
+                Icon(
+                  Icons.error_outline,
+                  size: 20,
+                  color: Colors.orange.shade700,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Text(
+                            retry.errorTypeLabel,
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: colorScheme.onSurface,
+                            ),
+                          ),
+                          if (projectTitle != null) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: colorScheme.primary.withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                projectTitle!,
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: colorScheme.primary,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                      if (retry.errorMessage.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(
+                            retry.errorMessage.length > 80
+                                ? '${retry.errorMessage.substring(0, 80)}...'
+                                : retry.errorMessage,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            // 操作按钮
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: () => onRetry(retry.retryId, true),
+                    icon: const Icon(Icons.refresh, size: 18),
+                    label: const Text('重试'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.orange,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: () => onRetry(retry.retryId, false),
+                    icon: const Icon(Icons.close, size: 18),
+                    label: const Text('取消'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.grey,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

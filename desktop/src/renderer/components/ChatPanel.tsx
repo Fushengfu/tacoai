@@ -153,6 +153,7 @@ function sanitizeAssistantContentForDisplay(content: string, toolNames: string[]
     .replace(/<\/?think\b[^>]*>/gi, '')
   const masked = maskToolNamesForUser(withoutThink, toolNames)
   return masked
+    .replace(/\[DONE\]\s*$/g, '') // 过滤 [DONE] 标记（SSE 终止符误入内容）
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 }

@@ -66,6 +66,10 @@ class BridgeClient {
   final List<BridgePendingConfirm> _pendingConfirms = [];
   final List<Function(List<BridgePendingConfirm>)> _confirmListeners = [];
 
+  // 待重试确认列表（网络超时/空响应等可恢复错误）
+  final List<BridgePendingRetry> _pendingRetries = [];
+  final List<Function(List<BridgePendingRetry>)> _retryListeners = [];
+
   // 节流机制：将高频通知合并为批量通知
   Timer? _notifyThrottleTimer;
   bool _pendingNotify = false;
@@ -221,6 +225,19 @@ class BridgeClient {
     _confirmListeners.remove(callback);
   }
 
+  /// 获取待重试列表
+  List<BridgePendingRetry> get pendingRetries => List.unmodifiable(_pendingRetries);
+
+  /// 监听待重试列表变化
+  void onRetryChange(Function(List<BridgePendingRetry>) callback) {
+    _retryListeners.add(callback);
+  }
+
+  /// 移除待重试监听器
+  void removeRetryListener(Function(List<BridgePendingRetry>) callback) {
+    _retryListeners.remove(callback);
+  }
+
   /// 发送 Agent 确认（带项目隔离验证）
   void sendAgentConfirm(String confirmId, bool approved) {
     // 查找确认项，验证项目隔离
@@ -244,6 +261,19 @@ class BridgeClient {
   /// 终止 Agent
   void sendAgentAbort(String requestId) {
     _send(BridgeAgentAbort(requestId: requestId));
+  }
+
+  /// 发送重试确认响应
+  void sendRetryResponse(String retryId, bool shouldRetry) {
+    // 从待重试列表中移除
+    _pendingRetries.removeWhere((r) => r.retryId == retryId);
+    _notifyRetryListeners();
+    // 发送到桌面端
+    _sendRaw({
+      'type': 'bridge:retry-response',
+      'retryId': retryId,
+      'shouldRetry': shouldRetry,
+    });
   }
 
   /// 发送心跳
@@ -539,18 +569,22 @@ class BridgeClient {
     if (oldProjectId != null && oldProjectId != projectId) {
       // 清理旧项目的活跃任务
       _projectActiveTasks.remove(oldProjectId);
-      // 清理待确认列表（属于旧项目的确认）
-      _pendingConfirms.clear();
-      _notifyConfirmListeners();
+      // 不清除确认请求和重试请求——桌面端仍在等待响应
+      // UI 层会按当前项目过滤显示，切换回来时仍可操作
       // 清空消息列表，避免显示旧项目数据
       _messages.clear();
       _notifyListenersImmediately({'type': 'bridge:project-cleared', 'threadId': projectId});
     }
 
+    // 先设置当前项目 ID，再通知监听器（确保 UI 过滤时使用新项目 ID）
     _currentProjectId = projectId;
     // 切换项目时，更新活跃任务状态
     _activeAgentRequestId = _projectActiveTasks[projectId];
     _activeOriginalRequestId = null;
+
+    // 通知确认/重试监听器重新过滤（使用新的 currentProjectId）
+    _notifyConfirmListeners();
+    _notifyRetryListeners();
 
     // 切换项目时，优先从本地缓存加载新项目的消息
     if (projectId != null && projectId.isNotEmpty) {
@@ -831,6 +865,23 @@ class BridgeClient {
           }
           break;
 
+        case 'bridge:agent-retry-resolved':
+          {
+            _messageQueue.enqueue(
+              type: BridgeMessageType.confirm,
+              data: json,
+              handler: () {
+                // 桌面端已处理重试确认，通知移动端清除对应的待重试弹窗
+                final retryId = json['retryId'] as String? ?? '';
+                if (retryId.isNotEmpty) {
+                  _pendingRetries.removeWhere((r) => r.retryId == retryId);
+                  _notifyRetryListeners();
+                }
+              },
+            );
+          }
+          break;
+
         case 'bridge:files-changed':
           _messageQueue.enqueue(
             type: BridgeMessageType.files,
@@ -880,7 +931,21 @@ class BridgeClient {
                               sessions: [],
                             ),
                           );
-                          reorderedProjects.add(existingProject);
+                          // 同步 modelConfigId（桌面端 project-states 推送的新字段）
+                          final pushedModelConfigId = state['modelConfigId'] as String?;
+                          if (pushedModelConfigId != null && pushedModelConfigId.isNotEmpty &&
+                              pushedModelConfigId != existingProject.modelConfigId) {
+                            reorderedProjects.add(BridgeProjectInfo(
+                              id: existingProject.id,
+                              title: existingProject.title,
+                              workspace: existingProject.workspace,
+                              sessions: existingProject.sessions,
+                              activeSessionId: existingProject.activeSessionId,
+                              modelConfigId: pushedModelConfigId,
+                            ));
+                          } else {
+                            reorderedProjects.add(existingProject);
+                          }
                           
                           // 更新活跃任务状态
                           final isProcessing = state['isProcessing'] as bool? ?? false;
@@ -1013,6 +1078,21 @@ class BridgeClient {
     }
   }
 
+  /// 解析图片数据（兼容对象格式和字符串 URL 格式）
+  BridgeAttachedImage _parseBridgeImage(dynamic img) {
+    if (img is Map<String, dynamic>) {
+      return BridgeAttachedImage.fromJson(img);
+    }
+    // 字符串格式（桌面端 bridge:chat-user-message 发送的 URL）
+    final url = img.toString();
+    return BridgeAttachedImage(
+      id: 'img-${url.hashCode}',
+      dataUrl: '',
+      cloudUrl: url,
+      name: 'image',
+    );
+  }
+
   void _applyUserMessage(Map<String, dynamic> json) {
     try {
       final messageId = json['messageId'] as String?;
@@ -1026,6 +1106,12 @@ class BridgeClient {
       final projectId = (threadId != null && threadId.isNotEmpty) ? threadId : (_currentProjectId ?? '');
       if (projectId != _currentProjectId) return;
       
+      // 解析图片列表（兼容对象格式和字符串 URL 格式）
+      List<BridgeAttachedImage>? bridgeImages;
+      if (imagesJson != null && imagesJson.isNotEmpty) {
+        bridgeImages = imagesJson.map((img) => _parseBridgeImage(img)).toList();
+      }
+      
       // 查找 pending 消息（乐观更新的消息）
       final pendingIdx = _messages.indexWhere((m) => m.role == 'user' && m.id.startsWith('pending-') && m.content == content);
       
@@ -1035,9 +1121,7 @@ class BridgeClient {
           id: messageId,
           role: 'user',
           content: content,
-          images: imagesJson != null && imagesJson.isNotEmpty
-              ? imagesJson.map((img) => BridgeAttachedImage.fromJson(img as Map<String, dynamic>)).toList()
-              : null,
+          images: bridgeImages,
         );
         return;
       }
@@ -1047,18 +1131,11 @@ class BridgeClient {
       if (existingByIdx >= 0) return;
       
       // 添加用户消息到消息列表
-      List<BridgeAttachedImage>? images;
-      if (imagesJson != null && imagesJson.isNotEmpty) {
-        images = imagesJson
-            .map((img) => BridgeAttachedImage.fromJson(img as Map<String, dynamic>))
-            .toList();
-      }
-      
       _messages.add(BridgeChatMessage(
         id: messageId,
         role: 'user',
         content: content,
-        images: images,
+        images: bridgeImages,
       ));
     } catch (e) {
       print('[BridgeClient] Failed to apply user message: $e');
@@ -1459,8 +1536,26 @@ class BridgeClient {
         // 添加到待确认列表（带项目隔离）
         final isPlanConfirm = risks.any((r) => r.toolName == 'propose_plan');
         String summary = '';
+        List<String> planSteps = [];
+        String? planReasoning;
         if (isPlanConfirm && risks.isNotEmpty) {
-          summary = risks[0].detail; // 计划详情作为摘要
+          // 解析计划 JSON，提取 summary、steps、reasoning
+          try {
+            final planJson = json.decode(risks[0].detail) as Map<String, dynamic>;
+            summary = (planJson['summary'] as String?) ?? '';
+            planReasoning = planJson['reasoning'] as String?;
+            final rawSteps = planJson['steps'] as List<dynamic>? ?? [];
+            planSteps = rawSteps.map((s) {
+              if (s is String) return s;
+              if (s is Map<String, dynamic>) {
+                return (s['title'] as String?) ?? (s['content'] as String?) ?? (s['text'] as String?) ?? s.toString();
+              }
+              return s.toString();
+            }).where((s) => s.isNotEmpty).toList();
+          } catch (_) {
+            // JSON 解析失败，降级使用 detail 原文
+            summary = risks[0].detail;
+          }
         } else {
           summary = toolCalls.map((t) => t.name).join(', ');
         }
@@ -1472,6 +1567,8 @@ class BridgeClient {
           risks: risks,
           toolCalls: toolCalls,
           thinking: steps.isNotEmpty ? steps.last.thinking : '',
+          planSteps: planSteps,
+          planReasoning: planReasoning,
         ));
         _notifyConfirmListeners();
 
@@ -1488,6 +1585,26 @@ class BridgeClient {
             risks: risks,
             confirmId: confirmId,
           );
+        }
+        break;
+
+      case 'retry_confirm':
+        // 可恢复错误（网络超时/空响应等），等待用户确认是否重试
+        final retryId = event['retryId'] as String? ?? '';
+        final errorType = event['errorType'] as String? ?? 'unknown';
+        final errorMessage = event['errorMessage'] as String? ?? '';
+        final retryRound = event['round'] as int? ?? 0;
+
+        if (retryId.isNotEmpty) {
+          // 添加到待重试列表（带项目隔离）
+          _pendingRetries.add(BridgePendingRetry(
+            retryId: retryId,
+            projectId: projectId,
+            errorType: errorType,
+            errorMessage: errorMessage,
+            round: retryRound,
+          ));
+          _notifyRetryListeners();
         }
         break;
 
@@ -2087,6 +2204,19 @@ class BridgeClient {
         cb(snapshot);
       } catch (e) {
         print('[BridgeClient] Confirm callback error: $e');
+      }
+    }
+  }
+
+  void _notifyRetryListeners() {
+    final snapshot = List<BridgePendingRetry>.from(_pendingRetries);
+    // 创建副本避免并发修改错误
+    final listeners = List.from(_retryListeners);
+    for (final cb in listeners) {
+      try {
+        cb(snapshot);
+      } catch (e) {
+        print('[BridgeClient] Retry callback error: $e');
       }
     }
   }

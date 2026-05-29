@@ -44,6 +44,7 @@ export interface ProjectStateInfo {
   id: string
   title: string
   workspace?: string
+  modelConfigId?: string   // 当前项目绑定的模型配置 ID
   isProcessing: boolean
   activeTaskId?: string
   lastActivityAt: number
@@ -233,8 +234,18 @@ export class BridgeManager {
     }
   }
 
+  /** 同步所有项目的 modelConfigId（由 IPC 层调用，在桥接初始化或项目列表变更时） */
+  syncProjectModelConfigs(threads: Array<{ id: string; modelConfigId?: string }>): void {
+    for (const thread of threads) {
+      const existing = this.projectStates.get(thread.id)
+      if (existing && thread.modelConfigId) {
+        existing.modelConfigId = thread.modelConfigId
+      }
+    }
+  }
+
   /** 更新项目状态（由 IPC 层调用，当 Agent 开始/结束任务时） */
-  updateProjectState(projectId: string, updates: Partial<Pick<ProjectStateInfo, 'title' | 'workspace' | 'isProcessing' | 'activeTaskId' | 'lastMessageId' | 'lastMessageRole' | 'lastMessageHasContent' | 'lastMessageIsStreaming' | 'lastMessageHasPlan'>>): void {
+  updateProjectState(projectId: string, updates: Partial<Pick<ProjectStateInfo, 'title' | 'workspace' | 'modelConfigId' | 'isProcessing' | 'activeTaskId' | 'lastMessageId' | 'lastMessageRole' | 'lastMessageHasContent' | 'lastMessageIsStreaming' | 'lastMessageHasPlan'>>): void {
     const existing = this.projectStates.get(projectId)
     const now = Date.now()
     if (existing) {
@@ -251,6 +262,7 @@ export class BridgeManager {
         id: projectId,
         title: updates.title || '',
         workspace: updates.workspace,
+        modelConfigId: updates.modelConfigId,
         isProcessing: updates.isProcessing ?? false,
         activeTaskId: updates.activeTaskId,
         lastActivityAt: now,
@@ -260,7 +272,7 @@ export class BridgeManager {
   }
 
   /** 更新项目状态并立即推送给移动端（由 IPC 层调用，当 Agent 开始/结束任务时） */
-  updateProjectStateAndPush(projectId: string, updates: Partial<Pick<ProjectStateInfo, 'title' | 'workspace' | 'isProcessing' | 'activeTaskId' | 'lastMessageId' | 'lastMessageRole' | 'lastMessageHasContent' | 'lastMessageIsStreaming' | 'lastMessageHasPlan'>>): void {
+  updateProjectStateAndPush(projectId: string, updates: Partial<Pick<ProjectStateInfo, 'title' | 'workspace' | 'modelConfigId' | 'isProcessing' | 'activeTaskId' | 'lastMessageId' | 'lastMessageRole' | 'lastMessageHasContent' | 'lastMessageIsStreaming' | 'lastMessageHasPlan'>>): void {
     this.updateProjectState(projectId, updates)
     // 立即推送给移动端，确保状态即时同步
     this.pushProjectsOnDemand()
@@ -325,6 +337,7 @@ export class BridgeManager {
       id: s.id,
       title: s.title,
       workspace: s.workspace,
+      modelConfigId: s.modelConfigId,
       isProcessing: s.isProcessing,
       activeTaskId: s.activeTaskId,
       lastActivityAt: s.lastActivityAt,
@@ -369,6 +382,7 @@ export class BridgeManager {
           id: s.id,
           title: s.title,
           workspace: s.workspace,
+          modelConfigId: s.modelConfigId,
           isProcessing: s.isProcessing,
           activeTaskId: s.activeTaskId,
           lastActivityAt: s.lastActivityAt,
@@ -520,7 +534,8 @@ export class BridgeManager {
       /* ---- client → host messages ---- */
       case 'bridge:chat-send':
       case 'bridge:agent-confirm':
-      case 'bridge:agent-abort': {
+      case 'bridge:agent-abort':
+      case 'bridge:retry-response': {
         this.lastHeartbeatReceived = Date.now()
         for (const cb of this.clientMessageCallbacks) {
           try { cb(msg as BridgeClientMessage) } catch (err) { logBridgeError('clientMessage callback error', err) }

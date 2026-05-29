@@ -5,6 +5,25 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import '../services/bridge_protocol.dart';
 import 'agent_step_widget.dart';
 
+/// 简单的代码高亮器 — 确保代码块文本使用等宽字体和正确的样式
+class _CodeHighlighter extends SyntaxHighlighter {
+  final Color textColor;
+  _CodeHighlighter({required this.textColor});
+
+  @override
+  TextSpan format(String code) {
+    return TextSpan(
+      text: code,
+      style: TextStyle(
+        fontFamily: 'monospace',
+        fontSize: 13,
+        color: textColor,
+        height: 1.5,
+      ),
+    );
+  }
+}
+
 /// 消息气泡组件 — 支持 Markdown 渲染、Agent 步骤展示、计划进度
 class MessageBubble extends StatefulWidget {
   final BridgeChatMessage message;
@@ -19,6 +38,21 @@ class MessageBubble extends StatefulWidget {
 }
 
 class _MessageBubbleState extends State<MessageBubble> {
+  /// 判断消息是否有实际的工具调用步骤（排除纯 thinking 步骤）
+  /// 只有包含工具调用、系统通知、确认等实际操作的步骤才显示执行步骤卡片
+  bool _hasToolCallSteps(BridgeChatMessage msg) {
+    if (msg.agentSteps == null || msg.agentSteps!.isEmpty) return false;
+    for (final step in msg.agentSteps!) {
+      // 有工具调用、系统通知、确认请求的步骤才算
+      if (step.toolCalls.isNotEmpty ||
+          step.systemTitle != null && step.systemTitle!.isNotEmpty ||
+          step.confirmId != null) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// 判断消息是否正在处理中（根据 activePlan 和 agentSteps 状态）
   bool _isMessageProcessing(BridgeChatMessage msg) {
     // 如果有 taskTiming 且已结束，说明任务已完成
@@ -187,9 +221,9 @@ class _MessageBubbleState extends State<MessageBubble> {
                                 ),
                               ),
 
-                            // Agent 步骤（仅 assistant 消息，有任意步骤即显示，包括 thinking 阶段）
-                            if (widget.message.agentSteps != null &&
-                                widget.message.agentSteps!.isNotEmpty)
+                            // Agent 步骤（仅 assistant 消息，且至少有一个步骤包含工具调用或系统通知才显示）
+                            // 过滤掉只有 thinking 的步骤（普通聊天模式下模型可能生成 thinking 但无工具调用）
+                            if (_hasToolCallSteps(widget.message))
                               AgentStepWidget(
                                 steps: widget.message.agentSteps!,
                                 colorScheme: colorScheme,
@@ -414,8 +448,11 @@ class _MessageBubbleState extends State<MessageBubble> {
   }
 
   Widget _buildContent(bool isUser, ColorScheme colorScheme) {
-    final content = widget.message.content.trim();
+    var content = widget.message.content.trim();
     if (content.isEmpty) return const SizedBox.shrink();
+
+    // 过滤 [DONE] 标记（某些模型会在文本末尾生成 [DONE]，属于 SSE 终止符误入内容）
+    content = content.replaceAll(RegExp(r'\[DONE\]\s*$'), '').trim();
 
     if (isUser) {
       return Text(
@@ -428,70 +465,79 @@ class _MessageBubbleState extends State<MessageBubble> {
       );
     }
 
-    return MarkdownBody(
-      data: content,
-      styleSheet: MarkdownStyleSheet(
-        p: TextStyle(
-          color: colorScheme.onSurface,
-          fontSize: 14,
-          height: 1.6,
-        ),
-        code: TextStyle(
-          fontFamily: 'monospace',
-          fontSize: 13,
-          backgroundColor: colorScheme.surfaceContainerHighest,
-          color: colorScheme.onSurface,
-        ),
-        codeblockDecoration: BoxDecoration(
-          color: colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        blockquote: TextStyle(
-          color: colorScheme.onSurface.withValues(alpha: 0.7),
-          fontStyle: FontStyle.italic,
-        ),
-        blockquoteDecoration: BoxDecoration(
-          border: Border(
-            left: BorderSide(
-              color: colorScheme.outline.withValues(alpha: 0.3),
-              width: 3,
-            ),
-          ),
-        ),
-        h1: TextStyle(
-          color: colorScheme.onSurface,
-          fontSize: 20,
-          fontWeight: FontWeight.bold,
-        ),
-        h2: TextStyle(
-          color: colorScheme.onSurface,
-          fontSize: 18,
-          fontWeight: FontWeight.bold,
-        ),
-        h3: TextStyle(
-          color: colorScheme.onSurface,
-          fontSize: 16,
-          fontWeight: FontWeight.bold,
-        ),
-        listBullet: TextStyle(
-          color: colorScheme.onSurface,
-          fontSize: 14,
-        ),
-        tableHead: TextStyle(
-          color: colorScheme.onSurface,
-          fontWeight: FontWeight.bold,
-          fontSize: 13,
-        ),
-        tableBody: TextStyle(
-          color: colorScheme.onSurface,
-          fontSize: 13,
-        ),
-        tableBorder: TableBorder.all(
-          color: colorScheme.outline.withValues(alpha: 0.2),
+    // 构建样式表（使用局部变量避免 const 求值问题）
+    final styleSheet = MarkdownStyleSheet(
+      p: TextStyle(
+        color: colorScheme.onSurface,
+        fontSize: 14,
+        height: 1.6,
+      ),
+      code: TextStyle(
+        fontFamily: 'monospace',
+        fontSize: 13,
+        backgroundColor: colorScheme.surfaceContainerHighest,
+        color: colorScheme.onSurface,
+      ),
+      codeblockDecoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: colorScheme.outline.withValues(alpha: 0.15),
           width: 1,
         ),
-        tableCellsPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       ),
+      codeblockPadding: const EdgeInsets.all(12),
+      blockquote: TextStyle(
+        color: colorScheme.onSurface.withValues(alpha: 0.7),
+        fontStyle: FontStyle.italic,
+      ),
+      blockquoteDecoration: BoxDecoration(
+        border: Border(
+          left: BorderSide(
+            color: colorScheme.outline.withValues(alpha: 0.3),
+            width: 3,
+          ),
+        ),
+      ),
+      h1: TextStyle(
+        color: colorScheme.onSurface,
+        fontSize: 20,
+        fontWeight: FontWeight.bold,
+      ),
+      h2: TextStyle(
+        color: colorScheme.onSurface,
+        fontSize: 18,
+        fontWeight: FontWeight.bold,
+      ),
+      h3: TextStyle(
+        color: colorScheme.onSurface,
+        fontSize: 16,
+        fontWeight: FontWeight.bold,
+      ),
+      listBullet: TextStyle(
+        color: colorScheme.onSurface,
+        fontSize: 14,
+      ),
+      tableHead: TextStyle(
+        color: colorScheme.onSurface,
+        fontWeight: FontWeight.bold,
+        fontSize: 13,
+      ),
+      tableBody: TextStyle(
+        color: colorScheme.onSurface,
+        fontSize: 13,
+      ),
+      tableBorder: TableBorder.all(
+        color: colorScheme.outline.withValues(alpha: 0.2),
+        width: 1,
+      ),
+      tableCellsPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+    );
+
+    return MarkdownBody(
+      data: content,
+      syntaxHighlighter: _CodeHighlighter(textColor: colorScheme.onSurface),
+      styleSheet: styleSheet,
       selectable: true,
       onTapLink: (text, href, title) {
         // 可以后续添加链接跳转

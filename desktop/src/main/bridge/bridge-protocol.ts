@@ -398,6 +398,7 @@ export type BridgeClientMessage =
   | BridgeChatSend
   | BridgeAgentConfirm
   | BridgeAgentAbort
+  | BridgeRetryResponse
   | BridgeHeartbeat
   | BridgeGetProjects
   | BridgeGetWorkspaceTree
@@ -411,6 +412,13 @@ export type BridgeClientMessage =
   | BridgeSwitchModel
   | BridgeLoadOlderMessages
   | BridgePollTaskStatus
+
+/** 移动端重试确认响应 */
+export interface BridgeRetryResponse {
+  type: 'bridge:retry-response'
+  retryId: string
+  shouldRetry: boolean
+}
 
 /** 移动端主动请求当前状态快照（连接/重连后使用） */
 export interface BridgeRequestState {

@@ -154,12 +154,15 @@ export async function handleAgentStream(event: IpcMainEvent, payload: AgentStrea
         }
         userText = textParts.join('\n')
       }
-      if (userText || userImages.length > 0) {
+      // 过滤掉 base64 dataUrl（只保留云端 URL），减少 WebSocket 传输量
+      // 修复：移动端 _applyUserMessage 期望对象格式而非字符串，需要转换
+      const cloudImages = userImages.filter(url => url.startsWith('http://') || url.startsWith('https://'))
+      if (userText || cloudImages.length > 0) {
         getBridgeManager().sendHostMessage({
           type: 'bridge:chat-user-message',
           messageId: sourceUserMessageId || `user-${requestId}`,
           content: userText,
-          images: userImages.length > 0 ? userImages : undefined,
+          images: cloudImages.length > 0 ? cloudImages : undefined,
           threadId: projectId,
           timestamp: Date.now(),
         } as any)

@@ -17,6 +17,69 @@ import { agentAbortControllers } from './chat-handlers'
 import { handleGatewayGetModels } from './gateway-handlers'
 
 /* ------------------------------------------------------------------ */
+/*  Image data stripping for bridge (reduce WebSocket payload)         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 从消息列表中剥离图片 dataUrl（base64），只保留 cloudUrl + 元数据。
+ * 大幅减少通过 WebSocket 推送到移动端的数据量。
+ *
+ * 规则：
+ * - 如果有 cloudUrl：去掉 dataUrl（移动端用 Image.network 加载）
+ * - 如果没有 cloudUrl 且 dataUrl < 100KB：保留 dataUrl（唯一显示方式）
+ * - 如果没有 cloudUrl 且 dataUrl >= 100KB：去掉 dataUrl（防止 WebSocket 传输过大）
+ */
+function stripDataUrlFromMessages(messages: unknown[]): unknown[] {
+  return messages.map((msg: any) => {
+    if (!msg || typeof msg !== 'object') return msg
+
+    const result = { ...msg }
+
+    // 处理 images 数组
+    if (Array.isArray(result.images)) {
+      result.images = result.images.map((img: any) => {
+        if (!img || typeof img !== 'object') return img
+        if (typeof img.dataUrl !== 'string' || img.dataUrl.length === 0) return img
+
+        const hasCloudUrl = typeof img.cloudUrl === 'string' && img.cloudUrl.length > 0
+        if (hasCloudUrl) {
+          // 有云端 URL，去掉 dataUrl
+          const { dataUrl, ...rest } = img
+          return rest
+        }
+
+        // 没有 cloudUrl，检查 dataUrl 大小
+        if (img.dataUrl.length > 100 * 1024) {
+          // 超过 100KB，去掉（防止 WebSocket 传输过大）
+          const { dataUrl, ...rest } = img
+          return rest
+        }
+
+        // 小于 100KB 且无 cloudUrl，保留 dataUrl 作为唯一显示方式
+        return img
+      })
+    }
+
+    // 处理 content 数组中的 image_url（多模态格式）
+    if (Array.isArray(result.content)) {
+      result.content = result.content.map((part: any) => {
+        if (!part || typeof part !== 'object') return part
+        if (part.type === 'image_url' && part.image_url?.url) {
+          const url = part.image_url.url as string
+          // 如果是 base64 dataUrl，替换为空字符串（移动端不直接用 content 中的图片）
+          if (url.startsWith('data:')) {
+            return { ...part, image_url: { ...part.image_url, url: '' } }
+          }
+        }
+        return part
+      })
+    }
+
+    return result
+  })
+}
+
+/* ------------------------------------------------------------------ */
 /*  Bridge connection handlers                                         */
 /* ------------------------------------------------------------------ */
 
@@ -84,6 +147,9 @@ export function setupBridgeClientConnectedHandler(): void {
       // 同步更新 BridgeManager 的活跃项目
       const orderedProjectIds = state.threadsState.threads.map(t => t.id)
       mgr.setActiveThread(state.threadsState.activeThreadId, orderedProjectIds)
+
+      // 同步所有项目的 modelConfigId（供 project-states 推送给移动端）
+      mgr.syncProjectModelConfigs(state.threadsState.threads)
 
       // 不再主动推送全量快照，改为等待手机端发送 bridge:request-state 请求
       // 手机端优先从本地 SQLite 缓存加载消息，按需请求快照
@@ -217,6 +283,8 @@ export function setupBridgeDataHandler(): void {
             const state = await getAppState()
             const orderedProjectIds = state.threadsState.threads.map(t => t.id)
             mgr.setActiveThread(projectId, orderedProjectIds)
+            // 同步所有项目的 modelConfigId（切换项目时刷新）
+            mgr.syncProjectModelConfigs(state.threadsState.threads)
           } catch { /* bridge 未初始化时忽略 */ }
           
           // 通知所有 renderer 切换项目（异步，不阻塞响应）
@@ -252,7 +320,7 @@ export function setupBridgeDataHandler(): void {
               const mgr = getBridgeManager()
               mgr.sendHostMessage({
                 type: 'bridge:state',
-                messages: page.messages as BridgeChatMessageType[],
+                messages: stripDataUrlFromMessages(page.messages) as BridgeChatMessageType[],
                 threadId: activeThread.id,
                 workspace: activeThread.workspace,
                 modelLabel: modelConfig?.model || modelConfig?.name || '',
@@ -311,7 +379,7 @@ export function setupBridgeDataHandler(): void {
               respond({
                 type: 'bridge:state',
                 requestId,
-                messages: page.messages as BridgeChatMessageType[],
+                messages: stripDataUrlFromMessages(page.messages) as BridgeChatMessageType[],
                 threadId: activeThread.id,
                 workspace: activeThread.workspace,
                 modelLabel: modelConfig?.model || modelConfig?.name || '',
@@ -354,7 +422,7 @@ export function setupBridgeDataHandler(): void {
           respond({
             type: 'bridge:older-messages',
             requestId,
-            messages: page.messages,
+            messages: stripDataUrlFromMessages(page.messages),
             totalCount: page.totalCount,
             startSeq: page.startSeq,
             endSeq: page.endSeq,
@@ -524,7 +592,7 @@ export function setupBridgeStateSnapshotResponse(): void {
       const mgr = getBridgeManager()
       mgr.sendHostMessage({
         type: 'bridge:state',
-        messages: payload.messages as BridgeChatMessageType[],
+        messages: stripDataUrlFromMessages(payload.messages) as BridgeChatMessageType[],
         threadId: payload.threadId,
         activeAgentRequestId: payload.activeAgentRequestId,
         workspace: payload.workspace,

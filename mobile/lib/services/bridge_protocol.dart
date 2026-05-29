@@ -715,6 +715,8 @@ class BridgePendingConfirm {
   final List<BridgeRiskInfo> risks;
   final List<BridgeToolCallInfo> toolCalls;
   final String? thinking; // 确认前的思考内容
+  final List<String> planSteps; // 执行计划步骤列表（仅 planConfirm 有值）
+  final String? planReasoning; // 执行计划理由（仅 planConfirm 有值）
 
   BridgePendingConfirm({
     required this.confirmId,
@@ -724,7 +726,37 @@ class BridgePendingConfirm {
     required this.risks,
     required this.toolCalls,
     this.thinking,
+    this.planSteps = const [],
+    this.planReasoning,
   });
+}
+
+/// 待重试确认项（网络超时/空响应等可恢复错误）
+class BridgePendingRetry {
+  final String retryId;
+  final String? projectId;
+  final String errorType; // 'network' | 'timeout' | 'empty_response' | 'interrupted'
+  final String errorMessage;
+  final int round;
+
+  BridgePendingRetry({
+    required this.retryId,
+    this.projectId,
+    required this.errorType,
+    required this.errorMessage,
+    required this.round,
+  });
+
+  /// 错误类型的中文描述
+  String get errorTypeLabel {
+    switch (errorType) {
+      case 'timeout': return '请求超时';
+      case 'network': return '网络异常';
+      case 'empty_response': return '模型未返回数据';
+      case 'interrupted': return '任务中断';
+      default: return '未知错误';
+    }
+  }
 }
 
 /// Agent 确认/拒绝响应

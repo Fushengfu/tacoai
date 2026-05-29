@@ -233,6 +233,14 @@ export default function App() {
           }
           break
         }
+        case 'bridge:retry-response': {
+          const retryId = String(msg.retryId || '')
+          const shouldRetry = Boolean(msg.shouldRetry)
+          if (retryId) {
+            window.taco.agent.retryResponse(retryId, shouldRetry)
+          }
+          break
+        }
       }
     })
     return unsubscribe
