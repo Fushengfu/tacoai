@@ -95,6 +95,7 @@ export class BridgeManager {
   private _activeThreadId: string | null = null
   private stateReportTimer: ReturnType<typeof setInterval> | null = null
   private readonly STATE_REPORT_INTERVAL_MS = 5000 // 每 5 秒上报一次项目状态
+  private _projectStatesDirty = false // 脏标记：状态变化时设为 true，推送后设为 false
 
   /* sync manager */
   private syncManager = new BridgeSyncManager()
@@ -269,6 +270,7 @@ export class BridgeManager {
       })
     }
     logBridge(`Project state updated: ${projectId} (processing: ${updates.isProcessing})`)
+    this._projectStatesDirty = true // 标记状态已变化
   }
 
   /** 更新项目状态并立即推送给移动端（由 IPC 层调用，当 Agent 开始/结束任务时） */
@@ -333,6 +335,9 @@ export class BridgeManager {
   /** 向移动端推送当前所有项目状态 */
   private reportProjectStates(orderedProjectIds?: string[]): void {
     if (this.projectStates.size === 0) return
+    // 优化：只在状态变化时才推送，避免每 5 秒无变化的全量推送
+    if (!this._projectStatesDirty) return
+    this._projectStatesDirty = false // 重置脏标记
     let states = Array.from(this.projectStates.values()).map((s) => ({
       id: s.id,
       title: s.title,

@@ -18,7 +18,11 @@ import 'bridge_protocol.dart';
 class MessageCache {
   static MessageCache? _instance;
   Database? _db;
+  /// LRU 内存缓存：最多保留最近 _maxCacheSize 个项目的内存缓存
   final Map<String, List<BridgeChatMessage>> _memoryCache = {};
+  /// 记录项目访问顺序（用于 LRU 淘汰）
+  final List<String> _accessOrder = [];
+  static const int _maxCacheSize = 3; // 最多缓存 3 个项目的消息
 
   // 单字段最大存储长度（防止 CursorWindow 溢出）
   // Android CursorWindow 默认 2MB，4 个大字段各控制在 256KB 以内
@@ -71,6 +75,17 @@ class MessageCache {
         // version 1 -> 2: 无 schema 变更，仅升级 CursorWindow 大小
       },
     );
+  }
+
+  /// 更新 LRU 访问顺序
+  void _touchCache(String sessionId) {
+    _accessOrder.remove(sessionId);
+    _accessOrder.add(sessionId);
+    // 如果超过缓存限制，移除最久未使用的项目
+    while (_accessOrder.length > _maxCacheSize) {
+      final oldest = _accessOrder.removeAt(0);
+      _memoryCache.remove(oldest);
+    }
   }
 
   /// 截断超长字段，防止 CursorWindow 溢出
@@ -200,6 +215,7 @@ class MessageCache {
     // 更新内存缓存（内存中保留完整数据）
     _memoryCache[sessionId]?.removeWhere((m) => m.id == msg.id);
     _memoryCache[sessionId]?.add(msg);
+    _touchCache(sessionId);
   }
 
   /// 批量保存消息（用于全量快照）
@@ -236,12 +252,14 @@ class MessageCache {
 
     // 更新内存缓存（内存中保留完整数据）
     _memoryCache[sessionId] = List.from(messages);
+    _touchCache(sessionId);
   }
 
   /// 加载指定 session 的消息
   Future<List<BridgeChatMessage>> loadMessages(String sessionId, {int limit = 50}) async {
     // 优先返回内存缓存
     if (_memoryCache.containsKey(sessionId)) {
+      _touchCache(sessionId); // 更新 LRU 访问顺序
       return _memoryCache[sessionId]!;
     }
 
@@ -259,6 +277,7 @@ class MessageCache {
 
       final messages = rows.map((row) => _rowToMessage(row)).toList();
       _memoryCache[sessionId] = messages;
+      _touchCache(sessionId);
       return messages;
     } on DatabaseException catch (e) {
       // "Row too big to fit into CursorWindow" 错误处理
@@ -320,6 +339,7 @@ class MessageCache {
     }
 
     _memoryCache[sessionId] = messages;
+    _touchCache(sessionId);
     debugPrint('[MessageCache] Loaded ${messages.length}/${idRows.length} messages individually');
     return messages;
   }

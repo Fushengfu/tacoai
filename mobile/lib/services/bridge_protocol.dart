@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 ///  Taco 跨端桥接协议定义（移动端）
 ///
 ///  Mobile (Client) 扫码获取配对码，使用会员 token 连接 Relay 与 Host 配对。
@@ -444,6 +447,9 @@ class BridgeAttachedImage {
   final String uploadStatus;  // 'pending' | 'uploading' | 'done' | 'error'
   final int? uploadProgress;  // 可选字段，与桌面端一致
 
+  /// 预解码的图片字节数据（避免每次 build 时重复 base64Decode）
+  final Uint8List? decodedBytes;
+
   BridgeAttachedImage({
     required this.id,
     required this.dataUrl,
@@ -451,16 +457,33 @@ class BridgeAttachedImage {
     required this.name,
     this.uploadStatus = 'done',
     this.uploadProgress,
+    this.decodedBytes,
   });
 
   factory BridgeAttachedImage.fromJson(Map<String, dynamic> json) {
+    final dataUrl = json['dataUrl'] as String? ?? '';
+    
+    // 预解码 base64 图片数据，避免每次 build 时重复执行
+    Uint8List? decodedBytes;
+    if (dataUrl.startsWith('data:')) {
+      final match = RegExp(r'data:image/[^;]+;base64,(.+)').firstMatch(dataUrl);
+      if (match != null) {
+        try {
+          decodedBytes = base64Decode(match.group(1)!);
+        } catch (_) {
+          // 解码失败时 decodedBytes 保持 null，UI 层会降级显示错误图标
+        }
+      }
+    }
+
     return BridgeAttachedImage(
       id: json['id'] as String? ?? '',
-      dataUrl: json['dataUrl'] as String? ?? '',
+      dataUrl: dataUrl,
       cloudUrl: json['cloudUrl'] as String? ?? '',
       name: json['name'] as String? ?? '',
       uploadStatus: json['uploadStatus'] as String? ?? 'done',
       uploadProgress: json['uploadProgress'] as int?,
+      decodedBytes: decodedBytes,
     );
   }
 

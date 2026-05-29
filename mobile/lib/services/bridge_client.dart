@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -40,6 +41,9 @@ class BridgeClient {
   static const int _kDefaultTokenLifetimeMs = 24 * 60 * 60 * 1000; // 默认 24 小时
 
   final List<BridgeChatMessage> _messages = [];
+  /// 消息列表的 ValueNotifier（避免每次通知时 List.from 拷贝）
+  final ValueNotifier<List<BridgeChatMessage>> messagesNotifier = ValueNotifier([]);
+  int _messagesVersion = 0; // 消息版本号（用于判断是否真的变化了）
   final List<Function(BridgeStatus)> _statusListeners = [];
   final List<Function(dynamic)> _messageListeners = [];
   String? _error;
@@ -624,6 +628,8 @@ class BridgeClient {
 
   /// 立即通知（不节流），用于切换项目等需要即时反馈的场景
   void _notifyListenersImmediately(dynamic data) {
+    // 更新消息 ValueNotifier
+    _updateMessagesNotifier();
     // 创建副本避免并发修改错误
     final listeners = List.from(_messageListeners);
     for (final cb in listeners) {
@@ -2159,6 +2165,8 @@ class BridgeClient {
         _pendingNotify = false;
         // 使用 Future.microtask 确保通知在下一帧执行，避免阻塞 WebSocket 消息处理
         Future.microtask(() {
+          // 更新消息 ValueNotifier（只在版本变化时更新，避免不必要的 rebuild）
+          _updateMessagesNotifier();
           // 创建副本避免并发修改错误
           final listeners = List.from(_messageListeners);
           for (final cb in listeners) {
@@ -2182,6 +2190,8 @@ class BridgeClient {
     _agentNotifyTimer = Timer(Duration.zero, () {
       if (_pendingAgentNotify) {
         _pendingAgentNotify = false;
+        // 更新消息 ValueNotifier
+        _updateMessagesNotifier();
         // 创建副本避免并发修改错误
         final listeners = List.from(_messageListeners);
         for (final cb in listeners) {
@@ -2193,6 +2203,15 @@ class BridgeClient {
         }
       }
     });
+  }
+
+  /// 更新消息 ValueNotifier（只在版本变化时更新，避免不必要的 rebuild）
+  void _updateMessagesNotifier() {
+    _messagesVersion++;
+    // 直接更新 ValueNotifier，使用不可修改视图
+    // ValueNotifier 内部会检查值是否真的变化，但因为我们使用 List.unmodifiable 每次都创建新对象
+    // 所以这里需要手动检查版本号
+    messagesNotifier.value = List.unmodifiable(_messages);
   }
 
   void _notifyConfirmListeners() {

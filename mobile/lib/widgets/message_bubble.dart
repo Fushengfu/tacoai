@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -38,6 +37,88 @@ class MessageBubble extends StatefulWidget {
 }
 
 class _MessageBubbleState extends State<MessageBubble> {
+  /// 缓存的 MarkdownStyleSheet，仅在 colorScheme 变化时重建
+  MarkdownStyleSheet? _cachedStyleSheet;
+  ColorScheme? _cachedColorScheme;
+  SyntaxHighlighter? _cachedHighlighter;
+
+  /// 获取或创建缓存的样式表（按 colorScheme 惰性更新）
+  MarkdownStyleSheet _getStyleSheet(ColorScheme colorScheme) {
+    if (_cachedColorScheme == colorScheme && _cachedStyleSheet != null) {
+      return _cachedStyleSheet!;
+    }
+    _cachedColorScheme = colorScheme;
+    _cachedHighlighter = _CodeHighlighter(textColor: colorScheme.onSurface);
+    _cachedStyleSheet = MarkdownStyleSheet(
+      p: TextStyle(
+        color: colorScheme.onSurface,
+        fontSize: 14,
+        height: 1.6,
+      ),
+      code: TextStyle(
+        fontFamily: 'monospace',
+        fontSize: 13,
+        backgroundColor: colorScheme.surfaceContainerHighest,
+        color: colorScheme.onSurface,
+      ),
+      codeblockDecoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: colorScheme.outline.withValues(alpha: 0.15),
+          width: 1,
+        ),
+      ),
+      codeblockPadding: const EdgeInsets.all(12),
+      blockquote: TextStyle(
+        color: colorScheme.onSurface.withValues(alpha: 0.7),
+        fontStyle: FontStyle.italic,
+      ),
+      blockquoteDecoration: BoxDecoration(
+        border: Border(
+          left: BorderSide(
+            color: colorScheme.outline.withValues(alpha: 0.3),
+            width: 3,
+          ),
+        ),
+      ),
+      h1: TextStyle(
+        color: colorScheme.onSurface,
+        fontSize: 20,
+        fontWeight: FontWeight.bold,
+      ),
+      h2: TextStyle(
+        color: colorScheme.onSurface,
+        fontSize: 18,
+        fontWeight: FontWeight.bold,
+      ),
+      h3: TextStyle(
+        color: colorScheme.onSurface,
+        fontSize: 16,
+        fontWeight: FontWeight.bold,
+      ),
+      listBullet: TextStyle(
+        color: colorScheme.onSurface,
+        fontSize: 14,
+      ),
+      tableHead: TextStyle(
+        color: colorScheme.onSurface,
+        fontWeight: FontWeight.bold,
+        fontSize: 13,
+      ),
+      tableBody: TextStyle(
+        color: colorScheme.onSurface,
+        fontSize: 13,
+      ),
+      tableBorder: TableBorder.all(
+        color: colorScheme.outline.withValues(alpha: 0.2),
+        width: 1,
+      ),
+      tableCellsPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+    );
+    return _cachedStyleSheet!;
+  }
+
   /// 判断消息是否有实际的工具调用步骤（排除纯 thinking 步骤）
   /// 只有包含工具调用、系统通知、确认等实际操作的步骤才显示执行步骤卡片
   bool _hasToolCallSteps(BridgeChatMessage msg) {
@@ -328,78 +409,69 @@ class _MessageBubbleState extends State<MessageBubble> {
 
   /// 构建图片缩略图
   Widget _buildImageThumbnail(BridgeAttachedImage img, ColorScheme colorScheme) {
-    // 优先使用 dataUrl（本地预览），回退到 cloudUrl（云端URL）
-    String? imageSrc;
-    if (img.dataUrl.isNotEmpty) {
-      imageSrc = img.dataUrl;
-    } else if (img.cloudUrl.isNotEmpty) {
-      imageSrc = img.cloudUrl;
-    }
-    
-    if (imageSrc == null || imageSrc.isEmpty) return const SizedBox.shrink();
-
-    return GestureDetector(
-      onTap: () {
-        // TODO: 可以后续添加图片预览功能
-      },
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(8),
-        child: _buildImageWidget(imageSrc, colorScheme),
-      ),
-    );
-  }
-
-  /// 构建图片 Widget（支持 dataUrl 和网络 URL）
-  Widget _buildImageWidget(String src, ColorScheme colorScheme) {
-    // 判断是否为 dataUrl
-    if (src.startsWith('data:')) {
-      // 提取 base64 数据
-      final match = RegExp(r'data:image/[^;]+;base64,(.+)').firstMatch(src);
-      if (match == null) {
-        return _buildImageErrorWidget(colorScheme);
-      }
-      
-      final base64Data = match.group(1)!;
-      final bytes = base64Decode(base64Data);
-      
-      return Image.memory(
-        bytes,
-        width: 150,
-        height: 150,
-        fit: BoxFit.cover,
-        errorBuilder: (context, error, stackTrace) {
-          return _buildImageErrorWidget(colorScheme);
+    // 优先使用预解码的 bytes（避免重复 base64Decode），回退到 cloudUrl
+    if (img.decodedBytes != null && img.decodedBytes!.isNotEmpty) {
+      return GestureDetector(
+        onTap: () {
+          // TODO: 可以后续添加图片预览功能
         },
-      );
-    } else {
-      // 网络 URL
-      return Image.network(
-        src,
-        width: 150,
-        height: 150,
-        fit: BoxFit.cover,
-        errorBuilder: (context, error, stackTrace) {
-          return _buildImageErrorWidget(colorScheme);
-        },
-        loadingBuilder: (context, child, loadingProgress) {
-          if (loadingProgress == null) return child;
-          return Container(
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Image.memory(
+            img.decodedBytes!,
             width: 150,
             height: 150,
-            color: colorScheme.surfaceContainerHighest,
-            child: Center(
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                value: loadingProgress.expectedTotalBytes != null
-                    ? loadingProgress.cumulativeBytesLoaded / loadingProgress.expectedTotalBytes!
-                    : null,
-                color: colorScheme.primary,
-              ),
-            ),
-          );
-        },
+            fit: BoxFit.cover,
+            errorBuilder: (context, error, stackTrace) {
+              return _buildImageErrorWidget(colorScheme);
+            },
+          ),
+        ),
       );
     }
+
+    // 回退到 cloudUrl（网络图片）
+    if (img.cloudUrl.isNotEmpty) {
+      return GestureDetector(
+        onTap: () {},
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: _buildNetworkImage(img.cloudUrl, colorScheme),
+        ),
+      );
+    }
+
+    return const SizedBox.shrink();
+  }
+
+  /// 构建网络图片 Widget（带加载指示器和错误处理）
+  Widget _buildNetworkImage(String url, ColorScheme colorScheme) {
+    return Image.network(
+      url,
+      width: 150,
+      height: 150,
+      fit: BoxFit.cover,
+      errorBuilder: (context, error, stackTrace) {
+        return _buildImageErrorWidget(colorScheme);
+      },
+      loadingBuilder: (context, child, loadingProgress) {
+        if (loadingProgress == null) return child;
+        return Container(
+          width: 150,
+          height: 150,
+          color: colorScheme.surfaceContainerHighest,
+          child: Center(
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              value: loadingProgress.expectedTotalBytes != null
+                  ? loadingProgress.cumulativeBytesLoaded / loadingProgress.expectedTotalBytes!
+                  : null,
+              color: colorScheme.primary,
+            ),
+          ),
+        );
+      },
+    );
   }
 
   /// 构建图片错误提示
@@ -465,79 +537,10 @@ class _MessageBubbleState extends State<MessageBubble> {
       );
     }
 
-    // 构建样式表（使用局部变量避免 const 求值问题）
-    final styleSheet = MarkdownStyleSheet(
-      p: TextStyle(
-        color: colorScheme.onSurface,
-        fontSize: 14,
-        height: 1.6,
-      ),
-      code: TextStyle(
-        fontFamily: 'monospace',
-        fontSize: 13,
-        backgroundColor: colorScheme.surfaceContainerHighest,
-        color: colorScheme.onSurface,
-      ),
-      codeblockDecoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: colorScheme.outline.withValues(alpha: 0.15),
-          width: 1,
-        ),
-      ),
-      codeblockPadding: const EdgeInsets.all(12),
-      blockquote: TextStyle(
-        color: colorScheme.onSurface.withValues(alpha: 0.7),
-        fontStyle: FontStyle.italic,
-      ),
-      blockquoteDecoration: BoxDecoration(
-        border: Border(
-          left: BorderSide(
-            color: colorScheme.outline.withValues(alpha: 0.3),
-            width: 3,
-          ),
-        ),
-      ),
-      h1: TextStyle(
-        color: colorScheme.onSurface,
-        fontSize: 20,
-        fontWeight: FontWeight.bold,
-      ),
-      h2: TextStyle(
-        color: colorScheme.onSurface,
-        fontSize: 18,
-        fontWeight: FontWeight.bold,
-      ),
-      h3: TextStyle(
-        color: colorScheme.onSurface,
-        fontSize: 16,
-        fontWeight: FontWeight.bold,
-      ),
-      listBullet: TextStyle(
-        color: colorScheme.onSurface,
-        fontSize: 14,
-      ),
-      tableHead: TextStyle(
-        color: colorScheme.onSurface,
-        fontWeight: FontWeight.bold,
-        fontSize: 13,
-      ),
-      tableBody: TextStyle(
-        color: colorScheme.onSurface,
-        fontSize: 13,
-      ),
-      tableBorder: TableBorder.all(
-        color: colorScheme.outline.withValues(alpha: 0.2),
-        width: 1,
-      ),
-      tableCellsPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-    );
-
     return MarkdownBody(
       data: content,
-      syntaxHighlighter: _CodeHighlighter(textColor: colorScheme.onSurface),
-      styleSheet: styleSheet,
+      syntaxHighlighter: _cachedHighlighter ?? _CodeHighlighter(textColor: colorScheme.onSurface),
+      styleSheet: _getStyleSheet(colorScheme),
       selectable: true,
       onTapLink: (text, href, title) {
         // 可以后续添加链接跳转
