@@ -136,10 +136,58 @@ function transformForKimi(msg: StandardChatMessage): { role: string; content: un
 }
 
 /**
+ * 去掉 content 中的 [HISTORICAL_TASK_RESULT] 和 [/HISTORICAL_TASK_RESULT] 标签，
+ * 保留标签之间的内容。支持字符串和 ContentPart 数组两种格式。
+ */
+function stripHistoricalTaskResult(content: unknown): unknown {
+  if (typeof content === 'string') {
+    return content
+      .replace(/\[HISTORICAL_TASK_RESULT\]/g, '')
+      .replace(/\[\/HISTORICAL_TASK_RESULT\]/g, '')
+  }
+  if (Array.isArray(content)) {
+    return (content as ContentPart[]).map((part) => {
+      if (part.type === 'text') {
+        return {
+          ...part,
+          text: part.text
+            .replace(/\[HISTORICAL_TASK_RESULT\]/g, '')
+            .replace(/\[\/HISTORICAL_TASK_RESULT\]/g, ''),
+        }
+      }
+      return part
+    })
+  }
+  return content
+}
+
+/**
  * 转换为 Minimax 格式
  */
-function transformForMinimax(msg: StandardChatMessage): { role: string; content: unknown } {
-  return transformForDeepseek(msg)
+function transformForMinimax(msg: StandardChatMessage): { role: string; content: unknown; tool_call_id?: string; name?: string; tool_calls?: unknown[]; reasoning_content?: string } {
+  const rawContent: unknown = msg.content.length === 0 ? '' : msg.content
+  const result: { role: string; content: unknown; tool_call_id?: string; name?: string; tool_calls?: unknown[]; reasoning_content?: string } = {
+    role: msg.role,
+    content: stripHistoricalTaskResult(rawContent),
+  }
+  
+  // tool 消息需要保留 tool_call_id 和 name
+  if (msg.role === 'tool') {
+    if (msg.tool_call_id) result.tool_call_id = msg.tool_call_id
+    if (msg.name) result.name = msg.name
+  }
+  
+  // assistant 消息如果有 tool_calls 也需要保留
+  if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
+    result.tool_calls = msg.tool_calls
+  }
+  
+  // assistant 消息需要保留 reasoning_content（thinking mode 必须）
+  if (msg.role === 'assistant' && msg.reasoning_content) {
+    result.reasoning_content = msg.reasoning_content
+  }
+  
+  return result
 }
 
 /**

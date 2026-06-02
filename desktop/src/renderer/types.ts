@@ -190,6 +190,7 @@ export type ModelConfig = {
   contextLength: string
   temperature: string
   supportsVision?: boolean
+  supportsReasoning?: boolean
   createdAt?: number
   updatedAt?: number
 }

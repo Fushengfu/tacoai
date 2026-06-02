@@ -1493,6 +1493,7 @@ export function useChat() {
         temperature: parseConfiguredTemperature(modelConfig.temperature),
         upload: resolveUploadOverrideForProvider(provider),
         supportsVision: Boolean(modelConfig.supportsVision),
+        supportsReasoning: Boolean(modelConfig.supportsReasoning),
       }
     }
 
@@ -1560,6 +1561,7 @@ export function useChat() {
         temperature: parseConfiguredTemperature(modelConfig.temperature),
         upload: resolveUploadOverrideForProvider(provider),
         supportsVision: Boolean(modelConfig.supportsVision),
+        supportsReasoning: Boolean(modelConfig.supportsReasoning),
       }
     }
 

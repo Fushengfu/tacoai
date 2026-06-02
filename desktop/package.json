@@ -1,7 +1,7 @@
 {
   "name": "Taco",
   "private": true,
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "Taco AI - 智能编程助手",
   "author": "Amulet",
   "type": "module",

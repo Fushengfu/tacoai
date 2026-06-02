@@ -873,7 +873,8 @@ export function ChatPanel({
   }, [messages])
 
   // 检测会话切换，强制标记需要滚动到底部
-  useEffect(() => {
+  // 必须用 useLayoutEffect 而非 useEffect，确保在 DOM 更新前同步执行，让下方的 useLayoutEffect 快照能读到正确值
+  useLayoutEffect(() => {
     const prevSessionId = prevSessionIdRef.current
     if (prevSessionId !== activeSessionId) {
       prevSessionIdRef.current = activeSessionId ?? null

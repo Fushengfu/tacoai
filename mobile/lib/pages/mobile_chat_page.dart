@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:audioplayers/audioplayers.dart';
 import '../services/bridge_client.dart';
 import '../services/bridge_protocol.dart';
 import '../widgets/message_bubble.dart';
@@ -31,6 +32,7 @@ class MobileChatPage extends StatefulWidget {
 class _MobileChatPageState extends State<MobileChatPage> {
   final ScrollController _scrollController = ScrollController();
   final TextEditingController _textController = TextEditingController();
+  final FocusNode _focusNode = FocusNode();
 
   // 使用 ValueNotifier 分离消息列表状态，减少 setState 范围
   late ValueNotifier<List<BridgeChatMessage>> _messagesNotifier;
@@ -83,6 +85,10 @@ class _MobileChatPageState extends State<MobileChatPage> {
   // 处理状态追踪（用于检测发送按钮是否需要更新）
   bool _wasProcessing = false;
 
+  // 任务完成提示音播放器
+  final AudioPlayer _taskCompletePlayer = AudioPlayer();
+  bool _soundInitialized = false;
+
   @override
   void initState() {
     super.initState();
@@ -99,10 +105,17 @@ class _MobileChatPageState extends State<MobileChatPage> {
     // 初始化处理状态追踪
     _wasProcessing = _isCurrentProjectSending();
 
+    // 初始化提示音播放器
+    _initializeSound();
+
     // 初始化时立即从缓存解析项目标题和模型信息（不等 bridge:state）
     // 使用 addPostFrameCallback 确保 build 完成后再调用 setState
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _resolveProjectHeaderInfo(widget.client.currentProjectId);
+      if (mounted) {
+        _resolveProjectHeaderInfo(widget.client.currentProjectId);
+        // 初始化时同步确认/重试列表（按当前项目过滤）
+        _syncPendingItems();
+      }
     });
 
     // 监听滚动位置，控制"滚动到顶部"按钮显示
@@ -114,11 +127,35 @@ class _MobileChatPageState extends State<MobileChatPage> {
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _textController.dispose();
+    _focusNode.dispose();
     // 不 dispose _messagesNotifier，因为它是 bridge_client 的属性
     _deltaUpdateTimer?.cancel();
     _switchProjectTimeout?.cancel();
+    _taskCompletePlayer.dispose();
     widget.client.removeRetryListener(_onRetryChange);
     super.dispose();
+  }
+
+  /// 初始化提示音播放器
+  Future<void> _initializeSound() async {
+    try {
+      await _taskCompletePlayer.setSource(AssetSource('task_complete.wav'));
+      await _taskCompletePlayer.setVolume(0.5); // 设置音量为 50%
+      _soundInitialized = true;
+    } catch (e) {
+      print('[MobileChatPage] 提示音初始化失败: $e');
+    }
+  }
+
+  /// 播放任务完成提示音
+  void _playTaskCompleteSound() {
+    if (_soundInitialized && mounted) {
+      try {
+        _taskCompletePlayer.resume();
+      } catch (e) {
+        print('[MobileChatPage] 播放提示音失败: $e');
+      }
+    }
   }
 
   void _onScroll() {
@@ -177,18 +214,25 @@ class _MobileChatPageState extends State<MobileChatPage> {
 
   void _onConfirmChange(List<BridgePendingConfirm> confirms) {
     if (!mounted) return;
-    setState(() {
-      // 只显示当前项目的确认请求，其他项目的暂存但不显示
-      // 当切换回来时仍可看到并操作
-      _pendingConfirms = confirms.where((c) => c.projectId == widget.client.currentProjectId).toList();
-    });
+    _syncPendingItems();
   }
 
   void _onRetryChange(List<BridgePendingRetry> retries) {
     if (!mounted) return;
+    _syncPendingItems();
+  }
+
+  /// 同步确认/重试列表（按当前项目过滤）
+  void _syncPendingItems() {
+    if (!mounted) return;
+    final currentProjectId = widget.client.currentProjectId;
     setState(() {
-      // 只显示当前项目的重试请求
-      _pendingRetries = retries.where((r) => r.projectId == widget.client.currentProjectId).toList();
+      _pendingConfirms = widget.client.pendingConfirms
+          .where((c) => c.projectId == currentProjectId)
+          .toList();
+      _pendingRetries = widget.client.pendingRetries
+          .where((r) => r.projectId == currentProjectId)
+          .toList();
     });
   }
 
@@ -229,6 +273,10 @@ class _MobileChatPageState extends State<MobileChatPage> {
       // 同步处理状态（bridge:state 可能携带 activeAgentRequestId）
       final isNowProcessing = _isCurrentProjectSending();
       if (isNowProcessing != _wasProcessing) {
+        // 任务完成时播放提示音（从处理中变为空闲）
+        if (_wasProcessing && !isNowProcessing) {
+          _playTaskCompleteSound();
+        }
         _wasProcessing = isNowProcessing;
         needUpdate = true;
       }
@@ -252,6 +300,10 @@ class _MobileChatPageState extends State<MobileChatPage> {
       // 检查处理状态是否变化，如果变化则触发 setState 更新发送按钮
       final isNowProcessing = _isCurrentProjectSending();
       if (isNowProcessing != _wasProcessing) {
+        // 任务完成时播放提示音（从处理中变为空闲）
+        if (_wasProcessing && !isNowProcessing) {
+          _playTaskCompleteSound();
+        }
         _wasProcessing = isNowProcessing;
         setState(() {});
       }
@@ -267,6 +319,10 @@ class _MobileChatPageState extends State<MobileChatPage> {
           // 检查处理状态是否变化（delta done=true 时清除处理状态）
           final isNowProcessing = _isCurrentProjectSending();
           if (isNowProcessing != _wasProcessing) {
+            // 任务完成时播放提示音（从处理中变为空闲）
+            if (_wasProcessing && !isNowProcessing) {
+              _playTaskCompleteSound();
+            }
             _wasProcessing = isNowProcessing;
             setState(() {});
           }
@@ -284,6 +340,9 @@ class _MobileChatPageState extends State<MobileChatPage> {
       }
       // 记录待切换的项目 ID（用于快速连续切换时只响应最新一次）
       _pendingSwitchProjectId = json['threadId'] as String? ?? _pendingSwitchProjectId;
+
+      // 切换项目时收起键盘，避免自动弹出
+      _focusNode.unfocus();
 
       // 立即从缓存查找项目名称和模型信息（不等 bridge:state 到达）
       _resolveProjectHeaderInfo(_pendingSwitchProjectId ?? widget.client.currentProjectId);
@@ -305,19 +364,14 @@ class _MobileChatPageState extends State<MobileChatPage> {
         setState(() => _isSwitchingProject = false);
       }
 
+      // 切换项目完成时收起键盘
+      _focusNode.unfocus();
+
       // 立即更新项目标题和模型信息（bridge:project-switched 比 bridge:state 先到达）
       _resolveProjectHeaderInfo(widget.client.currentProjectId);
 
       // 重新过滤确认和重试请求（显示当前项目的）
-      setState(() {
-        final currentProjectId = widget.client.currentProjectId;
-        _pendingConfirms = widget.client.pendingConfirms
-            .where((c) => c.projectId == currentProjectId)
-            .toList();
-        _pendingRetries = widget.client.pendingRetries
-            .where((r) => r.projectId == currentProjectId)
-            .toList();
-      });
+      _syncPendingItems();
       // 切换项目完成后自动滚动到底部
       if (!_userIsScrolling) {
         _isAtBottom = true;
@@ -345,6 +399,10 @@ class _MobileChatPageState extends State<MobileChatPage> {
       // 检查处理状态是否变化（bridge:project-states / bridge:task-status-polled 可能改变处理状态）
       final isNowProcessing = _isCurrentProjectSending();
       if (isNowProcessing != _wasProcessing) {
+        // 任务完成时播放提示音（从处理中变为空闲）
+        if (_wasProcessing && !isNowProcessing) {
+          _playTaskCompleteSound();
+        }
         _wasProcessing = isNowProcessing;
         setState(() {});
       }
@@ -1002,6 +1060,8 @@ class _MobileChatPageState extends State<MobileChatPage> {
                   children: [
                     Expanded(
                       child: TextField(
+                        focusNode: _focusNode,
+                        autofocus: false,
                         controller: _textController,
                         decoration: InputDecoration(
                           hintText: '输入消息...',

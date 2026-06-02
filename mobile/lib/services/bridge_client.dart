@@ -1344,6 +1344,75 @@ class BridgeClient {
   }
 
   /// 更新消息中对应 step 的确认状态（桌面端确认/拒绝后同步到移动端 UI）
+  void _handleConfirmEvent(Map<String, dynamic> event, String? projectId, List<BridgeAgentStep> steps) {
+    final confirmId = event['confirmId'] as String? ?? '';
+    final toolCallsJson = event['toolCalls'] as List<dynamic>? ?? [];
+    final risksJson = event['risks'] as List<dynamic>? ?? [];
+    final toolCalls = toolCallsJson
+        .map((t) => BridgeToolCallInfo.fromJson(t as Map<String, dynamic>))
+        .toList();
+    final risks = risksJson
+        .map((r) => BridgeRiskInfo.fromJson(r as Map<String, dynamic>))
+        .toList();
+
+    // 添加到待确认列表（带项目隔离）
+    final isPlanConfirm = risks.any((r) => r.toolName == 'propose_plan');
+    String summary = '';
+    List<String> planSteps = [];
+    String? planReasoning;
+    if (isPlanConfirm && risks.isNotEmpty) {
+      // 解析计划 JSON，提取 summary、steps、reasoning
+      try {
+        final planJson = json.decode(risks[0].detail) as Map<String, dynamic>;
+        summary = (planJson['summary'] as String?) ?? '';
+        planReasoning = planJson['reasoning'] as String?;
+        final rawSteps = planJson['steps'] as List<dynamic>? ?? [];
+        planSteps = rawSteps.map((s) {
+          if (s is String) return s;
+          if (s is Map<String, dynamic>) {
+            return (s['title'] as String?) ?? (s['content'] as String?) ?? (s['text'] as String?) ?? s.toString();
+          }
+          return s.toString();
+        }).where((s) => s.isNotEmpty).toList();
+      } catch (_) {
+        // JSON 解析失败，降级使用 detail 原文
+        summary = risks[0].detail;
+      }
+    } else {
+      summary = toolCalls.map((t) => t.name).join(', ');
+    }
+    _pendingConfirms.add(BridgePendingConfirm(
+      confirmId: confirmId,
+      projectId: projectId,
+      isPlanConfirm: isPlanConfirm,
+      summary: summary,
+      risks: risks,
+      toolCalls: toolCalls,
+      thinking: steps.isNotEmpty ? steps.last.thinking : '',
+      planSteps: planSteps,
+      planReasoning: planReasoning,
+    ));
+    _notifyConfirmListeners();
+  }
+
+  void _handleRetryConfirmEvent(Map<String, dynamic> event, String? projectId) {
+    final retryId = event['retryId'] as String? ?? '';
+    final errorType = event['errorType'] as String? ?? 'unknown';
+    final errorMessage = event['errorMessage'] as String? ?? '';
+    final retryRound = event['round'] as int? ?? 0;
+
+    if (retryId.isNotEmpty) {
+      _pendingRetries.add(BridgePendingRetry(
+        retryId: retryId,
+        projectId: projectId,
+        errorType: errorType,
+        errorMessage: errorMessage,
+        round: retryRound,
+      ));
+      _notifyRetryListeners();
+    }
+  }
+
   void _updateStepConfirmStatus(String confirmId, bool approved) {
     for (int i = 0; i < _messages.length; i++) {
       final msg = _messages[i];
@@ -1432,7 +1501,9 @@ class BridgeClient {
     }
 
     // 项目隔离：只处理当前项目的事件内容，其他项目的事件仅更新 _projectActiveTasks（供侧边栏显示）
-    if (projectId != null && projectId != _currentProjectId) {
+    // 但确认/重试请求需要跨项目收集（用户切换到该项目时需要能看到）
+    final isConfirmOrRetry = (eventType == 'confirm' || eventType == 'retry_confirm');
+    if (projectId != null && projectId != _currentProjectId && !isConfirmOrRetry) {
       return;
     }
 
@@ -1456,7 +1527,24 @@ class BridgeClient {
     }
 
     final old = _messages[idx];
-    final steps = old.agentSteps != null ? List<BridgeAgentStep>.from(old.agentSteps!) : <BridgeAgentStep>[];
+    final msgSteps = old.agentSteps != null ? List<BridgeAgentStep>.from(old.agentSteps!) : <BridgeAgentStep>[];
+
+    // 确认/重试请求需要跨项目收集（即使不是当前项目也要添加到待确认列表）
+    if (isConfirmOrRetry) {
+      switch (eventType) {
+        case 'confirm':
+          _handleConfirmEvent(event, projectId, msgSteps);
+          break;
+        case 'retry_confirm':
+          _handleRetryConfirmEvent(event, projectId);
+          break;
+      }
+    }
+
+    // 非当前项目的事件，只处理确认/重试，不更新消息内容
+    if (projectId != null && projectId != _currentProjectId) {
+      return;
+    }
 
     switch (eventType) {
       case 'text':
@@ -1474,15 +1562,15 @@ class BridgeClient {
       case 'thinking':
         // 思考过程：追加到最后一个 step 或创建新 step
         final content = event['content'] as String? ?? '';
-        if (steps.isEmpty || steps.last.status == 'done') {
-          steps.add(BridgeAgentStep(
-            round: steps.length + 1,
+        if (msgSteps.isEmpty || msgSteps.last.status == 'done') {
+          msgSteps.add(BridgeAgentStep(
+            round: msgSteps.length + 1,
             thinking: content,
             status: 'running',
           ));
         } else {
-          final last = steps.last;
-          steps[steps.length - 1] = BridgeAgentStep(
+          final last = msgSteps.last;
+          msgSteps[msgSteps.length - 1] = BridgeAgentStep(
             round: last.round,
             systemTitle: last.systemTitle,
             systemDetail: last.systemDetail,
@@ -1504,16 +1592,16 @@ class BridgeClient {
             .map((t) => BridgeToolCallInfo.fromJson(t as Map<String, dynamic>))
             .toList();
 
-        if (steps.isEmpty || steps.last.status == 'done') {
-          steps.add(BridgeAgentStep(
-            round: steps.length + 1,
+        if (msgSteps.isEmpty || msgSteps.last.status == 'done') {
+          msgSteps.add(BridgeAgentStep(
+            round: msgSteps.length + 1,
             thinking: thinking,
             toolCalls: toolCalls,
             status: 'calling',
           ));
         } else {
-          final last = steps.last;
-          steps[steps.length - 1] = BridgeAgentStep(
+          final last = msgSteps.last;
+          msgSteps[msgSteps.length - 1] = BridgeAgentStep(
             round: last.round,
             systemTitle: last.systemTitle,
             systemDetail: last.systemDetail,
@@ -1572,15 +1660,15 @@ class BridgeClient {
           summary: summary,
           risks: risks,
           toolCalls: toolCalls,
-          thinking: steps.isNotEmpty ? steps.last.thinking : '',
+          thinking: msgSteps.isNotEmpty ? msgSteps.last.thinking : '',
           planSteps: planSteps,
           planReasoning: planReasoning,
         ));
         _notifyConfirmListeners();
 
-        if (steps.isNotEmpty) {
-          final last = steps.last;
-          steps[steps.length - 1] = BridgeAgentStep(
+        if (msgSteps.isNotEmpty) {
+          final last = msgSteps.last;
+          msgSteps[msgSteps.length - 1] = BridgeAgentStep(
             round: last.round,
             systemTitle: last.systemTitle,
             systemDetail: last.systemDetail,
@@ -1621,9 +1709,9 @@ class BridgeClient {
             .map((r) => BridgeToolResultInfo.fromJson(r as Map<String, dynamic>))
             .toList();
 
-        if (steps.isNotEmpty) {
-          final last = steps.last;
-          steps[steps.length - 1] = BridgeAgentStep(
+        if (msgSteps.isNotEmpty) {
+          final last = msgSteps.last;
+          msgSteps[msgSteps.length - 1] = BridgeAgentStep(
             round: last.round,
             systemTitle: last.systemTitle,
             systemDetail: last.systemDetail,
@@ -1641,16 +1729,16 @@ class BridgeClient {
         // 系统通知
         final title = event['title'] as String? ?? '';
         final message = event['message'] as String? ?? '';
-        if (steps.isEmpty || steps.last.status == 'done') {
-          steps.add(BridgeAgentStep(
-            round: steps.length + 1,
+        if (msgSteps.isEmpty || msgSteps.last.status == 'done') {
+          msgSteps.add(BridgeAgentStep(
+            round: msgSteps.length + 1,
             systemTitle: title,
             systemDetail: message,
             status: 'done',
           ));
         } else {
-          final last = steps.last;
-          steps[steps.length - 1] = BridgeAgentStep(
+          final last = msgSteps.last;
+          msgSteps[msgSteps.length - 1] = BridgeAgentStep(
             round: last.round,
             systemTitle: title.isNotEmpty ? title : last.systemTitle,
             systemDetail: message.isNotEmpty ? message : last.systemDetail,
@@ -1688,7 +1776,7 @@ class BridgeClient {
           content: old.content,
           images: old.images,
           attachments: old.attachments,
-          agentSteps: steps,
+          agentSteps: msgSteps,
           activePlan: activePlan,
           taskTiming: old.taskTiming,
         );
@@ -1719,7 +1807,7 @@ class BridgeClient {
             content: old.content,
             images: old.images,
             attachments: old.attachments,
-            agentSteps: steps,
+            agentSteps: msgSteps,
             activePlan: BridgeActivePlan(
               summary: plan.summary,
               reasoning: plan.reasoning,
@@ -1744,7 +1832,7 @@ class BridgeClient {
             content: old.content,
             images: old.images,
             attachments: old.attachments,
-            agentSteps: steps,
+            agentSteps: msgSteps,
             activePlan: old.activePlan,
             taskTiming: old.taskTiming,
           );
@@ -1754,9 +1842,9 @@ class BridgeClient {
 
       case 'done':
         // 完成
-        if (steps.isNotEmpty) {
-          final last = steps.last;
-          steps[steps.length - 1] = BridgeAgentStep(
+        if (msgSteps.isNotEmpty) {
+          final last = msgSteps.last;
+          msgSteps[msgSteps.length - 1] = BridgeAgentStep(
             round: last.round,
             systemTitle: last.systemTitle,
             systemDetail: last.systemDetail,
@@ -1780,7 +1868,7 @@ class BridgeClient {
           content: old.content,
           images: old.images,
           attachments: old.attachments,
-          agentSteps: steps,
+          agentSteps: msgSteps,
           activePlan: null,  // 任务完成，清除 activePlan
           taskTiming: timing,
         );
@@ -1789,9 +1877,9 @@ class BridgeClient {
       case 'error':
         // 错误
         final message = event['message'] as String? ?? '';
-        if (steps.isNotEmpty) {
-          final last = steps.last;
-          steps[steps.length - 1] = BridgeAgentStep(
+        if (msgSteps.isNotEmpty) {
+          final last = msgSteps.last;
+          msgSteps[msgSteps.length - 1] = BridgeAgentStep(
             round: last.round,
             systemTitle: 'Error',
             systemDetail: message,
@@ -1809,7 +1897,7 @@ class BridgeClient {
           content: old.content,
           images: old.images,
           attachments: old.attachments,
-          agentSteps: steps,
+          agentSteps: msgSteps,
           activePlan: null,  // 任务出错，清除 activePlan
           taskTiming: old.taskTiming,
         );
@@ -1823,7 +1911,7 @@ class BridgeClient {
       content: old.content,
       images: old.images,
       attachments: old.attachments,
-      agentSteps: steps,
+      agentSteps: msgSteps,
       activePlan: old.activePlan,
       taskTiming: old.taskTiming,
     );

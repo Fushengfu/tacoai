@@ -71,6 +71,7 @@ export type ProviderConfig = {
   headers?: IncomingHttpHeaders
   upload?: IpcUploadConfig
   supportsVision?: boolean
+  supportsReasoning?: boolean
 }
 
 export type ProviderOverrides = Record<string, Partial<ProviderConfig>>
@@ -1071,9 +1072,9 @@ async function buildRequest(
     messages: providerReadyMessages,
     temperature: resolveRequestTemperature(config),
     stream,
-    thinking: {
-      "type": "enabled"
-    },
+    // thinking: {
+    //   "type": config.model == "MiniMax-M3" ? "adaptive" : "enabled"
+    // },
   }
   if (options?.tools && options.tools.length > 0) {
     body.tools = options.tools

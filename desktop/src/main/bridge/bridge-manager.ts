@@ -163,6 +163,22 @@ export class BridgeManager {
     }
   }
 
+  /** 强制刷新 Token（供 HTTP 请求 401 时调用，返回 Promise 等待刷新完成） */
+  async forceRefreshToken(): Promise<boolean> {
+    if (!this.token) {
+      logBridge('Token force refresh skipped: no token')
+      return false
+    }
+    logBridge('Token force refresh requested')
+    try {
+      await this.doTokenRefresh()
+      return this.token !== null
+    } catch (err) {
+      logBridgeError('Token force refresh error', err)
+      return false
+    }
+  }
+
   /** 获取当前 Token（用于网关接口调用） */
   getToken(): string | null {
     return this.token

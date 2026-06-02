@@ -423,6 +423,7 @@ function ensureDb(): DatabaseSync {
       max_tokens TEXT NOT NULL DEFAULT '',
       temperature TEXT NOT NULL DEFAULT '',
       supports_vision INTEGER NOT NULL DEFAULT 0,
+      supports_reasoning INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER,
       updated_at INTEGER
     );
@@ -477,6 +478,7 @@ function ensureDb(): DatabaseSync {
   ensureColumn(next, 'app_model_configs', 'name', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(next, 'app_model_configs', 'temperature', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(next, 'app_model_configs', 'supports_vision', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(next, 'app_model_configs', 'supports_reasoning', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(next, 'app_model_configs', 'created_at', 'INTEGER')
   ensureColumn(next, 'app_model_configs', 'updated_at', 'INTEGER')
   backfillScopeKey(next, 'task_memories')
@@ -1115,6 +1117,7 @@ function normalizeModelConfigForStorage(raw: unknown, index: number, nowTs: numb
     contextLength: asTrimmedString(item.contextLength),
     temperature: asTrimmedString(item.temperature),
     supportsVision: asBooleanFlag(item.supportsVision),
+    supportsReasoning: asBooleanFlag(item.supportsReasoning),
     ...(typeof parseOptionalTimestamp(item.createdAt) === 'number'
       ? { createdAt: parseOptionalTimestamp(item.createdAt) }
       : { createdAt: nowTs + index }),
@@ -1146,6 +1149,7 @@ function normalizeLegacyProviderFormsForStorage(raw: unknown, nowTs: number): Ap
       contextLength,
       temperature,
       supportsVision: false,
+      supportsReasoning: false,
       createdAt: nowTs + index,
       updatedAt: nowTs + index,
     })
@@ -1235,8 +1239,8 @@ function ensureAppStateRecordMigration(database: DatabaseSync): void {
         : normalizeLegacyProviderFormsForStorage(payload.providerForms, nowTs)
       const insertModelStmt = database.prepare(`
         INSERT INTO app_model_configs (
-          id, provider, name, base_url, api_key, model, max_tokens, temperature, supports_vision, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, provider, name, base_url, api_key, model, max_tokens, temperature, supports_vision, supports_reasoning, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       for (const model of normalizedModels) {
         insertModelStmt.run(
@@ -1249,6 +1253,7 @@ function ensureAppStateRecordMigration(database: DatabaseSync): void {
           model.contextLength ?? null,
           model.temperature ?? null,
           model.supportsVision ? 1 : 0,
+          model.supportsReasoning ? 1 : 0,
           parseOptionalTimestamp(model.createdAt) ?? null,
           parseOptionalTimestamp(model.updatedAt) ?? null,
         )
@@ -1435,6 +1440,7 @@ export function loadAppProvidersStateFromDb(): AppStateStoreEntry<AppStateProvid
       max_tokens,
       temperature,
       supports_vision,
+      supports_reasoning,
       created_at,
       updated_at
     FROM app_model_configs
@@ -1453,6 +1459,7 @@ export function loadAppProvidersStateFromDb(): AppStateStoreEntry<AppStateProvid
       contextLength: row.max_tokens,
       temperature: row.temperature,
       supportsVision: Number(row.supports_vision || 0) > 0,
+      supportsReasoning: Number(row.supports_reasoning || 0) > 0,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }, index, Date.now()))
@@ -1500,8 +1507,8 @@ export function saveAppProvidersStateToDb(payload: AppStateProvidersPayload): Ap
     database.prepare(`DELETE FROM app_model_configs`).run()
     const insertStmt = database.prepare(`
       INSERT INTO app_model_configs (
-        id, provider, name, base_url, api_key, model, max_tokens, temperature, supports_vision, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, provider, name, base_url, api_key, model, max_tokens, temperature, supports_vision, supports_reasoning, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     for (const model of modelConfigs) {
       insertStmt.run(
@@ -1514,6 +1521,7 @@ export function saveAppProvidersStateToDb(payload: AppStateProvidersPayload): Ap
         model.contextLength ?? null,
         model.temperature ?? null,
         model.supportsVision ? 1 : 0,
+        model.supportsReasoning ? 1 : 0,
         parseOptionalTimestamp(model.createdAt) ?? null,
         parseOptionalTimestamp(model.updatedAt) ?? null,
       )

@@ -13,7 +13,7 @@ type ModelsSettingsPanelProps = {
   onSelectModel: (id: string) => void
   onRemoveModelWithConfirm: (id: string, title: string) => void
   onSetActiveModelConfigId: (id: string) => void
-  onModelDraftFieldChange: <K extends keyof Pick<ModelConfig, 'provider' | 'baseUrl' | 'apiKey' | 'model' | 'contextLength' | 'temperature' | 'supportsVision'>>(key: K, value: Pick<ModelConfig, 'provider' | 'baseUrl' | 'apiKey' | 'model' | 'contextLength' | 'temperature' | 'supportsVision'>[K]) => void
+  onModelDraftFieldChange: <K extends keyof Pick<ModelConfig, 'provider' | 'baseUrl' | 'apiKey' | 'model' | 'contextLength' | 'temperature' | 'supportsVision' | 'supportsReasoning'>>(key: K, value: Pick<ModelConfig, 'provider' | 'baseUrl' | 'apiKey' | 'model' | 'contextLength' | 'temperature' | 'supportsVision' | 'supportsReasoning'>[K]) => void
   onSaveModelDraft: () => void
   onToggleApiKeyReveal: (id: string) => void
 }
@@ -206,6 +206,23 @@ export function ModelsSettingsPanel({
                         className="settings-toggle"
                         checked={Boolean(modelDraft.supportsVision)}
                         onChange={(e) => onModelDraftFieldChange('supportsVision', e.target.checked)}
+                      />
+                    </div>
+                  </label>
+                  <label className="settings-field">
+                    <span>推理内容回传</span>
+                    <div className="settings-toggle-row">
+                      <span className="settings-toggle-label">
+                        <strong>{modelDraft.supportsReasoning ? '支持 reasoning_content' : '不支持 reasoning_content'}</strong>
+                        <small>
+                          启用后，Agent 在调用工具时会将思考过程放入 reasoning_content 字段，避免部分模型被计划文本反复诱导。
+                        </small>
+                      </span>
+                      <input
+                        type="checkbox"
+                        className="settings-toggle"
+                        checked={Boolean(modelDraft.supportsReasoning)}
+                        onChange={(e) => onModelDraftFieldChange('supportsReasoning', e.target.checked)}
                       />
                     </div>
                   </label>

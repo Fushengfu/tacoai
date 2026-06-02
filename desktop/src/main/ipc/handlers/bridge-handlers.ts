@@ -17,6 +17,70 @@ import { agentAbortControllers } from './chat-handlers'
 import { handleGatewayGetModels } from './gateway-handlers'
 
 /* ------------------------------------------------------------------ */
+/*  Workspace tree flattening to nested structure                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 将扁平的 WorkspaceEntry[] 转换为嵌套的树形结构。
+ * 桌面端 getWorkspaceTree 返回扁平 entries，移动端期望嵌套 children 结构。
+ */
+function buildNestedTree(
+  entries: Array<{ path: string; name: string; kind: string; depth: number }>,
+): Array<{ name: string; path: string; isDirectory: boolean; children?: any[] }> {
+  const nodeMap = new Map<string, { name: string; path: string; isDirectory: boolean; children?: any[] }>()
+  const roots: Array<{ name: string; path: string; isDirectory: boolean; children?: any[] }> = []
+
+  // 先创建所有节点
+  for (const entry of entries) {
+    const isDir = entry.kind === 'directory'
+    const node = {
+      name: entry.name,
+      path: entry.path,
+      isDirectory: isDir,
+      children: isDir ? [] : undefined,
+    }
+    nodeMap.set(entry.path, node)
+  }
+
+  // 建立父子关系
+  for (const entry of entries) {
+    const node = nodeMap.get(entry.path)!
+    const parentPath = entry.path.includes('/') ? entry.path.split('/').slice(0, -1).join('/') : ''
+    
+    if (parentPath && nodeMap.has(parentPath)) {
+      const parent = nodeMap.get(parentPath)!
+      if (!parent.children) parent.children = []
+      parent.children.push(node)
+    } else {
+      // 根节点（没有父节点或父节点不在列表中）
+      roots.push(node)
+    }
+  }
+
+  // 对每个节点的 children 排序：目录在前，文件在后，按名称字母顺序
+  for (const node of nodeMap.values()) {
+    if (node.children) {
+      node.children.sort((a, b) => {
+        if (a.isDirectory !== b.isDirectory) {
+          return a.isDirectory ? -1 : 1
+        }
+        return a.name.localeCompare(b.name)
+      })
+    }
+  }
+
+  // 根节点也排序
+  roots.sort((a, b) => {
+    if (a.isDirectory !== b.isDirectory) {
+      return a.isDirectory ? -1 : 1
+    }
+    return a.name.localeCompare(b.name)
+  })
+
+  return roots
+}
+
+/* ------------------------------------------------------------------ */
 /*  Image data stripping for bridge (reduce WebSocket payload)         */
 /* ------------------------------------------------------------------ */
 
@@ -208,7 +272,10 @@ export function setupBridgeDataHandler(): void {
             break
           }
           const { getWorkspaceTree } = await import('../../tools')
-          const tree = await getWorkspaceTree(cwd)
+          const result = await getWorkspaceTree(cwd)
+          
+          // 将扁平 entries 转换为嵌套树形结构（适配移动端期望的格式）
+          const tree = buildNestedTree(result.entries)
           respond({ type: 'bridge:workspace-tree', requestId, tree })
           break
         }
@@ -221,7 +288,18 @@ export function setupBridgeDataHandler(): void {
             break
           }
           try {
-            const result = await handleFileRead(filePath)
+            // 解析文件路径：如果是相对路径，拼接当前活跃项目的 workspace 路径
+            let resolvedPath = filePath
+            if (!nodePath.isAbsolute(filePath)) {
+              const state = await getAppState()
+              const activeThread = state.threadsState.threads.find(
+                (t) => t.id === state.threadsState.activeThreadId,
+              )
+              if (activeThread?.workspace) {
+                resolvedPath = nodePath.join(activeThread.workspace, filePath)
+              }
+            }
+            const result = await handleFileRead(resolvedPath)
             respond({
               type: 'bridge:file-content',
               requestId,
@@ -253,7 +331,18 @@ export function setupBridgeDataHandler(): void {
             break
           }
           try {
-            await handleFileWrite(filePath, content)
+            // 解析文件路径：如果是相对路径，拼接当前活跃项目的 workspace 路径
+            let resolvedPath = filePath
+            if (!nodePath.isAbsolute(filePath)) {
+              const state = await getAppState()
+              const activeThread = state.threadsState.threads.find(
+                (t) => t.id === state.threadsState.activeThreadId,
+              )
+              if (activeThread?.workspace) {
+                resolvedPath = nodePath.join(activeThread.workspace, filePath)
+              }
+            }
+            await handleFileWrite(resolvedPath, content)
             respond({ type: 'bridge:file-written', requestId, success: true })
           } catch (err) {
             respond({

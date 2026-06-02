@@ -1093,6 +1093,8 @@ export async function runAgent(
   let pseudoToolCallRejectCount = 0
   let enforceStandardToolCall = false
   let completionValidationHint = ''
+  let autoNetworkRetryCount = 0
+  let autoEmptyRetryCount = 0
 
   function cleanupAssistantText(text: string): string {
     return stripPseudoToolCallArtifacts(
@@ -1438,19 +1440,29 @@ export async function runAgent(
         msg.includes('超时')
       )
 
-      // 可恢复错误：发射 retry_confirm 事件，等待用户确认
+      // 可恢复错误：先自动重试 5 次，失败后再弹出重试按钮让用户确认
       if (isRecoverableNetworkError) {
-        const retryId = `retry-${Date.now()}-${++confirmCounter}`
         const errorType = (msg.includes('timeout') || msg.includes('超时') || msg.includes('ETIMEDOUT'))
           ? 'timeout' as const
           : 'network' as const
-        log('AGENT_RETRYABLE_ERROR', { round, retryId, errorType, error: msg }, logScope)
+
+        autoNetworkRetryCount++
+
+        if (autoNetworkRetryCount <= 5) {
+          log('AGENT_AUTO_RETRY', { round, autoRetryCount: autoNetworkRetryCount, maxRetries: 5, errorType, error: msg }, logScope)
+          round-- // 不消耗轮次
+          continue // 自动重试
+        }
+
+        // 自动重试 5 次后仍失败，弹出重试按钮
+        const retryId = `retry-${Date.now()}-${++confirmCounter}`
+        log('AGENT_RETRYABLE_ERROR', { round, retryId, errorType, error: msg, autoRetriesExhausted: true }, logScope)
 
         onEvent?.({
           type: 'retry_confirm',
           retryId,
           errorType,
-          errorMessage: msg,
+          errorMessage: `自动重试 ${autoNetworkRetryCount} 次后仍失败：${msg}`,
           round,
         })
 
@@ -1464,6 +1476,7 @@ export async function runAgent(
         }
 
         if (shouldRetry) {
+          autoNetworkRetryCount = 0 // 重置计数器
           round-- // 不消耗轮次
           continue // 重新发起相同的 LLM 请求
         }
@@ -1539,14 +1552,23 @@ export async function runAgent(
 
       const reason = '模型未返回可用文本或标准工具调用。'
       {
+        autoEmptyRetryCount++
+
+        if (autoEmptyRetryCount <= 5) {
+          log('AGENT_AUTO_RETRY_EMPTY', { round, autoRetryCount: autoEmptyRetryCount, maxRetries: 5, rawPreview: rawTextContent.slice(0, 200) }, logScope)
+          round-- // 不消耗轮次
+          continue // 自动重试
+        }
+
+        // 自动重试 5 次后仍失败，弹出重试按钮
         const retryId = `retry-${Date.now()}-${++confirmCounter}`
-        log('AGENT_EMPTY_RESPONSE', { round, retryId, rawPreview: rawTextContent.slice(0, 200) }, logScope)
+        log('AGENT_EMPTY_RESPONSE', { round, retryId, rawPreview: rawTextContent.slice(0, 200), autoRetriesExhausted: true }, logScope)
 
         onEvent?.({
           type: 'retry_confirm',
           retryId,
           errorType: 'empty_response',
-          errorMessage: reason,
+          errorMessage: `自动重试 ${autoEmptyRetryCount} 次后仍失败：${reason}`,
           round,
         })
 
@@ -1560,6 +1582,7 @@ export async function runAgent(
         }
 
         if (shouldRetry) {
+          autoEmptyRetryCount = 0 // 重置计数器
           round-- // 不消耗轮次
           continue // 重新发起相同的 LLM 请求
         }
@@ -1580,6 +1603,7 @@ export async function runAgent(
     // 这里不要把本轮“思考/计划/开始执行”的自然语言正文继续喂回下一轮，
     // 否则部分兼容模型会被自己上一轮的计划文本反复诱导，持续重复同一工具调用。
     // 兼容推理模型：assistant+tool_calls 统一带 reasoning_content，content 仍保持空字符串。
+    // 是否支持 reasoning_content 由模型配置决定，不再硬编码 provider。
     const sanitizedReasoningForToolCall = sanitizeReasoningForContext(rawReasoningContent).trim()
     const reasoningForToolCall =
       sanitizedReasoningForToolCall
@@ -1590,7 +1614,8 @@ export async function runAgent(
       content: assistantToolCallContent,
       tool_calls: toolCalls
     }
-    if (provider !== 'qwen') {
+    const modelSupportsReasoning = overrides?.[provider]?.supportsReasoning ?? true
+    if (modelSupportsReasoning) {
       assistantToolCallMessage.reasoning_content = reasoningForToolCall || '继续'
     }
     workingMessages.push(assistantToolCallMessage)
