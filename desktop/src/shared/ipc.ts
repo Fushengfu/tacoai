@@ -822,7 +822,7 @@ export type TacoApi = {
     /** 通过主进程代理登录请求，避免 CORS 问题 */
     login: (username: string, password: string) => Promise<{ token: string; member: Record<string, unknown> }>
     /** 通过主进程代理注册请求 */
-    register: (username: string, password: string, nickname?: string) => Promise<{ token: string; member: Record<string, unknown> }>
+    register: (username: string, password: string, nickname?: string, phone?: string, email?: string) => Promise<{ token: string; member: Record<string, unknown> }>
   }
   shell: {
     /** 用指定编辑器打开文件 */

@@ -68,8 +68,8 @@ const tacoApi: TacoApi = {
   auth: {
     login: (username: string, password: string) =>
       ipcRenderer.invoke(IpcChannel.MEMBER_LOGIN, { username, password }),
-    register: (username: string, password: string, nickname?: string) =>
-      ipcRenderer.invoke(IpcChannel.MEMBER_REGISTER, { username, password, nickname }),
+    register: (username: string, password: string, nickname?: string, phone?: string, email?: string) =>
+      ipcRenderer.invoke(IpcChannel.MEMBER_REGISTER, { username, password, nickname, phone, email }),
   },
   shell: {
     openInEditor: (filePath: string, editor: EditorId) =>

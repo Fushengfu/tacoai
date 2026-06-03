@@ -125,6 +125,11 @@
   color: var(--muted, #9aa3b2);
 }
 
+.login-modal-field label .required-star {
+  color: #f44336;
+  margin-left: 2px;
+}
+
 .login-modal-input {
   padding: 8px 12px;
   border: 1px solid var(--border, #1f232b);

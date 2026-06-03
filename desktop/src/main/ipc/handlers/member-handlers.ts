@@ -44,7 +44,7 @@ export async function handleMemberLogin(
 
 export async function handleMemberRegister(
   _event: IpcMainInvokeEvent,
-  payload: { username: string; password: string; nickname?: string },
+  payload: { username: string; password: string; nickname?: string; phone?: string; email?: string },
 ) {
   return new Promise((resolve, reject) => {
     const request = net.request({

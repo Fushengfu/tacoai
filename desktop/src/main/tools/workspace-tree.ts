@@ -5,7 +5,9 @@
  */
 
 import fs from 'node:fs/promises'
+import fsSync from 'node:fs'
 import path from 'node:path'
+import ignore from 'ignore'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -66,6 +68,74 @@ const FS_IGNORE = new Set([
   'dist', '.cache', '.turbo', 'coverage', 'release', '.nuxt',
   '.output', '.svelte-kit', '.parcel-cache', '.DS_Store',
 ])
+
+/* ------------------------------------------------------------------ */
+/*  .gitignore 解析（使用 ignore 库，与 git 行为一致）                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 加载并合并所有 .gitignore 规则。
+ *
+ * 与 git 行为一致：不仅读取根目录的 .gitignore，还会递归查找子目录中的
+ * .gitignore 文件，并按层级合并规则。子目录的规则优先级更高。
+ */
+async function loadAllGitignoreRules(rootDir: string): Promise<import('ignore').Ignore> {
+  const ig = ignore()
+
+  // 先收集所有 .gitignore 文件路径（按深度排序，根目录优先）
+  const gitignorePaths: string[] = []
+
+  async function findGitignoreFiles(absDir: string, relDir: string, depth: number) {
+    if (depth > 12) return
+    let items: fsSync.Dirent[]
+    try {
+      items = fsSync.readdirSync(absDir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const item of items) {
+      if (item.name === '.gitignore' && item.isFile()) {
+        gitignorePaths.push(path.join(absDir, '.gitignore'))
+      }
+      if (item.isDirectory() && !FS_IGNORE.has(item.name) && !item.name.startsWith('.')) {
+        await findGitignoreFiles(
+          path.join(absDir, item.name),
+          relDir ? `${relDir}/${item.name}` : item.name,
+          depth + 1,
+        )
+      }
+    }
+  }
+
+  await findGitignoreFiles(rootDir, '', 0)
+
+  // 按路径深度排序（根目录 .gitignore 优先加载）
+  gitignorePaths.sort((a, b) => a.split(path.sep).length - b.split(path.sep).length)
+
+  for (const gitignorePath of gitignorePaths) {
+    try {
+      const content = await fs.readFile(gitignorePath, 'utf-8')
+      ig.add(content)
+    } catch {
+      // 忽略读取失败的文件
+    }
+  }
+
+  return ig
+}
+
+/**
+ * 快速判断路径是否被 .gitignore 规则忽略。
+ *
+ * 使用 ignore 库的 .ignores() 方法，与 git 的忽略行为完全一致。
+ * 支持所有 gitignore 语法：通配符、目录后缀 /、否定 !、锚定等。
+ */
+function isPathIgnored(relPath: string, ig: import('ignore').Ignore): boolean {
+  // ignore 库要求路径不带前导 ./
+  const cleanPath = relPath.replace(/^\.\//, '')
+  if (!cleanPath) return false
+  return ig.ignores(cleanPath)
+}
 
 function shouldSkipName(name: string, includeHidden: boolean): boolean {
   if (FS_IGNORE.has(name)) return true
@@ -176,6 +246,7 @@ async function collectWorkspaceEntries(
   }
 
   // 方法二：fs.readdir 递归
+  const ig = await loadAllGitignoreRules(rootDir)
   const scanDepth = Math.min(maxDepth + 8, 24)
   async function scan(absDir: string, relDir: string, depth: number) {
     if (depth > scanDepth || fileSet.size + dirSet.size >= maxEntries) {
@@ -195,6 +266,9 @@ async function collectWorkspaceEntries(
 
       const relPath = toPosixPath(relDir ? `${relDir}/${item.name}` : item.name)
       if (!relPath) continue
+
+      // 使用 ignore 库判断是否被 .gitignore 忽略
+      if (isPathIgnored(relPath, ig)) continue
 
       if (item.isDirectory()) {
         dirSet.add(relPath)

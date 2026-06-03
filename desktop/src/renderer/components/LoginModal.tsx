@@ -36,9 +36,10 @@ export function LoginModal({ onClose, onLoginSuccess }: Readonly<LoginModalProps
   const [loginPassword, setLoginPassword] = useState('')
   
   // 注册状态
-  const [regUsername, setRegUsername] = useState('')
   const [regPassword, setRegPassword] = useState('')
   const [regNickname, setRegNickname] = useState('')
+  const [regPhone, setRegPhone] = useState('')
+  const [regEmail, setRegEmail] = useState('')
   
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -97,17 +98,32 @@ export function LoginModal({ onClose, onLoginSuccess }: Readonly<LoginModalProps
   }, [loginUsername, loginPassword, onLoginSuccess])
 
   const handleRegister = useCallback(async () => {
-    if (!regUsername.trim() || !regPassword.trim()) {
-      setError('请输入用户名和密码')
-      return
-    }
-    if (regUsername.trim().length < 3) {
-      setError('用户名至少3个字符')
+    if (!regPassword.trim()) {
+      setError('请输入密码')
       return
     }
     if (regPassword.trim().length < 6) {
       setError('密码至少6个字符')
       return
+    }
+    // 手机号必填
+    const phone = regPhone.trim()
+    if (!phone) {
+      setError('手机号为必填项')
+      return
+    }
+    // 校验手机号格式（11位数字）
+    if (phone.length !== 11 || !/^\d{11}$/.test(phone)) {
+      setError('手机号格式不正确，请输入11位数字手机号')
+      return
+    }
+    // 校验邮箱格式（如果填写了）
+    const email = regEmail.trim()
+    if (email) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        setError('邮箱格式不正确')
+        return
+      }
     }
 
     setLoading(true)
@@ -117,9 +133,11 @@ export function LoginModal({ onClose, onLoginSuccess }: Readonly<LoginModalProps
       // 对密码进行 SHA256 加密后再发送
       const hashedPassword = await hashPasswordSHA256(regPassword)
       const data = await window.taco.auth.register(
-        regUsername.trim(),
+        phone,
         hashedPassword,
-        regNickname.trim() || undefined
+        regNickname.trim() || undefined,
+        phone,
+        email || undefined
       )
       const { token, member } = data as { token: string; member: MemberInfo }
       localStorage.setItem('taco.memberToken', token)
@@ -130,7 +148,7 @@ export function LoginModal({ onClose, onLoginSuccess }: Readonly<LoginModalProps
     } finally {
       setLoading(false)
     }
-  }, [regUsername, regPassword, regNickname, onLoginSuccess])
+  }, [regPassword, regNickname, regPhone, regEmail, onLoginSuccess])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
@@ -225,20 +243,6 @@ export function LoginModal({ onClose, onLoginSuccess }: Readonly<LoginModalProps
           ) : (
             <>
               <div className="login-modal-field">
-                <label htmlFor="reg-username">用户名</label>
-                <input
-                  id="reg-username"
-                  className="login-modal-input"
-                  type="text"
-                  value={regUsername}
-                  onChange={(e) => setRegUsername(e.target.value)}
-                  placeholder="至少3个字符"
-                  autoComplete="username"
-                  autoFocus
-                />
-              </div>
-
-              <div className="login-modal-field">
                 <label htmlFor="reg-password">密码</label>
                 <input
                   id="reg-password"
@@ -248,6 +252,7 @@ export function LoginModal({ onClose, onLoginSuccess }: Readonly<LoginModalProps
                   onChange={(e) => setRegPassword(e.target.value)}
                   placeholder="至少6个字符"
                   autoComplete="new-password"
+                  autoFocus
                 />
               </div>
 
@@ -261,6 +266,32 @@ export function LoginModal({ onClose, onLoginSuccess }: Readonly<LoginModalProps
                   onChange={(e) => setRegNickname(e.target.value)}
                   placeholder="显示名称"
                   autoComplete="nickname"
+                />
+              </div>
+
+              <div className="login-modal-field">
+                <label htmlFor="reg-phone">手机号<span className="required-star">*</span></label>
+                <input
+                  id="reg-phone"
+                  className="login-modal-input"
+                  type="tel"
+                  value={regPhone}
+                  onChange={(e) => setRegPhone(e.target.value)}
+                  placeholder="11位手机号（将作为登录账号名）"
+                  autoComplete="tel"
+                />
+              </div>
+
+              <div className="login-modal-field">
+                <label htmlFor="reg-email">邮箱（可选）</label>
+                <input
+                  id="reg-email"
+                  className="login-modal-input"
+                  type="email"
+                  value={regEmail}
+                  onChange={(e) => setRegEmail(e.target.value)}
+                  placeholder="example@mail.com"
+                  autoComplete="email"
                 />
               </div>
 
