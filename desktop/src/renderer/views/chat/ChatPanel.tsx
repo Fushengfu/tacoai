@@ -280,7 +280,6 @@ export function ChatPanel({
 }: Readonly<ChatPanelProps>) {
   const hasProviders = configuredProviders.length > 0
   const isNearBottomRef = useRef<boolean>(true)
-  const wasAtBottomBeforeRenderRef = useRef<boolean>(true)
   const lastScrollHeightRef = useRef<number>(0)
   const BOTTOM_THRESHOLD = 240
   const [visibleMessageCount, setVisibleMessageCount] = useState(() => Math.min(messages.length, INITIAL_VISIBLE_MESSAGE_COUNT))
@@ -859,80 +858,57 @@ export function ChatPanel({
     return () => el.removeEventListener('scroll', check)
   }, [scrollRef])
 
-  // 跟踪最后一条 AI 消息的内容长度（用于触发滚动）
-  // 包含 content 长度和 toolCalls 数量，确保 tool calls 增加时也能触发滚动
-  const lastAssistantContentLen = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i]?.role === 'assistant') {
-        const contentLen = (messages[i].content ?? '').length
-        const toolCallsLen = messages[i].toolCalls?.length ?? 0
-        return contentLen + toolCallsLen * 1000 // toolCalls 变化时触发重新计算
-      }
-    }
-    return 0
-  }, [messages])
-
-  // 检测会话切换，强制标记需要滚动到底部
+  // ── 会话切换时标记需要强制滚到底部 ──
   const scrollPendingRef = useRef(false)
   useLayoutEffect(() => {
     const prevSessionId = prevSessionIdRef.current
     if (prevSessionId !== activeSessionId) {
       prevSessionIdRef.current = activeSessionId ?? null
       scrollPendingRef.current = true
-      wasAtBottomBeforeRenderRef.current = true
       isNearBottomRef.current = true
     }
   }, [activeSessionId])
 
-  // 记录本次渲染前用户是否在底部 + scrollHeight（DOM 更新前快照）
-  // 必须在滚动 effect 之前执行，所以用独立的 useLayoutEffect
-  // 无依赖数组：每次渲染都执行，确保流式输出时也能正确捕获
+  // ── 统一滚动逻辑（每次渲染都在 DOM 更新后同步执行）──
+  // 核心思路：
+  //   1. 用 lastScrollHeightRef（上一帧的 scrollHeight）判断"上一帧用户是否在底部"
+  //      避免新内容加入后 scrollHeight 膨胀导致误判
+  //   2. 用户在底部 → 自动滚到新底部；用户上滚查看历史 → 不自动滚
+  //   3. 会话切换 → scrollPendingRef 标记 → 等消息加载完后强制滚到底部
+  // 无依赖数组：每次渲染都执行，确保流式输出逐 chunk 增长时也能正确跟随
   useLayoutEffect(() => {
     const el = scrollRef.current
     if (!el) return
+
+    // ── 分支 1：会话切换后等待消息加载 ──
     if (scrollPendingRef.current) {
-      // 强制滚动模式下不覆盖 wasAtBottomBeforeRenderRef，等待内容加载
       lastScrollHeightRef.current = el.scrollHeight
+      if (messages.length > 0) {
+        // 消息已加载，强制滚到底部并退出待定模式
+        el.scrollTop = el.scrollHeight
+        scrollPendingRef.current = false
+        isNearBottomRef.current = true
+      }
+      // 消息尚未加载（messages=[]）→ 只记录高度，等待下次渲染
       return
     }
-    const distanceToBottom = Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight)
-    wasAtBottomBeforeRenderRef.current = distanceToBottom < BOTTOM_THRESHOLD
+
+    // ── 分支 2：正常渲染 ──
+    // 关键：用上一帧的高度判断"上一帧时用户是否在底部"
+    // 而不是用当前高度（当前高度可能因新内容膨胀，导致误判）
+    const prevScrollHeight = lastScrollHeightRef.current
+    const prevDistanceToBottom = Math.max(0, prevScrollHeight - el.scrollTop - el.clientHeight)
+    const wasAtBottom = prevDistanceToBottom < BOTTOM_THRESHOLD
+
+    // 更新记录：保存当前高度供下一帧使用
     lastScrollHeightRef.current = el.scrollHeight
-  })
 
-  // 统一滚动逻辑：在 DOM 更新后同步执行
-  // - 会话切换 + 消息加载完成 → 强制滚到底部
-  // - 用户在底部时，内容增长自动跟随滚动
-  // - 用户向上查看历史时，不自动滚动
-  useLayoutEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
+    if (!wasAtBottom) return // 用户上一帧不在底部（上滚查看历史）→ 不自动滚
 
-    if (scrollPendingRef.current && messages.length > 0) {
-      // 会话切换后消息已加载，强制滚到底部
-      el.scrollTop = el.scrollHeight
-      scrollPendingRef.current = false
-      isNearBottomRef.current = true
-      wasAtBottomBeforeRenderRef.current = true
-      return
-    }
-
-    if (scrollPendingRef.current) {
-      // 消息尚未加载，先滚到当前位置（通常是 0）
-      el.scrollTop = el.scrollHeight
-      return
-    }
-
-    if (!wasAtBottomBeforeRenderRef.current) return
-    const scrollHeightDelta = el.scrollHeight - lastScrollHeightRef.current
-    if (scrollHeightDelta > 0) {
-      el.scrollTop += scrollHeightDelta
-    } else {
-      el.scrollTop = el.scrollHeight
-    }
+    // 用户在底部 → 自动滚到新底部
+    el.scrollTop = el.scrollHeight
     isNearBottomRef.current = true
-    wasAtBottomBeforeRenderRef.current = true
-  }, [messages.length, lastAssistantContentLen, activeSessionId, scrollRef])
+  })
 
   function isWindowsAbsolutePath(text: string): boolean {
     return /^[a-zA-Z]:[\\/]/.test(text) || text.startsWith('\\\\')
