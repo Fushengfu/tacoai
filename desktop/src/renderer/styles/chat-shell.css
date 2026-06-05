@@ -1172,6 +1172,8 @@ body.is-dragging * {
   resize: none;
   outline: none;
   min-height: 44px;
+  max-height: 200px;
+  overflow-y: auto;
 }
 
 /* contentEditable placeholder */
