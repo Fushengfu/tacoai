@@ -1,7 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
-import { AppErrorBoundary } from './components/AppErrorBoundary'
+import { AppErrorBoundary } from './views/AppErrorBoundary'
 import './styles.css'
 
 window.addEventListener('error', (event) => {

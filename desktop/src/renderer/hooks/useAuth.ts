@@ -5,7 +5,7 @@
  */
 
 import { useState, useCallback, useEffect } from 'react'
-import type { MemberInfo } from '../components/LoginModal'
+import type { MemberInfo } from '../views/LoginModal'
 import { storeToken, loadToken, removeToken } from '../lib/secure-storage'
 
 export function useAuth() {

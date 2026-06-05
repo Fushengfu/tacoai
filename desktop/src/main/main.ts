@@ -1,264 +1,32 @@
 import 'dotenv/config'
-import { fixPath } from './system/fix-path'
+import { fixPath } from './infrastructure/fix-path'
 
 // 尽早修复 PATH，确保后续所有子进程都能找到 npm、node、git 等命令
 fixPath()
 
-import { app, BrowserWindow, Menu, MenuItem, Tray, nativeImage } from 'electron'
+import { app, BrowserWindow, Menu, MenuItem } from 'electron'
 import path from 'node:path'
-import { existsSync } from 'node:fs'
 import { registerIpcHandlers } from './ipc'
-import { logError, logInfo, getLogDir } from './system/logger'
+import { logError, logInfo, getLogDir } from './infrastructure/logger'
 import { IpcChannel } from '../shared/ipc'
-import { shutdownAllMcp } from './automation/mcp'
-import { cleanupAllTerminals } from './system/terminal'
-import { ensurePromptConfigInitialized } from './project/prompt-config'
-import { scheduleStartupUpdateCheck } from './system/app-updater'
-
-// esbuild 构建后 __dirname 由 CJS 运行时提供，指向 dist-main/
-// 源码开发时 tsx 也支持 __dirname
+import { shutdownAllMcp } from './infrastructure/mcp'
+import { cleanupAllTerminals } from './infrastructure/terminal'
+import { ensurePromptConfigInitialized } from './services/prompt/prompt-config'
+import { scheduleStartupUpdateCheck } from './infrastructure/app-updater'
+import {
+  isExternalUrl,
+  showMainWindow,
+  recoverMainWindow,
+  setWindowFactory,
+  setMainWindow,
+  setForceQuit,
+  forceQuit,
+  mainWindow,
+  type MainWindowRestoreState,
+} from './window/window-manager'
+import { createTray, updateTrayMenu } from './window/tray'
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
-let mainWindow: BrowserWindow | null = null
-let tray: Tray | null = null
-let forceQuit = false
-const rendererRecoveryTimestamps: number[] = []
-const RENDERER_RECOVERY_WINDOW_MS = 30_000
-const MAX_RENDERER_RECOVERIES_PER_WINDOW = 3
-
-type MainWindowRestoreState = {
-  bounds?: Electron.Rectangle
-  maximized?: boolean
-  visible?: boolean
-}
-
-/** 判断是否为外部 URL（http/https） */
-function isExternalUrl(url: string): boolean {
-  try {
-    const u = new URL(url)
-    return u.protocol === 'http:' || u.protocol === 'https:'
-  } catch {
-    return false
-  }
-}
-
-function normalizeTrayIcon(image: Electron.NativeImage): Electron.NativeImage {
-  if (image.isEmpty()) return image
-  const trimmed = trimTransparentPadding(image)
-
-  if (process.platform === 'darwin') {
-    // macOS: 使用真实应用图标（非 template），避免显示白点
-    return trimmed.resize({ width: 20, height: 20, quality: 'best' })
-  }
-
-  if (process.platform === 'win32') {
-    // Windows: 适当放大，避免托盘里过小
-    return trimmed.resize({ width: 20, height: 20, quality: 'best' })
-  }
-
-  return trimmed
-}
-
-function resolveTrayIcon() {
-  const candidates = [
-    // macOS 优先 icns，Windows 优先 ico，减少格式兼容问题
-    ...(process.platform === 'darwin' ? [
-      path.join(process.cwd(), 'desktop', 'build', 'icon.icns'),
-      path.join(process.cwd(), 'build', 'icon.icns'),
-      path.join(__dirname, '../../build/icon.icns'),
-      path.join(app.getAppPath(), 'build', 'icon.icns'),
-      path.join(process.resourcesPath, 'build', 'icon.icns'),
-      path.join(process.resourcesPath, 'icon.icns'),
-    ] : []),
-    ...(process.platform === 'win32' ? [
-      path.join(process.cwd(), 'desktop', 'build', 'icon.ico'),
-      path.join(process.cwd(), 'build', 'icon.ico'),
-      path.join(__dirname, '../../build/icon.ico'),
-      path.join(app.getAppPath(), 'build', 'icon.ico'),
-      path.join(process.resourcesPath, 'build', 'icon.ico'),
-      path.join(process.resourcesPath, 'icon.ico'),
-    ] : []),
-    path.join(process.cwd(), 'desktop', 'build', 'icon.png'),
-    path.join(process.cwd(), 'desktop', 'build', 'icon.ico'),
-    path.join(process.cwd(), 'desktop', 'build', 'icon.icns'),
-    path.join(process.cwd(), 'build', 'icon.png'),
-    path.join(process.cwd(), 'build', 'icon.ico'),
-    path.join(process.cwd(), 'build', 'icon.icns'),
-    path.join(__dirname, '../../build/icon.png'),
-    path.join(__dirname, '../../build/icon.ico'),
-    path.join(__dirname, '../../build/icon.icns'),
-    path.join(app.getAppPath(), 'build', 'icon.png'),
-    path.join(app.getAppPath(), 'build', 'icon.ico'),
-    path.join(app.getAppPath(), 'build', 'icon.icns'),
-    path.join(process.resourcesPath, 'build', 'icon.png'),
-    path.join(process.resourcesPath, 'build', 'icon.ico'),
-    path.join(process.resourcesPath, 'build', 'icon.icns'),
-    path.join(process.resourcesPath, 'icon.png'),
-    path.join(process.resourcesPath, 'icon.ico'),
-    path.join(process.resourcesPath, 'icon.icns'),
-  ]
-  for (const iconPath of candidates) {
-    if (!iconPath || !existsSync(iconPath)) continue
-    const img = nativeImage.createFromPath(iconPath)
-    if (!img.isEmpty()) return normalizeTrayIcon(img)
-  }
-
-  // Windows 打包场景兜底：直接使用 exe 自带图标，避免托盘空白
-  if (process.platform === 'win32') {
-    const exeIcon = nativeImage.createFromPath(process.execPath)
-    if (!exeIcon.isEmpty()) return normalizeTrayIcon(exeIcon)
-  }
-
-  return normalizeTrayIcon(nativeImage.createEmpty())
-}
-
-function trimTransparentPadding(image: Electron.NativeImage): Electron.NativeImage {
-  try {
-    const { width, height } = image.getSize()
-    if (width <= 0 || height <= 0) return image
-
-    const bitmap = image.toBitmap()
-    let minX = width
-    let minY = height
-    let maxX = -1
-    let maxY = -1
-
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        // toBitmap: BGRA 顺序，alpha 在第 4 个字节
-        const alpha = bitmap[(y * width + x) * 4 + 3]
-        if (alpha > 8) {
-          if (x < minX) minX = x
-          if (y < minY) minY = y
-          if (x > maxX) maxX = x
-          if (y > maxY) maxY = y
-        }
-      }
-    }
-
-    if (maxX < minX || maxY < minY) return image
-    if (minX === 0 && minY === 0 && maxX === width - 1 && maxY === height - 1) return image
-    return image.crop({ x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 })
-  } catch {
-    return image
-  }
-}
-
-function showMainWindow() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    mainWindow = createWindow()
-  }
-  if (!mainWindow) return
-  if (mainWindow.isMinimized()) mainWindow.restore()
-  mainWindow.show()
-  mainWindow.focus()
-}
-
-function updateTrayMenu() {
-  if (!tray) return
-  const isVisible = Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible())
-  const menu = Menu.buildFromTemplate([
-    {
-      label: isVisible ? '隐藏窗口' : '显示窗口',
-      click: () => {
-        if (!mainWindow || mainWindow.isDestroyed()) {
-          showMainWindow()
-          updateTrayMenu()
-          return
-        }
-        if (mainWindow.isVisible()) mainWindow.hide()
-        else showMainWindow()
-        updateTrayMenu()
-      },
-    },
-    {
-      label: '退出 Taco AI',
-      click: () => {
-        forceQuit = true
-        app.quit()
-      },
-    },
-  ])
-  tray.setContextMenu(menu)
-}
-
-function createTray() {
-  if (tray) return
-  tray = new Tray(resolveTrayIcon())
-  tray.setToolTip('Taco AI')
-  // macOS 左键点击默认打开上下文菜单，不触发 click 事件
-  // Windows/Linux 左键点击触发 click 事件，需要切换窗口并更新菜单标签
-  tray.on('click', () => {
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      showMainWindow()
-      updateTrayMenu()
-      return
-    }
-    if (mainWindow.isVisible()) mainWindow.hide()
-    else showMainWindow()
-    updateTrayMenu()
-  })
-  updateTrayMenu()
-}
-
-function canRecoverRenderer(): boolean {
-  const now = Date.now()
-  while (rendererRecoveryTimestamps.length > 0 && (now - rendererRecoveryTimestamps[0]) > RENDERER_RECOVERY_WINDOW_MS) {
-    rendererRecoveryTimestamps.shift()
-  }
-  if (rendererRecoveryTimestamps.length >= MAX_RENDERER_RECOVERIES_PER_WINDOW) {
-    return false
-  }
-  rendererRecoveryTimestamps.push(now)
-  return true
-}
-
-function recoverMainWindow(win: BrowserWindow, details: Electron.RenderProcessGoneDetails) {
-  const restoreState: MainWindowRestoreState = {
-    bounds: win.isDestroyed() ? undefined : win.getBounds(),
-    maximized: !win.isDestroyed() && win.isMaximized(),
-    visible: !win.isDestroyed() && win.isVisible(),
-  }
-
-  const allowRecovery = canRecoverRenderer()
-  logError('renderer-process-gone', '主渲染进程退出', {
-    reason: details.reason,
-    exitCode: details.exitCode,
-    allowRecovery,
-    restoreState,
-  })
-
-  if (!allowRecovery || forceQuit) {
-    return
-  }
-
-  if (mainWindow === win) {
-    mainWindow = null
-  }
-
-  try {
-    if (!win.isDestroyed()) win.destroy()
-  } catch (err) {
-    logError('renderer-process-gone', '销毁异常窗口失败', err)
-  }
-
-  setTimeout(() => {
-    if (forceQuit) return
-    const recovered = createWindow(restoreState)
-    mainWindow = recovered
-    if (restoreState.visible === false) {
-      recovered.hide()
-    } else {
-      recovered.show()
-      recovered.focus()
-    }
-    logInfo('renderer-process-gone', '主窗口已自动恢复', {
-      reason: details.reason,
-      exitCode: details.exitCode,
-    })
-    updateTrayMenu()
-  }, 350)
-}
 
 function createWindow(restoreState?: MainWindowRestoreState) {
   const bounds = restoreState?.bounds
@@ -279,7 +47,7 @@ function createWindow(restoreState?: MainWindowRestoreState) {
       webviewTag: true,
       preload: path.join(__dirname, '../dist-preload/index.cjs'),
       additionalArguments: [`--taco-version=${app.getVersion()}`],
-    }
+    },
   })
 
   console.log(`Taco version: ${app.getVersion()}`)
@@ -326,7 +94,7 @@ function createWindow(restoreState?: MainWindowRestoreState) {
   })
 
   win.webContents.on('render-process-gone', (_event, details) => {
-    recoverMainWindow(win, details)
+    recoverMainWindow(win, details, updateTrayMenu)
   })
 
   win.webContents.on('unresponsive', () => {
@@ -353,7 +121,7 @@ function createWindow(restoreState?: MainWindowRestoreState) {
   win.on('show', () => updateTrayMenu())
   win.on('hide', () => updateTrayMenu())
   win.on('closed', () => {
-    if (mainWindow === win) mainWindow = null
+    if (mainWindow === win) setMainWindow(null)
     updateTrayMenu()
   })
 
@@ -378,10 +146,11 @@ app.whenReady().then(async () => {
     })
   }
 
-  mainWindow = createWindow()
+  setWindowFactory(createWindow)
+  setMainWindow(createWindow())
   createTray()
   registerIpcHandlers()
-  scheduleStartupUpdateCheck(mainWindow)
+  scheduleStartupUpdateCheck(mainWindow!)
 
   app.on('activate', () => {
     showMainWindow()
@@ -389,7 +158,7 @@ app.whenReady().then(async () => {
 })
 
 app.on('before-quit', () => {
-  forceQuit = true
+  setForceQuit(true)
   // 清理所有终端进程
   cleanupAllTerminals()
 })

@@ -43,7 +43,7 @@ export function stripInternalContextTags(input: string): string {
   let output = String(input ?? '')
 
   output = output.replace(/<!--TACO_RUNTIME_TOOL_PROMPT_START-->[\s\S]*?<!--TACO_RUNTIME_TOOL_PROMPT_END-->/gi, '')
-  output = output.replace(/<!--TACO_RUNTIME_TOOL_PROMPT_START-->[\s\S]*$/gi, '')
+  output = output.replace(/<!--TACO_RUNTIME_TOOL_PROMPT_START-->/gi, '')
   output = output.replace(/<!--TACO_RUNTIME_TOOL_PROMPT_END-->/gi, '')
 
   for (const tag of INTERNAL_CONTEXT_ATTR_BLOCK_TAGS) {
@@ -53,11 +53,13 @@ export function stripInternalContextTags(input: string): string {
     output = output.replace(new RegExp(`\\[${tag}\\][\\s\\S]*?\\[\\/${tag}\\]`, 'gi'), '')
   }
 
+  // 兜底：只移除未配对的独立标签本身，不删除后面的内容
+  // 避免模型讨论这些标签名称时整段内容被贪婪截断
   for (const tag of INTERNAL_CONTEXT_ATTR_BLOCK_TAGS) {
-    output = output.replace(new RegExp(`\\[${tag}[^\\]]*\\][\\s\\S]*$`, 'gi'), '')
+    output = output.replace(new RegExp(`\\[${tag}[^\\]]*\\]`, 'gi'), '')
   }
   for (const tag of INTERNAL_CONTEXT_BLOCK_TAGS) {
-    output = output.replace(new RegExp(`\\[${tag}\\][\\s\\S]*$`, 'gi'), '')
+    output = output.replace(new RegExp(`\\[${tag}\\]`, 'gi'), '')
   }
 
   output = output.replace(/\[(?:\/)?(?:CURRENT_TASK_SUMMARY|HISTORICAL_TASK_RESULT|HISTORICAL_PENDING_STATE|MEMORY_SNAPSHOT|BACKGROUND_CONTEXT|SKILLS_CATALOG|SKILL_ALLOWED_TOOLS|SKILL_RESOURCES|USER_QUERY|USER_ASSETS|RUNTIME_TOOL_PROMPT|SKILL_DETAIL|SKILL_RESOURCE)[^\]]*\]/gi, '')

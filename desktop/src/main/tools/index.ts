@@ -1,45 +1,35 @@
 /**
- * 工具系统 - Barrel file (向后兼容)
+ * 工具系统 - Barrel file（向后兼容）
  *
- * 所有导出已拆分到独立模块：
- * - definitions.ts: 工具定义、类型、Prompt 构建器
- * - registry.ts: 工具过滤、权限管理
- * - executor.ts: 工具执行引擎
- * - risk-assessor.ts: 风险评估
- * - gui-plus-coords.ts: GUI-Plus 坐标映射
- * - workspace-tree.ts: 工作区目录树
+ * 实际代码已迁移到 services/tools/。
  */
 
-// Types
 export type {
   ToolDefinition,
   ToolCall,
   FileChange,
   ToolResult,
-} from './definitions'
+} from '../services/tools/definitions'
 
 export type {
   RiskLevel,
   RiskInfo,
   RiskCategory,
-} from './risk-assessor'
+} from '../services/tools/risk-assessor'
 
-// Definitions & Prompt builders
 export {
   toolDefinitions,
   normalizeToolName,
   buildToolDesignPromptBlock,
   getAllToolDefinitions,
   getFilteredToolDefinitions,
-  getToolDesignPromptBlock, // backward compat alias
-} from './definitions'
+  getToolDesignPromptBlock,
+} from '../services/tools/definitions'
 
-// Registry
 export {
   buildAllowedToolNamesForRequest,
-} from './registry'
+} from '../services/tools/registry'
 
-// Executor
 export {
   executeToolCalls,
   getWorkspaceTree,
@@ -49,10 +39,9 @@ export {
   getAutoApproveCategories,
   isBrowserAutoApproved,
   isDesktopAutoApproved,
-} from './executor'
+} from '../services/tools/executor'
 
-// Risk assessor
 export {
   assessToolCallsRisk,
   RISK_CATEGORY_INFO,
-} from './risk-assessor'
+} from '../services/tools/risk-assessor'
