@@ -101,6 +101,12 @@ export async function buildBackgroundContextConversationMessages(
   recallDebug: RecallDebugCandidate[]
 }> {
   let normalizedQuery = ''
+  // 保留原始 content 数组中的图片/视频/音频 URL，避免被记忆回放替换后丢失
+  const mediaParts: Array<
+    | { type: 'image_url'; image_url: { url: string } }
+    | { type: 'video_url'; video_url: { url: string } }
+    | { type: 'audio_url'; audio_url: { url: string } }
+  > = []
   if (typeof userQuery === 'string') {
     normalizedQuery = userQuery
   } else if (Array.isArray(userQuery)) {
@@ -108,6 +114,16 @@ export async function buildBackgroundContextConversationMessages(
       .filter((part) => part.type === 'text')
       .map((part) => part.text || '')
       .join('\n')
+    // 提取媒体类型部分（image_url / video_url / audio_url）
+    for (const part of userQuery as Array<{type?: string; image_url?: {url?: string}; video_url?: {url?: string}; audio_url?: {url?: string}}>) {
+      if (part.type === 'image_url' && part.image_url?.url) {
+        mediaParts.push({ type: 'image_url', image_url: { url: part.image_url.url } })
+      } else if (part.type === 'video_url' && part.video_url?.url) {
+        mediaParts.push({ type: 'video_url', video_url: { url: part.video_url.url } })
+      } else if (part.type === 'audio_url' && part.audio_url?.url) {
+        mediaParts.push({ type: 'audio_url', audio_url: { url: part.audio_url.url } })
+      }
+    }
   } else {
     normalizedQuery = String(userQuery ?? '')
   }
@@ -208,7 +224,17 @@ export async function buildBackgroundContextConversationMessages(
       content: assistantText,
     })
   }
-  messages.push({ role: 'user', content: wrapUserQueryText(normalizedQuery) })
+  // 构建最后一条用户消息：如果有媒体附件，使用数组格式保留 image_url 等内容
+  const wrappedText = wrapUserQueryText(normalizedQuery)
+  if (mediaParts.length > 0) {
+    const contentParts: ChatMessage['content'] = [
+      { type: 'text', text: wrappedText },
+      ...mediaParts,
+    ]
+    messages.push({ role: 'user', content: contentParts })
+  } else {
+    messages.push({ role: 'user', content: wrappedText })
+  }
 
   return {
     messages,

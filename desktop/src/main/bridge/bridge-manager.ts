@@ -457,6 +457,11 @@ export class BridgeManager {
 
     this.ws.on('open', () => {
       logBridge('WebSocket connected')
+      // 防御性检查：如果 ws 在 open 事件前已被置 null（如连接立即失败），跳过后续操作
+      if (!this.ws) {
+        logBridge('WebSocket open event fired but ws is null, skipping')
+        return
+      }
       this.reconnectAttempts = 0
       this.startHeartbeat()
       // 连接成功后立即更新状态，避免 UI 显示"未连接"但实际已连接
@@ -464,7 +469,9 @@ export class BridgeManager {
 
       // 发送缓存的消息
       for (const msg of this.pendingMessages) {
-        this.ws!.send(JSON.stringify(msg))
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify(msg))
+        }
       }
       this.pendingMessages = []
 

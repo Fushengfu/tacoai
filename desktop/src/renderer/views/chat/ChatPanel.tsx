@@ -628,7 +628,11 @@ export function ChatPanel({
     }
     
     // 2. 添加已上传的图片（使用 cloudUrl）
-    const doneImages = attachedImages.filter(img => img.uploadStatus === 'done' && img.cloudUrl)
+    // 注意：上面的等待循环通过 setAttachedImages 更新了内部状态，
+    // 但闭包中的 attachedImages 变量仍指向旧值。必须用函数式更新读取最新状态。
+    let latestImages: AttachedImage[] = []
+    setAttachedImages(prev => { latestImages = prev; return prev })
+    const doneImages = latestImages.filter(img => img.uploadStatus === 'done' && img.cloudUrl)
     for (const img of doneImages) {
       parts.push({ type: 'image_url', image_url: { url: img.cloudUrl } })
     }
