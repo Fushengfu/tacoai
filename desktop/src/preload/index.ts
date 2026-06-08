@@ -70,6 +70,15 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.MEMBER_LOGIN, { username, password }),
     register: (username: string, password: string, nickname?: string, phone?: string, email?: string) =>
       ipcRenderer.invoke(IpcChannel.MEMBER_REGISTER, { username, password, nickname, phone, email }),
+    /** 持久化 Token 到文件系统（~/.taco/auth.json） */
+    persistToken: (token: string, expiresAt?: number, memberInfo?: unknown) =>
+      ipcRenderer.invoke(IpcChannel.AUTH_TOKEN_SAVE, { token, expiresAt, memberInfo }),
+    /** 从文件系统加载持久化的 Token */
+    loadPersistedToken: (): Promise<{ token: string; expiresAt?: number; memberInfo?: unknown } | null> =>
+      ipcRenderer.invoke(IpcChannel.AUTH_TOKEN_LOAD),
+    /** 删除文件系统中持久化的 Token */
+    removePersistedToken: () =>
+      ipcRenderer.invoke(IpcChannel.AUTH_TOKEN_REMOVE),
   },
   shell: {
     openInEditor: (filePath: string, editor: EditorId) =>

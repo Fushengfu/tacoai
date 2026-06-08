@@ -75,6 +75,12 @@ import {
 } from './handlers/member-handlers'
 
 import {
+  handleAuthSaveToken,
+  handleAuthLoadToken,
+  handleAuthRemoveToken,
+} from './handlers/auth-handlers'
+
+import {
   handleGatewayGetModels,
 } from './handlers/gateway-handlers'
 
@@ -118,6 +124,11 @@ export function registerIpcHandlers() {
   // Member
   ipcMain.handle(IpcChannel.MEMBER_LOGIN, handleMemberLogin)
   ipcMain.handle(IpcChannel.MEMBER_REGISTER, handleMemberRegister)
+
+  // Auth Token persistence
+  ipcMain.handle(IpcChannel.AUTH_TOKEN_SAVE, handleAuthSaveToken)
+  ipcMain.handle(IpcChannel.AUTH_TOKEN_LOAD, handleAuthLoadToken)
+  ipcMain.handle(IpcChannel.AUTH_TOKEN_REMOVE, handleAuthRemoveToken)
 
   // Gateway
   ipcMain.handle(IpcChannel.GATEWAY_GET_MODELS, handleGatewayGetModels)

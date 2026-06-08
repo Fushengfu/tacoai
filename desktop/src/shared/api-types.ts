@@ -46,6 +46,12 @@ export type TacoApi = {
     login: (username: string, password: string) => Promise<{ token: string; member: Record<string, unknown> }>
     /** 通过主进程代理注册请求 */
     register: (username: string, password: string, nickname?: string, phone?: string, email?: string) => Promise<{ token: string; member: Record<string, unknown> }>
+    /** 持久化 Token 到文件系统（~/.taco/auth.json） */
+    persistToken: (token: string, expiresAt?: number, memberInfo?: unknown) => Promise<void>
+    /** 从文件系统加载持久化的 Token */
+    loadPersistedToken: () => Promise<{ token: string; expiresAt?: number; memberInfo?: unknown } | null>
+    /** 删除文件系统中持久化的 Token */
+    removePersistedToken: () => Promise<void>
   }
   shell: {
     /** 用指定编辑器打开文件 */

@@ -1,7 +1,9 @@
 /**
  * 认证相关 Hook
- * 
- * 管理用户登录状态、Token、会员信息等
+ *
+ * 管理用户登录状态、Token、会员信息等。
+ * Token 双写策略：同时写入文件系统（主进程）和 localStorage（渲染进程），
+ * 启动时优先从文件系统加载，localStorage 作为降级方案。
  */
 
 import { useState, useCallback, useEffect } from 'react'
@@ -17,29 +19,52 @@ export function useAuth() {
       return null
     }
   })
-  
+
   const [memberToken, setMemberToken] = useState<string | null>(() => {
-    // 从安全存储中加载 Token
     return null // 将在 useEffect 中异步加载
   })
-  
+
   const [showLoginModal, setShowLoginModal] = useState(false)
 
-  // 异步加载 Token
+  // 异步加载 Token（优先文件存储，fallback 到 localStorage）
   useEffect(() => {
-    loadToken().then(token => {
-      if (token) {
-        setMemberToken(token)
+    const load = async () => {
+      // 1. 优先从文件存储加载
+      try {
+        const persisted = await window.taco.auth.loadPersistedToken()
+        if (persisted && persisted.token) {
+          setMemberToken(persisted.token)
+          // 如果文件存储中有 memberInfo，同步到 localStorage
+          if (persisted.memberInfo) {
+            setMemberInfo(persisted.memberInfo as MemberInfo)
+            localStorage.setItem('taco.memberInfo', JSON.stringify(persisted.memberInfo))
+          }
+          // 同步到 secure-storage
+          await storeToken(persisted.token).catch(() => {})
+          return
+        }
+      } catch (err) {
+        console.warn('[useAuth] Failed to load from file storage:', err)
       }
-    }).catch(err => {
-      console.error('[useAuth] Failed to load token:', err)
-    })
+
+      // 2. fallback: 从 localStorage 加载
+      try {
+        const token = await loadToken()
+        if (token) {
+          setMemberToken(token)
+        }
+      } catch (err) {
+        console.error('[useAuth] Failed to load token:', err)
+      }
+    }
+    load()
   }, [])
 
   /** 登录成功处理 */
   const handleLoginSuccess = useCallback(async (token: string, member: MemberInfo) => {
     try {
-      // 使用安全存储
+      // 双写：文件存储 + localStorage
+      await window.taco.auth.persistToken(token, undefined, member)
       await storeToken(token)
       localStorage.setItem('taco.memberInfo', JSON.stringify(member))
       setMemberInfo(member)
@@ -47,30 +72,36 @@ export function useAuth() {
       setShowLoginModal(false)
     } catch (error) {
       console.error('[useAuth] Failed to store token:', error)
-      // 降级方案: 使用 localStorage
+      // 降级方案: 仅使用 localStorage
       localStorage.setItem('taco.memberToken', token)
       setMemberToken(token)
+      setShowLoginModal(false)
     }
   }, [])
 
   /** 登出处理 */
   const handleLogout = useCallback(async () => {
     try {
-      // 断开桥接服务
       window.taco.bridge.disconnect()
     } catch (error) {
       console.error('[useAuth] Failed to disconnect bridge:', error)
     }
-    
+
+    // 双删：文件存储 + localStorage
     try {
-      // 使用安全存储删除
+      await window.taco.auth.removePersistedToken()
+    } catch (error) {
+      console.warn('[useAuth] Failed to remove persisted token:', error)
+    }
+
+    try {
       await removeToken()
     } catch (error) {
       console.error('[useAuth] Failed to remove token:', error)
     }
-    
+
     localStorage.removeItem('taco.memberInfo')
-    localStorage.removeItem('taco.memberToken') // 清理旧的明文 Token
+    localStorage.removeItem('taco.memberToken')
     setMemberInfo(null)
     setMemberToken(null)
   }, [])
@@ -89,8 +120,11 @@ export function useAuth() {
   useEffect(() => {
     const unsub = window.taco.bridge.onStatusChange((s) => {
       if (s.tokenExpired) {
-        // Token 过期，清除本地 token 和安全存储，弹出登录框
+        // Token 过期，清除所有存储
+        window.taco.auth.removePersistedToken().catch(() => {})
         removeToken().catch(() => {})
+        localStorage.removeItem('taco.memberInfo')
+        localStorage.removeItem('taco.memberToken')
         setMemberToken(null)
         setMemberInfo(null)
         setShowLoginModal(true)

@@ -27,6 +27,7 @@ import {
   type BridgeError,
 } from './bridge-protocol'
 import { BridgeSyncManager } from './bridge-sync-manager'
+import { saveAuthToFile } from '../infrastructure/auth-store'
 
 /* ------------------------------------------------------------------ */
 /*  Event callbacks                                                    */
@@ -774,6 +775,11 @@ export class BridgeManager {
       }
 
       logBridge(`Token refreshed successfully, new expiry: ${new Date(this.tokenExpiresAt).toISOString()}`)
+
+      // 持久化刷新后的新 Token 到文件，防止 localStorage 丢失
+      saveAuthToFile({ token: newToken, expiresAt: this.tokenExpiresAt }).catch((err) => {
+        logBridgeError('Failed to persist refreshed token to file', err)
+      })
 
       // 使用新 Token 重连
       this.refreshToken(newToken)

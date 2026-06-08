@@ -149,6 +149,13 @@ export const IpcChannel = {
   MEMBER_LOGIN: 'member:login',
   MEMBER_REGISTER: 'member:register',
 
+  /** renderer → main, 持久化登录 Token 到文件（~/.taco/auth.json） */
+  AUTH_TOKEN_SAVE: 'auth:token-save',
+  /** renderer → main, 从文件加载持久化的 Token */
+  AUTH_TOKEN_LOAD: 'auth:token-load',
+  /** renderer → main, 删除持久化的 Token 文件 */
+  AUTH_TOKEN_REMOVE: 'auth:token-remove',
+
   /** renderer → main, 会员登录桥接（使用 token 连接 Relay） */
   BRIDGE_CONNECT: 'bridge:connect',
   /** renderer → main, 断开桥接连接 */
