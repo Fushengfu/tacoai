@@ -93,9 +93,9 @@ export class BridgeManager {
   /* project state cache */
   private projectStates = new Map<string, ProjectStateInfo>()
   private _activeThreadId: string | null = null
-  private stateReportTimer: ReturnType<typeof setInterval> | null = null
-  private readonly STATE_REPORT_INTERVAL_MS = 5000 // 每 5 秒上报一次项目状态
-  private _projectStatesDirty = false // 脏标记：状态变化时设为 true，推送后设为 false
+  private stateReportDebounceTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly STATE_REPORT_DEBOUNCE_MS = 300 // 脏标记触发后 300ms 去抖上报
+  private _projectStatesDirty = false // 脏标记：状态变化时设为 true，上报后设为 false
 
   /* sync manager */
   private syncManager = new BridgeSyncManager()
@@ -129,6 +129,11 @@ export class BridgeManager {
     }
     this.reconnectAttempts = 0
     this.pendingMessages = []
+    
+    // 清理旧的项目状态缓存，防止幽灵项目推送给移动端
+    this.projectStates.clear()
+    this._activeThreadId = null
+    this._projectStatesDirty = false
     
     // 设置同步管理器的发送函数
     this.syncManager.setSendFunction((msg) => this.sendHostMessageDirect(msg))
@@ -287,6 +292,8 @@ export class BridgeManager {
     }
     logBridge(`Project state updated: ${projectId} (processing: ${updates.isProcessing})`)
     this._projectStatesDirty = true // 标记状态已变化
+    // 脏标记驱动：状态变化时调度去抖上报，不再依赖定时器轮询
+    this.scheduleStateReport()
   }
 
   /** 更新项目状态并立即推送给移动端（由 IPC 层调用，当 Agent 开始/结束任务时） */
@@ -332,19 +339,20 @@ export class BridgeManager {
     return this._activeThreadId
   }
 
-  /** 启动定期状态上报定时器 */
-  startStateReportTimer(orderedProjectIds?: string[]): void {
-    this.stopStateReportTimer()
-    this.stateReportTimer = setInterval(() => {
+  /** 调度脏标记驱动的去抖上报（替代 5 秒定时器轮询） */
+  private scheduleStateReport(orderedProjectIds?: string[]): void {
+    if (this.stateReportDebounceTimer) return // 已有待执行的上报
+    this.stateReportDebounceTimer = setTimeout(() => {
+      this.stateReportDebounceTimer = null
       this.reportProjectStates(orderedProjectIds)
-    }, this.STATE_REPORT_INTERVAL_MS)
+    }, this.STATE_REPORT_DEBOUNCE_MS)
   }
 
-  /** 停止定期状态上报定时器 */
-  stopStateReportTimer(): void {
-    if (this.stateReportTimer) {
-      clearInterval(this.stateReportTimer)
-      this.stateReportTimer = null
+  /** 停止待执行的去抖上报 */
+  private cancelScheduledStateReport(): void {
+    if (this.stateReportDebounceTimer) {
+      clearTimeout(this.stateReportDebounceTimer)
+      this.stateReportDebounceTimer = null
     }
   }
 
@@ -353,86 +361,24 @@ export class BridgeManager {
     if (this.projectStates.size === 0) return
     // 优化：只在状态变化时才推送，避免每 5 秒无变化的全量推送
     if (!this._projectStatesDirty) return
-    this._projectStatesDirty = false // 重置脏标记
-    let states = Array.from(this.projectStates.values()).map((s) => ({
-      id: s.id,
-      title: s.title,
-      workspace: s.workspace,
-      modelConfigId: s.modelConfigId,
-      isProcessing: s.isProcessing,
-      activeTaskId: s.activeTaskId,
-      lastActivityAt: s.lastActivityAt,
-      // 新增：最后一条消息的状态
-      lastMessageId: s.lastMessageId,
-      lastMessageRole: s.lastMessageRole,
-      lastMessageHasContent: s.lastMessageHasContent,
-      lastMessageIsStreaming: s.lastMessageIsStreaming,
-      lastMessageHasPlan: s.lastMessageHasPlan,
-    }))
+    // 不在此处重置脏标记——如果消息被节流丢弃，脏标记保持为 true，
+    // 下次定时检查时会重试发送，避免状态更新永久丢失
+    this._projectStatesDirty = false
+
+    const states = this.buildProjectStatesPayload(orderedProjectIds)
     
-    // 如果提供了顺序信息，按照指定顺序排序项目状态
-    if (orderedProjectIds && orderedProjectIds.length > 0 && states.length > 0) {
-      states.sort((a, b) => {
-        const indexA = orderedProjectIds.indexOf(a.id)
-        const indexB = orderedProjectIds.indexOf(b.id)
-        // 如果两个项目都在顺序列表中，按指定顺序排
-        if (indexA !== -1 && indexB !== -1) {
-          return indexA - indexB
-        }
-        // 如果只有 a 在顺序列表中，a 排前面
-        if (indexA !== -1) return -1
-        // 如果只有 b 在顺序列表中，b 排前面
-        if (indexB !== -1) return 1
-        // 都不在顺序列表中，保持原顺序
-        return 0
-      })
-    }
-    
+    // 使用 critical 优先级发送，绕过节流窗口，确保状态更新不被丢弃
     this.sendHostMessage({
       type: 'bridge:project-states',
       states,
       activeThreadId: this._activeThreadId || '',
       timestamp: Date.now(),
-    })
+    }, 'critical')
   }
 
   /** 按需立即推送项目列表（不等定时器），用于项目变更时即时通知移动端 */
   pushProjectsOnDemand(orderedProjectIds?: string[]): void {
-    let states = this.projectStates.size > 0
-      ? Array.from(this.projectStates.values()).map((s) => ({
-          id: s.id,
-          title: s.title,
-          workspace: s.workspace,
-          modelConfigId: s.modelConfigId,
-          isProcessing: s.isProcessing,
-          activeTaskId: s.activeTaskId,
-          lastActivityAt: s.lastActivityAt,
-          // 新增：最后一条消息的状态
-          lastMessageId: s.lastMessageId,
-          lastMessageRole: s.lastMessageRole,
-          lastMessageHasContent: s.lastMessageHasContent,
-          lastMessageIsStreaming: s.lastMessageIsStreaming,
-          lastMessageHasPlan: s.lastMessageHasPlan,
-        }))
-      : []
-    
-    // 如果提供了顺序信息，按照指定顺序排序项目状态
-    if (orderedProjectIds && orderedProjectIds.length > 0 && states.length > 0) {
-      states.sort((a, b) => {
-        const indexA = orderedProjectIds.indexOf(a.id)
-        const indexB = orderedProjectIds.indexOf(b.id)
-        // 如果两个项目都在顺序列表中，按指定顺序排
-        if (indexA !== -1 && indexB !== -1) {
-          return indexA - indexB
-        }
-        // 如果只有 a 在顺序列表中，a 排前面
-        if (indexA !== -1) return -1
-        // 如果只有 b 在顺序列表中，b 排前面
-        if (indexB !== -1) return 1
-        // 都不在顺序列表中，保持原顺序
-        return 0
-      })
-    }
+    const states = this.buildProjectStatesPayload(orderedProjectIds)
     
     // 关键修复: 使用 critical 优先级，确保项目状态变更立即发送到移动端
     // 避免被节流导致移动端永久显示"处理中"
@@ -443,6 +389,49 @@ export class BridgeManager {
       timestamp: Date.now(),
     }, 'critical')
     logBridge(`Pushed project states on demand (${states.length} projects, activeThread: ${this._activeThreadId})`)
+  }
+
+  /** 构建项目状态列表并按指定顺序排序（提取公共逻辑消除重复） */
+  private buildProjectStatesPayload(orderedProjectIds?: string[]): Array<{
+    id: string; title: string; workspace?: string; modelConfigId?: string;
+    isProcessing: boolean; activeTaskId?: string; lastActivityAt: number;
+    lastMessageId?: string; lastMessageRole?: string; lastMessageHasContent?: boolean;
+    lastMessageIsStreaming?: boolean; lastMessageHasPlan?: boolean;
+  }> {
+    if (this.projectStates.size === 0) return []
+    
+    const states = Array.from(this.projectStates.values()).map((s) => ({
+      id: s.id,
+      title: s.title,
+      workspace: s.workspace,
+      modelConfigId: s.modelConfigId,
+      isProcessing: s.isProcessing,
+      activeTaskId: s.activeTaskId,
+      lastActivityAt: s.lastActivityAt,
+      lastMessageId: s.lastMessageId,
+      lastMessageRole: s.lastMessageRole,
+      lastMessageHasContent: s.lastMessageHasContent,
+      lastMessageIsStreaming: s.lastMessageIsStreaming,
+      lastMessageHasPlan: s.lastMessageHasPlan,
+    }))
+    
+    // 按指定顺序排序：用 Map 将 indexOf 从 O(n) 优化到 O(1)
+    if (orderedProjectIds && orderedProjectIds.length > 0) {
+      const orderMap = new Map<string, number>()
+      for (let i = 0; i < orderedProjectIds.length; i++) {
+        orderMap.set(orderedProjectIds[i], i)
+      }
+      states.sort((a, b) => {
+        const indexA = orderMap.get(a.id)
+        const indexB = orderMap.get(b.id)
+        if (indexA !== undefined && indexB !== undefined) return indexA - indexB
+        if (indexA !== undefined) return -1
+        if (indexB !== undefined) return 1
+        return 0
+      })
+    }
+    
+    return states
   }
 
   /* ------------------------------------------------------------------ */
@@ -481,8 +470,10 @@ export class BridgeManager {
       // 启动 Token 自动刷新定时器
       this.startTokenRefreshTimer()
 
-      // 启动项目状态定期上报
-      this.startStateReportTimer(orderedProjectIds)
+      // 连接成功后立即推送一次项目状态，使移动端同步
+      if (this.projectStates.size > 0) {
+        this.pushProjectsOnDemand(orderedProjectIds)
+      }
 
       // 重连后如果有之前连接的客户端，主动推送状态快照
       // （移动端也会通过 bridge:request-state 主动请求，这里作为兜底）
@@ -512,6 +503,7 @@ export class BridgeManager {
     this.ws.on('error', (err: Error) => {
       logBridgeError('WebSocket error', err)
       this.error = err.message || 'WebSocket 连接错误'
+      this.stopHeartbeat()
       this.setStatus('disconnected')
     })
   }
@@ -836,7 +828,7 @@ export class BridgeManager {
     this.stopHeartbeat()
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null }
     if (this.tokenRefreshTimer) { clearTimeout(this.tokenRefreshTimer); this.tokenRefreshTimer = null }
-    this.stopStateReportTimer()
+    this.cancelScheduledStateReport()
   }
 
   private setStatus(status: BridgeConnectionStatus): void {

@@ -430,6 +430,11 @@ const tacoApi: TacoApi = {
       }
     },
 
+    /** 通知主进程：移动端请求的项目切换已完成，消息已加载，可以推送 bridge:state */
+    notifySwitchProjectLoaded: (data: { projectId: string; sessionId: string }) => {
+      ipcRenderer.send('bridge:switch-project-loaded', data)
+    },
+
     onClientMessage: (callback: (msg: Record<string, unknown>) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, msg: Record<string, unknown>) => callback(msg)
       ipcRenderer.on(IpcChannel.BRIDGE_CLIENT_MESSAGE, handler)

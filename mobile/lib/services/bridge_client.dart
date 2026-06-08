@@ -66,6 +66,12 @@ class BridgeClient {
   /// 获取缓存的项目列表（用于显示项目名称）
   List<BridgeProjectInfo>? get cachedProjects => _cachedProjects;
 
+  // 快照时间戳追踪：用于判断 delta 和 state 的新旧关系
+  // key: messageId, value: 该消息最后一次被 state 快照更新时的快照时间戳
+  final Map<String, int> _lastStateSnapshotTs = {};
+  // 上一次 bridge:state 的时间戳
+  int? _lastBridgeStateTimestamp;
+
   // 待确认列表（授权确认 + 执行计划确认）
   final List<BridgePendingConfirm> _pendingConfirms = [];
   final List<Function(List<BridgePendingConfirm>)> _confirmListeners = [];
@@ -577,6 +583,9 @@ class BridgeClient {
       // UI 层会按当前项目过滤显示，切换回来时仍可操作
       // 清空消息列表，避免显示旧项目数据
       _messages.clear();
+      // 清空快照时间戳追踪
+      _lastStateSnapshotTs.clear();
+      _lastBridgeStateTimestamp = null;
       _notifyListenersImmediately({'type': 'bridge:project-cleared', 'threadId': projectId});
     }
 
@@ -623,6 +632,8 @@ class BridgeClient {
   /// 清空消息列表（用于切换项目时立即清空 UI）
   void clearMessages() {
     _messages.clear();
+    _lastStateSnapshotTs.clear();
+    _lastBridgeStateTimestamp = null;
     _notifyListenersImmediately({'type': 'bridge:messages-cleared'});
   }
 
@@ -784,8 +795,10 @@ class BridgeClient {
                 print('[BridgeClient] Ignoring bridge:state for different project: $stateThreadId (current: $_currentProjectId)');
                 return;
               }
-              // 增量更新消息列表，避免全量替换导致的 UI 闪烁
-              _mergeMessages(state.messages);
+              // 记录快照时间戳，用于判断 delta/state 竞态
+              _lastBridgeStateTimestamp = state.timestamp;
+              // 增量更新消息列表，传递快照时间戳用于竞态判断
+              _mergeMessages(state.messages, snapshotTimestamp: state.timestamp);
               // 关键修复：bridge:state 不再更新 _currentProjectId
               // _currentProjectId 只由 setCurrentProject() 设置（用户主动切换）
               // bridge:state 只更新 _activeAgentRequestId（用于 abort 等全局状态）
@@ -1279,12 +1292,17 @@ class BridgeClient {
   /// 合并消息列表（用于 bridge:state 全量快照）
   /// 核心原则：桌面端数据为权威源
   /// 
+  /// 竞态处理策略：
+  /// - 用快照时间戳（timestamp）判断快照新旧
+  /// - 如果本地消息在快照之后被 delta 更新过（content 更长），保留 delta 内容
+  /// - 如果快照比本地更新，用快照替换
+  /// 
   /// 策略：
   /// 1. 桌面端推送的消息直接替换本地对应消息（基于 ID 匹配）
   /// 2. 本地没有的消息，直接追加
   /// 3. 本地有但桌面端没有的消息，保留（可能是乐观更新或流式输出中）
   /// 4. 最后按时间戳排序
-  void _mergeMessages(List<BridgeChatMessage> incoming) {
+  void _mergeMessages(List<BridgeChatMessage> incoming, {int? snapshotTimestamp}) {
     if (incoming.isEmpty) return;
 
     final sessionId = _currentProjectId;
@@ -1302,16 +1320,35 @@ class BridgeClient {
       final existingIdx = existingMap[msg.id];
       
       if (existingIdx != null) {
-        // 消息已存在：桌面端数据为权威源，直接替换
-        // 但保留本地较长的 content（流式输出可能有更多内容）
+        // 消息已存在：判断是否应该用快照替换
         final existing = _messages[existingIdx];
-        final shouldReplace = msg.content.length >= existing.content.length;
+        bool shouldReplace;
+        
+        if (snapshotTimestamp != null) {
+          final lastSnapshotTs = _lastStateSnapshotTs[msg.id];
+          if (lastSnapshotTs != null && snapshotTimestamp <= lastSnapshotTs) {
+            // 快照不比上次新，只更新元数据（保留 delta 可能追加的内容）
+            shouldReplace = false;
+          } else if (lastSnapshotTs != null && snapshotTimestamp > lastSnapshotTs) {
+            // 快照比上次新，用快照替换（桌面端权威数据）
+            shouldReplace = true;
+          } else {
+            // 没有上次快照记录，用内容长度比较（兜底）
+            shouldReplace = msg.content.length >= existing.content.length;
+          }
+        } else {
+          // 没有快照时间戳，用内容长度比较（兜底）
+          shouldReplace = msg.content.length >= existing.content.length;
+        }
         
         if (shouldReplace) {
           _messages[existingIdx] = msg;
+          if (snapshotTimestamp != null) {
+            _lastStateSnapshotTs[msg.id] = snapshotTimestamp;
+          }
           changed = true;
         } else {
-          // 本地 content 更长，只更新元数据
+          // 本地 content 更长（delta 在快照之后追加了内容），只更新元数据
           _messages[existingIdx] = existing.copyWith(
             agentSteps: msg.agentSteps ?? existing.agentSteps,
             activePlan: msg.activePlan ?? existing.activePlan,
@@ -1323,6 +1360,9 @@ class BridgeClient {
         // 新消息：直接追加
         if (msg.content.isNotEmpty || msg.role == 'user') {
           _messages.add(msg);
+          if (snapshotTimestamp != null) {
+            _lastStateSnapshotTs[msg.id] = snapshotTimestamp;
+          }
           changed = true;
         }
       }
@@ -2269,13 +2309,12 @@ class BridgeClient {
     });
   }
 
-  /// Agent 事件立即通知（不节流），保证思考过程和工具调用的实时性
+  /// Agent 事件节流通知（16ms 节流，与 _notifyListeners 保持一致）
+  /// 高频 agent 事件（thinking、tool_calls）会合并为一次通知，减少 UI rebuild
   void _notifyAgentListeners(dynamic data) {
     _pendingAgentNotify = true;
     _agentNotifyTimer?.cancel();
-    // 使用 microtask 代替 Timer(Duration.zero) 减少延迟
-    // microtask 在当前事件循环结束后立即执行，比 Timer 更快
-    _agentNotifyTimer = Timer(Duration.zero, () {
+    _agentNotifyTimer = Timer(_kNotifyThrottleMs, () {
       if (_pendingAgentNotify) {
         _pendingAgentNotify = false;
         // 更新消息 ValueNotifier

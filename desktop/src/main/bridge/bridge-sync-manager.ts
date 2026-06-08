@@ -96,6 +96,9 @@ export class BridgeSyncManager {
   private mergeBuffer: Map<string, any> = new Map()
   private mergeTimer: NodeJS.Timeout | null = null
 
+  // 队列排空定时器（节流窗口到期后自动排空队列）
+  private queueFlushTimer: NodeJS.Timeout | null = null
+
   // 节流时间戳记录
   private lastSentTime: Map<string, number> = new Map()
 
@@ -208,6 +211,15 @@ export class BridgeSyncManager {
       
       this.queues[priority].push(pendingMsg)
       console.log(`[BridgeSync] Throttled non-delta message queued: ${message.type}`)
+      
+      // 设置定时器在节流窗口到期后排空队列
+      if (!this.queueFlushTimer) {
+        const throttleMs = PRIORITY_CONFIG[priority].throttle
+        this.queueFlushTimer = setTimeout(() => {
+          this.queueFlushTimer = null
+          this.processQueues()
+        }, throttleMs)
+      }
     }
   }
 
@@ -220,6 +232,9 @@ export class BridgeSyncManager {
     }
     
     this.mergeBuffer.clear()
+    
+    // merge buffer 刷新后，也尝试排空队列中的非 delta 消息
+    this.processQueues()
   }
 
   /* ------------------------------------------------------------------ */
@@ -326,6 +341,10 @@ export class BridgeSyncManager {
     if (this.mergeTimer) {
       clearTimeout(this.mergeTimer)
       this.mergeTimer = null
+    }
+    if (this.queueFlushTimer) {
+      clearTimeout(this.queueFlushTimer)
+      this.queueFlushTimer = null
     }
     
     this.queues = { critical: [], high: [], normal: [], low: [] }

@@ -151,6 +151,7 @@ class BridgeState {
   final String? threadTitle;
   final String? projectTitle;
   final BridgeTokenUsage? tokenUsage;
+  final int? timestamp; // 桌面端生成快照的时间戳，用于判断快照新旧
 
   BridgeState({
     required this.messages,
@@ -162,6 +163,7 @@ class BridgeState {
     this.threadTitle,
     this.projectTitle,
     this.tokenUsage,
+    this.timestamp,
   });
 
   factory BridgeState.fromJson(Map<String, dynamic> json) {
@@ -180,6 +182,7 @@ class BridgeState {
       threadTitle: json['threadTitle'] as String?,
       projectTitle: json['projectTitle'] as String?,
       tokenUsage: tokenUsageJson != null ? BridgeTokenUsage.fromJson(tokenUsageJson) : null,
+      timestamp: json['timestamp'] as int?,
     );
   }
 }

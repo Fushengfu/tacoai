@@ -263,6 +263,8 @@ export type TacoApi = {
     onSwitchProject: (callback: (data: { projectId: string; sessionId?: string }) => void) => () => void
     /** 监听移动端请求切换模型 */
     onSwitchModel: (callback: (data: { modelConfigId: string }) => void) => () => void
+    /** 通知主进程：移动端请求的项目切换已完成，消息已加载 */
+    notifySwitchProjectLoaded: (data: { projectId: string; sessionId: string }) => void
     /** 监听移动端发来的消息（chat-send / agent-confirm / agent-abort 等） */
     onClientMessage: (callback: (msg: Record<string, unknown>) => void) => () => void
     /** 发送状态快照响应给主进程 */

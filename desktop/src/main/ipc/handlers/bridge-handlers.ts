@@ -80,6 +80,55 @@ function buildNestedTree(
   return roots
 }
 
+/** 注册 renderer 项目切换完成回调：renderer 加载消息后推送 bridge:state 给移动端 */
+export function setupBridgeSwitchProjectLoadedHandler(): void {
+  ipcMain.on('bridge:switch-project-loaded', async (_event, payload: { projectId: string; sessionId: string }) => {
+    try {
+      const projectId = String(payload.projectId || '')
+      const sessionId = String(payload.sessionId || '')
+      if (!projectId || !sessionId) return
+
+      const state = await getAppState()
+      const activeThread = state.threadsState.threads.find((t) => t.id === projectId)
+      if (!activeThread) return
+
+      const page = loadChatStoreSessionPage(sessionId, { limit: 50 })
+      if (!page || !Array.isArray(page.messages)) return
+
+      const modelConfig = state.providersState.modelConfigs.find(
+        (m) => m.id === activeThread.modelConfigId,
+      )
+      const hasActiveTask = agentAbortControllers.size > 0 &&
+        Array.from(agentAbortControllers.keys()).some(key => {
+          return key.includes(sessionId) || key.includes(activeThread.id)
+        })
+      const activeAgentRequestId = hasActiveTask ? `agent-${sessionId}` : undefined
+
+      const mgr = getBridgeManager()
+      mgr.sendHostMessage({
+        type: 'bridge:state',
+        messages: stripDataUrlFromMessages(page.messages) as BridgeChatMessageType[],
+        threadId: activeThread.id,
+        workspace: activeThread.workspace,
+        modelLabel: modelConfig?.model || modelConfig?.name || '',
+        modelConfigId: activeThread.modelConfigId,
+        threadTitle: activeThread.title,
+        projectTitle: activeThread.title,
+        ...(activeAgentRequestId ? { activeAgentRequestId } : {}),
+      } as any)
+      log('BRIDGE_STATE_PUSHED_AFTER_SWITCH', {
+        threadId: activeThread.id,
+        sessionId,
+        messageCount: page.messages.length,
+      }, 'bridge')
+    } catch (err) {
+      logError('bridge', '切换项目后推送 bridge:state 失败', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  })
+}
+
 /* ------------------------------------------------------------------ */
 /*  Image data stripping for bridge (reduce WebSocket payload)         */
 /* ------------------------------------------------------------------ */
@@ -382,53 +431,8 @@ export function setupBridgeDataHandler(): void {
               win.webContents.send('bridge:switch-project-from-mobile', { projectId, sessionId })
             }
           }
-          
-          // 关键修复：等待 renderer 完成切换后，主动推送 bridge:state 快照给移动端
-          // renderer 切换项目需要时间（加载消息、更新 UI），等待 1.5 秒后推送
-          setTimeout(async () => {
-            try {
-              const state = await getAppState()
-              const activeThread = state.threadsState.threads.find((t) => t.id === projectId)
-              if (!activeThread) return
-              
-              const resolvedSessionId = activeThread.activeSessionId || activeThread.sessions[0]?.id || ''
-              if (!resolvedSessionId) return
-              
-              const page = loadChatStoreSessionPage(resolvedSessionId, { limit: 50 })
-              if (!page || !Array.isArray(page.messages)) return
-              
-              const modelConfig = state.providersState.modelConfigs.find(
-                (m) => m.id === activeThread.modelConfigId,
-              )
-              const hasActiveTask = agentAbortControllers.size > 0 &&
-                Array.from(agentAbortControllers.keys()).some(key => {
-                  return key.includes(resolvedSessionId) || key.includes(activeThread.id)
-                })
-              const activeAgentRequestId = hasActiveTask ? `agent-${resolvedSessionId}` : undefined
-              
-              const mgr = getBridgeManager()
-              mgr.sendHostMessage({
-                type: 'bridge:state',
-                messages: stripDataUrlFromMessages(page.messages) as BridgeChatMessageType[],
-                threadId: activeThread.id,
-                workspace: activeThread.workspace,
-                modelLabel: modelConfig?.model || modelConfig?.name || '',
-                modelConfigId: activeThread.modelConfigId,
-                threadTitle: activeThread.title,
-                projectTitle: activeThread.title,
-                ...(activeAgentRequestId ? { activeAgentRequestId } : {}),
-              } as any)
-              log('BRIDGE_STATE_PUSHED_AFTER_SWITCH', {
-                threadId: activeThread.id,
-                sessionId: resolvedSessionId,
-                messageCount: page.messages.length,
-              }, 'bridge')
-            } catch (err) {
-              logError('bridge', '切换项目后推送 bridge:state 失败', {
-                error: err instanceof Error ? err.message : String(err),
-              })
-            }
-          }, 1500)
+          // bridge:state 推送由 renderer 完成消息加载后通过 bridge:switch-project-loaded 触发
+          // 参见 setupBridgeSwitchProjectLoadedHandler()
           break
         }
 

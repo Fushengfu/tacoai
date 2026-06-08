@@ -219,27 +219,27 @@ class MessageCache {
   }
 
   /// 批量保存消息（用于全量快照）
+  /// 使用显式事务确保原子性：delete + insert 在同一个事务中，断电时不会丢失数据
   Future<void> saveMessages(String sessionId, List<BridgeChatMessage> messages) async {
     final db = _db;
     if (db == null) return;
 
     try {
-      final batch = db.batch();
+      // 使用显式事务确保原子性：delete + insert 要么全部成功，要么全部回滚
+      await db.transaction((txn) async {
+        // 先删除该 session 的旧消息
+        await txn.delete('messages', where: 'session_id = ?', whereArgs: [sessionId]);
 
-      // 先删除该 session 的旧消息
-      batch.delete('messages', where: 'session_id = ?', whereArgs: [sessionId]);
-
-      for (int i = 0; i < messages.length; i++) {
-        batch.insert(
-          'messages',
-          _messageToRow(sessionId, messages[i], i),
-        );
-      }
-
-      await batch.commit(noResult: true);
+        for (int i = 0; i < messages.length; i++) {
+          await txn.insert(
+            'messages',
+            _messageToRow(sessionId, messages[i], i),
+          );
+        }
+      });
     } catch (e) {
-      debugPrint('[MessageCache] saveMessages batch failed, trying individual inserts: $e');
-      // 批量失败时逐条保存，跳过溢出行
+      debugPrint('[MessageCache] saveMessages transaction failed, trying individual inserts: $e');
+      // 事务失败时逐条保存，跳过溢出行
       await clearSession(sessionId);
       for (int i = 0; i < messages.length; i++) {
         try {

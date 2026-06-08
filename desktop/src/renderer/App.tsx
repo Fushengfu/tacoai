@@ -183,9 +183,18 @@ export default function App() {
       setDraft('')
       fileViewer.reset()
       setShowTerminal(false)
+
+      // 通知主进程：项目切换完成，可以推送 bridge:state 给移动端
+      // 使用 ensureSessionLoaded 的完成时机，而非硬编码延迟
+      const activeSessionId = sessionId || thread.activeSessionId || thread.sessions[0]?.id
+      if (activeSessionId) {
+        void chat.ensureSessionLoaded(activeSessionId).then(() => {
+          window.taco.bridge.notifySwitchProjectLoaded({ projectId, sessionId: activeSessionId })
+        })
+      }
     })
     return unsubscribe
-  }, [threadStore])
+  }, [threadStore, chat])
 
   // 监听移动端请求切换模型
   useEffect(() => {

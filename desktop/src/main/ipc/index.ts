@@ -66,6 +66,7 @@ import {
   setupBridgeClientConnectedHandler,
   setupBridgeStateSnapshotResponse,
   setupBridgeDataHandler,
+  setupBridgeSwitchProjectLoadedHandler,
 } from './handlers/bridge-handlers'
 
 import {
@@ -256,6 +257,7 @@ export function registerIpcHandlers() {
   setupBridgeClientConnectedHandler()
   setupBridgeStateSnapshotResponse()
   setupBridgeDataHandler()
+  setupBridgeSwitchProjectLoadedHandler()
 
   // Upload
   ipcMain.handle(IpcChannel.IMAGE_UPLOAD, handleImageUpload)
