@@ -5,3 +5,4 @@ dist-main/
 .env
 release/
 .DS_Store
+mobile/
