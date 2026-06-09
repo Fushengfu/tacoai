@@ -100,6 +100,7 @@ export async function summarizeMessages(
   messagesToSummarize: ChatMessage[],
   signal?: AbortSignal,
   logScope?: string,
+  userId?: string,
 ): Promise<string> {
   const lines: string[] = []
   for (const m of messagesToSummarize) {
@@ -133,7 +134,7 @@ export async function summarizeMessages(
   ]
 
   try {
-    const summary = await requestChatCompletion(provider, summaryPrompt, overrides, signal, logScope)
+    const summary = await requestChatCompletion(provider, summaryPrompt, overrides, signal, logScope, userId)
     return summary
   } catch (err) {
     if (isAbortError(err) || signal?.aborted) throw err
@@ -155,6 +156,7 @@ export async function summarizeCurrentTaskProgress(
   state: ContextBuildState,
   signal?: AbortSignal,
   logScope?: string,
+  userId?: string,
 ): Promise<string> {
   const lines: string[] = []
   const userMediaRefs = collectUserMediaRefsFromMessages(messagesToSummarize)
@@ -195,7 +197,7 @@ export async function summarizeCurrentTaskProgress(
   ]
 
   try {
-    return await requestChatCompletion(provider, prompt, overrides, signal, logScope)
+    return await requestChatCompletion(provider, prompt, overrides, signal, logScope, userId)
   } catch (err) {
     if (isAbortError(err) || signal?.aborted) throw err
     log('CURRENT_TASK_SUMMARIZE_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
@@ -229,6 +231,7 @@ export async function compressAgentContext(
   logScope?: string,
   onEvent?: (event: AgentEvent) => void,
   onRecallMeta?: (meta: RecallMeta) => void,
+  userId?: string,
 ): Promise<{ compressed: number; nextCurrentTaskStartIndex: number }> {
   const threshold = Math.floor(tokenBudget * 0.80)
 
@@ -255,7 +258,7 @@ export async function compressAgentContext(
     preserveCurrentUserQuery: true,
   }, logScope)
 
-  const summary = await summarizeCurrentTaskProgress(provider, overrides, toCompress, state, signal, logScope)
+  const summary = await summarizeCurrentTaskProgress(provider, overrides, toCompress, state, signal, logScope, userId)
 
   const summaryMsg: ChatMessage = {
     role: 'assistant',
@@ -271,7 +274,7 @@ export async function compressAgentContext(
     contextLength: tokenBudget,
     signal,
     logScope,
-  }).catch((err) => {
+  }, userId).catch((err) => {
     log('AGENT_TASK_MEMORY_MAINTAIN_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
   })
 

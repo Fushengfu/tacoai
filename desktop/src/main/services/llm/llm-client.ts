@@ -1045,6 +1045,7 @@ async function buildRequest(
   options?: RequestOptions,
   signal?: AbortSignal,
   logScope?: string,
+  userId?: string,
 ) {
   // 步骤 1: 合并 system 消息
   const normalizedMessages = normalizeMessages(messages)
@@ -1072,9 +1073,7 @@ async function buildRequest(
     messages: providerReadyMessages,
     temperature: resolveRequestTemperature(config),
     stream,
-    // thinking: {
-    //   "type": config.model == "MiniMax-M3" ? "adaptive" : "enabled"
-    // },
+    ...(userId ? { user_id: userId } : {}),
   }
   if (options?.tools && options.tools.length > 0) {
     body.tools = options.tools
@@ -1164,13 +1163,14 @@ export async function requestChatCompletion(
   overrides?: ProviderOverrides,
   signal?: AbortSignal,
   logScope?: string,
+  userId?: string,
 ) {
   const config = getProviderConfig(provider, overrides)
   if (!config.apiKey || !config.model) {
     throw new Error(`Missing API key or model for ${provider}`)
   }
 
-  const { url, init } = await buildRequest(provider, config, messages, false, undefined, signal, logScope)
+  const { url, init } = await buildRequest(provider, config, messages, false, undefined, signal, logScope, userId)
   const startTime = Date.now()
 
   // ── 记录完整请求 ──
@@ -1221,13 +1221,14 @@ export async function* requestChatCompletionStream(
   signal?: AbortSignal,
   logScope?: string,
   onUsage?: (usage: TokenUsage) => void,
+  userId?: string,
 ): AsyncGenerator<string> {
   const config = getProviderConfig(provider, overrides)
   if (!config.apiKey || !config.model) {
     throw new Error(`Missing API key or model for ${provider}`)
   }
 
-  const { url, init } = await buildRequest(provider, config, messages, true, undefined, signal, logScope)
+  const { url, init } = await buildRequest(provider, config, messages, true, undefined, signal, logScope, userId)
   const startTime = Date.now()
 
   // ── 记录完整请求 ──
@@ -1480,13 +1481,14 @@ export async function* requestStreamWithTools(
   options?: RequestOptions,
   signal?: AbortSignal,
   logScope?: string,
+  userId?: string,
 ): AsyncGenerator<StreamEvent> {
   const config = getProviderConfig(provider, overrides)
   if (!config.apiKey || !config.model) {
     throw new Error(`Missing API key or model for ${provider}`)
   }
 
-  const { url, init } = await buildRequest(provider, config, messages, true, options, signal, logScope)
+  const { url, init } = await buildRequest(provider, config, messages, true, options, signal, logScope, userId)
   const startTime = Date.now()
 
   log('REQUEST', {

@@ -198,6 +198,7 @@ export async function maintainTaskMemoriesByAI(
   workspace: string,
   projectId: string | undefined,
   options?: MemoryMaintainOptions,
+  userId?: string,
 ): Promise<{ applied: boolean; merged: number; dropped: number; total: number; reason: string }> {
   const provider = options?.provider
   if (!workspace || !workspace.trim()) return { applied: false, merged: 0, dropped: 0, total: 0, reason: 'empty_workspace' }
@@ -269,7 +270,7 @@ export async function maintainTaskMemoriesByAI(
 
     let parsedDecision: MemoryConsolidationDecision | null = null
     try {
-      const raw = await requestChatCompletion(provider, messages, options?.overrides, options?.signal, options?.logScope)
+      const raw = await requestChatCompletion(provider, messages, options?.overrides, options?.signal, options?.logScope, userId)
       const parsed = safeParseObjectFromText(raw)
       parsedDecision = normalizeConsolidationDecision(parsed)
       if (!parsedDecision) {

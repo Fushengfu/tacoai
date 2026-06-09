@@ -10,6 +10,7 @@
  */
 
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import type { ChatMessage, ProviderOverrides, TokenUsage } from '../../ai/llm'
 import type { ProviderKey } from '../../ai/llm'
 import { requestChatCompletion, requestStreamWithTools } from '../../ai/llm'
@@ -182,6 +183,11 @@ export async function runAgent(
 
   // 将启用的 skills 目录注入 system prompt
   const skillsCatalogBlock = buildActiveSkillsCatalogBlock()
+
+  // 构建 user_id：基于 API key + 项目 ID 的哈希，用于 KVCache 缓存隔离
+  const resolvedApiKey = (overrides?.[provider] as any)?.apiKey ?? ''
+  const userIdSource = `${resolvedApiKey}:${projectId ?? workspace}`
+  const userId = createHash('sha256').update(userIdSource).digest('hex').slice(0, 32)
 
   const workingMessages = [...messages]
   const activatedSkillIds = new Set<string>()
@@ -871,6 +877,7 @@ export async function runAgent(
         logScope,
         onEvent,
         (meta) => { latestRecallMeta = meta },
+        userId,
       )
       currentTaskStartIndex = compressed.nextCurrentTaskStartIndex
     } catch (err) {
@@ -910,6 +917,7 @@ export async function runAgent(
         { tools: getFilteredToolDefinitions(allowedToolNames), toolChoice: 'auto' },
         signal,
         logScope,
+        userId,
       )) {
         // 每收到一个 chunk 就检查是否被中断
         if (signal?.aborted) {
@@ -1008,6 +1016,7 @@ export async function runAgent(
           logScope,
           onEvent,
           (meta) => { latestRecallMeta = meta },
+          userId,
         )
         currentTaskStartIndex = dropped.nextCurrentTaskStartIndex
         if (dropped.compressed > 0) {
