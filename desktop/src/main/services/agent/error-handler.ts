@@ -12,7 +12,7 @@ import { log } from '../../system/logger'
 /*  确认等待机制                                                        */
 /* ------------------------------------------------------------------ */
 
-const CONFIRM_TIMEOUT_MS = 10 * 60 * 1000 // 10分钟超时
+const CONFIRM_TIMEOUT_MS = 24 * 60 * 60 * 1000 // 24小时超时
 const RETRY_TIMEOUT_MS = 24 * 60 * 60 * 1000 // 重试确认 24 小时超时
 
 /** 待处理的确认请求：confirmId → resolve(approved) */

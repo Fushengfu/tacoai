@@ -117,7 +117,7 @@ import { compactLine, maskSensitiveText, summarizeRunCommand, extractIdentifiers
 /* ------------------------------------------------------------------ */
 
 const MAX_TOOL_ROUNDS = 1000 // 防止无限循环 
-const AGENT_LOOP_TIMEOUT_MS = 10 * 60 * 1000 // 10分钟超时
+const AGENT_LOOP_TIMEOUT_MS = 24 * 60 * 60 * 1000 // 24小时超时
 let confirmCounter = 0
 
 /* ------------------------------------------------------------------ */
