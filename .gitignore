@@ -4,6 +4,7 @@ desktop/dist/
 desktop/dist-preload/
 desktop/dist-main/
 desktop/release/
+release/
 desktop/.env
 
 mobile/
