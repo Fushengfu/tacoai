@@ -3,7 +3,17 @@
   "private": true,
   "version": "0.3.10",
   "description": "Taco AI - 智能编程助手",
-  "author": "Amulet",
+  "author": {
+    "name": "Fushengfu",
+    "email": "shengfu8161980541@qq.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Fushengfu/tacoai.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Fushengfu/tacoai/issues"
+  },
   "type": "module",
   "main": "dist-main/main.cjs",
   "scripts": {

@@ -206,6 +206,15 @@ taco/
 
 ---
 
+## 联系与反馈
+
+- **作者邮箱**：[shengfu8161980541@qq.com](mailto:shengfu8161980541@qq.com)
+- **GitHub Issues**：[github.com/Fushengfu/tacoai/issues](https://github.com/Fushengfu/tacoai/issues)
+- **Gitee Issues**：[gitee.com/fushengfu/tacoai/issues](https://gitee.com/fushengfu/tacoai/issues)
+- **许可证**：本项目基于 [Apache License 2.0](LICENSE) 开源
+
+---
+
 ## 版本
 
 当前版本：**v0.3.10**

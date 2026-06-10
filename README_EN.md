@@ -206,6 +206,15 @@ taco/
 
 ---
 
+## Contact & Feedback
+
+- **Author Email**: [shengfu8161980541@qq.com](mailto:shengfu8161980541@qq.com)
+- **GitHub Issues**: [github.com/Fushengfu/tacoai/issues](https://github.com/Fushengfu/tacoai/issues)
+- **Gitee Issues**: [gitee.com/fushengfu/tacoai/issues](https://gitee.com/fushengfu/tacoai/issues)
+- **License**: This project is open-sourced under the [Apache License 2.0](LICENSE)
+
+---
+
 ## Version
 
 Current version: **v0.3.10**
