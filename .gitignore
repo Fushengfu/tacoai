@@ -6,12 +6,14 @@ desktop/dist-main/
 desktop/release/
 desktop/.env
 
-mobile/.dart_tool/
-mobile/.flutter-plugins
-mobile/.flutter-plugins-dependencies
-mobile/.packages
-mobile/build/
-mobile/.idea/
-mobile/.metadata
+mobile/
+ai-gateway/
+
+.hintrc
+test.md
+usage.md
+*.md.bak
+桌面端*.md
+*.png.bak
 
 .DS_Store
