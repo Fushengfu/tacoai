@@ -19,9 +19,9 @@ on:
         default: 'all'
         options:
           - all
-          - mac
+          # - mac
           - win
-          - linux
+          # - linux
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
