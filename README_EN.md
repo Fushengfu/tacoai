@@ -1,3 +1,5 @@
+[中文](README.md) | English
+
 # Taco AI
 
 **Taco AI** is a desktop-based intelligent assistant that shares your computer environment. It can read code, execute commands, manipulate files, control browsers, and help you complete development, analysis, debugging, and various other tasks.
