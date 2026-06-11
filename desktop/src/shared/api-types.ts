@@ -27,6 +27,7 @@ import type {
   McpServerInfo,
   MemoryScopeExportResult,
   MemoryScopeStats,
+  MobileApkInfo,
   ProjectNote,
   ProjectTaskMemory,
   RendererErrorPayload,
@@ -243,6 +244,8 @@ export type TacoApi = {
     getModels: () => Promise<GatewayModelsResponse>
   }
   bridge: {
+    /** 获取手机端 APK 下载信息（从版本检查 API 获取 download_url，失败返回 null） */
+    getMobileApkInfo: (packageName: string) => Promise<MobileApkInfo | null>
     /** 使用会员 token 连接 Relay */
     connect: (token: string) => void
     /** 断开桥接连接 */

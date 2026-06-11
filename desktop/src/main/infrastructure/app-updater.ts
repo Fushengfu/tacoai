@@ -282,7 +282,7 @@ async function requestVersionCheck(
     nonce,
     sign,
   })
-  const appId = String(process.env.TACO_APP_ID ?? 'com.taco.ai-agent').trim() || 'com.taco.ai-agent'
+  const appId = String(process.env.TACO_APP_ID ?? 'cn.zhongnanke.taco').trim() || 'cn.zhongnanke.taco'
   const currentBuild = String(versionToBuildCode(currentVersion))
   const requestUrl = `${VERSION_CHECK_URL}?${query.toString()}`
 
@@ -686,6 +686,91 @@ export async function checkAndPromptForUpdate(options: CheckUpdateOptions = {}):
 
 export function getLastUpdateCheckResult(): AppUpdateCheckResult | null {
   return lastUpdateCheckResult
+}
+
+/* ------------------------------------------------------------------ */
+/*  Mobile APK 下载信息查询                                             */
+/* ------------------------------------------------------------------ */
+
+export type MobileApkInfo = {
+  downloadUrl: string
+  version?: string
+}
+
+/**
+ * 从版本检查 API 获取 Android APK 下载地址。
+ * 复用桌面端的登录 token 鉴权，失败时返回 null（前端 fallback 到硬编码地址）。
+ */
+export async function fetchMobileApkInfo(packageName: string): Promise<MobileApkInfo | null> {
+  console.log('[app-update] [mobile] fetchMobileApkInfo start:', { packageName })
+
+  try {
+    const uid = await resolvePersistentDeviceUid()
+    const login = await loginAndGetToken(uid)
+    const secret = extractJwtSecret(login.token)
+    if (!secret) {
+      console.warn('[app-update] [mobile] token 中未解析到 secret，跳过鉴权调用')
+      return null
+    }
+
+    const timestamp = String(Math.floor(Date.now() / 1000))
+    const nonce = randomNonce(16)
+    const body = ''
+    const sign = sha1Hex(`${nonce}${timestamp}${ZERO_WIDTH_SPLIT}${body}${ZERO_WIDTH_SPLIT}${secret}`)
+    const query = new URLSearchParams({
+      type: 'Android',
+      packageName,
+      timestamp,
+      nonce,
+      sign,
+    })
+    const requestUrl = `${VERSION_CHECK_URL}?${query.toString()}`
+
+    console.log('[app-update] [mobile] request:', {
+      url: requestUrl,
+      packageName,
+    })
+
+    const resp = await fetch(requestUrl, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${login.token}`,
+        'X-Device-Id': uid,
+        'X-Owner-Id': OWNER_ID,
+      },
+    })
+
+    if (!resp.ok) {
+      console.warn('[app-update] [mobile] API 返回非 2xx:', resp.status)
+      return null
+    }
+
+    const envelope = await parseJsonEnvelope<VersionCheckData>(resp, '手机端版本检查')
+    if (Number(envelope.errcode) !== 0) {
+      console.warn('[app-update] [mobile] API 错误:', envelope.msg)
+      return null
+    }
+
+    const data = envelope.data ?? {}
+    const downloadUrl = String(data.download_url ?? '').trim()
+    if (!downloadUrl) {
+      console.warn('[app-update] [mobile] 响应中无 download_url')
+      return null
+    }
+
+    const result: MobileApkInfo = {
+      downloadUrl,
+      version: data.version ? String(data.version).trim() : undefined,
+    }
+
+    console.log('[app-update] [mobile] success:', result)
+    return result
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.warn('[app-update] [mobile] 失败:', msg)
+    return null
+  }
 }
 
 const AUTO_CHECK_INTERVAL_MS = 60_000 // 每分钟检查一次

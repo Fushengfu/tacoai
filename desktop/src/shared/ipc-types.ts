@@ -505,6 +505,12 @@ export type RendererErrorPayload = {
   metadata?: Record<string, unknown>
 }
 
+/** 手机端 APK 下载信息 */
+export type MobileApkInfo = {
+  downloadUrl: string
+  version?: string
+}
+
 export type ChatStoreSessionSnapshot = {
   projectId: string
   sessionId: string

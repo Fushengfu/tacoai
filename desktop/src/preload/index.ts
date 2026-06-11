@@ -24,6 +24,7 @@ import type {
   RendererErrorPayload,
   BridgeStatusPayload,
   GatewayModelsResponse,
+  MobileApkInfo,
 } from '../shared/ipc'
 
 // 沙盒化 preload 无法使用 os 模块，用 process 和环境变量替代
@@ -389,6 +390,10 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.GATEWAY_GET_MODELS),
   },
   bridge: {
+    /** 获取手机端 APK 下载信息（从版本检查 API 获取 download_url） */
+    getMobileApkInfo: (packageName: string): Promise<MobileApkInfo | null> =>
+      ipcRenderer.invoke(IpcChannel.GET_MOBILE_APK_INFO, packageName),
+
     connect: (token: string): void =>
       ipcRenderer.send(IpcChannel.BRIDGE_CONNECT, token),
 

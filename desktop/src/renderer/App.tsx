@@ -25,6 +25,7 @@ import { ChatStatusOverlay } from './views/chat/ChatStatusOverlay'
 import { SettingsPage } from './views/SettingsModal'
 import TokenReportPanel from './views/token-report'
 import { BridgePanel } from './views/bridge/BridgePanel'
+import { MobileDownloadPanel } from './views/bridge/MobileDownloadPanel'
 import { LoginModal, type MemberInfo } from './views/LoginModal'
 import { PaneErrorBoundary } from './views/PaneErrorBoundary'
 import { useDrag } from './hooks/useDrag'
@@ -53,6 +54,7 @@ export default function App() {
   const [showTerminal, setShowTerminal] = useState(false)
   const [showStatusOverlay, setShowStatusOverlay] = useState(false)
   const [showBridgePanel, setShowBridgePanel] = useState(false)
+  const [showMobileDownloadPanel, setShowMobileDownloadPanel] = useState(false)
   const [editor, setEditor] = useState<EditorId>(() =>
     (localStorage.getItem('taco.editor') as EditorId) || 'cursor'
   )
@@ -595,6 +597,18 @@ export default function App() {
               </svg>
             </button>
             <button
+              className={`pill mobile-download-toggle ${showMobileDownloadPanel ? 'active' : ''}`}
+              type="button"
+              onClick={() => setShowMobileDownloadPanel((v) => !v)}
+              title="下载手机端"
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                <rect x="3.5" y="0.5" width="9" height="13" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.3"/>
+                <circle cx="8" cy="11.5" r="0.9" fill="currentColor"/>
+                <path d="M6.5 3h3" fill="none" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/>
+              </svg>
+            </button>
+            <button
               className={`pill token-report-toggle ${middleView === 'token-report' ? 'active' : ''}`}
               type="button"
               onClick={() => { setShowTokenReport((v) => !v); setMiddleView(middleView === 'token-report' ? 'chat' : 'token-report') }}
@@ -910,6 +924,10 @@ export default function App() {
 
         {showBridgePanel && (
           <BridgePanel onClose={() => setShowBridgePanel(false)} memberToken={auth.memberToken} />
+        )}
+
+        {showMobileDownloadPanel && (
+          <MobileDownloadPanel onClose={() => setShowMobileDownloadPanel(false)} />
         )}
 
         {auth.showLoginModal && (

@@ -32,7 +32,7 @@ import { getLogDir } from '../system/logger'
 import { log } from '../system/logger'
 import { handleTerminalSpawn, handleTerminalInput, handleTerminalResize, handleTerminalKill } from '../system/terminal'
 import { openExternalBrowser, closeExternalBrowser, navigateExternalBrowser, focusExternalBrowser } from '../automation/browser'
-import { checkAndPromptForUpdate, getLastUpdateCheckResult } from '../system/app-updater'
+import { checkAndPromptForUpdate, getLastUpdateCheckResult, fetchMobileApkInfo } from '../system/app-updater'
 import type { FileTreeEntry } from '../../shared/ipc'
 
 // Import from split modules
@@ -179,6 +179,9 @@ export function registerIpcHandlers() {
     })
   )
   ipcMain.handle(IpcChannel.APP_GET_UPDATE_STATUS, () => getLastUpdateCheckResult())
+  ipcMain.handle(IpcChannel.GET_MOBILE_APK_INFO, (_e, packageName: string) =>
+    fetchMobileApkInfo(packageName)
+  )
   ipcMain.handle(IpcChannel.APP_NOTIFY, handleAppNotify)
   ipcMain.handle(IpcChannel.APP_RENDERER_ERROR, handleRendererError)
   ipcMain.handle(IpcChannel.APP_STATE_GET, handleAppStateGet)

@@ -141,6 +141,8 @@ export const IpcChannel = {
   APP_CHECK_UPDATE: 'app:check-update',
   /** renderer → main, 获取最近一次版本检查结果（启动自动检查/手动检查） */
   APP_GET_UPDATE_STATUS: 'app:get-update-status',
+  /** renderer → main, 获取手机端 APK 下载信息 */
+  GET_MOBILE_APK_INFO: 'mobile:get-apk-info',
   /** renderer → main, 触发系统通知 */
   APP_NOTIFY: 'app:notify',
   /** renderer → main, 上报渲染层异常诊断 */
