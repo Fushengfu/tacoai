@@ -22,7 +22,6 @@ import type {
   AppNotifyPayload,
   AppUpdateCheckResult,
   RendererErrorPayload,
-  PromptConfig,
   BridgeStatusPayload,
   GatewayModelsResponse,
 } from '../shared/ipc'
@@ -384,12 +383,6 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.APP_STATE_SAVE_THREADS, payload),
     saveProviders: (payload: AppStateProvidersPayload): Promise<AppStateProvidersPayload> =>
       ipcRenderer.invoke(IpcChannel.APP_STATE_SAVE_PROVIDERS, payload),
-  },
-  prompt: {
-    getConfig: (): Promise<PromptConfig> =>
-      ipcRenderer.invoke(IpcChannel.PROMPT_CONFIG_GET),
-    saveConfig: (config: PromptConfig): Promise<PromptConfig> =>
-      ipcRenderer.invoke(IpcChannel.PROMPT_CONFIG_SAVE, config),
   },
   gateway: {
     getModels: (): Promise<GatewayModelsResponse> =>

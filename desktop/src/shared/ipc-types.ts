@@ -257,25 +257,6 @@ export type SystemInfo = {
   locale: string
 }
 
-/** Prompt 配置层 */
-export type PromptLayerConfig = {
-  /** 通用追加文本 */
-  allExtra?: string
-  /** agent 模式追加文本 */
-  agentExtra?: string
-  /** agent 模式完整覆盖（可选） */
-  agentOverride?: string
-}
-
-/** Prompt 配置（存储在 ~/.taco/prompt-config.json） */
-export type PromptConfig = {
-  version?: number
-  common?: PromptLayerConfig
-  provider?: Record<string, PromptLayerConfig>
-  model?: Record<string, PromptLayerConfig>
-  updatedAt?: string
-}
-
 /* ------------------------------------------------------------------ */
 /*  Editor                                                             */
 /* ------------------------------------------------------------------ */

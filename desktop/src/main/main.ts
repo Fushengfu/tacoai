@@ -11,7 +11,6 @@ import { logError, logInfo, getLogDir } from './infrastructure/logger'
 import { IpcChannel } from '../shared/ipc'
 import { shutdownAllMcp } from './infrastructure/mcp'
 import { cleanupAllTerminals } from './infrastructure/terminal'
-import { ensurePromptConfigInitialized } from './services/prompt/prompt-config'
 import { scheduleStartupUpdateCheck } from './infrastructure/app-updater'
 import {
   isExternalUrl,
@@ -136,15 +135,6 @@ app.whenReady().then(async () => {
     node: process.versions.node,
     logDir: getLogDir(),
   })
-
-  try {
-    await ensurePromptConfigInitialized()
-    logInfo('prompt-config', 'prompt-config.json initialized')
-  } catch (err) {
-    logInfo('prompt-config', 'prompt-config.json init failed', {
-      error: err instanceof Error ? err.message : String(err),
-    })
-  }
 
   setWindowFactory(createWindow)
   setMainWindow(createWindow())

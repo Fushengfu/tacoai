@@ -182,10 +182,6 @@ export const IpcChannel = {
   APP_STATE_GET: 'app-state:get',
   APP_STATE_SAVE_THREADS: 'app-state:save-threads',
   APP_STATE_SAVE_PROVIDERS: 'app-state:save-providers',
-  /** Prompt 配置（可选文件覆盖） */
-  PROMPT_CONFIG_GET: 'prompt-config:get',
-  PROMPT_CONFIG_SAVE: 'prompt-config:save',
-
   /** renderer → main, 获取 AI 网关模型列表 */
   GATEWAY_GET_MODELS: 'gateway:get-models',
 

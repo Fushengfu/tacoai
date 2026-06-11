@@ -5,8 +5,6 @@
  */
 
 import type { ProviderId } from '../../../renderer/types'
-import type { PromptConfig, PromptLayerConfig } from '../../../shared/ipc-types'
-import { DEFAULT_MODEL_PROMPT_LAYER_MAP, DEFAULT_PROVIDER_PROMPT_LAYER_MAP } from './prompt-defaults'
 
 /** 系统环境信息 */
 export type SystemEnv = {
@@ -531,58 +529,15 @@ function cleanText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
-function applyLayer(base: string, layer?: PromptLayerConfig): string {
-  if (!layer) return base
-  const modeOverride = cleanText(layer.agentOverride)
-  let current = modeOverride || base
-  const allExtra = cleanText(layer.allExtra)
-  const modeExtra = cleanText(layer.agentExtra)
-  // 防止把完整系统提示词再次注入，造成重复规则与上下文污染。
-  const looksLikeFullPrompt = (text: string): boolean => {
-    if (!text) return false
-    const t = text.toLowerCase()
-    return t.includes('当前会话环境') || t.includes('核心行为准则') || t.includes('完成门禁')
-  }
-  if (allExtra && !current.includes(allExtra) && !looksLikeFullPrompt(allExtra)) current += `\n${allExtra}`
-  if (modeExtra && !current.includes(modeExtra) && !looksLikeFullPrompt(modeExtra)) current += `\n${modeExtra}`
-  return current
-}
-
-function resolveConfigLayerMap(
-  map: Record<string, PromptLayerConfig> | undefined,
-  key: string | undefined
-): PromptLayerConfig | undefined {
-  if (!map || !key) return undefined
-  return map[key.trim().toLowerCase()]
-}
-
 /** 构建包含系统环境的 system prompt */
 export function buildSystemPrompt(options: {
   env: SystemEnv
-  provider?: ProviderId
-  model?: string
   projectRules?: string
-  promptConfig?: PromptConfig | null
 }): string {
   const env = options.env
-  const provider = options.provider
-  const model = cleanText(options.model)
   const projectRules = cleanText(options.projectRules)
-  const promptConfig = options.promptConfig ?? undefined
 
   let prompt = buildAgentSystemPrompt(env)
-
-  // 配置文件层：common -> provider -> model
-  // 若配置文件缺失，使用共享默认层作为兜底。
-  const fallbackConfig: PromptConfig = {
-    provider: DEFAULT_PROVIDER_PROMPT_LAYER_MAP,
-    model: DEFAULT_MODEL_PROMPT_LAYER_MAP,
-  }
-  const resolvedConfig = promptConfig ?? fallbackConfig
-
-  prompt = applyLayer(prompt, resolvedConfig.common)
-  prompt = applyLayer(prompt, resolveConfigLayerMap(resolvedConfig.provider, provider))
-  prompt = applyLayer(prompt, resolveConfigLayerMap(resolvedConfig.model, model))
 
   if (projectRules) {
     prompt += `\n\n# 项目规则（用户自定义）\n${projectRules}\n\n执行要求：在不违反安全边界与系统约束的前提下，优先遵守以上项目规则。`

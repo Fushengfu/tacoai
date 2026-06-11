@@ -382,11 +382,9 @@ export async function handleAppNotify(_event: IpcMainInvokeEvent, payload: AppNo
 }
 
 /* ------------------------------------------------------------------ */
-/*  Config handlers (AppState, PromptConfig)                 */
+/*  Config handlers (AppState)                              */
 /* ------------------------------------------------------------------ */
 
-import { getPromptConfig, savePromptConfig } from '../../project/prompt-config'
-import type { PromptConfig } from '../../../shared/ipc'
 import { getAppState, saveAppProvidersState, saveAppThreadsState } from '../../system/app-state'
 
 export async function handleAppStateGet(): Promise<AppStateSnapshot> {
@@ -416,12 +414,4 @@ export async function handleAppStateSaveProviders(
   payload: AppStateProvidersPayload,
 ): Promise<AppStateProvidersPayload> {
   return await saveAppProvidersState(payload)
-}
-
-export async function handlePromptConfigGet(): Promise<PromptConfig> {
-  return await getPromptConfig()
-}
-
-export async function handlePromptConfigSave(_event: IpcMainInvokeEvent, config: PromptConfig): Promise<PromptConfig> {
-  return await savePromptConfig(config)
 }

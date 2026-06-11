@@ -1,5 +1,4 @@
 import type { ModelConfig, ProviderId, ProviderForm, ProviderForms } from './types'
-import type { PromptConfig } from '../shared/ipc'
 import { buildSystemPrompt as buildSystemPromptCore } from '../shared/prompt-builder'
 import type { SystemEnv } from '../shared/prompt-builder'
 
@@ -126,7 +125,6 @@ export function buildSystemPrompt(options?: {
   model?: string
   supportsVision?: boolean
   projectRules?: string
-  promptConfig?: PromptConfig | null
 }): string {
   const env = getSystemEnv()
   if (options?.workspace) env.workspace = options.workspace
@@ -134,9 +132,6 @@ export function buildSystemPrompt(options?: {
 
   return buildSystemPromptCore({
     env,
-    provider: options?.provider,
-    model: options?.model,
     projectRules: options?.projectRules,
-    promptConfig: options?.promptConfig,
   })
 }

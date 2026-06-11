@@ -110,6 +110,16 @@ The top "+ Add Memory" button allows manual addition of project knowledge.
 
 ---
 
+### Cross-device Sync Demo
+
+<p align="center">
+  <video controls width="800" src="49.mp4"></video>
+  <br/>
+  <em>Taco AI mobile app operation demo</em>
+</p>
+
+---
+
 ## Download & Install
 
 No need to clone the source code — download the installer for your platform directly.
@@ -201,7 +211,7 @@ taco/
 │   ├── backend/                # Go backend service
 │   ├── admin/                  # React admin panel
 │   └── docs/                   # API documentation
-└── 1.png 2.png 3.png 4.png 5.png  # App screenshots
+└── 1.png 2.png 3.png 4.png 5.png 49.mp4  # Screenshots & demo video
 ```
 
 ---

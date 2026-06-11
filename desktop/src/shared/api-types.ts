@@ -29,7 +29,6 @@ import type {
   MemoryScopeStats,
   ProjectNote,
   ProjectTaskMemory,
-  PromptConfig,
   RendererErrorPayload,
   SkillInfo,
   SystemInfo,
@@ -238,12 +237,6 @@ export type TacoApi = {
     get: () => Promise<AppStateSnapshot>
     saveThreads: (payload: AppStateThreadsPayload) => Promise<AppStateThreadsPayload>
     saveProviders: (payload: AppStateProvidersPayload) => Promise<AppStateProvidersPayload>
-  }
-  prompt: {
-    /** 读取 prompt 配置（文件缺失时返回默认空配置） */
-    getConfig: () => Promise<PromptConfig>
-    /** 保存 prompt 配置 */
-    saveConfig: (config: PromptConfig) => Promise<PromptConfig>
   }
   gateway: {
     /** 从 AI 网关获取模型列表（需要已登录） */

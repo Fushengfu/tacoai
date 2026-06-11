@@ -51,8 +51,6 @@ import {
   handleAppStateGet,
   handleAppStateSaveThreads,
   handleAppStateSaveProviders,
-  handlePromptConfigGet,
-  handlePromptConfigSave,
 } from './handlers/chat-handlers'
 
 import {
@@ -186,8 +184,6 @@ export function registerIpcHandlers() {
   ipcMain.handle(IpcChannel.APP_STATE_GET, handleAppStateGet)
   ipcMain.handle(IpcChannel.APP_STATE_SAVE_THREADS, handleAppStateSaveThreads)
   ipcMain.handle(IpcChannel.APP_STATE_SAVE_PROVIDERS, handleAppStateSaveProviders)
-  ipcMain.handle(IpcChannel.PROMPT_CONFIG_GET, handlePromptConfigGet)
-  ipcMain.handle(IpcChannel.PROMPT_CONFIG_SAVE, handlePromptConfigSave)
 
   // Terminal
   ipcMain.on(IpcChannel.TERMINAL_SPAWN, handleTerminalSpawn)

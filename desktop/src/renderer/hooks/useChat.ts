@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ActivePlan, AgentStep, AttachedAsset, AttachedImage, ChatMsg, ModelConfig, ProviderId, QueuedMessage, TaskTiming, ToolCallInfo, ToolResultInfo } from '../types'
-import type { ChatStoreSessionPage, ChatStoreSessionPatch, ChatStoreSessionSummary, IpcChatMessage, IpcChatOverrides, PromptConfig } from '../../shared/ipc'
+import type { ChatStoreSessionPage, ChatStoreSessionPatch, ChatStoreSessionSummary, IpcChatMessage, IpcChatOverrides } from '../../shared/ipc'
 import { buildSystemPrompt } from '../constants'
 import { loadJson, saveJson, uid } from '../lib/storage'
 import { loadUploadSettings, toIpcUploadConfig } from '../lib/upload-config'
@@ -455,9 +455,6 @@ export function useChat() {
   const inFlightThreadsRef = useRef<Set<string>>(new Set())
   // 始终指向最新的 sendMessage 函数
   const sendMessageRef = useRef<(params: SendMessageParams) => Promise<void>>()
-  // Prompt 配置（来自 ~/.taco/prompt-config.json，不存在时回退硬编码）
-  const promptConfigRef = useRef<PromptConfig | null>(null)
-  const promptConfigLoadedRef = useRef(false)
 
   const commitThreadMessages = useCallback((next: Record<string, ChatMsg[]>) => {
     threadMessagesRef.current = next
@@ -733,25 +730,6 @@ export function useChat() {
   useEffect(() => {
     saveJson('taco.projectTokenStatsByThread', projectTokenStatsByThread)
   }, [projectTokenStatsByThread])
-
-  useEffect(() => {
-    let cancelled = false
-    if (!window.taco.prompt?.getConfig) return
-    window.taco.prompt.getConfig()
-      .then((config) => {
-        if (cancelled) return
-        promptConfigRef.current = config
-        promptConfigLoadedRef.current = true
-      })
-      .catch(() => {
-        if (cancelled) return
-        promptConfigRef.current = null
-        promptConfigLoadedRef.current = true
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
   const ensureSessionLoaded = useCallback(async (sessionId: string, limit = CHAT_STORE_INITIAL_PAGE_SIZE) => {
     const key = String(sessionId || '').trim()
@@ -1068,23 +1046,6 @@ export function useChat() {
       delete next[threadId]
       return next
     })
-  }
-
-  async function ensurePromptConfigLoaded(): Promise<PromptConfig | null> {
-    if (promptConfigLoadedRef.current) return promptConfigRef.current
-    if (!window.taco.prompt?.getConfig) {
-      promptConfigLoadedRef.current = true
-      promptConfigRef.current = null
-      return null
-    }
-    try {
-      promptConfigRef.current = await window.taco.prompt.getConfig()
-    } catch {
-      promptConfigRef.current = null
-    } finally {
-      promptConfigLoadedRef.current = true
-    }
-    return promptConfigRef.current
   }
 
   /* ------------------------------------------------------------------ */
@@ -1474,12 +1435,10 @@ export function useChat() {
     }
 
     // 构造 API 消息
-    const promptConfig = await ensurePromptConfigLoaded()
-    const model = String(modelConfig.model ?? '').trim() || undefined
     const systemContent = buildSystemPrompt({
-      workspace, provider, model,
+      workspace,
       supportsVision: Boolean(modelConfig.supportsVision),
-      projectRules, promptConfig,
+      projectRules,
     })
     const apiMessages = [
       { role: 'system' as const, content: systemContent },
@@ -1540,15 +1499,13 @@ export function useChat() {
     setActiveTaskStartedAtByThread((prev) => ({ ...prev, [threadId]: taskStartedAt }))
 
     // 构造 API 消息
-    const promptConfig = await ensurePromptConfigLoaded()
-    const model = String(modelConfig.model ?? '').trim() || undefined
     const apiMessages = [
       {
         role: 'system' as const,
         content: buildSystemPrompt({
-          workspace, provider, model,
+          workspace,
           supportsVision: Boolean(modelConfig.supportsVision),
-          projectRules, promptConfig,
+          projectRules,
         }),
       },
       ...buildMessagesForApi(currentMsgs),
