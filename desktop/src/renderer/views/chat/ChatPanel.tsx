@@ -142,6 +142,8 @@ function maskToolNamesForUser(text: string, toolNames: string[]): string {
   output = output
     .replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/gi, '')
     .replace(/<invoke[\s\S]*?<\/invoke>/gi, '')
+    .replace(/<tool_calls\b[^>]*>[\s\S]*?<\/tool_calls>/gi, '')
+    .replace(/<\/?tool_calls\b[^>]*>/gi, '')
     .replace(/<\/?minimax:tool_call>/gi, '')
   return output
 }

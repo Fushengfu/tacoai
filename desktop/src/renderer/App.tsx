@@ -16,7 +16,6 @@ import { useChat } from './hooks/useChat'
 import { useProviderSettings } from './hooks/useProviderSettings'
 import { useGatewayModels } from './hooks/useGatewayModels'
 import { useResolvedModel } from './hooks/useResolvedModel'
-import { useGuiPlusSettings } from './hooks/useGuiPlusSettings'
 import { useAuth } from './hooks/useAuth'
 import { useLayout } from './hooks/useLayout'
 import { useBrowser } from './hooks/useBrowser'
@@ -39,7 +38,6 @@ export default function App() {
   const chat = useChat()
   const providerSettings = useProviderSettings()
   const gatewayModels = useGatewayModels()
-  const guiPlusSettings = useGuiPlusSettings()
   const auth = useAuth()
   const layout = useLayout()
   
@@ -762,8 +760,6 @@ export default function App() {
                 onAddModelConfig={providerSettings.addModelConfig}
                 onUpdateModelConfig={providerSettings.updateModelConfig}
                 onRemoveModelConfig={providerSettings.removeModelConfig}
-                guiPlusForm={guiPlusSettings.guiPlusForm}
-                onUpdateGuiPlusField={guiPlusSettings.updateGuiPlusField}
                 themeMode={themeMode}
                 onThemeModeChange={setThemeMode}
                 projectRules={currentProjectRules}

@@ -6,7 +6,6 @@
  * - registry.ts: 工具过滤、权限管理
  * - executor.ts: 工具执行引擎
  * - risk-assessor.ts: 风险评估
- * - gui-plus-coords.ts: GUI-Plus 坐标映射
  * - workspace-tree.ts: 工作区目录树
  */
 

@@ -106,12 +106,6 @@
   min-width: 0;
 }
 
-.gui-plus-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
 .settings-models-list-wrap {
   background: rgba(255, 255, 255, 0.02);
   border: 1px solid rgba(255, 255, 255, 0.08);

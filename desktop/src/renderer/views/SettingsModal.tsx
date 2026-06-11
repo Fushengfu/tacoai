@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
-import type { GuiPlusForm, ModelConfig, ThemeMode } from '../types'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import type { ModelConfig, ThemeMode } from '../types'
 import type { SkillInfo, ProjectNote, ProjectTaskMemory, NoteCategory, McpServerInfo, MemoryScopeStats, AppUpdateCheckResult } from '../../shared/ipc'
+import { PROVIDER_DEFAULT_BASE_URLS } from '../constants'
 import {
   loadUploadSettings,
   normalizeUploadSettingsState,
@@ -10,7 +11,6 @@ import {
 import { GeneralSettingsPanel } from './settings/GeneralSettingsPanel'
 import { ModelsSettingsPanel } from './settings/ModelsSettingsPanel'
 import { UploadSettingsPanel } from './settings/UploadSettingsPanel'
-import { GuiPlusSettingsPanel } from './settings/GuiPlusSettingsPanel'
 import { SkillsSettingsPanel } from './settings/SkillsSettingsPanel'
 import { NotesSettingsPanel } from './settings/NotesSettingsPanel'
 import { McpSettingsPanel } from './settings/McpSettingsPanel'
@@ -19,11 +19,9 @@ type SettingsPageProps = {
   modelConfigs: ModelConfig[]
   activeModelConfigId: string
   onSetActiveModelConfigId: (id: string) => void
-  onAddModelConfig: () => string
+  onAddModelConfig: (initial?: Partial<ModelConfig>) => string
   onUpdateModelConfig: (id: string, patch: Partial<Omit<ModelConfig, 'id'>>) => void
   onRemoveModelConfig: (id: string) => void
-  guiPlusForm: GuiPlusForm
-  onUpdateGuiPlusField: <K extends keyof GuiPlusForm>(key: K, value: GuiPlusForm[K]) => void
   themeMode: ThemeMode
   onThemeModeChange: (mode: ThemeMode) => void
   projectRules?: string
@@ -35,7 +33,7 @@ type SettingsPageProps = {
   memberToken?: string
 }
 
-type SettingsTab = 'general' | 'models' | 'upload' | 'gui_plus' | 'skills' | 'notes' | 'mcp'
+type SettingsTab = 'general' | 'models' | 'upload' | 'skills' | 'notes' | 'mcp'
 type ModelConfigDraft = Pick<ModelConfig, 'provider' | 'baseUrl' | 'apiKey' | 'model' | 'contextLength' | 'temperature' | 'supportsVision' | 'supportsReasoning'>
 
 function toModelDraft(model: ModelConfig): ModelConfigDraft {
@@ -58,8 +56,6 @@ export function SettingsPage({
   onAddModelConfig,
   onUpdateModelConfig,
   onRemoveModelConfig,
-  guiPlusForm,
-  onUpdateGuiPlusField,
   themeMode,
   onThemeModeChange,
   projectRules,
@@ -76,7 +72,9 @@ export function SettingsPage({
   const [modelDraftForId, setModelDraftForId] = useState('')
   const [modelDraftDirty, setModelDraftDirty] = useState(false)
   const [modelDraft, setModelDraft] = useState<ModelConfigDraft | null>(null)
-  const [revealGuiPlusKey, setRevealGuiPlusKey] = useState(false)
+  // 本地待保存的模型（未点"保存"前不写入数据库）
+  const [pendingModelIds, setPendingModelIds] = useState<Set<string>>(new Set())
+  const [pendingModelDrafts, setPendingModelDrafts] = useState<Map<string, ModelConfig>>(new Map())
   const [uploadDraft, setUploadDraft] = useState<UploadSettingsState>(() => loadUploadSettings())
   const [uploadSaved, setUploadSaved] = useState<UploadSettingsState>(() => loadUploadSettings())
   const [revealUploadSecrets, setRevealUploadSecrets] = useState<Record<string, boolean>>({})
@@ -155,12 +153,15 @@ export function SettingsPage({
       return
     }
 
-    const hasEditing = editingModelId && modelConfigs.some((item) => item.id === editingModelId)
+    const hasEditing = editingModelId && (
+      modelConfigs.some((item) => item.id === editingModelId)
+      || pendingModelDrafts.has(editingModelId)
+    )
     if (hasEditing) return
 
     const active = modelConfigs.find((item) => item.id === activeModelConfigId)
     setEditingModelId(active?.id ?? modelConfigs[0].id)
-  }, [activeModelConfigId, editingModelId, modelConfigs])
+  }, [activeModelConfigId, editingModelId, modelConfigs, pendingModelDrafts])
 
   useEffect(() => {
     if (!editingModelId) {
@@ -170,6 +171,7 @@ export function SettingsPage({
       return
     }
     const selected = modelConfigs.find((item) => item.id === editingModelId)
+      ?? pendingModelDrafts.get(editingModelId)
     if (!selected) return
 
     if (modelDraftForId !== selected.id || !modelDraftDirty) {
@@ -177,7 +179,7 @@ export function SettingsPage({
       setModelDraftForId(selected.id)
       setModelDraftDirty(false)
     }
-  }, [editingModelId, modelConfigs, modelDraftDirty, modelDraftForId])
+  }, [editingModelId, modelConfigs, pendingModelDrafts, modelDraftDirty, modelDraftForId])
 
   const notesWorkspace = (workspace ?? '').trim()
   const notesProjectId = (projectId ?? '').trim()
@@ -489,8 +491,16 @@ export function SettingsPage({
   }
 
   const selectedModel = editingModelId
-    ? (modelConfigs.find((item) => item.id === editingModelId) ?? null)
+    ? (modelConfigs.find((item) => item.id === editingModelId)
+      ?? pendingModelDrafts.get(editingModelId)
+      ?? null)
     : null
+
+  // 合并已持久化模型与本地待保存模型，用于左侧列表展示
+  const allModelConfigs = useMemo(
+    () => [...modelConfigs, ...pendingModelDrafts.values()],
+    [modelConfigs, pendingModelDrafts],
+  )
 
   const modelHasChanges = Boolean(
     selectedModel
@@ -510,17 +520,41 @@ export function SettingsPage({
   const updateDraftField = <K extends keyof ModelConfigDraft>(key: K, value: ModelConfigDraft[K]) => {
     setModelDraft((prev) => {
       if (!prev) return prev
-      return {
+      const next: ModelConfigDraft = {
         ...prev,
         [key]: value,
       }
+      // 切换 Provider 时自动更新为对应服务商默认接口地址
+      if (key === 'provider') {
+        const newProvider = value as string
+        const defaultUrl = PROVIDER_DEFAULT_BASE_URLS[newProvider as keyof typeof PROVIDER_DEFAULT_BASE_URLS]
+        if (defaultUrl) {
+          next.baseUrl = defaultUrl
+        }
+      }
+      return next
     })
     setModelDraftDirty(true)
   }
 
   const handleSaveModelDraft = () => {
     if (!selectedModel || !modelDraft) return
-    onUpdateModelConfig(selectedModel.id, modelDraft)
+    if (pendingModelIds.has(selectedModel.id)) {
+      // 新模型：写入数据库
+      onAddModelConfig({ ...modelDraft, id: selectedModel.id } as Partial<ModelConfig>)
+      setPendingModelIds((prev) => {
+        const next = new Set(prev)
+        next.delete(selectedModel.id)
+        return next
+      })
+      setPendingModelDrafts((prev) => {
+        const next = new Map(prev)
+        next.delete(selectedModel.id)
+        return next
+      })
+    } else {
+      onUpdateModelConfig(selectedModel.id, modelDraft)
+    }
     setModelDraftDirty(false)
   }
 
@@ -574,14 +608,48 @@ export function SettingsPage({
   const handleSelectModel = useCallback((id: string) => {
     if (!id || id === editingModelId) return
     flushModelDraft()
+    // 如果从待保存模型切换走且未保存，清理掉
+    const prevId = editingModelId
+    if (prevId) {
+      setPendingModelIds((prev) => {
+        const next = new Set(prev)
+        next.delete(prevId)
+        return next
+      })
+      setPendingModelDrafts((prev) => {
+        const next = new Map(prev)
+        next.delete(prevId)
+        return next
+      })
+    }
     setEditingModelId(id)
   }, [editingModelId, flushModelDraft])
 
   const handleAddModel = useCallback(() => {
     flushModelDraft()
-    const id = onAddModelConfig()
+    const ts = Date.now()
+    const id = `pending-${ts}-${Math.random().toString(36).slice(2, 8)}`
+    const defaultProvider = 'deepseek'
+    const newModel: ModelConfig = {
+      id,
+      provider: defaultProvider,
+      name: '',
+      baseUrl: PROVIDER_DEFAULT_BASE_URLS[defaultProvider],
+      apiKey: '',
+      model: '',
+      contextLength: '',
+      temperature: '',
+      supportsVision: false,
+      createdAt: ts,
+      updatedAt: ts,
+    }
+    setPendingModelIds((prev) => new Set(prev).add(id))
+    setPendingModelDrafts((prev) => new Map(prev).set(id, newModel))
+    setModelDraft(toModelDraft(newModel))
+    setModelDraftForId(id)
+    setModelDraftDirty(false)
     setEditingModelId(id)
-  }, [flushModelDraft, onAddModelConfig])
+  }, [flushModelDraft])
 
   const handleRemoveModelWithConfirm = useCallback((id: string, displayName: string) => {
     const targetId = String(id || '').trim()
@@ -589,9 +657,26 @@ export function SettingsPage({
     const targetName = String(displayName || '').trim() || targetId
     const confirmed = window.confirm(`确认删除模型「${targetName}」？此操作不可恢复。`)
     if (!confirmed) return
+
+    // 待保存模型只从本地清理
+    if (pendingModelIds.has(targetId)) {
+      setPendingModelIds((prev) => {
+        const next = new Set(prev)
+        next.delete(targetId)
+        return next
+      })
+      setPendingModelDrafts((prev) => {
+        const next = new Map(prev)
+        next.delete(targetId)
+        return next
+      })
+      if (editingModelId === targetId) setEditingModelId(null)
+      return
+    }
+
     if (editingModelId === targetId) setEditingModelId(null)
     onRemoveModelConfig(targetId)
-  }, [editingModelId, onRemoveModelConfig])
+  }, [editingModelId, onRemoveModelConfig, pendingModelIds])
 
   useEffect(() => {
     if (tab !== 'models') {
@@ -661,13 +746,6 @@ export function SettingsPage({
           </button>
           <button
             type="button"
-            className={`settings-tab ${tab === 'gui_plus' ? 'active' : ''}`}
-            onClick={() => setTab('gui_plus')}
-          >
-            GUI-Plus
-          </button>
-          <button
-            type="button"
             className={`settings-tab ${tab === 'skills' ? 'active' : ''}`}
             onClick={() => setTab('skills')}
           >
@@ -696,6 +774,7 @@ export function SettingsPage({
               browserAutoTakeover={browserAutoTakeover}
               browserDebugMode={browserDebugMode}
               browserHiddenMode={browserHiddenMode}
+              desktopAutoTakeover={autoApproveCategories.has('desktop_ops')}
               recallDebugEnabled={recallDebugEnabled}
               themeMode={themeMode}
               projectRulesDraft={projectRulesDraft}
@@ -704,6 +783,16 @@ export function SettingsPage({
               updateCheckSummary={updateCheckSummary}
               autoApproveCategories={autoApproveCategories}
               onBrowserAutoTakeoverChange={(val) => {
+                setBrowserAutoTakeover(val)
+                localStorage.setItem('taco.browserAutoTakeover', String(val))
+                window.taco.browser.setAutoTakeover(val)
+                // 同步到自动授权分类，确保浏览器操作与全局接管模式保持一致
+                const nextAutoApprove = new Set(autoApproveCategories)
+                if (val) nextAutoApprove.add('browser_ops')
+                else nextAutoApprove.delete('browser_ops')
+                updateAutoApproveCategories(nextAutoApprove)
+              }}
+              onBrowserAutoTakeoverSimple={(val) => {
                 setBrowserAutoTakeover(val)
                 localStorage.setItem('taco.browserAutoTakeover', String(val))
                 window.taco.browser.setAutoTakeover(val)
@@ -717,6 +806,12 @@ export function SettingsPage({
                 setBrowserHiddenMode(val)
                 localStorage.setItem('taco.browserHiddenMode', String(val))
                 window.taco.browser.setHiddenMode(val)
+              }}
+              onDesktopAutoTakeoverChange={(val) => {
+                const next = new Set(autoApproveCategories)
+                if (val) next.add('desktop_ops')
+                else next.delete('desktop_ops')
+                updateAutoApproveCategories(next)
               }}
               onRecallDebugEnabledChange={(val) => {
                 setRecallDebugEnabled(val)
@@ -734,12 +829,13 @@ export function SettingsPage({
           {/* ── 模型配置 ── */}
           {tab === 'models' && (
             <ModelsSettingsPanel
-              modelConfigs={modelConfigs}
+              modelConfigs={allModelConfigs}
               activeModelConfigId={activeModelConfigId}
               editingModelId={editingModelId}
               selectedModel={selectedModel}
               modelDraft={modelDraft}
               modelHasChanges={modelHasChanges}
+              editingIsPending={pendingModelIds.has(editingModelId || '')}
               revealApiKey={revealApiKey}
               onAddModel={handleAddModel}
               onSelectModel={handleSelectModel}
@@ -762,16 +858,6 @@ export function SettingsPage({
               onSave={handleSaveUploadDraft}
               revealUploadSecrets={revealUploadSecrets}
               onToggleSecret={(key) => setRevealUploadSecrets((prev) => ({ ...prev, [key]: !(prev[key] ?? false) }))}
-            />
-          )}
-
-          {/* ── GUI-Plus ── */}
-          {tab === 'gui_plus' && (
-            <GuiPlusSettingsPanel
-              guiPlusForm={guiPlusForm}
-              onUpdateGuiPlusField={onUpdateGuiPlusField}
-              revealGuiPlusKey={revealGuiPlusKey}
-              onToggleGuiPlusKey={() => setRevealGuiPlusKey((prev) => !prev)}
             />
           )}
 

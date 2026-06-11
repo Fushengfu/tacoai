@@ -541,7 +541,7 @@ function applyLayer(base: string, layer?: PromptLayerConfig): string {
   const looksLikeFullPrompt = (text: string): boolean => {
     if (!text) return false
     const t = text.toLowerCase()
-    return t.includes('你是 taco 的执行代理') || t.includes('# 总控路由') || t.includes('## 1) 基础角色')
+    return t.includes('当前会话环境') || t.includes('核心行为准则') || t.includes('完成门禁')
   }
   if (allExtra && !current.includes(allExtra) && !looksLikeFullPrompt(allExtra)) current += `\n${allExtra}`
   if (modeExtra && !current.includes(modeExtra) && !looksLikeFullPrompt(modeExtra)) current += `\n${modeExtra}`

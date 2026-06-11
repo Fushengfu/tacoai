@@ -19,7 +19,6 @@ import type {
   MemoryScopeExportResult,
   McpServerInfo,
   ExternalBrowserStatus,
-  GuiPlusConfig,
   AppNotifyPayload,
   AppUpdateCheckResult,
   RendererErrorPayload,
@@ -377,12 +376,6 @@ const tacoApi: TacoApi = {
         ipcRenderer.removeListener(IpcChannel.EXTERNAL_BROWSER_STATUS, handler)
       }
     },
-  },
-  guiPlus: {
-    getConfig: (): Promise<GuiPlusConfig> =>
-      ipcRenderer.invoke(IpcChannel.GUI_PLUS_GET),
-    saveConfig: (config: GuiPlusConfig): Promise<void> =>
-      ipcRenderer.invoke(IpcChannel.GUI_PLUS_SAVE, config),
   },
   appState: {
     get: (): Promise<AppStateSnapshot> =>

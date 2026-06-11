@@ -382,21 +382,12 @@ export async function handleAppNotify(_event: IpcMainInvokeEvent, payload: AppNo
 }
 
 /* ------------------------------------------------------------------ */
-/*  Config handlers (GUI-Plus, AppState, PromptConfig)                 */
+/*  Config handlers (AppState, PromptConfig)                 */
 /* ------------------------------------------------------------------ */
 
-import { getGuiPlusConfig, saveGuiPlusConfig } from '../../automation/gui-plus'
-import type { GuiPlusConfig, PromptConfig } from '../../../shared/ipc'
 import { getPromptConfig, savePromptConfig } from '../../project/prompt-config'
+import type { PromptConfig } from '../../../shared/ipc'
 import { getAppState, saveAppProvidersState, saveAppThreadsState } from '../../system/app-state'
-
-export async function handleGuiPlusGet(): Promise<GuiPlusConfig> {
-  return await getGuiPlusConfig()
-}
-
-export async function handleGuiPlusSave(_event: IpcMainInvokeEvent, config: GuiPlusConfig): Promise<void> {
-  await saveGuiPlusConfig(config)
-}
 
 export async function handleAppStateGet(): Promise<AppStateSnapshot> {
   return await getAppState()

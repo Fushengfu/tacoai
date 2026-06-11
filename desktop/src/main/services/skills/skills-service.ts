@@ -48,7 +48,7 @@ const SKILL_TOOL_GROUPS: Record<string, string[]> = {
     'browser_drag',
     'browser_select',
   ],
-  desktop: ['desktop_screenshot', 'gui_plus_analyze', 'desktop_action'],
+  desktop: ['desktop_screenshot', 'desktop_action'],
   mcp: ['mcp_list_tools', 'mcp_call'],
   files: ['read_file', 'write_file', 'edit_file', 'delete_file', 'list_dir', 'find_file'],
   command: ['run_command'],
@@ -194,23 +194,21 @@ const BUILTIN_SKILLS: SkillInfo[] = [
 - **视觉定位任务**: 在未知坐标时先截图分析，再执行点击或输入
 
 ## 操作流程模式
-典型的桌面操作应遵循“截图-识别-执行-校验”的循环：
+典型的桌面操作应遵循“截图-执行-校验”的循环：
 
 1. **desktop_screenshot** → 获取当前屏幕截图
-2. **gui_plus_analyze** → 分析截图，定位目标元素或生成下一步动作
-3. **desktop_action** → 执行点击、双击、输入、快捷键、拖拽等动作
-4. **desktop_screenshot** → 再次截图复核界面状态变化
+2. **desktop_action** → 执行点击、双击、输入、快捷键、拖拽等动作
+3. **desktop_screenshot** → 再次截图复核界面状态变化
 
 ## 关键注意事项
 - 如果用户已经明确提供坐标、按键或输入内容，可直接使用 desktop_action
-- 如果目标只是语义描述（例如“点击保存按钮”），必须先截图再识别
+- 如果目标只是语义描述（例如“点击保存按钮”），可以先截图通过 MCP 视觉工具分析定位
 - 点击后若需要立即输入，先确认焦点已切换成功
 - 关键动作后必须复核结果，避免只报告“已执行”
 - 桌面操作不要混用浏览器 DOM 工具，桌面任务只使用桌面相关工具
 
 ## 工具速查
 - **desktop_screenshot**: 截取当前桌面屏幕,返回本地图片路径、cloudUrl与尺寸信息
-- **gui_plus_analyze**: 分析截图并返回结构化识别结果；instruction 必须明确识别目标
 - **desktop_action**: 执行点击、双击、输入、快捷键、拖拽、滚动等桌面动作；按 action 类型填写参数`,
   },
   {

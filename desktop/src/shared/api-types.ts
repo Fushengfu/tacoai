@@ -24,7 +24,6 @@ import type {
   GatewayModelsResponse,
   GitFileChange,
   GitWorkingTreeStatus,
-  GuiPlusConfig,
   McpServerInfo,
   MemoryScopeExportResult,
   MemoryScopeStats,
@@ -234,10 +233,6 @@ export type TacoApi = {
     focusExternal: (appId?: string) => Promise<void>
     /** 监听外部浏览器状态变化 (opened/closed/navigated) */
     onExternalStatus: (callback: (status: ExternalBrowserStatus) => void) => () => void
-  }
-  guiPlus: {
-    getConfig: () => Promise<GuiPlusConfig>
-    saveConfig: (config: GuiPlusConfig) => Promise<void>
   }
   appState: {
     get: () => Promise<AppStateSnapshot>

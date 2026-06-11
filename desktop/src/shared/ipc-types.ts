@@ -488,16 +488,6 @@ export type BrowserActionResult = {
   error?: string
 }
 
-export type GuiPlusConfig = {
-  baseUrl: string
-  apiKey: string
-  model: string
-  minPixels?: number
-  maxPixels?: number
-  highResolution?: boolean
-  includeUsage?: boolean
-}
-
 /* ------------------------------------------------------------------ */
 /*  Application State Types                                             */
 /* ------------------------------------------------------------------ */

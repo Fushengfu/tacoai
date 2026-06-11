@@ -178,9 +178,6 @@ export const IpcChannel = {
   BRIDGE_SET_PAIRING_MODE: 'bridge:set-pairing-mode',
 
 
-  /** GUI-Plus 配置 */
-  GUI_PLUS_GET: 'gui-plus:get',
-  GUI_PLUS_SAVE: 'gui-plus:save',
   /** 渲染层核心状态（文件持久化） */
   APP_STATE_GET: 'app-state:get',
   APP_STATE_SAVE_THREADS: 'app-state:save-threads',

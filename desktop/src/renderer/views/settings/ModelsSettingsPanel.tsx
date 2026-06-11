@@ -8,6 +8,7 @@ type ModelsSettingsPanelProps = {
   selectedModel: ModelConfig | null
   modelDraft: Partial<ModelConfig> | null
   modelHasChanges: boolean
+  editingIsPending: boolean
   revealApiKey: Record<string, boolean>
   onAddModel: () => void
   onSelectModel: (id: string) => void
@@ -25,6 +26,7 @@ export function ModelsSettingsPanel({
   selectedModel,
   modelDraft,
   modelHasChanges,
+  editingIsPending,
   revealApiKey,
   onAddModel,
   onSelectModel,
@@ -114,8 +116,9 @@ export function ModelsSettingsPanel({
                     <button
                       type="button"
                       className="settings-action-btn"
-                      disabled={activeModelConfigId === selectedModel.id}
+                      disabled={activeModelConfigId === selectedModel.id || editingIsPending}
                       onClick={() => onSetActiveModelConfigId(selectedModel.id)}
+                      title={editingIsPending ? '请先保存模型后再设为默认' : undefined}
                     >
                       {activeModelConfigId === selectedModel.id ? '默认模型' : '设为默认'}
                     </button>

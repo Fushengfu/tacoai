@@ -48,8 +48,6 @@ import {
   handleChatStoreSave,
   handleChatStoreDeleteSession,
   handleAppNotify,
-  handleGuiPlusGet,
-  handleGuiPlusSave,
   handleAppStateGet,
   handleAppStateSaveThreads,
   handleAppStateSaveProviders,
@@ -185,8 +183,6 @@ export function registerIpcHandlers() {
   ipcMain.handle(IpcChannel.APP_GET_UPDATE_STATUS, () => getLastUpdateCheckResult())
   ipcMain.handle(IpcChannel.APP_NOTIFY, handleAppNotify)
   ipcMain.handle(IpcChannel.APP_RENDERER_ERROR, handleRendererError)
-  ipcMain.handle(IpcChannel.GUI_PLUS_GET, handleGuiPlusGet)
-  ipcMain.handle(IpcChannel.GUI_PLUS_SAVE, handleGuiPlusSave)
   ipcMain.handle(IpcChannel.APP_STATE_GET, handleAppStateGet)
   ipcMain.handle(IpcChannel.APP_STATE_SAVE_THREADS, handleAppStateSaveThreads)
   ipcMain.handle(IpcChannel.APP_STATE_SAVE_PROVIDERS, handleAppStateSaveProviders)

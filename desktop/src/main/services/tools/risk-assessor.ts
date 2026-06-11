@@ -121,14 +121,10 @@ const autoApproveCategories = new Set<RiskCategory>()
 export function setAutoApproveCategories(categories: RiskCategory[]) {
   autoApproveCategories.clear()
   for (const cat of categories) autoApproveCategories.add(cat)
-  // browser_ops 同步到 browserAutoApproved
-  if (autoApproveCategories.has('browser_ops')) {
-    browserAutoApproved = true
-  }
-  // desktop_ops 同步到 desktopAutoApproved
-  if (autoApproveCategories.has('desktop_ops')) {
-    desktopAutoApproved = true
-  }
+  // browser_ops 同步到 browserAutoApproved（添加/移除均需同步）
+  browserAutoApproved = autoApproveCategories.has('browser_ops')
+  // desktop_ops 同步到 desktopAutoApproved（添加/移除均需同步）
+  desktopAutoApproved = autoApproveCategories.has('desktop_ops')
 }
 
 /** 获取当前自动授权分类列表 */

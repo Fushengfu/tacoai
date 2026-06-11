@@ -16,6 +16,16 @@ export const providers: readonly { id: ProviderId; label: string; contextLength:
   { id: 'mimo', label: 'MiMo', contextLength: 1048576 }
 ]
 
+/** 各服务商默认接口地址（添加模型时自动填入，用户可修改） */
+export const PROVIDER_DEFAULT_BASE_URLS: Record<ProviderId, string> = {
+  deepseek: 'https://api.deepseek.com/beta',
+  kimi: 'https://api.moonshot.cn/v1',
+  minimax: 'https://api.minimaxi.com/v1',
+  glm: 'https://open.bigmodel.cn/api/coding/paas/v4',
+  qwen: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+  mimo: 'https://api.xiaomimimo.com/v1',
+}
+
 export function resolveProviderDisplayLabel(providerId: ProviderId, form?: Partial<ProviderForm>): string {
   const model = String(form?.model ?? '').trim()
   if (model) return model
@@ -48,11 +58,11 @@ export function estimateTokens(text: string): number {
 }
 
 export const providerPlaceholders: Record<ProviderId, ProviderForm> = {
-  deepseek: { baseUrl: 'https://api.deepseek.com', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '131072（示例）', temperature: '0.05（可选）' },
+  deepseek: { baseUrl: 'https://api.deepseek.com/beta', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '131072（示例）', temperature: '0.05（可选）' },
   kimi: { baseUrl: 'https://api.moonshot.cn/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '131072（示例）', temperature: '0.05（可选）' },
   minimax: { baseUrl: 'https://api.minimaxi.com/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '1048576（示例）', temperature: '0.05（可选）' },
-  glm: { baseUrl: 'https://open.bigmodel.cn/api/paas/v4', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '131072（示例）', temperature: '0.05（可选）' },
-  qwen: { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '131072（示例）', temperature: '0.05（可选）' },
+  glm: { baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '131072（示例）', temperature: '0.05（可选）' },
+  qwen: { baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '131072（示例）', temperature: '0.05（可选）' },
   mimo: { baseUrl: 'https://api.xiaomimimo.com/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '1048576（示例）', temperature: '0.05（可选）' }
 }
 

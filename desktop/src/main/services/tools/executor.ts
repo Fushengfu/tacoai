@@ -12,12 +12,10 @@ import { log } from '../../system/logger'
 import { executeBrowserAction, getBrowserConsoleSnapshot } from '../../automation/browser'
 import type { BrowserActionType } from '../../../shared/ipc-types'
 import { saveScreenshot, getActiveMcpTools, callMcpTool } from '../../automation/mcp'
-import { fileToDataUrl, getGuiPlusConfig, runGuiPlus } from '../../automation/gui-plus'
 import { callDesktopService } from '../../automation/desktop-service'
 import { getAllowedToolsForSkills, readActiveSkillDetail, readActiveSkillResource } from '../../project/skills'
 import { normalizeToolName, toolDefinitions, type ToolCall, type ToolResult, type FileChange } from './definitions'
 import { assessToolCallsRisk, type RiskInfo, type RiskCategory, type RiskLevel } from './risk-assessor'
-import { mapGuiPlusCoordinates, extractGuiPlusPoint, compactGuiPlusParsed, compactGuiPlusMapped, getGuiPlusScopeKey, normalizeDesktopAction, parseDesktopKeyCombo, normalizeDesktopModifiers, resolveDesktopClicks, pickDesktopInputText, pendingGuiPlusClickGuardByScope, lastGuiPlusClickByImagePath, desktopScreenshotMetaByPath } from './gui-plus-coords'
 import { getWorkspaceTree } from './workspace-tree'
 import { resolveUploadConfig, uploadDataUrlToStorage } from '../llm/llm-client'
 import { loadUploadConfigFromDb } from '../../data/memory-db'
@@ -44,18 +42,6 @@ async function uploadScreenshotToCloud(dataUrl: string): Promise<string | null> 
     log('SCREENSHOT_UPLOAD_FAIL', { error: err instanceof Error ? err.message : String(err) })
     return null
   }
-}
-
-type DesktopScreenshotMeta = {
-  screenshotPath: string
-  screenshotWidth: number
-  screenshotHeight: number
-  displayId: string
-  displayWidth: number
-  displayHeight: number
-  displayBoundsX: number
-  displayBoundsY: number
-  displayScaleFactor: number
 }
 
 type ExecResult = { content: string; success: boolean }
@@ -508,8 +494,6 @@ async function executeTool(
         return await execBrowserAction('drag', args, projectId)
       case 'browser_select':
         return await execBrowserAction('select', args, projectId)
-      case 'gui_plus_analyze':
-        return await execGuiPlusAnalyze(args, signal, logScope)
       case 'desktop_action':
         return await execDesktopAction(args, signal, logScope)
       /* ---- MCP ---- */
@@ -1305,18 +1289,6 @@ async function execDesktopScreenshot(args: Record<string, unknown>, logScope?: s
     displayScaleFactor: display.scaleFactor,
   }
 
-  desktopScreenshotMetaByPath.set(screenshotPath, {
-    screenshotPath,
-    screenshotWidth: size.width,
-    screenshotHeight: size.height,
-    displayId: source.display_id,
-    displayWidth: display.size.width,
-    displayHeight: display.size.height,
-    displayBoundsX: display.bounds.x,
-    displayBoundsY: display.bounds.y,
-    displayScaleFactor: display.scaleFactor,
-  })
-
   log('DESKTOP_SCREENSHOT_RESULT', {
     success: true,
     displayId: payload.displayId,
@@ -1337,164 +1309,36 @@ async function execDesktopScreenshot(args: Record<string, unknown>, logScope?: s
   }
 }
 
-async function execGuiPlusAnalyze(args: Record<string, unknown>, signal?: AbortSignal, logScope?: string): Promise<ExecResult> {
-  const instruction = String(args.instruction ?? '').trim()
-  if (!instruction) return { content: 'Error: instruction is required', success: false }
-
-  const imageDataUrl = typeof args.imageDataUrl === 'string' ? args.imageDataUrl : ''
-  const imagePath = typeof args.imagePath === 'string' ? args.imagePath : ''
-
-  let dataUrl = imageDataUrl
-  if (!dataUrl && imagePath) {
-    try {
-      dataUrl = await fileToDataUrl(imagePath)
-    } catch (err) {
-      return { content: `Error: failed to read imagePath (${imagePath}): ${String(err)}`, success: false }
-    }
-  }
-  if (!dataUrl) return { content: 'Error: imageDataUrl or imagePath is required', success: false }
-
-  const config = await getGuiPlusConfig()
-  const reqMinPixels = args.minPixels !== undefined ? Number(args.minPixels) : undefined
-  const reqMaxPixels = args.maxPixels !== undefined ? Number(args.maxPixels) : undefined
-  const configMinPixels = Number.isFinite(config.minPixels) ? Number(config.minPixels) : undefined
-  const configMaxPixels = Number.isFinite(config.maxPixels) ? Number(config.maxPixels) : undefined
-  const effectiveMinPixels = Number.isFinite(reqMinPixels) ? Number(reqMinPixels) : configMinPixels
-  const effectiveMaxPixels = Number.isFinite(reqMaxPixels) ? Number(reqMaxPixels) : configMaxPixels
-
-  log('GUI_PLUS_REQUEST', {
-    instruction,
-    imagePath: imagePath || undefined,
-    imageDataUrlLength: dataUrl ? dataUrl.length : 0,
-    requestMinPixels: Number.isFinite(reqMinPixels) ? reqMinPixels : undefined,
-    requestMaxPixels: Number.isFinite(reqMaxPixels) ? reqMaxPixels : undefined,
-    effectiveMinPixels,
-    effectiveMaxPixels,
-    highResolution: Boolean(config.highResolution),
-  }, logScope)
-
-  const result = await runGuiPlus(config, instruction, dataUrl, {
-    minPixels: effectiveMinPixels,
-    maxPixels: effectiveMaxPixels,
-    signal,
-    logScope,
-  })
-
-  if (result.usage) {
-    log('GUI_PLUS_USAGE', {
-      promptTokens: result.usage.promptTokens,
-      completionTokens: result.usage.completionTokens,
-      totalTokens: result.usage.totalTokens,
-      cachedTokens: result.usage.cachedTokens,
-    }, logScope)
-  }
-
-  const parsedObj = (result.parsed && typeof result.parsed === 'object')
-    ? (result.parsed as { action?: string; parameters?: Record<string, unknown>; thought?: unknown })
-    : null
-  const extractedPoint = extractGuiPlusPoint(parsedObj?.parameters ?? {})
-  const mapped = mapGuiPlusCoordinates(
-    result.parsed,
-    dataUrl,
-    imagePath,
-    {
-      minPixels: effectiveMinPixels,
-      maxPixels: effectiveMaxPixels,
-      highResolution: config.highResolution,
-    }
-  )
-
-  const scopeKey = getGuiPlusScopeKey(logScope)
-  const parsedAction = typeof parsedObj?.action === 'string' ? parsedObj.action.toUpperCase() : ''
-  let unstableClick = false
-  let unstableReason: string | undefined
-  if (parsedAction === 'CLICK' && mapped && imagePath) {
-    const prev = lastGuiPlusClickByImagePath.get(imagePath)
-    if (prev) {
-      const distance = Math.hypot(mapped.x - prev.x, mapped.y - prev.y)
-      const diagonal = Math.hypot(mapped.originalWidth, mapped.originalHeight)
-      const threshold = Math.max(160, diagonal * 0.12)
-      if (distance > threshold) {
-        unstableClick = true
-        unstableReason = `same image click drift ${distance.toFixed(1)}px exceeds threshold ${threshold.toFixed(1)}px`
-      }
-    }
-    lastGuiPlusClickByImagePath.set(imagePath, {
-      imagePath,
-      x: mapped.x,
-      y: mapped.y,
-      timestamp: Date.now(),
-    })
-  }
-  if (parsedAction === 'CLICK' && mapped) {
-    pendingGuiPlusClickGuardByScope.set(scopeKey, {
-      x: mapped.x,
-      y: mapped.y,
-      unstable: unstableClick,
-      reason: unstableReason,
-      imagePath: imagePath || undefined,
-      timestamp: Date.now(),
-    })
-  } else {
-    pendingGuiPlusClickGuardByScope.delete(scopeKey)
-  }
-
-  const rawX = extractedPoint?.x
-  const rawY = extractedPoint?.y
-  if (mapped || rawX !== undefined || rawY !== undefined || unstableClick) {
-    log('GUI_PLUS_COORD_MAP', {
-      action: parsedObj?.action ?? null,
-      rawX,
-      rawY,
-      rawSource: extractedPoint?.source,
-      unstableClick,
-      unstableReason,
-      mapped: mapped ?? null,
-    }, logScope)
-  }
-
-  const warnings: string[] = []
-  if (extractedPoint?.source === 'x_array') {
-    warnings.push('GUI-Plus returned coordinates as parameters.x array; auto-converted to x/y')
-  } else if (extractedPoint?.source === 'xyxy_center') {
-    warnings.push('GUI-Plus returned coordinates as [x1,y1,x2,y2]; auto-converted to center point')
-  }
-  if (unstableClick && unstableReason) warnings.push(`Unstable click candidate: ${unstableReason}`)
-
-  const payload = {
-    parsed: compactGuiPlusParsed(result.parsed),
-    mapped: compactGuiPlusMapped(mapped),
-    rawLength: result.raw.length,
-    ...(warnings.length ? { warnings } : {}),
-    ...(unstableClick ? { requiresRecheck: true } : {}),
-  }
-
-  log('GUI_PLUS_RESULT', {
-    parsed: payload.parsed,
-    rawLength: result.raw.length,
-    usage: result.usage ?? null,
-    mapped: payload.mapped ?? null,
-    warnings,
-    requiresRecheck: unstableClick,
-  }, logScope)
-
-  return {
-    success: true,
-    content: JSON.stringify(payload),
-  }
-}
-
 async function execDesktopAction(args: Record<string, unknown>, signal?: AbortSignal, logScope?: string): Promise<ExecResult> {
   const rawAction = String(args.action ?? '').trim()
   if (!rawAction) return { content: 'Error: action is required', success: false }
-  const normalizedAction = normalizeDesktopAction(rawAction)
-  if (!normalizedAction) {
+
+  // Inline action normalization
+  const ACTION_ALIASES: Record<string, { action: string; impliedClicks?: number }> = {
+    INPUT: { action: 'type' },
+    TYPE_TEXT: { action: 'type' },
+    TYPE: { action: 'type' },
+    KEY_PRESS: { action: 'key' },
+    KEYPRESS: { action: 'key' },
+    PRESS: { action: 'key' },
+    DOUBLE_CLICK: { action: 'click', impliedClicks: 2 },
+    RIGHT_CLICK: { action: 'click' },
+    SCROLL_UP: { action: 'scroll' },
+    SCROLL_DOWN: { action: 'scroll' },
+    SCROLL_LEFT: { action: 'scroll' },
+    SCROLL_RIGHT: { action: 'scroll' },
+  }
+  const normalizedAlias = ACTION_ALIASES[rawAction.toUpperCase()]
+    ?? (['move', 'click', 'mouse_down', 'drag', 'scroll', 'type', 'key'].includes(rawAction.toLowerCase())
+      ? { action: rawAction.toLowerCase() }
+      : null)
+  if (!normalizedAlias) {
     return {
       content: `Error: unsupported action "${rawAction}". Supported actions: move/click/mouse_down/drag/scroll/type/key`,
       success: false,
     }
   }
-  const action = normalizedAction.action
+  const action = normalizedAlias.action
 
   let dx = Number.isFinite(Number(args.dx)) ? Number(args.dx) : undefined
   let dy = Number.isFinite(Number(args.dy)) ? Number(args.dy) : undefined
@@ -1518,13 +1362,52 @@ async function execDesktopAction(args: Record<string, unknown>, signal?: AbortSi
     }
   }
 
-  const parsedKeyCombo = parseDesktopKeyCombo(typeof args.key === 'string' ? args.key : '')
-  const explicitModifiers = normalizeDesktopModifiers(args.modifiers)
+  // Inline keyboard combo parsing
+  const rawKey = typeof args.key === 'string' ? args.key.trim() : ''
+  let parsedKey: { key?: string; modifiers?: Array<'cmd' | 'ctrl' | 'alt' | 'shift'> } = { key: rawKey || undefined }
+  if (rawKey && rawKey.includes('+')) {
+    const parts = rawKey.split('+').map(p => p.trim().toLowerCase())
+    const keyPart = parts.pop()
+    const mods: Array<'cmd' | 'ctrl' | 'alt' | 'shift'> = []
+    for (const p of parts) {
+      if (p === 'cmd' || p === 'command' || p === 'meta' || p === 'super' || p === 'win') mods.push('cmd')
+      else if (p === 'ctrl' || p === 'control') mods.push('ctrl')
+      else if (p === 'alt' || p === 'option') mods.push('alt')
+      else if (p === 'shift') mods.push('shift')
+    }
+    parsedKey = { key: keyPart, modifiers: mods.length > 0 ? mods : undefined }
+  }
+
+  // Inline modifiers normalization
+  const explicitModifiers = Array.isArray(args.modifiers)
+    ? (args.modifiers as string[]).filter((m): m is 'cmd' | 'ctrl' | 'alt' | 'shift' =>
+        ['cmd', 'command', 'meta', 'super', 'win', 'ctrl', 'control', 'alt', 'option', 'shift'].includes(String(m).toLowerCase()))
+      .map((m) => {
+        const lower = String(m).toLowerCase()
+        if (['cmd', 'command', 'meta', 'super', 'win'].includes(lower)) return 'cmd' as const
+        if (['ctrl', 'control'].includes(lower)) return 'ctrl' as const
+        if (['alt', 'option'].includes(lower)) return 'alt' as const
+        return 'shift' as const
+      })
+    : undefined
+
   const mergedModifiersSet = new Set<'cmd' | 'ctrl' | 'alt' | 'shift'>([
-    ...(parsedKeyCombo.modifiers ?? []),
+    ...(parsedKey.modifiers ?? []),
     ...(explicitModifiers ?? []),
   ])
-  const clicks = resolveDesktopClicks(args, action, normalizedAction.impliedClicks)
+
+  // Inline click resolution
+  let clicks: number | undefined = undefined
+  const double = Boolean(args.double)
+  if (double) clicks = 2
+  if (Number.isFinite(Number(args.clicks))) clicks = Number(args.clicks)
+  if (Number.isFinite(Number(args.clickCount))) clicks = Number(args.clickCount)
+  if (clicks === undefined && normalizedAlias.impliedClicks !== undefined) clicks = normalizedAlias.impliedClicks
+
+  // Inline text picking
+  const textCandidates = [args.text, args.input, args.value, args.content, args.message]
+  const text = textCandidates.find((t): t is string => typeof t === 'string' && t.trim().length > 0) ?? undefined
+
   const pickNumberArg = (keys: string[]): number | undefined => {
     for (const key of keys) {
       const n = Number(args[key])
@@ -1550,36 +1433,10 @@ async function execDesktopAction(args: Record<string, unknown>, signal?: AbortSi
     clicks,
     dx,
     dy,
-    text: pickDesktopInputText(args),
-    key: parsedKeyCombo.key ?? (typeof args.key === 'string' ? args.key.trim() : undefined),
+    text,
+    key: parsedKey.key ?? (typeof args.key === 'string' ? args.key.trim() : undefined),
     modifiers: mergedModifiersSet.size > 0 ? [...mergedModifiersSet] : undefined,
     delay_ms: Number.isFinite(Number(args.delay_ms)) ? Number(args.delay_ms) : undefined,
-  }
-
-  const scopeKey = getGuiPlusScopeKey(logScope)
-  const guard = pendingGuiPlusClickGuardByScope.get(scopeKey)
-  if (
-    action === 'click' &&
-    guard &&
-    Date.now() - guard.timestamp < 60_000 &&
-    Number.isFinite(payload.x) &&
-    Number.isFinite(payload.y)
-  ) {
-    const distance = Math.hypot(Number(payload.x) - guard.x, Number(payload.y) - guard.y)
-    if (distance <= 8 && guard.unstable) {
-      log('DESKTOP_ACTION_BLOCKED', {
-        reason: 'unstable_gui_plus_click',
-        guard,
-        payload,
-      }, logScope)
-      return {
-        content: `Error: blocked unstable GUI click candidate (${guard.reason ?? 'coordinate drift too large'}). Please take a new screenshot and re-analyze before clicking.`,
-        success: false,
-      }
-    }
-    if (distance <= 8 && !guard.unstable) {
-      pendingGuiPlusClickGuardByScope.delete(scopeKey)
-    }
   }
 
   log('DESKTOP_ACTION_REQUEST', {
@@ -1597,7 +1454,6 @@ async function execDesktopAction(args: Record<string, unknown>, signal?: AbortSi
     dy: payload.dy,
     key: payload.key,
     textLength: payload.text ? payload.text.length : 0,
-    guiClickGuard: guard ?? null,
   }, logScope)
 
   const result = await callDesktopService(payload, signal)

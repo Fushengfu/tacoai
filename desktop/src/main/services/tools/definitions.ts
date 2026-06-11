@@ -328,25 +328,6 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     type: 'function',
     function: {
-      name: 'gui_plus_analyze',
-      description: '调用 GUI-Plus 模型分析截图并返回可执行的 GUI 原子操作 JSON。若传 imagePath 且来源于 desktop_screenshot，返回的 mapped.x/mapped.y 为可直接用于 desktop_action 的屏幕绝对坐标。',
-      parameters: {
-        type: 'object',
-        properties: {
-          instruction: { type: 'string', description: '对截图的操作指令（必填）' },
-          analysisGoal: { type: 'string', description: '分析目标与成功判定标准（建议填写，减少误判）。例如：定位"登录"按钮并返回可点击坐标。' },
-          imageDataUrl: { type: 'string', description: '截图 data URL（与 imagePath 二选一）' },
-          imagePath: { type: 'string', description: '截图文件路径（与 imageDataUrl 二选一）' },
-          minPixels: { type: 'number', description: '图像最小像素阈值（可选）' },
-          maxPixels: { type: 'number', description: '图像最大像素阈值（可选）' },
-        },
-        required: ['instruction'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
       name: 'desktop_action',
       description: '调用本地 Node 原生桌面能力执行鼠标/键盘/文本输入等操作。用户明确给出坐标、按键或输入内容时应直接调用此工具，无需先截图。兼容动作别名（如 INPUT/TYPE_TEXT/KEY_PRESS）。',
       parameters: {

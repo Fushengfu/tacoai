@@ -208,16 +208,6 @@ export type ProviderForm = {
 /** 兼容旧版本地缓存结构（固定 provider 表单） */
 export type ProviderForms = Record<ProviderId, ProviderForm>
 
-export type GuiPlusForm = {
-  baseUrl: string
-  apiKey: string
-  model: string
-  minPixels: string
-  maxPixels: string
-  highResolution: boolean
-  includeUsage: boolean
-}
-
 export type QueuedMessage = {
   id: string
   content: string

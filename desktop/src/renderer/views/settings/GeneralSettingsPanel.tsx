@@ -5,6 +5,7 @@ type GeneralSettingsPanelProps = {
   browserAutoTakeover: boolean
   browserDebugMode: boolean
   browserHiddenMode: boolean
+  desktopAutoTakeover: boolean
   recallDebugEnabled: boolean
   themeMode: ThemeMode
   projectRulesDraft: string
@@ -13,8 +14,10 @@ type GeneralSettingsPanelProps = {
   updateCheckSummary: string
   autoApproveCategories: Set<string>
   onBrowserAutoTakeoverChange: (val: boolean) => void
+  onBrowserAutoTakeoverSimple: (val: boolean) => void
   onBrowserDebugModeChange: (val: boolean) => void
   onBrowserHiddenModeChange: (val: boolean) => void
+  onDesktopAutoTakeoverChange: (val: boolean) => void
   onRecallDebugEnabledChange: (val: boolean) => void
   onThemeModeChange: (mode: ThemeMode) => void
   onProjectRulesDraftChange: (val: string) => void
@@ -28,6 +31,7 @@ export function GeneralSettingsPanel({
   browserAutoTakeover,
   browserDebugMode,
   browserHiddenMode,
+  desktopAutoTakeover,
   recallDebugEnabled,
   themeMode,
   projectRulesDraft,
@@ -36,8 +40,10 @@ export function GeneralSettingsPanel({
   updateCheckSummary,
   autoApproveCategories,
   onBrowserAutoTakeoverChange,
+  onBrowserAutoTakeoverSimple,
   onBrowserDebugModeChange,
   onBrowserHiddenModeChange,
+  onDesktopAutoTakeoverChange,
   onRecallDebugEnabledChange,
   onThemeModeChange,
   onProjectRulesDraftChange,
@@ -52,82 +58,14 @@ export function GeneralSettingsPanel({
     else next.delete(catId)
     onUpdateAutoApproveCategories(next)
 
-    // 浏览器分类同步到独立的浏览器接管设置
+    // 浏览器分类同步到独立的浏览器接管设置（仅同步 UI，不再触发重复 IPC）
     if (catId === 'browser_ops') {
-      onBrowserAutoTakeoverChange(checked)
+      onBrowserAutoTakeoverSimple(checked)
     }
   }
 
   return (
     <>
-      <div className="settings-card">
-        <div className="settings-card-title">浏览器自动化</div>
-        <label className="settings-toggle-row">
-          <span className="settings-toggle-label">
-            <strong>全局接管模式</strong>
-            <small>开启后，AI 操作浏览器时不再需要每次确认，全程自动执行。关闭则仅首次需要确认。</small>
-          </span>
-          <input
-            type="checkbox"
-            className="settings-toggle"
-            checked={browserAutoTakeover}
-            onChange={(e) => onBrowserAutoTakeoverChange(e.target.checked)}
-          />
-        </label>
-
-        <label className="settings-toggle-row">
-          <span className="settings-toggle-label">
-            <strong>调试模式</strong>
-            <small>开启后，打开浏览器窗口时自动开启 DevTools 控制台，方便调试页面。对已打开的窗口立即生效。</small>
-          </span>
-          <input
-            type="checkbox"
-            className="settings-toggle"
-            checked={browserDebugMode}
-            onChange={(e) => onBrowserDebugModeChange(e.target.checked)}
-          />
-        </label>
-
-        <label className="settings-toggle-row">
-          <span className="settings-toggle-label">
-            <strong>隐藏窗口模式</strong>
-            <small>开启后，AI 打开浏览器时默认隐藏窗口（后台执行）。关闭后会显示浏览器窗口。</small>
-          </span>
-          <input
-            type="checkbox"
-            className="settings-toggle"
-            checked={browserHiddenMode}
-            onChange={(e) => onBrowserHiddenModeChange(e.target.checked)}
-          />
-        </label>
-
-        <label className="settings-toggle-row">
-          <span className="settings-toggle-label">
-            <strong>桌面自动化免确认授权</strong>
-            <small>开启后，AI 执行鼠标/键盘/输入等桌面自动化时不再弹出聊天区授权确认。</small>
-          </span>
-          <input
-            type="checkbox"
-            className="settings-toggle"
-            checked={autoApproveCategories.has('desktop_ops')}
-            onChange={(e) => handleAutoApproveChange('desktop_ops', e.target.checked)}
-          />
-        </label>
-
-        <label className="settings-toggle-row">
-          <span className="settings-toggle-label">
-            <strong>记忆召回调试日志</strong>
-            <small>开启后记录本轮召回候选、分数、入选原因与预算裁剪详情（仅日志可见）。</small>
-          </span>
-          <input
-            type="checkbox"
-            className="settings-toggle"
-            checked={recallDebugEnabled}
-            onChange={(e) => onRecallDebugEnabledChange(e.target.checked)}
-          />
-        </label>
-      </div>
-
       <div className="settings-card" style={{ marginTop: 16 }}>
         <div className="settings-card-title">主题样式</div>
         <div className="settings-grid">
@@ -224,6 +162,84 @@ export function GeneralSettingsPanel({
         </div>
       </div>
 
+      {/* 调试 */}
+      <div className="settings-card" style={{ marginTop: 16 }}>
+        <div className="settings-card-title">调试</div>
+
+        <label className="settings-toggle-row">
+          <span className="settings-toggle-label">
+            <strong>记忆召回调试日志</strong>
+            <small>开启后记录本轮召回候选、分数、入选原因与预算裁剪详情（仅日志可见）。</small>
+          </span>
+          <input
+            type="checkbox"
+            className="settings-toggle"
+            checked={recallDebugEnabled}
+            onChange={(e) => onRecallDebugEnabledChange(e.target.checked)}
+          />
+        </label>
+      </div>
+
+      {/* 浏览器自动化 */}
+      <div className="settings-card" style={{ marginTop: 16 }}>
+        <div className="settings-card-title">浏览器自动化</div>
+        <label className="settings-toggle-row">
+          <span className="settings-toggle-label">
+            <strong>全局接管模式</strong>
+            <small>开启后，AI 操作浏览器时不再需要每次确认，全程自动执行。关闭则每次浏览器操作都需要用户确认。</small>
+          </span>
+          <input
+            type="checkbox"
+            className="settings-toggle"
+            checked={browserAutoTakeover}
+            onChange={(e) => onBrowserAutoTakeoverChange(e.target.checked)}
+          />
+        </label>
+
+        <label className="settings-toggle-row">
+          <span className="settings-toggle-label">
+            <strong>调试模式</strong>
+            <small>开启后，打开浏览器窗口时自动开启 DevTools 控制台，方便调试页面。对已打开的窗口立即生效。</small>
+          </span>
+          <input
+            type="checkbox"
+            className="settings-toggle"
+            checked={browserDebugMode}
+            onChange={(e) => onBrowserDebugModeChange(e.target.checked)}
+          />
+        </label>
+
+        <label className="settings-toggle-row">
+          <span className="settings-toggle-label">
+            <strong>隐藏窗口模式</strong>
+            <small>开启后，AI 打开浏览器时默认隐藏窗口（后台执行）。关闭后会显示浏览器窗口。</small>
+          </span>
+          <input
+            type="checkbox"
+            className="settings-toggle"
+            checked={browserHiddenMode}
+            onChange={(e) => onBrowserHiddenModeChange(e.target.checked)}
+          />
+        </label>
+      </div>
+
+      {/* 桌面自动化 */}
+      <div className="settings-card" style={{ marginTop: 16 }}>
+        <div className="settings-card-title">桌面自动化</div>
+        <label className="settings-toggle-row">
+          <span className="settings-toggle-label">
+            <strong>全局接管模式</strong>
+            <small>开启后，AI 操作桌面时不再需要每次确认，全程自动执行。关闭则每次桌面操作都需要用户确认。</small>
+          </span>
+          <input
+            type="checkbox"
+            className="settings-toggle"
+            checked={desktopAutoTakeover}
+            onChange={(e) => onDesktopAutoTakeoverChange(e.target.checked)}
+          />
+        </label>
+      </div>
+
       {/* 代理自动授权设置 */}
       <div className="settings-card" style={{ marginTop: 16 }}>
         <div className="settings-card-title">代理自动授权</div>
@@ -232,6 +248,8 @@ export function GeneralSettingsPanel({
         </div>
         {[
           { id: 'package_install', label: '安装依赖', desc: 'npm install, pip install 等包管理器操作', level: 'danger' },
+          { id: 'desktop_ops', label: '桌面操作', desc: '鼠标/键盘/输入等桌面自动化操作', level: 'warning' },
+          { id: 'browser_ops', label: '浏览器操作', desc: 'AI 操控浏览器执行自动化', level: 'warning' },
           { id: 'git_ops', label: 'Git 操作', desc: 'git push, git merge, git rebase 等', level: 'warning' },
           { id: 'git_force', label: 'Git 强制操作', desc: 'git push --force, git reset --hard 等不可逆操作', level: 'danger' },
           { id: 'destructive_cmd', label: '删除/权限操作', desc: 'rm -rf, chmod, chown 等破坏性命令', level: 'danger' },
@@ -239,8 +257,7 @@ export function GeneralSettingsPanel({
           { id: 'docker_ops', label: 'Docker 操作', desc: 'docker run, docker build 等容器操作', level: 'warning' },
           { id: 'system_modify', label: '系统修改', desc: 'mkfs, dd 等磁盘级操作', level: 'danger' },
           { id: 'network_script', label: '网络脚本', desc: 'curl | sh 等下载并执行的命令', level: 'danger' },
-          { id: 'browser_ops', label: '浏览器操作', desc: 'AI 操控浏览器的所有自动化操作', level: 'warning' },
-          { id: 'desktop_ops', label: '桌面操作', desc: 'AI 操控鼠标/键盘/输入等桌面自动化', level: 'warning' },
+
         ].map((cat) => (
           <label key={cat.id} className="settings-toggle-row">
             <span className="settings-toggle-label">

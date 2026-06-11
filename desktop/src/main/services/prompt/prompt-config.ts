@@ -7,6 +7,7 @@ import { DEFAULT_MODEL_PROMPT_LAYER_MAP, DEFAULT_PROVIDER_PROMPT_LAYER_MAP } fro
 const TACO_DIR = path.join(app.getPath('home'), '.taco')
 const PROMPT_CONFIG_FILE = path.join(TACO_DIR, 'prompt-config.json')
 const PROMPT_CONFIG_VERSION = 3
+
 const DEFAULT_PROMPT_CONFIG: PromptConfig = {
   version: PROMPT_CONFIG_VERSION,
   provider: { ...DEFAULT_PROVIDER_PROMPT_LAYER_MAP },
