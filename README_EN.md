@@ -113,7 +113,7 @@ The top "+ Add Memory" button allows manual addition of project knowledge.
 ### Cross-device Sync Demo
 
 <p align="center">
-  <a href="https://github.com/Fushengfu/tacoai/blob/main/49.mp4" target="_blank">Watch Taco AI mobile app operation demo video</a>
+  <a href="49.mp4" target="_blank">Watch Taco AI mobile app operation demo video</a>
 </p>
 
 ---
