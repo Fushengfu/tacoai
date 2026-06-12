@@ -199,7 +199,6 @@ body {
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   flex-shrink: 0;
   padding: 0 12px;
-  -webkit-app-region: drag;
 }
 .middle-tab {
   position: relative;
@@ -213,7 +212,6 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  -webkit-app-region: no-drag;
 }
 .middle-tab:hover {
   color: var(--text);

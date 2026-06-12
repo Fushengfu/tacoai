@@ -8,37 +8,32 @@ import { pathToFileURL } from 'node:url'
 import { log, logError, logInfo } from './logger'
 import type { AppUpdateCheckResult } from '../../shared/ipc-types'
 
-const API_BASE = 'https://ai.zhongnanke.cn/api'
-const OWNER_ID = '35'
-const LOGIN_URL = `${API_BASE}/v1/member/login/uid`
-const VERSION_CHECK_URL = `${API_BASE}/v1/app/version/check`
+const API_BASE = 'https://aigateway.bjctykj.com'
+const VERSION_CHECK_URL = `${API_BASE}/api/v1/app/version/check`
 const DEVICE_UID_FILE = 'device-uid.json'
-const ZERO_WIDTH_SPLIT = '\u200B'
-const ZERO_WIDTH_CHARS = /[\u200B\u200C\u200D\u200E\u200F\uFEFF\u2060]/g
-const ZERO_WIDTH_GROUP_CHARS = /[\u200B\u200C\u200D\u200E\u200F\uFEFF\u2060]+/g
 
 type UpdateType = 'Windows' | 'macOS'
 
 type ApiEnvelope<T> = {
-  errcode?: number
-  msg?: string
-  timestamp?: number
+  code?: number
+  message?: string
   data?: T
-}
-
-type LoginData = {
-  token?: string
-  uid?: string
 }
 
 type VersionCheckData = {
   version?: string
   version_code?: string | number
   download_url?: string
+  downloadUrl?: string
   hash?: string
-  md5_sum?: string
+  sha256_sum?: string
+  sha256Sum?: string
   release_notes?: string
+  releaseNotes?: string
   forceUpdate?: boolean
+  force_update?: boolean
+  platform_type?: string
+  package_name?: string
 }
 
 type CheckUpdateOptions = {
@@ -47,39 +42,6 @@ type CheckUpdateOptions = {
 }
 
 let lastUpdateCheckResult: AppUpdateCheckResult | null = null
-
-function truncateText(text: string, maxLen = 1200): string {
-  const raw = String(text ?? '')
-  if (raw.length <= maxLen) return raw
-  return `${raw.slice(0, maxLen)}...(truncated ${raw.length - maxLen} chars)`
-}
-
-function maskText(value: string, head = 10, tail = 6): string {
-  const raw = String(value ?? '')
-  if (!raw) return ''
-  if (raw.length <= head + tail + 3) return '***'
-  return `${raw.slice(0, head)}***${raw.slice(-tail)}`
-}
-
-function sanitizeToken(raw: unknown): string {
-  const source = String(raw ?? '').trim()
-  if (!source) return ''
-
-  // 先尝试按“零宽分隔符”切段恢复 JWT 结构（避免把段间分隔误删）
-  if (!source.includes('.')) {
-    const parts = source
-      .split(ZERO_WIDTH_GROUP_CHARS)
-      .map((item) => item.trim())
-      .filter(Boolean)
-    if (parts.length >= 3) {
-      const normalized = `${parts[0]}.${parts[1]}.${parts.slice(2).join('')}`
-      return normalized.replace(/\s+/g, '')
-    }
-  }
-
-  // 兜底：仅清理零宽字符和空白
-  return source.replace(ZERO_WIDTH_CHARS, '').replace(/\s+/g, '').trim()
-}
 
 function fallbackDeviceUid(): string {
   const base = [
@@ -147,37 +109,6 @@ function resolveUpdateType(): UpdateType {
   throw new Error(`当前系统 ${process.platform} 暂不支持更新类型映射，仅支持 macOS / Windows`)
 }
 
-function randomNonce(length = 16): string {
-  return randomBytes(Math.max(8, Math.ceil(length / 2))).toString('hex').slice(0, length)
-}
-
-function decodeBase64Url(input: string): string {
-  const normalized = input.replace(/-/g, '+').replace(/_/g, '/')
-  const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4)
-  return Buffer.from(padded, 'base64').toString('utf-8')
-}
-
-function extractJwtSecret(token: string): string {
-  const parts = String(token).split('.')
-  if (parts.length < 2 || !parts[1]) return ''
-  try {
-    const payloadText = decodeBase64Url(parts[1])
-    const payload = JSON.parse(payloadText) as Record<string, unknown>
-    const candidates = ['secret', 'sign_secret', 'signSecret', 'sigSecret']
-    for (const key of candidates) {
-      const value = payload[key]
-      if (typeof value === 'string' && value.trim()) return value.trim()
-    }
-  } catch {
-    return ''
-  }
-  return ''
-}
-
-function sha1Hex(text: string): string {
-  return createHash('sha1').update(text).digest('hex')
-}
-
 function versionParts(version: string): number[] {
   const parts = String(version)
     .split('.')
@@ -209,139 +140,61 @@ function parseVersionCode(value: unknown): number {
   return Number.isFinite(numeric) ? numeric : 0
 }
 
-async function parseJsonEnvelope<T>(resp: Response, actionLabel: string): Promise<ApiEnvelope<T>> {
-  const text = await resp.text()
-  console.log(`[app-update] [response-raw] ${actionLabel}:`, truncateText(text))
-
-  let json: unknown = null
-  try {
-    json = JSON.parse(text)
-  } catch {
-    throw new Error(`${actionLabel}响应不是合法 JSON`)
-  }
-  if (!json || typeof json !== 'object') {
-    throw new Error(`${actionLabel}响应格式错误`)
-  }
-  return json as ApiEnvelope<T>
-}
-
-async function loginAndGetToken(uid: string): Promise<{ token: string; uid: string }> {
-  console.log('[app-update] [request] login:', {
-    method: 'POST',
-    url: LOGIN_URL,
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Owner-Id': OWNER_ID,
-    },
-    body: { uid },
-  })
-
-  const resp = await fetch(LOGIN_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Owner-Id': OWNER_ID,
-    },
-    body: JSON.stringify({ uid }),
-  })
-  console.log('[app-update] [response] login status:', { status: resp.status, statusText: resp.statusText })
-  if (!resp.ok) {
-    throw new Error(`登录失败: ${resp.status} ${resp.statusText}`)
-  }
-
-  const envelope = await parseJsonEnvelope<LoginData>(resp, '登录接口')
-  if (Number(envelope.errcode) !== 0) {
-    throw new Error(`登录失败: ${String(envelope.msg || envelope.errcode || '未知错误')}`)
-  }
-  const token = sanitizeToken(envelope.data?.token)
-  console.log('[app-update] [response] login parsed:', {
-    errcode: envelope.errcode,
-    msg: envelope.msg,
-    uid: envelope.data?.uid,
-    token: token ? maskText(token) : '',
-  })
-  if (!token) throw new Error('登录成功但未返回 token')
-  const resolvedUid = String(envelope.data?.uid ?? uid).trim() || uid
-  return { token, uid: resolvedUid }
-}
-
-async function requestVersionCheck(
-  token: string,
-  secret: string,
-  currentVersion: string,
+/**
+ * 调用网关公开版本检查 API（无需登录鉴权）
+ * GET /api/v1/app/version/check?type=macOS
+ */
+async function fetchVersionCheck(
   updateType: UpdateType,
-  uid: string,
+  currentVersion: string,
 ): Promise<VersionCheckData> {
-  const timestamp = String(Math.floor(Date.now() / 1000))
-  const nonce = randomNonce(16)
-  const body = ''
-  const sign = sha1Hex(`${nonce}${timestamp}${ZERO_WIDTH_SPLIT}${body}${ZERO_WIDTH_SPLIT}${secret}`)
-  const query = new URLSearchParams({
-    type: updateType,
-    timestamp,
-    nonce,
-    sign,
-  })
-  const appId = String(process.env.TACO_APP_ID ?? 'cn.zhongnanke.taco').trim() || 'cn.zhongnanke.taco'
-  const currentBuild = String(versionToBuildCode(currentVersion))
+  const query = new URLSearchParams({ type: updateType })
   const requestUrl = `${VERSION_CHECK_URL}?${query.toString()}`
 
-  console.log('[app-update] [request] version-check:', {
-    method: 'GET',
+  console.log('[app-update] [request] gateway version-check:', {
     url: requestUrl,
-    query: {
-      type: updateType,
-      timestamp,
-      nonce,
-      sign: maskText(sign, 8, 4),
-    },
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${maskText(token, 8, 4)}`,
-      'X-App-Version': currentVersion,
-      'X-App-Build': currentBuild,
-      'X-App-ID': appId,
-      'X-Device-Id': uid,
-      'X-Owner-Id': OWNER_ID,
-    },
+    type: updateType,
+    currentVersion,
   })
 
   const resp = await fetch(requestUrl, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-      'X-App-Version': currentVersion,
-      'X-App-Build': currentBuild,
-      'X-App-ID': appId,
-      'X-Device-Id': uid,
-      'X-Owner-Id': OWNER_ID,
     },
   })
-  console.log('[app-update] [response] version-check status:', { status: resp.status, statusText: resp.statusText })
+
+  console.log('[app-update] [response] version-check status:', {
+    status: resp.status,
+    statusText: resp.statusText,
+  })
+
   if (!resp.ok) {
     throw new Error(`版本检查失败: ${resp.status} ${resp.statusText}`)
   }
 
-  const envelope = await parseJsonEnvelope<VersionCheckData>(resp, '版本检查接口')
-  if (Number(envelope.errcode) !== 0) {
-    throw new Error(`版本检查失败: ${String(envelope.msg || envelope.errcode || '未知错误')}`)
+  const text = await resp.text()
+  let json: unknown = null
+  try {
+    json = JSON.parse(text)
+  } catch {
+    throw new Error('版本检查响应不是合法 JSON')
   }
 
+  const envelope = json as ApiEnvelope<VersionCheckData>
+  if (envelope.code !== 0 && envelope.code !== undefined) {
+    throw new Error(`版本检查失败: ${envelope.message || envelope.code}`)
+  }
+
+  const data = envelope.data ?? (json as VersionCheckData)
   console.log('[app-update] [response] version-check parsed:', {
-    errcode: envelope.errcode,
-    msg: envelope.msg,
-    data: envelope.data
-      ? {
-        version: envelope.data.version,
-        version_code: envelope.data.version_code,
-        download_url: envelope.data.download_url,
-        forceUpdate: envelope.data.forceUpdate,
-      }
-      : null,
+    version: data.version,
+    version_code: data.version_code,
+    download_url: data.download_url || data.downloadUrl,
+    forceUpdate: data.forceUpdate ?? data.force_update,
   })
 
-  return envelope.data ?? {}
+  return data
 }
 
 function resolveDialogWindow(parentWindow?: BrowserWindow | null): BrowserWindow | undefined {
@@ -391,6 +244,7 @@ async function ensureUniquePath(targetPath: string): Promise<string> {
 async function downloadUpdatePackage(
   downloadUrl: string,
   parentWindow?: BrowserWindow | null,
+  expectedSha256?: string,
 ): Promise<string> {
   const owner = resolveDialogWindow(parentWindow)
   const win = owner ?? BrowserWindow.getAllWindows().find((item) => !item.isDestroyed())
@@ -406,7 +260,6 @@ async function downloadUpdatePackage(
   return await new Promise<string>((resolve, reject) => {
     const session = win.webContents.session
     let started = false
-    const startAt = Date.now()
     let lastLogAt = 0
     const timeout = setTimeout(() => {
       cleanup()
@@ -443,7 +296,6 @@ async function downloadUpdatePackage(
             receivedBytes: received,
             totalBytes: total,
             progressPercent: progress >= 0 ? Number((progress * 100).toFixed(1)) : undefined,
-            elapsedMs: now - startAt,
           })
         }
       })
@@ -454,10 +306,35 @@ async function downloadUpdatePackage(
         console.log('[app-update] [download] done:', {
           state,
           filePath: finalPath,
-          elapsedMs: Date.now() - startAt,
         })
         if (state === 'completed') {
-          resolve(finalPath)
+          // 异步校验 SHA256（如果需要）
+          ;(async () => {
+            try {
+              if (expectedSha256) {
+                const fileBuffer = await fs.readFile(finalPath)
+                const actualHash = createHash('sha256')
+                  .update(fileBuffer)
+                  .digest('hex')
+                console.log('[app-update] [download] sha256 verify:', {
+                  expected: expectedSha256,
+                  actual: actualHash,
+                })
+                if (actualHash.toLowerCase() !== expectedSha256.toLowerCase()) {
+                  reject(
+                    new Error(
+                      `文件校验失败：SHA256 不匹配\n期望: ${expectedSha256}\n实际: ${actualHash}`,
+                    ),
+                  )
+                  return
+                }
+                console.log('[app-update] [download] sha256 verified OK')
+              }
+              resolve(finalPath)
+            } catch (err) {
+              reject(err instanceof Error ? err : new Error(String(err)))
+            }
+          })()
           return
         }
         reject(new Error(`下载失败: ${state}`))
@@ -538,16 +415,10 @@ export async function checkAndPromptForUpdate(options: CheckUpdateOptions = {}):
     updateType,
     uid,
   })
-  console.log('[app-update] check start:', { manual, currentVersion, updateType, uid })
+  console.log('[app-update] check start:', { manual, currentVersion, updateType })
 
   try {
-    const login = await loginAndGetToken(uid)
-    const secret = extractJwtSecret(login.token)
-    if (!secret) {
-      throw new Error('token 中未解析到 secret，无法生成签名')
-    }
-
-    const latest = await requestVersionCheck(login.token, secret, currentVersion, updateType, login.uid)
+    const latest = await fetchVersionCheck(updateType, currentVersion)
     const latestVersion = String(latest.version ?? '').trim()
     const latestVersionCode = String(latest.version_code ?? '').trim()
     const currentBuildCode = versionToBuildCode(currentVersion)
@@ -557,9 +428,10 @@ export async function checkAndPromptForUpdate(options: CheckUpdateOptions = {}):
       latestVersion &&
       (versionCmp > 0 || (versionCmp === 0 && remoteBuildCode > currentBuildCode)),
     )
-    const releaseNotes = String(latest.release_notes ?? '').trim()
-    const downloadUrl = String(latest.download_url ?? '').trim()
-    const forceUpdate = Boolean(latest.forceUpdate)
+    const releaseNotes = String(latest.release_notes ?? latest.releaseNotes ?? '').trim()
+    const downloadUrl = String(latest.download_url ?? latest.downloadUrl ?? '').trim()
+    const forceUpdate = Boolean(latest.forceUpdate ?? latest.force_update)
+    const sha256Sum = String(latest.sha256_sum ?? latest.sha256Sum ?? '').trim() || undefined
 
     let downloadTriggered = false
     if (hasUpdate && manual) {
@@ -583,7 +455,7 @@ export async function checkAndPromptForUpdate(options: CheckUpdateOptions = {}):
 
       if (result.response === 1 && downloadUrl) {
         downloadTriggered = true
-        const downloadedFile = await downloadUpdatePackage(downloadUrl, options.parentWindow)
+        const downloadedFile = await downloadUpdatePackage(downloadUrl, options.parentWindow, sha256Sum)
         if (process.platform === 'darwin') {
           const install = await showDialog(options.parentWindow, {
             type: 'question',
@@ -698,47 +570,24 @@ export type MobileApkInfo = {
 }
 
 /**
- * 从版本检查 API 获取 Android APK 下载地址。
- * 复用桌面端的登录 token 鉴权，失败时返回 null（前端 fallback 到硬编码地址）。
+ * 从网关公开版本检查 API 获取 Android APK 下载地址。
+ * 无需鉴权，失败时返回 null。
  */
 export async function fetchMobileApkInfo(packageName: string): Promise<MobileApkInfo | null> {
   console.log('[app-update] [mobile] fetchMobileApkInfo start:', { packageName })
 
   try {
-    const uid = await resolvePersistentDeviceUid()
-    const login = await loginAndGetToken(uid)
-    const secret = extractJwtSecret(login.token)
-    if (!secret) {
-      console.warn('[app-update] [mobile] token 中未解析到 secret，跳过鉴权调用')
-      return null
-    }
-
-    const timestamp = String(Math.floor(Date.now() / 1000))
-    const nonce = randomNonce(16)
-    const body = ''
-    const sign = sha1Hex(`${nonce}${timestamp}${ZERO_WIDTH_SPLIT}${body}${ZERO_WIDTH_SPLIT}${secret}`)
     const query = new URLSearchParams({
       type: 'Android',
       packageName,
-      timestamp,
-      nonce,
-      sign,
     })
     const requestUrl = `${VERSION_CHECK_URL}?${query.toString()}`
 
-    console.log('[app-update] [mobile] request:', {
-      url: requestUrl,
-      packageName,
-    })
+    console.log('[app-update] [mobile] request:', { url: requestUrl, packageName })
 
     const resp = await fetch(requestUrl, {
       method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${login.token}`,
-        'X-Device-Id': uid,
-        'X-Owner-Id': OWNER_ID,
-      },
+      headers: { 'Content-Type': 'application/json' },
     })
 
     if (!resp.ok) {
@@ -746,14 +595,18 @@ export async function fetchMobileApkInfo(packageName: string): Promise<MobileApk
       return null
     }
 
-    const envelope = await parseJsonEnvelope<VersionCheckData>(resp, '手机端版本检查')
-    if (Number(envelope.errcode) !== 0) {
-      console.warn('[app-update] [mobile] API 错误:', envelope.msg)
+    const text = await resp.text()
+    let json: unknown = null
+    try {
+      json = JSON.parse(text)
+    } catch {
+      console.warn('[app-update] [mobile] 响应不是合法 JSON')
       return null
     }
 
-    const data = envelope.data ?? {}
-    const downloadUrl = String(data.download_url ?? '').trim()
+    const envelope = json as ApiEnvelope<VersionCheckData>
+    const data = envelope.data ?? (json as VersionCheckData)
+    const downloadUrl = String(data.download_url ?? data.downloadUrl ?? '').trim()
     if (!downloadUrl) {
       console.warn('[app-update] [mobile] 响应中无 download_url')
       return null
@@ -773,7 +626,7 @@ export async function fetchMobileApkInfo(packageName: string): Promise<MobileApk
   }
 }
 
-const AUTO_CHECK_INTERVAL_MS = 60_000 // 每分钟检查一次
+const AUTO_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000 // 每 4 小时检查一次
 
 export function scheduleStartupUpdateCheck(parentWindow?: BrowserWindow | null): void {
   const startupDelayMs = 1_000

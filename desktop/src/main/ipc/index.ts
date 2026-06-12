@@ -51,6 +51,7 @@ import {
   handleAppStateGet,
   handleAppStateSaveThreads,
   handleAppStateSaveProviders,
+  handleAppStateSaveComplete,
 } from './handlers/chat-handlers'
 
 import {
@@ -187,6 +188,8 @@ export function registerIpcHandlers() {
   ipcMain.handle(IpcChannel.APP_STATE_GET, handleAppStateGet)
   ipcMain.handle(IpcChannel.APP_STATE_SAVE_THREADS, handleAppStateSaveThreads)
   ipcMain.handle(IpcChannel.APP_STATE_SAVE_PROVIDERS, handleAppStateSaveProviders)
+  // renderer 通知 main：状态已保存完毕，可安全退出
+  ipcMain.on(IpcChannel.APP_STATE_SAVE_COMPLETE, handleAppStateSaveComplete)
 
   // Terminal
   ipcMain.on(IpcChannel.TERMINAL_SPAWN, handleTerminalSpawn)

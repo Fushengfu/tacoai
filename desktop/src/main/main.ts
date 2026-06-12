@@ -24,6 +24,28 @@ import {
   type MainWindowRestoreState,
 } from './window/window-manager'
 import { createTray, updateTrayMenu } from './window/tray'
+import { getDb } from './repositories/memory-db/schema'
+
+/** 退出前保存等待状态 */
+let quitSaveResolved = false
+let quitSaveTimer: ReturnType<typeof setTimeout> | null = null
+
+export function resolveQuitSave() {
+  if (quitSaveResolved) return
+  quitSaveResolved = true
+  if (quitSaveTimer) {
+    clearTimeout(quitSaveTimer)
+    quitSaveTimer = null
+  }
+  // WAL checkpoint: 确保所有数据从 WAL 日志合并到主数据库文件
+  try {
+    const database = getDb()
+    database.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+  } catch (err) {
+    // checkpoint 失败不影响退出流程
+  }
+  app.exit(0)
+}
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
 
@@ -147,10 +169,30 @@ app.whenReady().then(async () => {
   })
 })
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
+  if (quitSaveResolved) return
+  // 阻止直接退出，等待 renderer 保存完成
+  event.preventDefault()
   setForceQuit(true)
   // 清理所有终端进程
   cleanupAllTerminals()
+  // 通知 renderer 立即保存状态
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.webContents.send(IpcChannel.APP_STATE_REQUEST_SAVE)
+    } catch (_) {
+      // renderer 已不可达，直接退出
+      resolveQuitSave()
+      return
+    }
+  } else {
+    resolveQuitSave()
+    return
+  }
+  // 超时保护：3 秒后强制退出
+  quitSaveTimer = setTimeout(() => {
+    resolveQuitSave()
+  }, 3000)
 })
 
 app.on('window-all-closed', () => {

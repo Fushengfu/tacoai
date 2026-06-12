@@ -419,3 +419,9 @@ export async function handleAppStateSaveProviders(
 ): Promise<AppStateProvidersPayload> {
   return await saveAppProvidersState(payload)
 }
+
+/** 渲染层确认状态已保存完毕 → 执行 WAL checkpoint + app.exit(0) */
+export function handleAppStateSaveComplete(): void {
+  const { resolveQuitSave } = require('../../main')
+  resolveQuitSave()
+}

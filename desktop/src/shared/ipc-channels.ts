@@ -182,6 +182,10 @@ export const IpcChannel = {
   APP_STATE_GET: 'app-state:get',
   APP_STATE_SAVE_THREADS: 'app-state:save-threads',
   APP_STATE_SAVE_PROVIDERS: 'app-state:save-providers',
+  /** main → renderer, 通知渲染层即将退出，需立即保存状态 */
+  APP_STATE_REQUEST_SAVE: 'app-state:request-save',
+  /** renderer → main, 渲染层保存完成，可安全退出 */
+  APP_STATE_SAVE_COMPLETE: 'app-state:save-complete',
   /** renderer → main, 获取 AI 网关模型列表 */
   GATEWAY_GET_MODELS: 'gateway:get-models',
 

@@ -382,6 +382,18 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.APP_STATE_SAVE_THREADS, payload),
     saveProviders: (payload: AppStateProvidersPayload): Promise<AppStateProvidersPayload> =>
       ipcRenderer.invoke(IpcChannel.APP_STATE_SAVE_PROVIDERS, payload),
+    /** 监听来自 main 进程的退出前保存请求 */
+    onRequestSave: (callback: () => void) => {
+      const handler = () => callback()
+      ipcRenderer.on(IpcChannel.APP_STATE_REQUEST_SAVE, handler)
+      return () => {
+        ipcRenderer.removeListener(IpcChannel.APP_STATE_REQUEST_SAVE, handler)
+      }
+    },
+    /** 渲染层保存完毕后通知 main 进程可安全退出 */
+    notifySaveComplete: () => {
+      ipcRenderer.send(IpcChannel.APP_STATE_SAVE_COMPLETE)
+    },
   },
   gateway: {
     getModels: (): Promise<GatewayModelsResponse> =>

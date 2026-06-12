@@ -236,6 +236,10 @@ export type TacoApi = {
     get: () => Promise<AppStateSnapshot>
     saveThreads: (payload: AppStateThreadsPayload) => Promise<AppStateThreadsPayload>
     saveProviders: (payload: AppStateProvidersPayload) => Promise<AppStateProvidersPayload>
+    /** 监听 main 进程的退出前保存请求；返回取消监听的函数 */
+    onRequestSave: (callback: () => void) => () => void
+    /** 渲染层保存完毕后通知 main 进程可安全退出 */
+    notifySaveComplete: () => void
   }
   gateway: {
     /** 从 AI 网关获取模型列表（需要已登录） */

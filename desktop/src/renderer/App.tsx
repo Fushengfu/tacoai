@@ -70,6 +70,43 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const doSendRef = useRef<(contentParts: MessageContentPart[], target?: any) => void>(() => {})
   const handleProviderChangeRef = useRef<(id: string) => void>(() => {})
+  // 退出前保存用：存储最新状态引用，避免 useEffect 闭包问题
+  const threadsRef = useRef(threadStore.threads)
+  const modelConfigsRef = useRef(providerSettings.modelConfigs)
+  const activeThreadIdRef = useRef(threadStore.activeThreadId)
+  const activeModelConfigIdRef = useRef(providerSettings.activeModelConfigId)
+
+  // 同步 refs，确保退出保存能拿到最新数据
+  useEffect(() => { threadsRef.current = threadStore.threads }, [threadStore.threads])
+  useEffect(() => { modelConfigsRef.current = providerSettings.modelConfigs }, [providerSettings.modelConfigs])
+  useEffect(() => { activeThreadIdRef.current = threadStore.activeThreadId }, [threadStore.activeThreadId])
+  useEffect(() => { activeModelConfigIdRef.current = providerSettings.activeModelConfigId }, [providerSettings.activeModelConfigId])
+
+  // 监听 main 进程的退出前保存请求
+  useEffect(() => {
+    const unsubscribe = window.taco.appState.onRequestSave(async () => {
+      try {
+        // 从 ref 读取最新状态，立即保存
+        const threadsPayload = {
+          threads: threadsRef.current as any[],
+          activeThreadId: activeThreadIdRef.current,
+        }
+        const providersPayload = {
+          modelConfigs: modelConfigsRef.current as any[],
+          activeModelConfigId: activeModelConfigIdRef.current,
+        }
+        await Promise.all([
+          window.taco.appState.saveThreads(threadsPayload),
+          window.taco.appState.saveProviders(providersPayload),
+        ])
+      } catch (err) {
+        console.error('[app-state] 退出前保存失败:', err)
+      } finally {
+        window.taco.appState.notifySaveComplete()
+      }
+    })
+    return unsubscribe
+  }, [])
 
   /* ---- Derived state ---- */
   const activeThread = threadStore.activeThread
