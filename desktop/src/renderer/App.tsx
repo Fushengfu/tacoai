@@ -462,8 +462,8 @@ export default function App() {
   }
 
   function handleSend(contentParts?: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } } | { type: 'video_url'; video_url: { url: string } } | { type: 'audio_url'; audio_url: { url: string } }>) {
-    // 检查是否有有效内容
-    if (!contentParts || contentParts.length === 0 || providerSettings.configuredModels.length === 0) return
+    // 检查是否有有效内容（本地模型为空时允许使用系统内置模型）
+    if (!contentParts || contentParts.length === 0 || (providerSettings.configuredModels.length === 0 && mergedModels.length === 0)) return
 
     if (sessionSending) {
       // 队列也接收数组格式
