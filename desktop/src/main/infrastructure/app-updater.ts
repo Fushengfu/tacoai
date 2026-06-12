@@ -250,12 +250,20 @@ async function downloadUpdatePackage(
   const win = owner ?? BrowserWindow.getAllWindows().find((item) => !item.isDestroyed())
   if (!win) throw new Error('未找到可用窗口，无法显示下载进度')
 
+  // 确保 URL 带有协议前缀，避免 Electron 将其当作相对路径处理
+  let normalizedUrl = String(downloadUrl ?? '').trim()
+  if (normalizedUrl && !/^https?:\/\//i.test(normalizedUrl)) {
+    normalizedUrl = `https://${normalizedUrl}`
+  }
+  // 将 URL 路径中的空格编码为 %20，避免 Electron will-download 匹配失败
+  normalizedUrl = normalizedUrl.replace(/\s/g, '%20')
+
   const downloadsDir = app.getPath('downloads')
   await fs.mkdir(downloadsDir, { recursive: true })
-  const fileName = safeFileNameFromUrl(downloadUrl)
+  const fileName = safeFileNameFromUrl(normalizedUrl)
   const savePath = await ensureUniquePath(path.join(downloadsDir, fileName))
 
-  console.log('[app-update] [download] start:', { downloadUrl, savePath })
+  console.log('[app-update] [download] start:', { downloadUrl: normalizedUrl, savePath })
 
   return await new Promise<string>((resolve, reject) => {
     const session = win.webContents.session
@@ -274,7 +282,9 @@ async function downloadUpdatePackage(
 
     const onWillDownload = (_event: Electron.Event, item: Electron.DownloadItem) => {
       if (started) return
-      if (item.getURL() !== downloadUrl) return
+      // CDN 跳转后 item.getURL() 可能已变，用宽松匹配
+      const urlMatch = item.getURL() === normalizedUrl || item.getURLChain?.().includes(normalizedUrl)
+      if (!urlMatch) return
       started = true
       clearTimeout(timeout)
       item.setSavePath(savePath)
@@ -343,7 +353,7 @@ async function downloadUpdatePackage(
 
     session.on('will-download', onWillDownload)
     try {
-      session.downloadURL(downloadUrl)
+      session.downloadURL(normalizedUrl)
     } catch (err) {
       cleanup()
       reject(err instanceof Error ? err : new Error(String(err)))
