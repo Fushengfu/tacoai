@@ -142,7 +142,7 @@ export function SettingsPage({
   }, [projectRules])
 
   useEffect(() => {
-    if (modelConfigs.length <= 0) {
+    if (modelConfigs.length <= 0 && pendingModelDrafts.size === 0) {
       setEditingModelId(null)
       setModelDraft(null)
       setModelDraftForId('')
