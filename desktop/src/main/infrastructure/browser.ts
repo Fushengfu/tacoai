@@ -697,11 +697,20 @@ async function executeExternalBrowserAction(payload: BrowserActionPayload, appId
       // ── 获取内容 ──
       case 'get_content': {
         const selector = String(params.selector ?? 'body')
+        const type = String(params.type ?? 'text')
         const result = await wc.executeJavaScript(`
           (function() {
             const el = document.querySelector(${JSON.stringify(selector)});
             if (!el) return 'null';
-            return el.innerText?.slice(0, 30000) || '';
+            switch (${JSON.stringify(type)}) {
+              case 'html':
+                return el.outerHTML?.slice(0, 30000) || '';
+              case 'value':
+                return el.value != null ? String(el.value).slice(0, 30000) : '';
+              case 'text':
+              default:
+                return el.innerText?.slice(0, 30000) || '';
+            }
           })()
         `)
         return { success: true, data: result }
@@ -709,9 +718,31 @@ async function executeExternalBrowserAction(payload: BrowserActionPayload, appId
 
       // ── 等待 ──
       case 'wait': {
-        const ms = Number(params.ms ?? 1000)
-        await new Promise(r => setTimeout(r, ms))
-        return { success: true, data: `等待了 ${ms}ms` }
+        const selector = String(params.selector ?? '')
+        const timeout = Number(params.timeout ?? 5000)
+        if (!selector) return { success: false, error: 'selector 参数缺失' }
+
+        const appeared = await wc.executeJavaScript(`
+          new Promise((resolve) => {
+            const start = Date.now();
+            const maxWait = ${timeout};
+            const el = document.querySelector(${JSON.stringify(selector)});
+            if (el) return resolve(true);
+            const observer = new MutationObserver(() => {
+              const el = document.querySelector(${JSON.stringify(selector)});
+              if (el) { observer.disconnect(); resolve(true); }
+              else if (Date.now() - start >= maxWait) { observer.disconnect(); resolve(false); }
+            });
+            observer.observe(document.body || document.documentElement, {
+              childList: true, subtree: true, attributes: true,
+            });
+            setTimeout(() => { observer.disconnect(); resolve(false); }, maxWait);
+          })
+        `)
+        if (!appeared) {
+          return { success: false, error: `等待超时：选择器 "${selector}" 在 ${timeout}ms 内未出现` }
+        }
+        return { success: true, data: `选择器 "${selector}" 已出现` }
       }
 
       // ── 执行 JS ──

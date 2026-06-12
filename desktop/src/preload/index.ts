@@ -355,8 +355,6 @@ const tacoApi: TacoApi = {
         ipcRenderer.removeListener(IpcChannel.OPEN_URL, handler)
       }
     },
-    setAutoTakeover: (enabled: boolean) =>
-      ipcRenderer.send(IpcChannel.BROWSER_AUTO_TAKEOVER, enabled),
     setDebugMode: (enabled: boolean) =>
       ipcRenderer.send(IpcChannel.BROWSER_DEBUG_MODE, enabled),
     setHiddenMode: (enabled: boolean) =>

@@ -1,4 +1,3 @@
-/**
 /* 下载面板 - 链接按钮样式 */
 a.bridge-btn {
   text-decoration: none;
@@ -7,8 +6,8 @@ a.bridge-btn {
   justify-content: center;
   box-sizing: border-box;
 }
- * BridgePanel 样式
- */
+
+/* BridgePanel 样式 */
 
 .bridge-panel {
   position: absolute;
@@ -232,13 +231,4 @@ a.bridge-btn {
   padding: 8px 12px;
   background: rgba(239, 68, 68, 0.08);
   border-radius: 8px;
-}
-
-/* 下载面板 - 链接按钮样式 */
-a.bridge-btn {
-  text-decoration: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-sizing: border-box;
 }

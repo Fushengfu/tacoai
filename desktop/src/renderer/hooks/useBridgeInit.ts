@@ -11,10 +11,6 @@ import { useEffect } from 'react'
 
 export function useBridgeInit() {
   useEffect(() => {
-    // 浏览器自动接管
-    const saved = localStorage.getItem('taco.browserAutoTakeover') === 'true'
-    if (saved) window.taco.browser.setAutoTakeover(true)
-
     // 浏览器调试模式
     const debugSaved = localStorage.getItem('taco.browserDebugMode') === 'true'
     if (debugSaved) window.taco.browser.setDebugMode(true)

@@ -114,8 +114,6 @@ export const IpcChannel = {
 
   /** 浏览器自动化（已废弃：统一使用外部 BrowserWindow + CDP） */
   BROWSER_ACTION: 'browser:action',
-  /** renderer → main, 设置浏览器全局接管模式 */
-  BROWSER_AUTO_TAKEOVER: 'browser:auto-takeover',
   /** renderer → main, 设置浏览器调试模式（是否打开 DevTools） */
   BROWSER_DEBUG_MODE: 'browser:debug-mode',
   /** renderer → main, 设置浏览器隐藏窗口模式（打开时是否隐藏窗口） */

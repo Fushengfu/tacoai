@@ -2,10 +2,8 @@ import type { ThemeMode } from '../../types'
 import type { AppUpdateCheckResult } from '../../../shared/ipc'
 
 type GeneralSettingsPanelProps = {
-  browserAutoTakeover: boolean
   browserDebugMode: boolean
   browserHiddenMode: boolean
-  desktopAutoTakeover: boolean
   recallDebugEnabled: boolean
   themeMode: ThemeMode
   projectRulesDraft: string
@@ -13,11 +11,8 @@ type GeneralSettingsPanelProps = {
   updateChecking: boolean
   updateCheckSummary: string
   autoApproveCategories: Set<string>
-  onBrowserAutoTakeoverChange: (val: boolean) => void
-  onBrowserAutoTakeoverSimple: (val: boolean) => void
   onBrowserDebugModeChange: (val: boolean) => void
   onBrowserHiddenModeChange: (val: boolean) => void
-  onDesktopAutoTakeoverChange: (val: boolean) => void
   onRecallDebugEnabledChange: (val: boolean) => void
   onThemeModeChange: (mode: ThemeMode) => void
   onProjectRulesDraftChange: (val: string) => void
@@ -28,10 +23,8 @@ type GeneralSettingsPanelProps = {
 }
 
 export function GeneralSettingsPanel({
-  browserAutoTakeover,
   browserDebugMode,
   browserHiddenMode,
-  desktopAutoTakeover,
   recallDebugEnabled,
   themeMode,
   projectRulesDraft,
@@ -39,11 +32,8 @@ export function GeneralSettingsPanel({
   updateChecking,
   updateCheckSummary,
   autoApproveCategories,
-  onBrowserAutoTakeoverChange,
-  onBrowserAutoTakeoverSimple,
   onBrowserDebugModeChange,
   onBrowserHiddenModeChange,
-  onDesktopAutoTakeoverChange,
   onRecallDebugEnabledChange,
   onThemeModeChange,
   onProjectRulesDraftChange,
@@ -57,11 +47,6 @@ export function GeneralSettingsPanel({
     if (checked) next.add(catId)
     else next.delete(catId)
     onUpdateAutoApproveCategories(next)
-
-    // 浏览器分类同步到独立的浏览器接管设置（仅同步 UI，不再触发重复 IPC）
-    if (catId === 'browser_ops') {
-      onBrowserAutoTakeoverSimple(checked)
-    }
   }
 
   return (
@@ -183,18 +168,6 @@ export function GeneralSettingsPanel({
       {/* 浏览器自动化 */}
       <div className="settings-card" style={{ marginTop: 16 }}>
         <div className="settings-card-title">浏览器自动化</div>
-        <label className="settings-toggle-row">
-          <span className="settings-toggle-label">
-            <strong>全局接管模式</strong>
-            <small>开启后，AI 操作浏览器时不再需要每次确认，全程自动执行。关闭则每次浏览器操作都需要用户确认。</small>
-          </span>
-          <input
-            type="checkbox"
-            className="settings-toggle"
-            checked={browserAutoTakeover}
-            onChange={(e) => onBrowserAutoTakeoverChange(e.target.checked)}
-          />
-        </label>
 
         <label className="settings-toggle-row">
           <span className="settings-toggle-label">
@@ -219,23 +192,6 @@ export function GeneralSettingsPanel({
             className="settings-toggle"
             checked={browserHiddenMode}
             onChange={(e) => onBrowserHiddenModeChange(e.target.checked)}
-          />
-        </label>
-      </div>
-
-      {/* 桌面自动化 */}
-      <div className="settings-card" style={{ marginTop: 16 }}>
-        <div className="settings-card-title">桌面自动化</div>
-        <label className="settings-toggle-row">
-          <span className="settings-toggle-label">
-            <strong>全局接管模式</strong>
-            <small>开启后，AI 操作桌面时不再需要每次确认，全程自动执行。关闭则每次桌面操作都需要用户确认。</small>
-          </span>
-          <input
-            type="checkbox"
-            className="settings-toggle"
-            checked={desktopAutoTakeover}
-            onChange={(e) => onDesktopAutoTakeoverChange(e.target.checked)}
           />
         </label>
       </div>

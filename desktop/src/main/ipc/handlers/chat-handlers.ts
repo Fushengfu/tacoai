@@ -180,13 +180,17 @@ export async function handleAgentStream(event: IpcMainEvent, payload: AgentStrea
         if (event.sender.isDestroyed()) return
         sendAgentEventSafely(event.sender, { requestId, ...agentEvent }, logScope)
         try {
-          getBridgeManager().sendHostMessage({
-            type: 'bridge:agent-event',
-            requestId: sourceAssistantMessageId || requestId,
-            originalRequestId: requestId,
-            threadId: projectId,
-            event: agentEvent,
-          } as any, 'high')
+          // tool_calls 不转发给移动端，避免与后续 confirm 事件重复弹窗
+          // 移动端只需要 confirm 事件（含完整 toolCalls 数据）来显示确认弹窗
+          if (agentEvent.type !== 'tool_calls') {
+            getBridgeManager().sendHostMessage({
+              type: 'bridge:agent-event',
+              requestId: sourceAssistantMessageId || requestId,
+              originalRequestId: requestId,
+              threadId: projectId,
+              event: agentEvent,
+            } as any, 'high')
+          }
           
           // 新增：根据事件类型更新项目状态
           const mgr = getBridgeManager()

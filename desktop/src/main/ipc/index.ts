@@ -23,7 +23,7 @@ import type {
   BridgeStatusPayload,
 } from '../../shared/ipc'
 import type { RiskCategory } from '../tools'
-import { setBrowserAutoApproved, setAutoApproveCategories } from '../tools'
+import { setAutoApproveCategories } from '../tools'
 import { gitLog, gitCommit, gitRollback, gitCommitFiles, gitStatus, gitFileChange, gitStageFiles, gitStageAll } from '../project/git'
 import { initSkills, listSkills, installSkill, uninstallSkill, toggleSkill, refreshSkills } from '../project/skills'
 import { listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, getMemoryScopeStats, exportMemoryScope } from '../data/notes'
@@ -219,11 +219,6 @@ export function registerIpcHandlers() {
   ipcMain.handle(IpcChannel.NOTES_DELETE, (_e, workspace: string, noteId: string, projectId?: string) => deleteNote(workspace, noteId, projectId))
   ipcMain.handle(IpcChannel.NOTES_STATS, (_e, workspace: string, projectId?: string) => getMemoryScopeStats(workspace, projectId))
   ipcMain.handle(IpcChannel.NOTES_EXPORT, (_e, workspace: string, projectId?: string) => exportMemoryScope(workspace, projectId))
-
-  // Browser auto takeover
-  ipcMain.on(IpcChannel.BROWSER_AUTO_TAKEOVER, (_e, enabled: boolean) => {
-    setBrowserAutoApproved(enabled)
-  })
 
   // MCP
   initMcp().catch((err) => console.error('MCP 初始化失败:', err))

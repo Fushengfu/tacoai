@@ -922,21 +922,22 @@ export default function App() {
           projectTokenStats={projectTokenStats}
         />
 
-        {showBridgePanel && (
-          <BridgePanel onClose={() => setShowBridgePanel(false)} memberToken={auth.memberToken} />
-        )}
-
-        {showMobileDownloadPanel && (
-          <MobileDownloadPanel onClose={() => setShowMobileDownloadPanel(false)} />
-        )}
-
-        {auth.showLoginModal && (
-          <LoginModal
-            onClose={auth.hideLogin}
-            onLoginSuccess={auth.handleLoginSuccess}
-          />
-        )}
       </div>
+
+      {showBridgePanel && (
+        <BridgePanel onClose={() => setShowBridgePanel(false)} memberToken={auth.memberToken} />
+      )}
+
+      {showMobileDownloadPanel && (
+        <MobileDownloadPanel onClose={() => setShowMobileDownloadPanel(false)} />
+      )}
+
+      {auth.showLoginModal && (
+        <LoginModal
+          onClose={auth.hideLogin}
+          onLoginSuccess={auth.handleLoginSuccess}
+        />
+      )}
     </div>
   )
 }

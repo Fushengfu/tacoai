@@ -217,8 +217,6 @@ export type TacoApi = {
   browser: {
     /** 监听主进程发来的打开 URL 事件 */
     onOpenUrl: (callback: (url: string) => void) => () => void
-    /** 设置浏览器全局接管模式 */
-    setAutoTakeover: (enabled: boolean) => void
     /** 设置浏览器调试模式（打开时自动开启 DevTools） */
     setDebugMode: (enabled: boolean) => void
     /** 设置浏览器隐藏窗口模式（打开时隐藏窗口） */

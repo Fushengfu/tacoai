@@ -101,9 +101,6 @@ export function SettingsPage({
   const [memoryExportPath, setMemoryExportPath] = useState('')
 
   // 通用设置
-  const [browserAutoTakeover, setBrowserAutoTakeover] = useState<boolean>(() =>
-    localStorage.getItem('taco.browserAutoTakeover') === 'true'
-  )
   const [browserDebugMode, setBrowserDebugMode] = useState<boolean>(() =>
     localStorage.getItem('taco.browserDebugMode') === 'true'
   )
@@ -771,10 +768,8 @@ export function SettingsPage({
           {/* ── 通用设置 ── */}
           {tab === 'general' && (
             <GeneralSettingsPanel
-              browserAutoTakeover={browserAutoTakeover}
               browserDebugMode={browserDebugMode}
               browserHiddenMode={browserHiddenMode}
-              desktopAutoTakeover={autoApproveCategories.has('desktop_ops')}
               recallDebugEnabled={recallDebugEnabled}
               themeMode={themeMode}
               projectRulesDraft={projectRulesDraft}
@@ -782,21 +777,6 @@ export function SettingsPage({
               updateChecking={updateChecking}
               updateCheckSummary={updateCheckSummary}
               autoApproveCategories={autoApproveCategories}
-              onBrowserAutoTakeoverChange={(val) => {
-                setBrowserAutoTakeover(val)
-                localStorage.setItem('taco.browserAutoTakeover', String(val))
-                window.taco.browser.setAutoTakeover(val)
-                // 同步到自动授权分类，确保浏览器操作与全局接管模式保持一致
-                const nextAutoApprove = new Set(autoApproveCategories)
-                if (val) nextAutoApprove.add('browser_ops')
-                else nextAutoApprove.delete('browser_ops')
-                updateAutoApproveCategories(nextAutoApprove)
-              }}
-              onBrowserAutoTakeoverSimple={(val) => {
-                setBrowserAutoTakeover(val)
-                localStorage.setItem('taco.browserAutoTakeover', String(val))
-                window.taco.browser.setAutoTakeover(val)
-              }}
               onBrowserDebugModeChange={(val) => {
                 setBrowserDebugMode(val)
                 localStorage.setItem('taco.browserDebugMode', String(val))
@@ -806,12 +786,6 @@ export function SettingsPage({
                 setBrowserHiddenMode(val)
                 localStorage.setItem('taco.browserHiddenMode', String(val))
                 window.taco.browser.setHiddenMode(val)
-              }}
-              onDesktopAutoTakeoverChange={(val) => {
-                const next = new Set(autoApproveCategories)
-                if (val) next.add('desktop_ops')
-                else next.delete('desktop_ops')
-                updateAutoApproveCategories(next)
               }}
               onRecallDebugEnabledChange={(val) => {
                 setRecallDebugEnabled(val)
