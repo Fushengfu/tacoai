@@ -970,17 +970,27 @@ export function ChatPanel({
   }
 
   function collectMessageScreenshotUrls(msg: ChatMsg): string[] {
-    const paths = new Set<string>()
+    const urls = new Set<string>()
     if (msg.agentSteps) {
       for (const step of msg.agentSteps) {
         for (const result of step.toolResults) {
-          for (const p of extractScreenshotPathsFromResultContent(result.content)) {
-            paths.add(p)
+          const text = String(result.content ?? '')
+          // 优先尝试解析 JSON 获取 cloudUrl（HTTP 云端图片，跨端可用）
+          try {
+            const parsed = JSON.parse(text) as { screenshotPath?: string; cloudUrl?: string }
+            if (parsed.cloudUrl && (parsed.cloudUrl.startsWith('http://') || parsed.cloudUrl.startsWith('https://'))) {
+              urls.add(parsed.cloudUrl)
+              continue // 有 cloudUrl 就不需要本地路径了
+            }
+          } catch { /* 非 JSON 内容，走回退逻辑 */ }
+          // 回退：从文本中提取本地 screenshotPath
+          for (const p of extractScreenshotPathsFromResultContent(text)) {
+            urls.add(toImageUrl(p))
           }
         }
       }
     }
-    return Array.from(paths).map((p) => toImageUrl(p))
+    return Array.from(urls)
   }
 
   let lastAssistantMessageId: string | null = null
