@@ -26,11 +26,6 @@
   overflow: hidden;
 }
 
-.topbar-actions.has-window-controls {
-  position: relative;
-  padding-right: 128px;
-}
-
 /* ------------------------------------------------------------------ */
 /*  Draggable bars — 手动拖拽，cursor 完全由 CSS 控制                   */
 /* ------------------------------------------------------------------ */
@@ -94,10 +89,6 @@ body.is-dragging * {
   justify-content: flex-end;
 }
 
-.topbar-actions.has-window-controls .topbar-main-actions {
-  margin-right: 8px;
-}
-
 .topbar-main-actions {
   display: flex;
   align-items: center;
@@ -108,29 +99,20 @@ body.is-dragging * {
 .window-controls {
   display: flex;
   align-items: center;
-  gap: 4px;
-  margin-left: auto;
-  padding-left: 8px;
-  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  gap: 8px;
   flex-shrink: 0;
 }
 
-.topbar-actions.has-window-controls .window-controls {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  margin-left: 0;
-  padding: 0 8px 0 10px;
-  border-left: 1px solid rgba(255, 255, 255, 0.08);
-  background: linear-gradient(180deg, rgba(12, 16, 24, 0.75), rgba(8, 10, 14, 0.65));
+/* 左侧窗口控制按钮（Windows 样式，类似 macOS 交通灯） */
+.window-controls-left {
+  margin-right: 4px;
 }
 
 .window-control-btn {
-  width: 28px;
-  height: 24px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 6px;
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
   background: rgba(255, 255, 255, 0.06);
   color: var(--text);
   font-size: 12px;
@@ -139,16 +121,53 @@ body.is-dragging * {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
   flex-shrink: 0;
   padding: 0;
+  opacity: 0.8;
 }
 
 .window-control-btn:hover {
   background: rgba(255, 255, 255, 0.14);
-  border-color: rgba(255, 255, 255, 0.22);
+  opacity: 1;
 }
 
+/* macOS 风格交通灯按钮颜色 */
+.window-control-btn:hover {
+  opacity: 1;
+}
+
+/* 关闭按钮 - 红色 */
+.window-controls-left .window-control-btn:first-child {
+  background: #ff5f57;
+}
+
+.window-controls-left .window-control-btn:first-child:hover {
+  background: #ff5f57;
+  opacity: 1;
+}
+
+/* 最小化按钮 - 黄色 */
+.window-controls-left .window-control-btn:nth-child(2) {
+  background: #febc2e;
+}
+
+.window-controls-left .window-control-btn:nth-child(2):hover {
+  background: #febc2e;
+  opacity: 1;
+}
+
+/* 最大化按钮 - 绿色 */
+.window-controls-left .window-control-btn:nth-child(3) {
+  background: #28c840;
+}
+
+.window-controls-left .window-control-btn:nth-child(3):hover {
+  background: #28c840;
+  opacity: 1;
+}
+
+/* 右侧窗口控制按钮（保留兼容） */
 .window-control-btn.close:hover {
   background: rgba(245, 101, 101, 0.2);
   border-color: rgba(245, 101, 101, 0.45);

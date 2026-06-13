@@ -559,6 +559,43 @@ export default function App() {
         }}
       >
         <div className="app-topbar-left">
+          {showWindowControls && (
+            <div className="window-controls window-controls-left no-drag">
+              <button
+                type="button"
+                className="window-control-btn"
+                onClick={() => globalThis.window.taco.window.close()}
+                title="关闭"
+                aria-label="关闭"
+              >
+                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                  <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="window-control-btn"
+                onClick={() => globalThis.window.taco.window.minimize()}
+                title="最小化"
+                aria-label="最小化"
+              >
+                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                  <path d="M3 8.5h10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="window-control-btn"
+                onClick={() => globalThis.window.taco.window.toggleMaximize()}
+                title="最大化/还原"
+                aria-label="最大化"
+              >
+                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                  <rect x="3.25" y="3.25" width="9.5" height="9.5" fill="none" stroke="currentColor" strokeWidth="1.5" rx="1" />
+                </svg>
+              </button>
+            </div>
+          )}
           <button
             type="button"
             className="sidebar-fixed-toggle no-drag"
@@ -576,15 +613,12 @@ export default function App() {
               )}
             </svg>
           </button>
-        </div>
-
-        <div className="app-topbar-center">
           <div className="topbar-title app-topbar-title" title={activeThreadTitle}>
             {activeThreadTitle}
           </div>
         </div>
 
-        <div className={`topbar-actions app-topbar-right ${showWindowControls ? 'has-window-controls' : ''}`}>
+        <div className="topbar-actions app-topbar-right">
           <div className="topbar-main-actions no-drag">
             {updateStatus?.success && updateStatus.hasUpdate && (
               <button
@@ -664,43 +698,6 @@ export default function App() {
               </button>
             )}
           </div>
-          {showWindowControls && (
-            <div className="window-controls no-drag">
-              <button
-                type="button"
-                className="window-control-btn"
-                onClick={() => globalThis.window.taco.window.minimize()}
-                title="最小化"
-                aria-label="最小化"
-              >
-                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-                  <path d="M3 8.5h10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className="window-control-btn"
-                onClick={() => globalThis.window.taco.window.toggleMaximize()}
-                title="最大化/还原"
-                aria-label="最大化"
-              >
-                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-                  <rect x="3.25" y="3.25" width="9.5" height="9.5" fill="none" stroke="currentColor" strokeWidth="1.5" rx="1" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className="window-control-btn close"
-                onClick={() => globalThis.window.taco.window.close()}
-                title="关闭"
-                aria-label="关闭"
-              >
-                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-                  <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                </svg>
-              </button>
-            </div>
-          )}
         </div>
       </header>
 

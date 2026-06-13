@@ -107,7 +107,7 @@ body {
 
 .app-topbar {
   display: grid;
-  grid-template-columns: minmax(110px, 1fr) minmax(0, 2fr) minmax(320px, 1fr);
+  grid-template-columns: minmax(200px, 1fr) minmax(320px, 1fr);
   align-items: center;
   gap: 12px;
   padding: 8px 12px;
@@ -125,19 +125,17 @@ body {
 .app-topbar-left {
   display: flex;
   align-items: center;
-  min-width: 0;
-}
-
-.app-topbar-center {
-  display: flex;
-  justify-content: center;
+  gap: 6px;
   min-width: 0;
 }
 
 .app-topbar-title {
-  text-align: center;
-  width: 100%;
-  max-width: 100%;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
 }
 
 .app-topbar-right {
