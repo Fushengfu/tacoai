@@ -17,8 +17,9 @@ import { getAllowedToolsForSkills, readActiveSkillDetail, readActiveSkillResourc
 import { normalizeToolName, toolDefinitions, type ToolCall, type ToolResult, type FileChange } from './definitions'
 import { assessToolCallsRisk, type RiskInfo, type RiskCategory, type RiskLevel } from './risk-assessor'
 import { getWorkspaceTree } from './workspace-tree'
-import { resolveUploadConfig, uploadDataUrlToStorage } from '../llm/llm-client'
+import { uploadDataUrlToStorage } from '../llm/llm-client'
 import { loadUploadConfigFromDb } from '../../data/memory-db'
+import type { IpcUploadConfig } from '../../../shared/ipc'
 
 // 上传截图到云存储
 async function uploadScreenshotToCloud(dataUrl: string): Promise<string | null> {
@@ -29,13 +30,39 @@ async function uploadScreenshotToCloud(dataUrl: string): Promise<string | null> 
       return null
     }
     
-    const uploadConfig = resolveUploadConfig(dbConfig.config as any)
+    // 从数据库配置中构造 IpcUploadConfig（与 upload-handlers.ts 逻辑一致）
+    let uploadConfig: IpcUploadConfig | null = null
+    const config = dbConfig.config as any
+    
+    if (dbConfig.provider === 'aliyun_oss') {
+      uploadConfig = {
+        provider: 'aliyun_oss',
+        accessKeyId: config.aliyunOss?.accessKeyId || '',
+        accessKeySecret: config.aliyunOss?.accessKeySecret || '',
+        bucket: config.aliyunOss?.bucket || '',
+        endpoint: config.aliyunOss?.endpoint || '',
+        objectPrefix: config.aliyunOss?.objectPrefix || '',
+        publicBaseUrl: config.aliyunOss?.publicBaseUrl || '',
+      }
+    } else if (dbConfig.provider === 'qiniu') {
+      uploadConfig = {
+        provider: 'qiniu',
+        accessKey: config.qiniu?.accessKey || '',
+        secretKey: config.qiniu?.secretKey || '',
+        bucket: config.qiniu?.bucket || '',
+        uploadUrl: config.qiniu?.uploadUrl || '',
+        publicBaseUrl: config.qiniu?.publicBaseUrl || '',
+        objectPrefix: config.qiniu?.objectPrefix || '',
+        expiresSeconds: config.qiniu?.expiresSeconds ? Number(config.qiniu.expiresSeconds) : undefined,
+      }
+    }
+    
     if (!uploadConfig) {
-      log('SCREENSHOT_UPLOAD_SKIP', { reason: 'invalid_upload_config' })
+      log('SCREENSHOT_UPLOAD_SKIP', { reason: 'invalid_upload_config', provider: dbConfig.provider })
       return null
     }
     
-    const cloudUrl = await uploadDataUrlToStorage(uploadConfig, dataUrl)
+    const cloudUrl = await uploadDataUrlToStorage(uploadConfig as any, dataUrl)
     log('SCREENSHOT_UPLOADED', { cloudUrl })
     return cloudUrl
   } catch (err) {
