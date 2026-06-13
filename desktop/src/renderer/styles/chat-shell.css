@@ -26,7 +26,7 @@
   overflow: hidden;
 }
 
-.topbar.has-window-controls {
+.topbar-actions.has-window-controls {
   position: relative;
   padding-right: 128px;
 }
@@ -90,7 +90,6 @@ body.is-dragging * {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex: 1;
   min-width: 0;
   justify-content: flex-end;
 }
@@ -116,7 +115,7 @@ body.is-dragging * {
   flex-shrink: 0;
 }
 
-.topbar.has-window-controls .window-controls {
+.topbar-actions.has-window-controls .window-controls {
   position: absolute;
   top: 0;
   right: 0;

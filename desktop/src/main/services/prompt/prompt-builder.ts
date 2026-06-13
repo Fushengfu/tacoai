@@ -24,7 +24,8 @@ export type SystemEnv = {
 
 function buildAgentImageRoutingRule(supportsVision: boolean): string {
   if (supportsVision) {
-    return '- 当用户消息已附带图片时，优先直接使用模型视觉理解能力；仅在模型无法完成、或用户明确要求时再使用 MCP 图像分析工具。'
+    return `- 当用户消息已附带图片时，优先直接使用模型视觉理解能力；仅在模型无法完成、或用户明确要求时再使用 MCP 图像分析工具。
+- 截图工具（browser_screenshot/desktop_screenshot）会自动上传到云存储并返回 cloudUrl，可直接作为图片URL传递给视觉理解模型，无需额外调用 MCP 图像工具。`
   }
   return '- 你需要图片分析时必须使用mcp工具来分析'
 }
@@ -33,6 +34,7 @@ function buildAgentImageAnalysisRules(supportsVision: boolean): string {
   if (supportsVision) {
     return [
       '- 当模型配置已开启"支持视觉理解"且用户提供图片时，可直接基于图片完成理解。',
+      '- 截图工具（browser_screenshot/desktop_screenshot）会自动上传到云存储并返回 cloudUrl，可直接作为图片URL传递给视觉理解模型，无需额外调用 MCP 图像工具。',
       '- 若任务需要 MCP 图像工具（例如用户明确要求或模型视觉能力不足），先调用 `mcp_list_tools` 确认参数定义，再调用 `mcp_call`。',
     ].join('\n')
   }

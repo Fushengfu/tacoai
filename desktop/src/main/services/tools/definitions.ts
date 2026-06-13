@@ -299,7 +299,7 @@ export const toolDefinitions: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'browser_screenshot',
-      description: '截取当前浏览器页面并返回结构化页面信息（标题、URL、可见元素、截图路径）。调用前应先明确本次截图目标，避免无目的连续截图。',
+      description: '截取当前浏览器页面并返回结构化页面信息（标题、URL、可见元素、截图路径）。如果配置了云存储（如七牛云/阿里云OSS），会自动上传截图并返回 cloudUrl 可直接访问的图片链接。调用前应先明确本次截图目标，避免无目的连续截图。',
       parameters: {
         type: 'object',
         properties: {
@@ -313,7 +313,7 @@ export const toolDefinitions: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'desktop_screenshot',
-      description: '截取当前桌面屏幕截图。默认使用实际屏幕分辨率，仅返回本地文件路径与尺寸元信息，供后续视觉识别使用。',
+      description: '截取当前桌面屏幕截图。默认使用实际屏幕分辨率，返回本地文件路径、尺寸元信息以及云存储链接（如果配置了七牛云/阿里云OSS会自动上传并返回 cloudUrl），供后续视觉识别使用。',
       parameters: {
         type: 'object',
         properties: {
