@@ -109,8 +109,8 @@ body.is-dragging * {
 }
 
 .window-control-btn {
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
   border: none;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.06);
@@ -132,14 +132,20 @@ body.is-dragging * {
   opacity: 1;
 }
 
-/* macOS 风格交通灯按钮颜色 */
-.window-control-btn:hover {
+/* macOS 风格交通灯：默认隐藏图标，hover 时显示 */
+.window-controls-left .window-control-btn svg {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.window-controls-left .window-control-btn:hover svg {
   opacity: 1;
 }
 
 /* 关闭按钮 - 红色 */
 .window-controls-left .window-control-btn:first-child {
   background: #ff5f57;
+  color: #4a0000;
 }
 
 .window-controls-left .window-control-btn:first-child:hover {
@@ -150,6 +156,7 @@ body.is-dragging * {
 /* 最小化按钮 - 黄色 */
 .window-controls-left .window-control-btn:nth-child(2) {
   background: #febc2e;
+  color: #995700;
 }
 
 .window-controls-left .window-control-btn:nth-child(2):hover {
@@ -160,6 +167,7 @@ body.is-dragging * {
 /* 最大化按钮 - 绿色 */
 .window-controls-left .window-control-btn:nth-child(3) {
   background: #28c840;
+  color: #006400;
 }
 
 .window-controls-left .window-control-btn:nth-child(3):hover {

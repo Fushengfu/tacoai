@@ -5,9 +5,10 @@
  */
 
 import fs from 'node:fs/promises'
+import * as fsSync from 'node:fs'
 import path from 'node:path'
 import { exec, execFile } from 'node:child_process'
-import { desktopCapturer, systemPreferences, screen, nativeImage, shell } from 'electron'
+import { app, desktopCapturer, systemPreferences, screen, nativeImage, shell } from 'electron'
 import { log } from '../../system/logger'
 import { executeBrowserAction, getBrowserConsoleSnapshot } from '../../automation/browser'
 import type { BrowserActionType } from '../../../shared/ipc-types'
@@ -18,22 +19,47 @@ import { normalizeToolName, toolDefinitions, type ToolCall, type ToolResult, typ
 import { assessToolCallsRisk, type RiskInfo, type RiskCategory, type RiskLevel } from './risk-assessor'
 import { getWorkspaceTree } from './workspace-tree'
 import { uploadDataUrlToStorage } from '../llm/llm-client'
-import { loadUploadConfigFromDb } from '../../data/memory-db'
+import { loadUploadConfigFromDb, saveUploadConfigToDb } from '../../data/memory-db'
 import type { IpcUploadConfig } from '../../../shared/ipc'
 
 // 上传截图到云存储
 async function uploadScreenshotToCloud(dataUrl: string): Promise<string | null> {
   try {
-    const dbConfig = loadUploadConfigFromDb()
+    // 基本校验：dataUrl 必须非空且符合 data: 格式
+    if (!dataUrl || !dataUrl.startsWith('data:')) {
+      log('SCREENSHOT_UPLOAD_SKIP', { reason: 'invalid_data_url' })
+      return null
+    }
+
+    let dbConfig = loadUploadConfigFromDb()
+
+    // 如果数据库没有配置，尝试从旧版 JSON 文件迁移（与 upload-handlers.ts 逻辑一致）
+    if (!dbConfig || dbConfig.provider === 'none') {
+      const configPath = path.join(app.getPath('userData'), 'upload-config.json')
+      if (fsSync.existsSync(configPath)) {
+        try {
+          const raw = fsSync.readFileSync(configPath, 'utf-8')
+          const parsed = JSON.parse(raw)
+          if (parsed.provider && parsed.provider !== 'none') {
+            log('SCREENSHOT_UPLOAD_MIGRATE_FROM_FILE', { path: configPath, provider: parsed.provider })
+            saveUploadConfigToDb(parsed.provider, parsed)
+            dbConfig = loadUploadConfigFromDb()
+          }
+        } catch (migrateErr) {
+          log('SCREENSHOT_UPLOAD_MIGRATE_FAIL', { error: migrateErr instanceof Error ? migrateErr.message : String(migrateErr) })
+        }
+      }
+    }
+
     if (!dbConfig || dbConfig.provider === 'none') {
       log('SCREENSHOT_UPLOAD_SKIP', { reason: 'no_upload_config' })
       return null
     }
-    
+
     // 从数据库配置中构造 IpcUploadConfig（与 upload-handlers.ts 逻辑一致）
     let uploadConfig: IpcUploadConfig | null = null
     const config = dbConfig.config as any
-    
+
     if (dbConfig.provider === 'aliyun_oss') {
       uploadConfig = {
         provider: 'aliyun_oss',
@@ -45,6 +71,9 @@ async function uploadScreenshotToCloud(dataUrl: string): Promise<string | null> 
         publicBaseUrl: config.aliyunOss?.publicBaseUrl || '',
       }
     } else if (dbConfig.provider === 'qiniu') {
+      // expiresSeconds 默认 3600，避免 undefined 导致 deadline=NaN
+      const expiresSecondsRaw = config.qiniu?.expiresSeconds
+      const expiresSeconds = expiresSecondsRaw ? Number(expiresSecondsRaw) : 3600
       uploadConfig = {
         provider: 'qiniu',
         accessKey: config.qiniu?.accessKey || '',
@@ -53,15 +82,23 @@ async function uploadScreenshotToCloud(dataUrl: string): Promise<string | null> 
         uploadUrl: config.qiniu?.uploadUrl || '',
         publicBaseUrl: config.qiniu?.publicBaseUrl || '',
         objectPrefix: config.qiniu?.objectPrefix || '',
-        expiresSeconds: config.qiniu?.expiresSeconds ? Number(config.qiniu.expiresSeconds) : undefined,
+        expiresSeconds: Number.isFinite(expiresSeconds) ? expiresSeconds : 3600,
       }
     }
-    
+
     if (!uploadConfig) {
       log('SCREENSHOT_UPLOAD_SKIP', { reason: 'invalid_upload_config', provider: dbConfig.provider })
       return null
     }
-    
+
+    // 检查关键字段非空，避免无效请求
+    if (uploadConfig.provider === 'qiniu') {
+      if (!uploadConfig.accessKey || !uploadConfig.secretKey || !uploadConfig.bucket) {
+        log('SCREENSHOT_UPLOAD_SKIP', { reason: 'missing_qiniu_credentials' })
+        return null
+      }
+    }
+
     const cloudUrl = await uploadDataUrlToStorage(uploadConfig as any, dataUrl)
     log('SCREENSHOT_UPLOADED', { cloudUrl })
     return cloudUrl
