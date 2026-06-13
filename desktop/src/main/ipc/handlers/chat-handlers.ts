@@ -154,15 +154,36 @@ export async function handleAgentStream(event: IpcMainEvent, payload: AgentStrea
         }
         userText = textParts.join('\n')
       }
-      // 过滤掉 base64 dataUrl（只保留云端 URL），减少 WebSocket 传输量
-      // 修复：移动端 _applyUserMessage 期望对象格式而非字符串，需要转换
-      const cloudImages = userImages.filter(url => url.startsWith('http://') || url.startsWith('https://'))
-      if (userText || cloudImages.length > 0) {
+      // 压缩 base64 dataUrl 图片后一并发送（不再过滤掉）
+      const processedImages: string[] = userImages.map(url => {
+        if (!url.startsWith('data:')) return url // 云端 URL 原样保留
+        try {
+          const { nativeImage } = require('electron')
+          const img = nativeImage.createFromDataURL(url)
+          if (img.isEmpty()) return url
+          const size = img.getSize()
+          const maxDim = 800
+          let scale = 1
+          if (size.width > maxDim || size.height > maxDim) {
+            scale = Math.min(maxDim / size.width, maxDim / size.height)
+          }
+          const resized = img.resize({
+            width: Math.max(1, Math.round(size.width * scale)),
+            height: Math.max(1, Math.round(size.height * scale)),
+            quality: 'best',
+          })
+          const buf = resized.toJPEG(55)
+          return `data:image/jpeg;base64,${buf.toString('base64')}`
+        } catch {
+          return url
+        }
+      })
+      if (userText || processedImages.length > 0) {
         getBridgeManager().sendHostMessage({
           type: 'bridge:chat-user-message',
           messageId: sourceUserMessageId || `user-${requestId}`,
           content: userText,
-          images: cloudImages.length > 0 ? cloudImages : undefined,
+          images: processedImages.length > 0 ? processedImages : undefined,
           threadId: projectId,
           timestamp: Date.now(),
         } as any)
@@ -180,17 +201,14 @@ export async function handleAgentStream(event: IpcMainEvent, payload: AgentStrea
         if (event.sender.isDestroyed()) return
         sendAgentEventSafely(event.sender, { requestId, ...agentEvent }, logScope)
         try {
-          // tool_calls 不转发给移动端，避免与后续 confirm 事件重复弹窗
-          // 移动端只需要 confirm 事件（含完整 toolCalls 数据）来显示确认弹窗
-          if (agentEvent.type !== 'tool_calls') {
-            getBridgeManager().sendHostMessage({
-              type: 'bridge:agent-event',
-              requestId: sourceAssistantMessageId || requestId,
-              originalRequestId: requestId,
-              threadId: projectId,
-              event: agentEvent,
-            } as any, 'high')
-          }
+          // tool_calls 也转发给移动端，让手机端实时显示 Agent 工具调用进度
+          getBridgeManager().sendHostMessage({
+            type: 'bridge:agent-event',
+            requestId: sourceAssistantMessageId || requestId,
+            originalRequestId: requestId,
+            threadId: projectId,
+            event: agentEvent,
+          } as any, 'high')
           
           // 新增：根据事件类型更新项目状态
           const mgr = getBridgeManager()

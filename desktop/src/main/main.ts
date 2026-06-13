@@ -60,8 +60,14 @@ function createWindow(restoreState?: MainWindowRestoreState) {
     minHeight: 720,
     show: restoreState?.visible ?? true,
     backgroundColor: '#0b0c0e',
-    titleBarStyle: 'hidden',
-    trafficLightPosition: { x: 20, y: 18 },
+    ...(process.platform === 'win32'
+      ? {
+          frame: false,
+        }
+      : {
+          titleBarStyle: 'hidden',
+          trafficLightPosition: { x: 20, y: 18 },
+        }),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

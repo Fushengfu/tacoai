@@ -74,6 +74,8 @@ export interface BridgeState {
   threadTitle?: string
   projectTitle?: string
   tokenUsage?: BridgeTokenUsage
+  /** 快照生成时间戳，用于判断快照新旧（毫秒） */
+  timestamp?: number
 }
 
 /** Agent 步骤信息 */
@@ -459,6 +461,7 @@ export interface BridgeProjectState {
   isProcessing: boolean
   activeTaskId?: string
   lastActivityAt: number
+  modelConfigId?: string
   // 新增：最后一条消息的状态（用于移动端侧边栏和消息气泡显示）
   lastMessageId?: string        // 最后一条消息 ID
   lastMessageRole?: string      // 最后一条消息角色（user/assistant）

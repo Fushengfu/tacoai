@@ -4,7 +4,7 @@
  * 包含 Bridge 跨端桥接相关的所有 handler：连接、状态转发、数据查询、项目切换等。
  */
 
-import { ipcMain, BrowserWindow } from 'electron'
+import { ipcMain, BrowserWindow, nativeImage } from 'electron'
 import type { IpcMainEvent } from 'electron'
 import { IpcChannel } from '../../../shared/ipc'
 import type { BridgeStatusPayload } from '../../../shared/ipc'
@@ -114,6 +114,7 @@ export function setupBridgeSwitchProjectLoadedHandler(): void {
         modelConfigId: activeThread.modelConfigId,
         threadTitle: activeThread.title,
         projectTitle: activeThread.title,
+        timestamp: Date.now(),
         ...(activeAgentRequestId ? { activeAgentRequestId } : {}),
       } as any)
       log('BRIDGE_STATE_PUSHED_AFTER_SWITCH', {
@@ -134,13 +135,48 @@ export function setupBridgeSwitchProjectLoadedHandler(): void {
 /* ------------------------------------------------------------------ */
 
 /**
+ * 压缩 base64 图片 dataUrl，使其适合 WebSocket 传输。
+ * 使用 Electron nativeImage 缩放 + JPEG 压缩，目标 80KB 以下。
+ */
+function compressDataUrlForBridge(dataUrl: string, maxChars: number = 110_000): string {
+  try {
+    const img = nativeImage.createFromDataURL(dataUrl)
+    if (img.isEmpty()) return dataUrl
+
+    const size = img.getSize()
+    const maxDim = 800
+
+    let scale = 1
+    if (size.width > maxDim || size.height > maxDim) {
+      scale = Math.min(maxDim / size.width, maxDim / size.height)
+    }
+
+    const newWidth = Math.max(1, Math.round(size.width * scale))
+    const newHeight = Math.max(1, Math.round(size.height * scale))
+    const resized = img.resize({ width: newWidth, height: newHeight, quality: 'best' })
+
+    // 从质量 70 开始递减，直到目标大小以下
+    for (const q of [70, 55, 40, 25]) {
+      const buf = resized.toJPEG(q)
+      const jpeg = `data:image/jpeg;base64,${buf.toString('base64')}`
+      if (jpeg.length <= maxChars) return jpeg
+    }
+    // 最低质量兜底
+    const fallbackBuf = resized.toJPEG(25)
+    return `data:image/jpeg;base64,${fallbackBuf.toString('base64')}`
+  } catch {
+    return dataUrl
+  }
+}
+
+/**
  * 从消息列表中剥离图片 dataUrl（base64），只保留 cloudUrl + 元数据。
  * 大幅减少通过 WebSocket 推送到移动端的数据量。
  *
- * 规则：
+ * 规则（v2 — 压缩替代丢弃）：
  * - 如果有 cloudUrl：去掉 dataUrl（移动端用 Image.network 加载）
  * - 如果没有 cloudUrl 且 dataUrl < 100KB：保留 dataUrl（唯一显示方式）
- * - 如果没有 cloudUrl 且 dataUrl >= 100KB：去掉 dataUrl（防止 WebSocket 传输过大）
+ * - 如果没有 cloudUrl 且 dataUrl >= 100KB：压缩为 JPEG 后保留（不再丢弃）
  */
 function stripDataUrlFromMessages(messages: unknown[]): unknown[] {
   return messages.map((msg: any) => {
@@ -163,9 +199,9 @@ function stripDataUrlFromMessages(messages: unknown[]): unknown[] {
 
         // 没有 cloudUrl，检查 dataUrl 大小
         if (img.dataUrl.length > 100 * 1024) {
-          // 超过 100KB，去掉（防止 WebSocket 传输过大）
-          const { dataUrl, ...rest } = img
-          return rest
+          // 超过 100KB：压缩而非丢弃
+          const compressed = compressDataUrlForBridge(img.dataUrl)
+          return { ...img, dataUrl: compressed }
         }
 
         // 小于 100KB 且无 cloudUrl，保留 dataUrl 作为唯一显示方式
@@ -179,9 +215,10 @@ function stripDataUrlFromMessages(messages: unknown[]): unknown[] {
         if (!part || typeof part !== 'object') return part
         if (part.type === 'image_url' && part.image_url?.url) {
           const url = part.image_url.url as string
-          // 如果是 base64 dataUrl，替换为空字符串（移动端不直接用 content 中的图片）
           if (url.startsWith('data:')) {
-            return { ...part, image_url: { ...part.image_url, url: '' } }
+            // 压缩而非置空
+            const compressed = compressDataUrlForBridge(url)
+            return { ...part, image_url: { ...part.image_url, url: compressed } }
           }
         }
         return part
@@ -479,6 +516,7 @@ export function setupBridgeDataHandler(): void {
                 modelConfigId: activeThread.modelConfigId,
                 threadTitle: activeThread.title,
                 projectTitle: activeThread.title,
+                timestamp: Date.now(),
                 ...(activeAgentRequestId ? { activeAgentRequestId } : {}),
               })
               log('BRIDGE_STATE_REQUEST_HANDLED', {
@@ -694,6 +732,7 @@ export function setupBridgeStateSnapshotResponse(): void {
         threadTitle: payload.threadTitle,
         projectTitle: payload.projectTitle,
         tokenUsage: payload.tokenUsage,
+        timestamp: Date.now(),
       })
       log('BRIDGE_STATE_PUSHED', {
         threadId: payload.threadId,

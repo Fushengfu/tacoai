@@ -554,6 +554,23 @@ export async function checkAndPromptForUpdate(options: CheckUpdateOptions = {}):
     logError('app-update', '检查更新失败', err)
     console.error('[app-update] check failed:', message)
 
+    if (manual) {
+      try {
+        await showDialog(options.parentWindow, {
+          type: 'error',
+          title: '检查更新失败',
+          message: '无法连接更新服务器',
+          detail: message,
+          buttons: ['知道了'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        })
+      } catch {
+        // ignore dialog errors
+      }
+    }
+
     const failed: AppUpdateCheckResult = {
       success: false,
       checkedAt,
