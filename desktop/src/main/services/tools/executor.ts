@@ -22,6 +22,72 @@ import { uploadDataUrlToStorage } from '../llm/llm-client'
 import { loadUploadConfigFromDb, saveUploadConfigToDb } from '../../data/memory-db'
 import type { IpcUploadConfig } from '../../../shared/ipc'
 
+// 从数据库加载云存储配置（与 upload-handlers.ts 逻辑一致）
+// 提取为共享函数，供 uploadScreenshotToCloud 和 execUploadFile 共用
+async function loadCloudUploadConfig(): Promise<IpcUploadConfig | null> {
+  let dbConfig = loadUploadConfigFromDb()
+
+  // 如果数据库没有配置，尝试从旧版 JSON 文件迁移
+  if (!dbConfig || dbConfig.provider === 'none') {
+    const configPath = path.join(app.getPath('userData'), 'upload-config.json')
+    if (fsSync.existsSync(configPath)) {
+      try {
+        const raw = fsSync.readFileSync(configPath, 'utf-8')
+        const parsed = JSON.parse(raw)
+        if (parsed.provider && parsed.provider !== 'none') {
+          log('UPLOAD_CONFIG_MIGRATE_FROM_FILE', { path: configPath, provider: parsed.provider })
+          saveUploadConfigToDb(parsed.provider, parsed)
+          dbConfig = loadUploadConfigFromDb()
+        }
+      } catch (migrateErr) {
+        log('UPLOAD_CONFIG_MIGRATE_FAIL', { error: migrateErr instanceof Error ? migrateErr.message : String(migrateErr) })
+      }
+    }
+  }
+
+  if (!dbConfig || dbConfig.provider === 'none') return null
+
+  const config = dbConfig.config as any
+  let uploadConfig: IpcUploadConfig | null = null
+
+  if (dbConfig.provider === 'aliyun_oss') {
+    uploadConfig = {
+      provider: 'aliyun_oss',
+      accessKeyId: config.aliyunOss?.accessKeyId || '',
+      accessKeySecret: config.aliyunOss?.accessKeySecret || '',
+      bucket: config.aliyunOss?.bucket || '',
+      endpoint: config.aliyunOss?.endpoint || '',
+      objectPrefix: config.aliyunOss?.objectPrefix || '',
+      publicBaseUrl: config.aliyunOss?.publicBaseUrl || '',
+    }
+  } else if (dbConfig.provider === 'qiniu') {
+    const expiresSecondsRaw = config.qiniu?.expiresSeconds
+    const expiresSeconds = expiresSecondsRaw ? Number(expiresSecondsRaw) : 3600
+    uploadConfig = {
+      provider: 'qiniu',
+      accessKey: config.qiniu?.accessKey || '',
+      secretKey: config.qiniu?.secretKey || '',
+      bucket: config.qiniu?.bucket || '',
+      uploadUrl: config.qiniu?.uploadUrl || '',
+      publicBaseUrl: config.qiniu?.publicBaseUrl || '',
+      objectPrefix: config.qiniu?.objectPrefix || '',
+      expiresSeconds: Number.isFinite(expiresSeconds) ? expiresSeconds : 3600,
+    }
+  }
+
+  if (!uploadConfig) return null
+
+  // 检查关键字段非空，避免无效请求
+  if (uploadConfig.provider === 'qiniu') {
+    if (!uploadConfig.accessKey || !uploadConfig.secretKey || !uploadConfig.bucket) {
+      log('SCREENSHOT_UPLOAD_SKIP', { reason: 'missing_qiniu_credentials' })
+      return null
+    }
+  }
+
+  return uploadConfig
+}
+
 // 上传截图到云存储
 async function uploadScreenshotToCloud(dataUrl: string): Promise<string | null> {
   try {
@@ -31,72 +97,10 @@ async function uploadScreenshotToCloud(dataUrl: string): Promise<string | null> 
       return null
     }
 
-    let dbConfig = loadUploadConfigFromDb()
-
-    // 如果数据库没有配置，尝试从旧版 JSON 文件迁移（与 upload-handlers.ts 逻辑一致）
-    if (!dbConfig || dbConfig.provider === 'none') {
-      const configPath = path.join(app.getPath('userData'), 'upload-config.json')
-      if (fsSync.existsSync(configPath)) {
-        try {
-          const raw = fsSync.readFileSync(configPath, 'utf-8')
-          const parsed = JSON.parse(raw)
-          if (parsed.provider && parsed.provider !== 'none') {
-            log('SCREENSHOT_UPLOAD_MIGRATE_FROM_FILE', { path: configPath, provider: parsed.provider })
-            saveUploadConfigToDb(parsed.provider, parsed)
-            dbConfig = loadUploadConfigFromDb()
-          }
-        } catch (migrateErr) {
-          log('SCREENSHOT_UPLOAD_MIGRATE_FAIL', { error: migrateErr instanceof Error ? migrateErr.message : String(migrateErr) })
-        }
-      }
-    }
-
-    if (!dbConfig || dbConfig.provider === 'none') {
+    const uploadConfig = await loadCloudUploadConfig()
+    if (!uploadConfig) {
       log('SCREENSHOT_UPLOAD_SKIP', { reason: 'no_upload_config' })
       return null
-    }
-
-    // 从数据库配置中构造 IpcUploadConfig（与 upload-handlers.ts 逻辑一致）
-    let uploadConfig: IpcUploadConfig | null = null
-    const config = dbConfig.config as any
-
-    if (dbConfig.provider === 'aliyun_oss') {
-      uploadConfig = {
-        provider: 'aliyun_oss',
-        accessKeyId: config.aliyunOss?.accessKeyId || '',
-        accessKeySecret: config.aliyunOss?.accessKeySecret || '',
-        bucket: config.aliyunOss?.bucket || '',
-        endpoint: config.aliyunOss?.endpoint || '',
-        objectPrefix: config.aliyunOss?.objectPrefix || '',
-        publicBaseUrl: config.aliyunOss?.publicBaseUrl || '',
-      }
-    } else if (dbConfig.provider === 'qiniu') {
-      // expiresSeconds 默认 3600，避免 undefined 导致 deadline=NaN
-      const expiresSecondsRaw = config.qiniu?.expiresSeconds
-      const expiresSeconds = expiresSecondsRaw ? Number(expiresSecondsRaw) : 3600
-      uploadConfig = {
-        provider: 'qiniu',
-        accessKey: config.qiniu?.accessKey || '',
-        secretKey: config.qiniu?.secretKey || '',
-        bucket: config.qiniu?.bucket || '',
-        uploadUrl: config.qiniu?.uploadUrl || '',
-        publicBaseUrl: config.qiniu?.publicBaseUrl || '',
-        objectPrefix: config.qiniu?.objectPrefix || '',
-        expiresSeconds: Number.isFinite(expiresSeconds) ? expiresSeconds : 3600,
-      }
-    }
-
-    if (!uploadConfig) {
-      log('SCREENSHOT_UPLOAD_SKIP', { reason: 'invalid_upload_config', provider: dbConfig.provider })
-      return null
-    }
-
-    // 检查关键字段非空，避免无效请求
-    if (uploadConfig.provider === 'qiniu') {
-      if (!uploadConfig.accessKey || !uploadConfig.secretKey || !uploadConfig.bucket) {
-        log('SCREENSHOT_UPLOAD_SKIP', { reason: 'missing_qiniu_credentials' })
-        return null
-      }
     }
 
     const cloudUrl = await uploadDataUrlToStorage(uploadConfig as any, dataUrl)
@@ -565,6 +569,8 @@ async function executeTool(
         return await execMcpCall(args, signal)
       case 'mcp_list_tools':
         return await execMcpListTools()
+      case 'upload_file':
+        return await execUploadFile(args, workspace)
       default:
         return { content: `Unknown tool: ${name}`, success: false }
     }
@@ -1053,6 +1059,123 @@ async function execDeleteNote(args: Record<string, unknown>, workspace: string, 
   const { deleteNote } = await import('../../data/notes')
   await deleteNote(workspace, noteId, projectId)
   return { content: `项目笔记已删除：${noteId}`, success: true }
+}
+
+/* ---- 文件上传到云存储 ---- */
+
+/** 文件扩展名 → MIME 类型映射 */
+const FILE_EXT_MIME_MAP: Record<string, string> = {
+  '.apk': 'application/vnd.android.package-archive',
+  '.ipa': 'application/octet-stream',
+  '.zip': 'application/zip',
+  '.gz': 'application/gzip',
+  '.tar.gz': 'application/x-gzip',
+  '.tar': 'application/x-tar',
+  '.dmg': 'application/x-apple-diskimage',
+  '.exe': 'application/vnd.microsoft.portable-executable',
+  '.msi': 'application/x-msi',
+  '.deb': 'application/vnd.debian.binary-package',
+  '.rpm': 'application/x-rpm',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/ico',
+  '.bmp': 'image/bmp',
+  '.pdf': 'application/pdf',
+  '.txt': 'text/plain',
+  '.json': 'application/json',
+  '.xml': 'application/xml',
+  '.html': 'text/html',
+  '.css': 'text/css',
+  '.js': 'text/javascript',
+  '.ts': 'application/typescript',
+}
+
+function detectFileMime(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase()
+  // 特殊处理 .tar.gz
+  if (filePath.toLowerCase().endsWith('.tar.gz')) return 'application/x-gzip'
+  return FILE_EXT_MIME_MAP[ext] || 'application/octet-stream'
+}
+
+async function execUploadFile(args: Record<string, unknown>, workspace: string): Promise<ExecResult> {
+  const rawPath = String(args.filePath ?? '').trim()
+  if (!rawPath) return { content: 'Error: filePath is required', success: false }
+
+  const resolved = path.resolve(workspace, rawPath)
+
+  // 检查文件是否存在
+  try {
+    await fs.access(resolved)
+  } catch {
+    return { content: `Error: File not found: ${rawPath}`, success: false }
+  }
+
+  // 获取文件信息
+  let fileSize: number
+  let fileName: string
+  try {
+    const stat = await fs.stat(resolved)
+    if (!stat.isFile()) return { content: `Error: Not a file: ${rawPath}`, success: false }
+    fileSize = stat.size
+    fileName = path.basename(resolved)
+  } catch (err) {
+    return { content: `Error: Cannot read file: ${err instanceof Error ? err.message : String(err)}`, success: false }
+  }
+
+  // 加载云存储配置
+  const uploadConfig = await loadCloudUploadConfig()
+  if (!uploadConfig) {
+    return { content: 'Error: 云存储未配置。请先在设置中配置七牛云或阿里云 OSS。', success: false }
+  }
+
+  // 如果用户指定了 objectPrefix，覆盖默认值
+  const customPrefix = String(args.objectPrefix ?? '').trim()
+  const finalConfig = customPrefix ? { ...uploadConfig, objectPrefix: customPrefix } : uploadConfig
+
+  // 读取文件并转换为 dataUrl
+  let dataUrl: string
+  try {
+    const bytes = await fs.readFile(resolved)
+    const base64 = bytes.toString('base64')
+    const mimeType = detectFileMime(resolved)
+    dataUrl = `data:${mimeType};base64,${base64}`
+  } catch (err) {
+    return { content: `Error: Failed to read file: ${err instanceof Error ? err.message : String(err)}`, success: false }
+  }
+
+  // 上传
+  try {
+    const cloudUrl = await uploadDataUrlToStorage(finalConfig as any, dataUrl)
+    log('UPLOAD_FILE_SUCCESS', { filePath: resolved, fileSize, fileName, cloudUrl })
+
+    const formattedSize = fileSize < 1024
+      ? `${fileSize} B`
+      : fileSize < 1024 * 1024
+        ? `${(fileSize / 1024).toFixed(1)} KB`
+        : `${(fileSize / (1024 * 1024)).toFixed(1)} MB`
+
+    return {
+      content: JSON.stringify({
+        cloudUrl,
+        fileName,
+        filePath: resolved,
+        fileSize,
+        formattedSize,
+        mimeType: detectFileMime(resolved),
+      }),
+      success: true,
+    }
+  } catch (err) {
+    log('UPLOAD_FILE_FAIL', { filePath: resolved, error: err instanceof Error ? err.message : String(err) })
+    return {
+      content: `Error: 上传失败 - ${err instanceof Error ? err.message : String(err)}`,
+      success: false,
+    }
+  }
 }
 
 /* ------------------------------------------------------------------ */

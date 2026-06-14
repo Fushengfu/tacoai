@@ -23,6 +23,7 @@ const ALWAYS_AVAILABLE_TOOL_NAMES = [
   'delete_note',
   'mcp_list_tools',
   'mcp_call',
+  'upload_file',
 ]
 
 function filterToolDefinitions(allowedToolNames?: Iterable<string>): ToolDefinition[] {

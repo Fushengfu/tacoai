@@ -601,6 +601,21 @@ export const toolDefinitions: ToolDefinition[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'upload_file',
+      description: '上传本地文件到云存储并返回下载链接。支持 APK、ZIP、图片、文档等任意文件类型。需要先在设置中配置云存储（七牛云/阿里云OSS）。常用于编译产物（APK/IPA/DMG/EXE）上传获取下载链接、分发文件、远程下载安装等场景。',
+      parameters: {
+        type: 'object',
+        properties: {
+          filePath: { type: 'string', description: '本地文件路径（绝对路径或相对工作空间）' },
+          objectPrefix: { type: 'string', description: '对象存储前缀路径（如 "apk/"、"builds/"），不指定则使用云存储配置中的默认前缀' },
+        },
+        required: ['filePath'],
+      },
+    },
+  },
 ]
 
 /* ------------------------------------------------------------------ */

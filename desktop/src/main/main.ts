@@ -12,6 +12,7 @@ import { IpcChannel } from '../shared/ipc'
 import { shutdownAllMcp } from './infrastructure/mcp'
 import { cleanupAllTerminals } from './infrastructure/terminal'
 import { scheduleStartupUpdateCheck } from './infrastructure/app-updater'
+import { startUsageReporter, stopUsageReporter } from './usage-reporter'
 import {
   isExternalUrl,
   showMainWindow,
@@ -169,6 +170,7 @@ app.whenReady().then(async () => {
   createTray()
   registerIpcHandlers()
   scheduleStartupUpdateCheck(mainWindow!)
+  startUsageReporter()
 
   app.on('activate', () => {
     showMainWindow()
@@ -182,6 +184,8 @@ app.on('before-quit', (event) => {
   setForceQuit(true)
   // 清理所有终端进程
   cleanupAllTerminals()
+  // 停止使用统计上报
+  stopUsageReporter()
   // 通知 renderer 立即保存状态
   if (mainWindow && !mainWindow.isDestroyed()) {
     try {
