@@ -124,10 +124,10 @@ No need to clone the source code — download the installer for your platform di
 
 | Platform | Download Link | Installation |
 |----------|---------------|--------------|
-| **macOS** (Apple Silicon) | [Taco AI-0.4.2-arm64.dmg](https://store.bjctykj.com/app-versions/macOS/1781289451_Taco_AI-0.4.2-arm64.dmg) | Double-click the `.dmg`, then drag into the `Applications` folder |
-| **Windows** (x64) | [Taco AI Setup 0.4.2.exe](https://store.bjctykj.com/app-versions/Windows/1781290240_Taco_AI_Setup_0.4.2.exe) | Double-click the `.exe` and follow the installation wizard |
+| **macOS** (Apple Silicon) | [Taco AI-0.4.3-arm64.dmg](https://store.bjctykj.com/2026-06-14/752f6318-de87-4431-aa8d-adb7124ad384.dmg) | Double-click the `.dmg`, then drag into the `Applications` folder |
+| **Windows** (x64) | [Taco AI Setup 0.4.3.exe](https://store.bjctykj.com/desktop/2026-06-14/32bd9baf-1448-4a45-aa90-fb122ebe299b.exe) | Double-click the `.exe` and follow the installation wizard |
 
-Current version: **v0.4.2**
+Current version: **v0.4.3**
 
 > For building from source, see [Quick Start](#quick-start) below.
 
@@ -225,4 +225,4 @@ taco/
 
 ## Version
 
-Current version: **v0.4.2**
+Current version: **v0.4.3**
