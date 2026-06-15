@@ -392,6 +392,50 @@ find . -name "*.ts" -path "*/renderer/*"
 - 同一命令（含等价参数）最多重试3次，达到上限后必须切换策略
 - 禁止使用破坏性命令（如 rm -rf），除非用户明确授权
 
+## Windows 编码规范（Windows 环境强制执行）
+
+**核心原则**：Windows 中文系统的默认编码是 GBK（codepage 936），PowerShell 5.x 默认使用 UTF-16 LE。项目中绝大部分代码文件是 UTF-8。通过 shell 命令直接处理文件内容时，必须显式指定 UTF-8 编码，否则中文会变成乱码。
+
+### 文件修改优先级
+- **首选**：使用 write_file / edit_file 工具（已内置 UTF-8 处理，编码安全）
+- **回退**：仅当工具调用失败时，才使用 shell 命令修改文件（必须遵守以下规则）
+
+### shell 命令写入文件的强制规则
+
+| 规则 | 说明 |
+|------|------|
+| **CMD 环境** | 写入文件前必须先执行 \`chcp 65001 > nul\` 切换到 UTF-8（codepage 65001），然后再执行写入命令 |
+| **PowerShell 环境** | 写入文件时必须使用 \`-Encoding UTF8\` 参数，如 \`Set-Content -Path file -Encoding UTF8\` 或 \`Out-File -FilePath file -Encoding UTF8\` |
+| **严禁直接重定向写中文** | \`echo 中文 > file.txt\` 在 CMD 中会以 GBK 编码输出，导致文件编码混乱。必须先用 \`chcp 65001\` 切换编码后再重定向 |
+| **复杂脚本用 Base64** | 如果脚本内容包含中文或特殊字符，将内容 Base64 编码后通过管道解码写入：\`echo BASE64STR | base64 -d > file\`，避免 shell 转义导致的编码损坏 |
+| **Python 脚本** | 写入文件时显式指定 \`encoding='utf-8'\`：\`open(path, 'w', encoding='utf-8')\` |
+| **sed/awk** | Windows 上优先用 PowerShell 替代 sed/awk，因 Git Bash 的 sed 可能因环境不同行为不一致 |
+
+### 正确示例（Windows CMD）
+
+\`\`\`cmd
+chcp 65001 > nul
+echo 这是中文内容 > file.txt
+\`\`\`
+
+### 正确示例（Windows PowerShell）
+
+\`\`\`powershell
+Set-Content -Path file.txt -Value "这是中文内容" -Encoding UTF8
+\`\`\`
+
+### 错误示例（绝对禁止）
+
+\`\`\`cmd
+REM 不！CMD 默认 codepage 是 GBK，这会写出 GBK 编码文件！
+echo 这是中文内容 > file.txt
+\`\`\`
+
+\`\`\`powershell
+# 不！PowerShell 5.x 默认 UTF-16 LE，其他工具读不了！
+echo "这是中文内容" > file.txt
+\`\`\`
+
 ## 技能调用
 - 基础提示词不写死技能说明，系统每轮注入 SKILLS_CATALOG
 - 需要使用某个技能时，先确认技能ID，再 read_skill 读取完整内容
