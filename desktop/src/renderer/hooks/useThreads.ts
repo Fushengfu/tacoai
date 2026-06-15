@@ -144,8 +144,10 @@ export function useThreads() {
         setActiveThreadId(nextActiveThreadId)
         if (!cancelled) setHydrated(true)
       } catch (err) {
-        console.error('[app-state] 加载项目列表失败:', err)
-        /* 不设置 hydrated=true —— 防止空数据覆盖数据库 */
+        console.error('[app-state] 加载项目列表失败（允许实时保存，空数据覆盖由后端防护）:', err)
+        /* 即使 DB 加载失败，也必须设置 hydrated=true，否则实时保存永久禁用。
+           空数据覆盖数据库的风险由 saveAppThreadsStateToDb 中的安全防护兜底（检测到空数组且 DB 有数据时拒绝覆盖）。 */
+        if (!cancelled) setHydrated(true)
       }
     }
 
