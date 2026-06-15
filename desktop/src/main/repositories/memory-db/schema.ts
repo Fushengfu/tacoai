@@ -469,6 +469,7 @@ function ensureDb(): DatabaseSync {
       max_tokens TEXT NOT NULL DEFAULT '',
       temperature TEXT NOT NULL DEFAULT '',
       supports_vision INTEGER NOT NULL DEFAULT 0,
+      supports_reasoning INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER,
       updated_at INTEGER
     );
@@ -533,6 +534,7 @@ function ensureDb(): DatabaseSync {
   ensureColumn(next, 'app_model_configs', 'name', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(next, 'app_model_configs', 'temperature', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(next, 'app_model_configs', 'supports_vision', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(next, 'app_model_configs', 'supports_reasoning', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(next, 'app_model_configs', 'created_at', 'INTEGER')
   ensureColumn(next, 'app_model_configs', 'updated_at', 'INTEGER')
 
