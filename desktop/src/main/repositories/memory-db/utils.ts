@@ -301,6 +301,7 @@ export function normalizeModelConfigForStorage(raw: unknown, index: number, nowT
     contextLength: asTrimmedString(item.contextLength),
     temperature: asTrimmedString(item.temperature),
     supportsVision: asBooleanFlag(item.supportsVision),
+    supportsReasoning: asBooleanFlag(item.supportsReasoning),
     ...(typeof parseOptionalTimestamp(item.createdAt) === 'number'
       ? { createdAt: parseOptionalTimestamp(item.createdAt) }
       : { createdAt: nowTs + index }),
@@ -332,6 +333,7 @@ export function normalizeLegacyProviderFormsForStorage(raw: unknown, nowTs: numb
       contextLength,
       temperature,
       supportsVision: false,
+      supportsReasoning: false,
       createdAt: nowTs + index,
       updatedAt: nowTs + index,
     })

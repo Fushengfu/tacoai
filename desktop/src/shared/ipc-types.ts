@@ -622,6 +622,7 @@ export type GatewayModelItem = {
   temperature: string
   contextLength: number
   supportsVision: boolean
+  supportsReasoning?: boolean
   displayName: string
   description: string
   sortOrder: number

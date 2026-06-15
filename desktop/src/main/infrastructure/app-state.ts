@@ -112,6 +112,7 @@ function normalizeModelConfig(raw: unknown, index: number): AppStateModelConfig 
     contextLength: asString(obj.contextLength).trim(),
     temperature: asString(obj.temperature).trim(),
     supportsVision: asBoolean(obj.supportsVision),
+    supportsReasoning: asBoolean(obj.supportsReasoning),
     ...(typeof asOptionalTimestamp(obj.createdAt) === 'number' ? { createdAt: asOptionalTimestamp(obj.createdAt) } : {}),
     ...(typeof asOptionalTimestamp(obj.updatedAt) === 'number' ? { updatedAt: asOptionalTimestamp(obj.updatedAt) } : {}),
   }
@@ -140,6 +141,7 @@ function legacyProviderFormsToModelConfigs(raw: unknown): AppStateModelConfig[] 
       contextLength,
       temperature,
       supportsVision: false,
+      supportsReasoning: false,
       createdAt: now,
       updatedAt: now,
     })

@@ -574,13 +574,14 @@ export function setupBridgeDataHandler(): void {
             displayName: m.name,
             model: m.model,
             supportsVision: Boolean(m.supportsVision),
+            supportsReasoning: Boolean(m.supportsReasoning),
             source: 'custom' as const,
           }))
 
           // 网关内置模型：复用桌面端已有的 handleGatewayGetModels，保持逻辑完全一致
           let gatewayModels: Array<{
             id: string; provider: string; name: string; displayName: string;
-            model: string; supportsVision: boolean; source: string;
+            model: string; supportsVision: boolean; supportsReasoning?: boolean; source: string;
           }> = []
           try {
             const gwResult = await handleGatewayGetModels(null as any)
@@ -596,6 +597,7 @@ export function setupBridgeDataHandler(): void {
               displayName: String(m.displayName ?? m.name ?? ''),
               model: String(m.model ?? ''),
               supportsVision: Boolean(m.supportsVision),
+              supportsReasoning: Boolean(m.supportsReasoning),
               source: 'system' as const,
             }))
           } catch (gwErr) {
@@ -606,7 +608,7 @@ export function setupBridgeDataHandler(): void {
           }
 
           // 合并去重：本地模型优先（id 相同时保留本地）
-          type ModelItem = { id: string; provider: string; name: string; displayName: string; model: string; supportsVision: boolean; source: string }
+          type ModelItem = { id: string; provider: string; name: string; displayName: string; model: string; supportsVision: boolean; supportsReasoning?: boolean; source: string }
           const mergedMap = new Map<string, ModelItem>()
           for (const m of localModels) {
             mergedMap.set(m.id, m)

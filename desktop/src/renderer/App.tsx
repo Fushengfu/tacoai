@@ -397,6 +397,7 @@ export default function App() {
           contextLength: String(gm.contextLength),
           temperature: gm.temperature,
           supportsVision: Boolean(gm.supportsVision),
+          supportsReasoning: Boolean(gm.supportsReasoning),
           createdAt: Date.now(),
           updatedAt: Date.now(),
         },

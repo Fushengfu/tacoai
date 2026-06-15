@@ -298,13 +298,10 @@ function ensureDb(): DatabaseSync {
   if (db) return db
   fs.mkdirSync(STATE_DIR, { recursive: true })
 
-  let lastError: unknown
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const next = new DatabaseSync(MEMORY_DB_PATH)
-      next.exec(`
+  const next = new DatabaseSync(MEMORY_DB_PATH)
+  next.exec(`
     PRAGMA journal_mode = WAL;
-    PRAGMA synchronous = ${process.platform === 'win32' ? 'FULL' : 'NORMAL'};
+    PRAGMA synchronous = NORMAL;
     PRAGMA foreign_keys = ON;
     PRAGMA temp_store = MEMORY;
 
@@ -552,17 +549,6 @@ function ensureDb(): DatabaseSync {
       migrateLegacyChatSessionSnapshots(next)
       db = next
       return next
-    } catch (err) {
-      lastError = err
-      console.error(`[DB] 打开数据库失败（尝试 ${attempt + 1}/2）:`, err)
-      if (attempt < 1) {
-        /* 500ms 后重试，缓解杀毒软件临时锁定数据库文件 */
-        const waitUntil = Date.now() + 500
-        while (Date.now() < waitUntil) { /* spin */ }
-      }
-    }
-  }
-  throw lastError
 }
 
 /* ------------------------------------------------------------------ */

@@ -637,6 +637,7 @@ export function SettingsPage({
       contextLength: '',
       temperature: '',
       supportsVision: false,
+      supportsReasoning: false,
       createdAt: ts,
       updatedAt: ts,
     }

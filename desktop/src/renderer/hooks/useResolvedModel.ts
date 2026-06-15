@@ -57,6 +57,7 @@ export function useResolvedModel(params: {
     contextLength: String(gatewayModelMatch.contextLength ?? ''),
     temperature: gatewayModelMatch.temperature,
     supportsVision: Boolean(gatewayModelMatch.supportsVision),
+    supportsReasoning: Boolean(gatewayModelMatch.supportsReasoning),
     createdAt: Date.now(),
     updatedAt: Date.now(),
   } : undefined)

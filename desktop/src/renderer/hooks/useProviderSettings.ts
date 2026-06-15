@@ -55,6 +55,7 @@ function fromLegacyProviderForms(forms: ProviderForms): ModelConfig[] {
         contextLength: asText(form?.contextLength),
         temperature: asText(form?.temperature),
         supportsVision: false,
+        supportsReasoning: false,
         createdAt,
         updatedAt: createdAt,
       } as ModelConfig
@@ -87,6 +88,7 @@ function normalizeModelConfig(raw: unknown, index: number): ModelConfig | null {
     contextLength: asText(obj.contextLength),
     temperature: asText(obj.temperature),
     supportsVision: asBoolean(obj.supportsVision),
+    supportsReasoning: asBoolean(obj.supportsReasoning),
     ...(Number.isFinite(createdAt) ? { createdAt: Math.max(0, Math.floor(createdAt)) } : {}),
     ...(Number.isFinite(updatedAt) ? { updatedAt: Math.max(0, Math.floor(updatedAt)) } : {}),
   }
@@ -123,6 +125,7 @@ function toPersistPayload(configs: ModelConfig[], activeModelConfigId: string): 
     contextLength: item.contextLength,
     temperature: asText(item.temperature),
     supportsVision: Boolean(item.supportsVision),
+    supportsReasoning: Boolean(item.supportsReasoning),
     ...(typeof item.createdAt === 'number' ? { createdAt: item.createdAt } : {}),
     ...(typeof item.updatedAt === 'number' ? { updatedAt: item.updatedAt } : {}),
   })) as AppStateModelConfig[]
@@ -229,6 +232,7 @@ export function useProviderSettings() {
       contextLength: asText(initial?.contextLength),
       temperature: asText(initial?.temperature),
       supportsVision: Boolean(initial?.supportsVision),
+      supportsReasoning: Boolean(initial?.supportsReasoning),
       createdAt: ts,
       updatedAt: ts,
     }
@@ -268,6 +272,7 @@ export function useProviderSettings() {
         contextLength: typeof patch.contextLength === 'string' ? patch.contextLength : item.contextLength,
         temperature: typeof patch.temperature === 'string' ? patch.temperature : item.temperature,
         supportsVision: typeof patch.supportsVision === 'boolean' ? patch.supportsVision : item.supportsVision,
+        supportsReasoning: typeof patch.supportsReasoning === 'boolean' ? patch.supportsReasoning : item.supportsReasoning,
         updatedAt: nowTs(),
       }
       return next

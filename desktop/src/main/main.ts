@@ -6,7 +6,6 @@ fixPath()
 
 import { app, BrowserWindow, Menu, MenuItem } from 'electron'
 import path from 'node:path'
-import fs from 'node:fs'
 import { registerIpcHandlers } from './ipc'
 import { logError, logInfo, getLogDir } from './infrastructure/logger'
 import { IpcChannel } from '../shared/ipc'
@@ -26,7 +25,7 @@ import {
   type MainWindowRestoreState,
 } from './window/window-manager'
 import { createTray, updateTrayMenu } from './window/tray'
-import { getDb, MEMORY_DB_PATH } from './repositories/memory-db/schema'
+import { getDb } from './repositories/memory-db/schema'
 
 /** 退出前保存等待状态 */
 let quitSaveResolved = false
@@ -45,17 +44,6 @@ export function resolveQuitSave() {
     database.exec('PRAGMA wal_checkpoint(TRUNCATE)')
   } catch (err) {
     logError('wal-checkpoint', 'WAL checkpoint 失败，数据可能未完全写入', { error: String(err) })
-  }
-  // fsync: 强制 OS 将文件缓冲区写入物理磁盘，防止 app.exit(0) 导致数据丢失
-  try {
-    const fd = fs.openSync(MEMORY_DB_PATH, 'r+')
-    try {
-      fs.fsyncSync(fd)
-    } finally {
-      fs.closeSync(fd)
-    }
-  } catch (err) {
-    logError('fsync', '数据库文件 fsync 失败，数据可能未持久化到磁盘', { error: String(err) })
   }
   app.exit(0)
 }
