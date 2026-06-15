@@ -1,5 +1,7 @@
 import { app } from 'electron'
 import { log, logError } from './infrastructure/logger'
+import { resolvePersistentDeviceUid } from './infrastructure/app-updater'
+import { randomBytes } from 'node:crypto'
 
 const API_BASE = 'https://aigateway.bjctykj.com'
 const REPORT_URL = `${API_BASE}/api/v1/public/desktop/report`
@@ -9,24 +11,21 @@ let deviceId: string | null = null
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null
 
 /**
- * 从 app-updater 模块动态加载 resolvePersistentDeviceUid
- * 避免循环依赖
+ * 获取持久化设备 UID
+ * 优先从 device-uid.json 读取，不存在则生成并持久化
  */
 async function resolveDeviceId(): Promise<string> {
   if (deviceId) return deviceId
 
   try {
-    // 动态导入以复用已有的设备 UID 生成逻辑
-    const updater = await import('./infrastructure/app-updater')
-    deviceId = await (updater as any).resolvePersistentDeviceUid?.()
+    deviceId = await resolvePersistentDeviceUid()
     if (deviceId) return deviceId
   } catch (err) {
-    console.warn('[usage-reporter] failed to import device uid from app-updater, using fallback:', err)
+    console.warn('[usage-reporter] failed to resolve persistent device uid, using fallback:', err)
   }
 
-  // 兜底：使用 crypto 生成
-  const crypto = await import('node:crypto')
-  deviceId = `desktop_${crypto.randomBytes(16).toString('hex')}`
+  // 兜底：仅在持久化方案完全失败时使用（每次启动会变，统计会失准）
+  deviceId = `desktop_${randomBytes(16).toString('hex')}`
   return deviceId
 }
 

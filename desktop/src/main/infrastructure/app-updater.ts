@@ -64,7 +64,7 @@ function isValidDeviceUid(value: unknown): value is string {
   return Boolean(text) && text.length >= 12 && text.length <= 128
 }
 
-async function resolvePersistentDeviceUid(): Promise<string> {
+export async function resolvePersistentDeviceUid(): Promise<string> {
   const fallback = fallbackDeviceUid()
   try {
     const dir = app.getPath('userData')
