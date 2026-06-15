@@ -142,10 +142,10 @@ export function useThreads() {
 
         setThreads(nextThreads)
         setActiveThreadId(nextActiveThreadId)
+        if (!cancelled) setHydrated(true)
       } catch (err) {
         console.error('[app-state] 加载项目列表失败:', err)
-      } finally {
-        if (!cancelled) setHydrated(true)
+        /* 不设置 hydrated=true —— 防止空数据覆盖数据库 */
       }
     }
 

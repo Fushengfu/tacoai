@@ -265,8 +265,11 @@ export function loadAppThreadsStateFromDb(): AppStateStoreEntry<AppStateThreadsP
   for (const row of threadRows) {
     const threadId = asTrimmedString(row.id)
     if (!threadId) continue
-    const sessions = sessionsByThread.get(threadId) ?? []
-    if (sessions.length <= 0) continue
+    let sessions = sessionsByThread.get(threadId) ?? []
+    /* 没有 session 的 thread 不再静默丢弃，自动补一个默认会话 */
+    if (sessions.length <= 0) {
+      sessions = [{ id: threadId, title: '会话', createdAt: parseOptionalTimestamp(row.updated_at) ?? Date.now() }]
+    }
     const activeSessionRaw = asTrimmedString(row.active_session_id)
     const activeSessionId = sessions.some((item) => item.id === activeSessionRaw)
       ? activeSessionRaw
@@ -326,6 +329,21 @@ export function saveAppThreadsStateToDb(payload: AppStateThreadsPayload): AppSta
     ? activeRaw
     : (threads[0]?.id ?? '')
   const updatedAt = new Date().toISOString()
+
+  /* 安全防护：如果传入的 threads 为空，检查数据库是否有数据 */
+  if (threads.length <= 0) {
+    const current = loadAppThreadsStateFromDb()
+    if (current.data && current.data.threads.length > 0) {
+      console.warn('[app-state] 拒绝用空数据覆盖已有项目列表，保留数据库当前状态')
+      return { data: current.data, updatedAt: current.updatedAt || updatedAt }
+    }
+    /* 数据库也为空（首次启动），正常写入空状态 */
+    runInTransaction(database, () => {
+      database.prepare(`DELETE FROM app_project_sessions`).run()
+      database.prepare(`DELETE FROM app_project_configs`).run()
+    })
+    return { data: { threads: [], activeThreadId: '' }, updatedAt }
+  }
 
   runInTransaction(database, () => {
     database.prepare(`DELETE FROM app_project_sessions`).run()
@@ -449,6 +467,20 @@ export function saveAppProvidersStateToDb(payload: AppStateProvidersPayload): Ap
     ? activeRaw
     : (modelConfigs[0]?.id ?? '')
   const updatedAt = new Date().toISOString()
+
+  /* 安全防护：如果传入的 modelConfigs 为空，检查数据库是否有数据 */
+  if (modelConfigs.length <= 0) {
+    const current = loadAppProvidersStateFromDb()
+    if (current.data && current.data.modelConfigs.length > 0) {
+      console.warn('[app-state] 拒绝用空数据覆盖已有模型配置，保留数据库当前状态')
+      return { data: current.data, updatedAt: current.updatedAt || updatedAt }
+    }
+    /* 数据库也为空（首次启动），正常写入空状态 */
+    runInTransaction(database, () => {
+      database.prepare(`DELETE FROM app_model_configs`).run()
+    })
+    return { data: { modelConfigs: [], activeModelConfigId: '' }, updatedAt }
+  }
 
   runInTransaction(database, () => {
     database.prepare(`DELETE FROM app_model_configs`).run()

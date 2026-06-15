@@ -166,10 +166,10 @@ export function useProviderSettings() {
 
         setModelConfigs(nextConfigs)
         setActiveModelConfigIdState(nextActiveModelConfigId)
+        if (!cancelled) setHydrated(true)
       } catch (err) {
         console.error('[app-state] 加载模型配置失败:', err)
-      } finally {
-        if (!cancelled) setHydrated(true)
+        /* 不设置 hydrated=true —— 防止空数据覆盖数据库 */
       }
     }
 
