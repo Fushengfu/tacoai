@@ -551,7 +551,7 @@ export default function App() {
       <header
         className={`topbar app-topbar draggable ${hasMacTrafficLights ? 'has-native-traffic-lights' : ''}`}
         style={{ gridColumn: '1 / 4', gridRow: '1 / 2' }}
-        {...drag}
+        onMouseDown={drag.onMouseDown}
         onDoubleClick={(e) => {
           // 如果刚发生过拖拽移动，忽略双击，防止拖动时误触最大化
           if (drag.didMoveRef.current) return
