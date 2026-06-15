@@ -28,6 +28,7 @@ import { BridgePanel } from './views/bridge/BridgePanel'
 import { MobileDownloadPanel } from './views/bridge/MobileDownloadPanel'
 import { LoginModal, type MemberInfo } from './views/LoginModal'
 import { PaneErrorBoundary } from './views/PaneErrorBoundary'
+import { OnboardingOverlay, isOnboardingCompleted, markOnboardingCompleted } from './views/OnboardingOverlay'
 import { useDrag } from './hooks/useDrag'
 import { useUpdateCheck } from './hooks/useUpdateCheck'
 import { useBridgeInit } from './hooks/useBridgeInit'
@@ -66,6 +67,32 @@ export default function App() {
 
   type MiddleView = 'chat' | 'settings' | 'token-report'
   const [middleView, setMiddleView] = useState<MiddleView>('chat')
+
+  /* ---- 首次使用引导 ---- */
+  const [onboardingStep, setOnboardingStep] = useState(0)
+  const [showOnboarding, setShowOnboarding] = useState(() => !isOnboardingCompleted())
+
+  const handleOnboardingNext = useCallback(() => {
+    setOnboardingStep((s) => s + 1)
+  }, [])
+
+  const handleOnboardingSkip = useCallback(() => {
+    setShowOnboarding(false)
+    markOnboardingCompleted()
+  }, [])
+
+  const handleOnboardingComplete = useCallback(() => {
+    setShowOnboarding(false)
+    markOnboardingCompleted()
+    // 引导完成后，如果是全新用户（无项目），自动创建一个项目
+    if (threadStore.threads.length === 0) {
+      threadStore.createThread('我的项目', providerSettings.activeModelConfigId || undefined)
+    }
+  }, [threadStore, providerSettings.activeModelConfigId])
+
+  const hasAnyProviders =
+    providerSettings.configuredModels.length > 0 || gatewayModels.models.length > 0
+  const hasAnyWorkspace = threadStore.threads.some((t) => Boolean(t.workspace?.trim()))
   
   const scrollRef = useRef<HTMLDivElement>(null)
   const doSendRef = useRef<(contentParts: MessageContentPart[], target?: any) => void>(() => {})
@@ -976,6 +1003,18 @@ export default function App() {
         <LoginModal
           onClose={auth.hideLogin}
           onLoginSuccess={auth.handleLoginSuccess}
+        />
+      )}
+
+      {/* 首次使用引导 */}
+      {showOnboarding && (
+        <OnboardingOverlay
+          step={onboardingStep}
+          onNext={handleOnboardingNext}
+          onSkip={handleOnboardingSkip}
+          onComplete={handleOnboardingComplete}
+          hasProviders={hasAnyProviders}
+          hasWorkspace={hasAnyWorkspace}
         />
       )}
     </div>
