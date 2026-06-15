@@ -300,7 +300,7 @@ function ensureDb(): DatabaseSync {
   const next = new DatabaseSync(MEMORY_DB_PATH)
   next.exec(`
     PRAGMA journal_mode = WAL;
-    PRAGMA synchronous = NORMAL;
+    PRAGMA synchronous = ${process.platform === 'win32' ? 'FULL' : 'NORMAL'};
     PRAGMA foreign_keys = ON;
     PRAGMA temp_store = MEMORY;
 

@@ -337,29 +337,42 @@ export function saveAppThreadsStateToDb(payload: AppStateThreadsPayload): AppSta
       console.warn('[app-state] 拒绝用空数据覆盖已有项目列表，保留数据库当前状态')
       return { data: current.data, updatedAt: current.updatedAt || updatedAt }
     }
-    /* 数据库也为空（首次启动），正常写入空状态 */
-    runInTransaction(database, () => {
-      database.prepare(`DELETE FROM app_project_sessions`).run()
-      database.prepare(`DELETE FROM app_project_configs`).run()
-    })
+    /* 数据库也为空（首次启动），无需任何操作 */
     return { data: { threads: [], activeThreadId: '' }, updatedAt }
   }
 
   runInTransaction(database, () => {
-    database.prepare(`DELETE FROM app_project_sessions`).run()
-    database.prepare(`DELETE FROM app_project_configs`).run()
-    const insertThreadStmt = database.prepare(`
+    /* UPSERT 所有 thread 和 session（非破坏性写入，不会先删再插） */
+    const upsertThreadStmt = database.prepare(`
       INSERT INTO app_project_configs (
         id, title, title_locked, updated_at, model_config_id, provider, mode, workspace, project_rules, active_session_id
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        title=excluded.title,
+        title_locked=excluded.title_locked,
+        updated_at=excluded.updated_at,
+        model_config_id=excluded.model_config_id,
+        provider=excluded.provider,
+        mode=excluded.mode,
+        workspace=excluded.workspace,
+        project_rules=excluded.project_rules,
+        active_session_id=excluded.active_session_id
     `)
-    const insertSessionStmt = database.prepare(`
+    const upsertSessionStmt = database.prepare(`
       INSERT INTO app_project_sessions (
         id, thread_id, title, created_at, sort_order
       ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        thread_id=excluded.thread_id,
+        title=excluded.title,
+        created_at=excluded.created_at,
+        sort_order=excluded.sort_order
     `)
+
+    const threadIds: string[] = []
     for (const thread of threads) {
-      insertThreadStmt.run(
+      threadIds.push(thread.id)
+      upsertThreadStmt.run(
         thread.id,
         thread.title,
         thread.titleLocked ? 1 : 0,
@@ -371,10 +384,19 @@ export function saveAppThreadsStateToDb(payload: AppStateThreadsPayload): AppSta
         asTrimmedString(thread.projectRules),
         thread.activeSessionId,
       )
-      thread.sessions.forEach((session, sessionIndex) => {
-        insertSessionStmt.run(session.id, thread.id, session.title, session.createdAt, sessionIndex)
-      })
+      for (let sessionIndex = 0; sessionIndex < thread.sessions.length; sessionIndex++) {
+        const session = thread.sessions[sessionIndex]
+        upsertSessionStmt.run(session.id, thread.id, session.title, session.createdAt, sessionIndex)
+      }
     }
+
+    /* 清理不在当前列表中的旧记录（保留已 UPSERT 的数据，只删多余的） */
+    if (threadIds.length > 0) {
+      const threadPlaceholders = threadIds.map(() => '?').join(', ')
+      database.prepare(`DELETE FROM app_project_sessions WHERE thread_id NOT IN (${threadPlaceholders})`).run(...threadIds)
+      database.prepare(`DELETE FROM app_project_configs WHERE id NOT IN (${threadPlaceholders})`).run(...threadIds)
+    }
+
     writeAppStateMetaRaw('active_thread_id', activeThreadId, database, updatedAt)
   })
 
@@ -475,22 +497,34 @@ export function saveAppProvidersStateToDb(payload: AppStateProvidersPayload): Ap
       console.warn('[app-state] 拒绝用空数据覆盖已有模型配置，保留数据库当前状态')
       return { data: current.data, updatedAt: current.updatedAt || updatedAt }
     }
-    /* 数据库也为空（首次启动），正常写入空状态 */
-    runInTransaction(database, () => {
-      database.prepare(`DELETE FROM app_model_configs`).run()
-    })
+    /* 数据库也为空（首次启动），无需任何操作 */
     return { data: { modelConfigs: [], activeModelConfigId: '' }, updatedAt }
   }
 
   runInTransaction(database, () => {
-    database.prepare(`DELETE FROM app_model_configs`).run()
-    const insertStmt = database.prepare(`
+    /* UPSERT（非破坏性写入，不会先删再插） */
+    const upsertStmt = database.prepare(`
       INSERT INTO app_model_configs (
         id, provider, name, base_url, api_key, model, max_tokens, temperature, supports_vision, supports_reasoning, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        provider=excluded.provider,
+        name=excluded.name,
+        base_url=excluded.base_url,
+        api_key=excluded.api_key,
+        model=excluded.model,
+        max_tokens=excluded.max_tokens,
+        temperature=excluded.temperature,
+        supports_vision=excluded.supports_vision,
+        supports_reasoning=excluded.supports_reasoning,
+        created_at=excluded.created_at,
+        updated_at=excluded.updated_at
     `)
+
+    const modelIds: string[] = []
     for (const model of modelConfigs) {
-      insertStmt.run(
+      modelIds.push(model.id)
+      upsertStmt.run(
         model.id,
         model.provider,
         model.name,
@@ -505,6 +539,13 @@ export function saveAppProvidersStateToDb(payload: AppStateProvidersPayload): Ap
         parseOptionalTimestamp(model.updatedAt) ?? null,
       )
     }
+
+    /* 清理不在当前列表中的旧记录 */
+    if (modelIds.length > 0) {
+      const placeholders = modelIds.map(() => '?').join(', ')
+      database.prepare(`DELETE FROM app_model_configs WHERE id NOT IN (${placeholders})`).run(...modelIds)
+    }
+
     writeAppStateMetaRaw('active_model_config_id', activeModelConfigId, database, updatedAt)
   })
 

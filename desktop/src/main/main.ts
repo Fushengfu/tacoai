@@ -43,7 +43,7 @@ export function resolveQuitSave() {
     const database = getDb()
     database.exec('PRAGMA wal_checkpoint(TRUNCATE)')
   } catch (err) {
-    // checkpoint 失败不影响退出流程
+    logError('wal-checkpoint', 'WAL checkpoint 失败，数据可能未完全写入', { error: String(err) })
   }
   app.exit(0)
 }
