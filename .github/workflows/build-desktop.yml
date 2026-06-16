@@ -49,7 +49,8 @@ jobs:
       - name: Build & Package (macOS arm64 dmg)
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npm run dist:mac
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: npm run dist:mac -- --publish always
 
       - name: Upload dmg artifact
         uses: actions/upload-artifact@v4
@@ -71,11 +72,16 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
+      - name: Setup MSVC compiler for native modules
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Install dependencies
         run: npm ci
 
       - name: Build & Package (Windows x64 NSIS)
-        run: npm run dist:win
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: npm run dist:win -- --publish always
 
       - name: Upload exe artifact
         uses: actions/upload-artifact@v4
