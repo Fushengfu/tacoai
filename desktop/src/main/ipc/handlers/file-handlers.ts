@@ -83,22 +83,24 @@ export async function handleFileRevert(_event: IpcMainInvokeEvent, filePath: str
 
 /** 删除文件（移到回收站） */
 export async function handleFileDelete(_event: IpcMainInvokeEvent, filePath: string): Promise<void> {
+  // 先检查文件是否存在，避免 macOS shell.trashItem 抛出不可预知的本地化错误
   try {
-    await shell.trashItem(filePath)
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
-    throw err
+    await fs.access(filePath)
+  } catch {
+    return // 文件不存在，无需删除
   }
+  await shell.trashItem(filePath)
 }
 
 /** 删除目录（移到回收站） */
 export async function handleDirectoryDelete(_event: IpcMainInvokeEvent, dirPath: string): Promise<void> {
+  // 先检查目录是否存在
   try {
-    await shell.trashItem(dirPath)
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
-    throw err
+    await fs.access(dirPath)
+  } catch {
+    return // 目录不存在，无需删除
   }
+  await shell.trashItem(dirPath)
 }
 
 /* ------------------------------------------------------------------ */
@@ -219,4 +221,18 @@ export async function handleFileWrite(
   const dir = nodePath.dirname(filePath)
   await fs.mkdir(dir, { recursive: true })
   await fs.writeFile(filePath, content, 'utf-8')
+}
+
+/** 创建目录（自动创建父目录） */
+export async function handleDirectoryCreate(
+  _event: IpcMainInvokeEvent, dirPath: string,
+): Promise<void> {
+  await fs.mkdir(dirPath, { recursive: true })
+}
+
+/** 重命名文件或目录 */
+export async function handleFileRename(
+  _event: IpcMainInvokeEvent, oldPath: string, newPath: string,
+): Promise<void> {
+  await fs.rename(oldPath, newPath)
 }

@@ -53,6 +53,10 @@ export const IpcChannel = {
   FILE_DELETE: 'file:delete',
   /** renderer → main (invoke/handle, 删除目录) */
   DIRECTORY_DELETE: 'directory:delete',
+  /** renderer → main (invoke/handle, 创建目录) */
+  DIRECTORY_CREATE: 'directory:create',
+  /** renderer → main (invoke/handle, 重命名文件/目录) */
+  FILE_RENAME: 'file:rename',
   /** renderer → main (invoke/handle, 读取文件内容) */
   FILE_READ: 'file:read',
   /** renderer → main (invoke/handle, 写入文件内容) */

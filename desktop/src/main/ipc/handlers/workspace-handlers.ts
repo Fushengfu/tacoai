@@ -24,7 +24,7 @@ const EXCLUDED_DIRS = new Set([
   'dist', 'build', 'out', 'target', '.gradle', 'Pods', 'DerivedData',
 ])
 
-const WORKSPACE_TREE_MAX_DEPTH = 8
+const WORKSPACE_TREE_MAX_DEPTH = 16
 const WORKSPACE_TREE_MAX_ENTRIES = 12_000
 const WORKSPACE_TREE_MAX_CHILDREN_PER_DIR = 1_500
 const WORKSPACE_TREE_CACHE_TTL_MS = 1_500
@@ -154,7 +154,10 @@ export function stopWatching() {
 /*  IPC Handlers                                                       */
 /* ------------------------------------------------------------------ */
 
-export async function handleWorkspaceTree(_event: IpcMainInvokeEvent, cwd: string): Promise<FileTreeEntry[]> {
+export async function handleWorkspaceTree(_event: IpcMainInvokeEvent, cwd: string, force?: boolean): Promise<FileTreeEntry[]> {
+  if (force) {
+    workspaceTreeCache.delete(nodePath.resolve(cwd))
+  }
   return getWorkspaceTree(cwd)
 }
 

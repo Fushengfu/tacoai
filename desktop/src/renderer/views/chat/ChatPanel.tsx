@@ -2500,10 +2500,8 @@ export function ChatPanel({
             </svg>
             <span>{workspace ? workspace.split('/').pop() || workspace : '选择工作空间'}</span>
           </div>
-        </div>
               
-        {/* 版本号 - 右侧 */}
-        <div className="composer-bottom-right">
+          {/* Token 统计 */}
           {runTokenStats && (
             <>
               <span className="token-stat-group-label">{t('stats.thisRun')}</span>
@@ -2542,6 +2540,10 @@ export function ChatPanel({
               </div>
             </>
           )}
+        </div>
+              
+        {/* 版本号 - 右侧 */}
+        <div className="composer-bottom-right">
           <span className="composer-footer-version">v{window.taco.version}</span>
         </div>
       </div>

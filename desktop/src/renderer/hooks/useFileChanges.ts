@@ -25,7 +25,7 @@ export function useFileChanges(
   const lastWorkspaceBySessionRef = useRef<Record<string, string>>({})
   
   // Git 工作区状态
-  const [gitWorkingStatus, setGitWorkingStatus] = useState<GitWorkingTreeStatus>({ staged: [], unstaged: [] })
+  const [gitWorkingStatus, setGitWorkingStatus] = useState<GitWorkingTreeStatus>({ staged: [], unstaged: [], fileStatuses: {} })
   const [gitStatusLoaded, setGitStatusLoaded] = useState(false)
   const gitStatusRefreshSeqRef = useRef(0)
   
@@ -159,7 +159,7 @@ export function useFileChanges(
   const refreshGitStatus = useCallback(async () => {
     const seq = ++gitStatusRefreshSeqRef.current
     if (!currentWorkspace) {
-      setGitWorkingStatus({ staged: [], unstaged: [] })
+      setGitWorkingStatus({ staged: [], unstaged: [], fileStatuses: {} })
       setGitStatusLoaded(false)
       return
     }
@@ -169,12 +169,13 @@ export function useFileChanges(
       setGitWorkingStatus({
         staged: Array.isArray(status?.staged) ? status.staged : [],
         unstaged: Array.isArray(status?.unstaged) ? status.unstaged : [],
+        fileStatuses: status?.fileStatuses ?? {},
       })
       setGitStatusLoaded(true)
     } catch (err) {
       if (seq !== gitStatusRefreshSeqRef.current) return
       console.error('获取 Git 工作区状态失败:', err)
-      setGitWorkingStatus({ staged: [], unstaged: [] })
+      setGitWorkingStatus({ staged: [], unstaged: [], fileStatuses: {} })
       setGitStatusLoaded(true)
     }
   }, [currentWorkspace])
@@ -264,7 +265,7 @@ export function useFileChanges(
       unstaged.delete(candidatePath)
       unstaged.delete(candidatePath.replace(/\//g, '\\'))
       unstaged.delete(candidatePath.replace(/\\/g, '/'))
-      return { staged: Array.from(staged), unstaged: Array.from(unstaged) }
+      return { staged: Array.from(staged), unstaged: Array.from(unstaged), fileStatuses: prev.fileStatuses }
     })
     setFileStatuses((prev) => ({ ...prev, [filePath]: 'accepted' }))
     try {
@@ -337,7 +338,7 @@ export function useFileChanges(
         const normalized = normalizeWorkspaceRelativePath(fc.filePath, currentWorkspace)
         if (normalized) staged.add(normalized)
       }
-      return { staged: Array.from(staged), unstaged: [] }
+      return { staged: Array.from(staged), unstaged: [], fileStatuses: prev.fileStatuses }
     })
     setFileStatuses((prev) => {
       const next = { ...prev }

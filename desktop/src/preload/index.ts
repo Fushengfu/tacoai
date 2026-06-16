@@ -214,8 +214,8 @@ const tacoApi: TacoApi = {
     selectAttachments: () => ipcRenderer.invoke(IpcChannel.SELECT_ATTACHMENTS),
   },
   workspace: {
-    tree: (cwd: string) =>
-      ipcRenderer.invoke(IpcChannel.WORKSPACE_TREE, cwd),
+    tree: (cwd: string, force?: boolean) =>
+      ipcRenderer.invoke(IpcChannel.WORKSPACE_TREE, cwd, force ?? false),
     watch: (cwd: string) =>
       ipcRenderer.send(IpcChannel.WORKSPACE_WATCH, cwd),
     unwatch: () =>
@@ -235,6 +235,10 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.FILE_DELETE, filePath),
     deleteDirectory: (dirPath: string) =>
       ipcRenderer.invoke(IpcChannel.DIRECTORY_DELETE, dirPath),
+    createDirectory: (dirPath: string) =>
+      ipcRenderer.invoke(IpcChannel.DIRECTORY_CREATE, dirPath),
+    rename: (oldPath: string, newPath: string) =>
+      ipcRenderer.invoke(IpcChannel.FILE_RENAME, oldPath, newPath),
     read: (filePath: string) =>
       ipcRenderer.invoke(IpcChannel.FILE_READ, filePath),
     write: (filePath: string, content: string) =>

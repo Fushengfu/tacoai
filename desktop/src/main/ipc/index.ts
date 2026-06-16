@@ -88,6 +88,8 @@ import {
   handleFileRevert,
   handleFileDelete,
   handleDirectoryDelete,
+  handleDirectoryCreate,
+  handleFileRename,
   handleFileRead,
   handleFileWrite,
 } from './handlers/file-handlers'
@@ -152,6 +154,8 @@ export function registerIpcHandlers() {
   ipcMain.handle(IpcChannel.FILE_REVERT, handleFileRevert)
   ipcMain.handle(IpcChannel.FILE_DELETE, handleFileDelete)
   ipcMain.handle(IpcChannel.DIRECTORY_DELETE, handleDirectoryDelete)
+  ipcMain.handle(IpcChannel.DIRECTORY_CREATE, handleDirectoryCreate)
+  ipcMain.handle(IpcChannel.FILE_RENAME, handleFileRename)
   ipcMain.handle(IpcChannel.FILE_READ, handleFileRead)
   ipcMain.handle(IpcChannel.FILE_WRITE, handleFileWrite)
 

@@ -112,7 +112,7 @@ export type TacoApi = {
   }
   workspace: {
     /** 读取工作空间目录树 */
-    tree: (cwd: string) => Promise<FileTreeEntry[]>
+    tree: (cwd: string, force?: boolean) => Promise<FileTreeEntry[]>
     /** 开始监听工作空间变化 */
     watch: (cwd: string) => void
     /** 停止监听工作空间变化 */
@@ -127,6 +127,10 @@ export type TacoApi = {
     delete: (filePath: string) => Promise<void>
     /** 删除目录 */
     deleteDirectory: (dirPath: string) => Promise<void>
+    /** 创建目录（自动创建父目录） */
+    createDirectory: (dirPath: string) => Promise<void>
+    /** 重命名文件或目录 */
+    rename: (oldPath: string, newPath: string) => Promise<void>
     /** 读取文件内容（文本文件返回内容字符串，二进制文件返回 null；图片可返回 dataUrl 预览） */
     read: (filePath: string) => Promise<{ content: string | null; size: number; isBinary: boolean; dataUrl?: string; truncated?: boolean }>
     /** 写入文件内容 */

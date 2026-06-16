@@ -33,6 +33,7 @@ import { useDrag } from './hooks/useDrag'
 import { useUpdateCheck } from './hooks/useUpdateCheck'
 import { useBridgeInit } from './hooks/useBridgeInit'
 import { useFileViewer } from './hooks/useFileViewer'
+import { WorkspaceTree } from './components/WorkspaceTree'
 
 export default function App() {
   /* ---- 业务 hooks ---- */
@@ -675,6 +676,11 @@ export default function App() {
                 {updateChecking ? '检查更新中...' : `新版本 v${updateStatus.latestVersion || ''}`}
               </button>
             )}
+            {messages.length > 0 && (
+              <button className="pill" type="button" onClick={handleClearChat}>
+                清空会话记录
+              </button>
+            )}
             <button
               className={`pill terminal-toggle ${showTerminal ? 'active' : ''}`}
               type="button"
@@ -736,10 +742,8 @@ export default function App() {
                 <rect x="10" y="4" width="1.5" height="8" rx="0.3" fill="currentColor"/>
               </svg>
             </button>
-            {messages.length > 0 && (
-              <button className="pill" type="button" onClick={handleClearChat}>
-                清空
-              </button>
+            {currentWorkspace && (
+              <WorkspaceTree workspace={currentWorkspace} />
             )}
           </div>
         </div>

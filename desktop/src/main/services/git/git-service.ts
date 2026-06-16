@@ -65,6 +65,8 @@ export type GitCommitInfo = {
 export type GitWorkingTreeStatus = {
   staged: string[]
   unstaged: string[]
+  /** 每个文件的 porcelain 状态码：M=已修改 A=新增暂存 D=已删除 ?=未跟踪 R=重命名 C=已复制 */
+  fileStatuses: Record<string, string>
 }
 
 export type GitFileChangeInfo = {
@@ -234,19 +236,43 @@ export async function gitCommitFiles(cwd: string, hash: string): Promise<string[
  */
 export async function gitStatus(cwd: string): Promise<GitWorkingTreeStatus> {
   if (!(await isGitRepo(cwd))) {
-    return { staged: [], unstaged: [] }
+    return { staged: [], unstaged: [], fileStatuses: {} }
   }
   try {
-    const [stagedRaw, unstagedRaw, untrackedRaw] = await Promise.all([
+    const [stagedRaw, unstagedRaw, untrackedRaw, porcelainRaw] = await Promise.all([
       git(cwd, 'diff --cached --name-only --'),
       git(cwd, 'diff --name-only --'),
       git(cwd, 'ls-files --others --exclude-standard'),
+      git(cwd, 'status --porcelain'),
     ])
     const staged = parseGitNameList(stagedRaw)
     const unstaged = parseGitNameList([unstagedRaw, untrackedRaw].filter(Boolean).join('\n'))
-    return { staged, unstaged }
+
+    // 解析 porcelain 获取每文件状态码
+    const fileStatuses: Record<string, string> = {}
+    if (porcelainRaw) {
+      for (const line of porcelainRaw.split('\n')) {
+        if (!line || line.length < 4) continue
+        const idx = line.charAt(0)
+        const wt = line.charAt(1)
+        const rest = line.slice(3).trim() // skip "XY "
+        if (!rest) continue
+
+        // 重命名/复制：格式为 "R  old -> new"
+        if ((idx === 'R' || idx === 'C') && rest.includes(' -> ')) {
+          const newPath = rest.split(' -> ').pop()!
+          fileStatuses[normalizeGitRelativePath(newPath)] = idx
+          continue
+        }
+
+        // 常规文件：工作区状态优先，其次索引状态
+        const status = wt !== ' ' ? wt : idx
+        fileStatuses[normalizeGitRelativePath(rest)] = status
+      }
+    }
+    return { staged, unstaged, fileStatuses }
   } catch {
-    return { staged: [], unstaged: [] }
+    return { staged: [], unstaged: [], fileStatuses: {} }
   }
 }
 
@@ -261,7 +287,7 @@ export async function gitFileChange(cwd: string, filePath: string): Promise<GitF
     readHeadText(cwd, rel),
     readWorkingTreeText(cwd, rel),
   ])
-  if (oldContent === newContent) return null
+  // 始终返回文件信息：即使内容完全相同也让 UI 展示无差异高亮的文件内容
   return { filePath: rel, oldContent, newContent }
 }
 

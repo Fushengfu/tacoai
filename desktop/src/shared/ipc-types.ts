@@ -290,6 +290,8 @@ export type FileTreeEntry = {
 export type GitWorkingTreeStatus = {
   staged: string[]
   unstaged: string[]
+  /** 每个文件的 porcelain 状态码：M=已修改 A=新增暂存 D=已删除 ?=未跟踪 R=重命名 C=已复制 */
+  fileStatuses: Record<string, string>
 }
 
 /** Git 文件差异快照（基于 HEAD vs 工作区） */
