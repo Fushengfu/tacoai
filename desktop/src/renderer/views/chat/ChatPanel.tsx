@@ -2424,8 +2424,8 @@ export function ChatPanel({
             }}
             aria-label="切换语言"
           >
-            <option value="zh-CN">中文</option>
-            <option value="en-US">English</option>
+            <option value="zh-CN">🇨🇳 中文</option>
+            <option value="en-US">🇺🇸 English</option>
           </select>
           
           {/* 项目目录 - 可点击 */}
