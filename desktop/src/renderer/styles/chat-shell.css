@@ -1257,6 +1257,38 @@ body.is-dragging * {
   min-width: 0;
 }
 
+/* ── 输入框内嵌上下文进度条（紧凑单行版） ── */
+.composer-context-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 56px;
+  flex-shrink: 0;
+}
+.composer-context-bar-track {
+  width: 40px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.composer-context-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.3s ease;
+  min-width: 1px;
+}
+.composer-context-bar-fill.warn {
+  background: #f59e0b;
+}
+.composer-context-bar-label {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  line-height: 1;
+}
+
 .composer-right {
   display: flex;
   align-items: center;
@@ -1415,6 +1447,61 @@ body.is-dragging * {
   opacity: 0.6;
 }
 
+/* 底部栏 token 使用统计 */
+.bottom-bar-token-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-right: 14px;
+  padding: 2px 10px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.token-stat-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: default;
+  white-space: nowrap;
+}
+
+.token-stat-icon {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  opacity: 0.5;
+}
+
+.token-stat-label {
+  font-size: 10px;
+  opacity: 0.45;
+  margin-right: 1px;
+}
+
+.token-stat-total {
+  font-weight: 600;
+  color: var(--text);
+  opacity: 0.8;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  padding-left: 10px;
+}
+
+/* Token 统计分组标签（本轮 / 累计） */
+.token-stat-group-label {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+  opacity: 0.55;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.03);
+  white-space: nowrap;
+  margin-right: 2px;
+}
+
 /* 底部控制栏 */
 .composer-bottom-bar {
   display: flex;
@@ -1461,8 +1548,15 @@ body.is-dragging * {
   opacity: 0.7;
 }
 
-/* 底部语言选择下拉框 */
-.bottom-bar-select {
+/* 语言切换自定义下拉框 */
+.bottom-bar-lang {
+  position: relative;
+}
+
+.bottom-bar-lang-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.1);
   color: var(--text);
@@ -1473,22 +1567,79 @@ body.is-dragging * {
   transition: all 0.15s ease;
   outline: none;
   min-width: 80px;
+  font-family: inherit;
 }
 
-.bottom-bar-select:hover {
+.bottom-bar-lang-btn:hover {
   background: rgba(255, 255, 255, 0.08);
   border-color: rgba(255, 255, 255, 0.15);
 }
 
-.bottom-bar-select:focus {
+.bottom-bar-lang-btn:focus-visible {
   border-color: rgba(59, 130, 246, 0.5);
-  background: rgba(255, 255, 255, 0.1);
 }
 
-.bottom-bar-select option {
+/* 国旗图标 */
+.lang-flag-icon {
+  width: 18px;
+  height: 12px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+/* 下拉箭头 */
+.lang-arrow {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  opacity: 0.5;
+  margin-left: 2px;
+}
+
+/* 下拉菜单 */
+.bottom-bar-lang-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
   background: #1e1e1e;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 4px;
+  min-width: 110px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  animation: lang-menu-in 0.12s ease;
+}
+
+@keyframes lang-menu-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.bottom-bar-lang-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
   color: var(--text);
-  padding: 4px 8px;
+  transition: background 0.1s ease;
+}
+
+.bottom-bar-lang-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.bottom-bar-lang-item.active {
+  background: rgba(59, 130, 246, 0.12);
+  color: #60a5fa;
+}
+
+/* 移除旧的 select 样式（不再使用） */
+.bottom-bar-select {
+  display: none;
 }
 
 /* 工作空间项目 - 药丸按钮样式 */

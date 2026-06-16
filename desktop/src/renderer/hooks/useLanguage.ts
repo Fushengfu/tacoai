@@ -20,6 +20,13 @@ const translations: Record<Language, Record<string, string>> = {
     'input.send': '发送消息',
     'input.stop': '停止生成',
     'input.no_provider': '请先配置模型',
+    // Token 统计
+    'stats.input': '输入',
+    'stats.output': '输出',
+    'stats.cacheHit': '缓存命中',
+    'stats.turns': '轮次',
+    'stats.thisRun': '本轮',
+    'stats.total': '累计',
     // 通用
     'common.language': '语言',
     'common.language_zh': '中文',
@@ -35,6 +42,13 @@ const translations: Record<Language, Record<string, string>> = {
     'input.send': 'Send message',
     'input.stop': 'Stop generation',
     'input.no_provider': 'Please configure a model first',
+    // Token stats
+    'stats.input': 'In',
+    'stats.output': 'Out',
+    'stats.cacheHit': 'Cache Hit',
+    'stats.turns': 'Rounds',
+    'stats.thisRun': 'Run',
+    'stats.total': 'Total',
     // Common
     'common.language': 'Language',
     'common.language_zh': '中文',

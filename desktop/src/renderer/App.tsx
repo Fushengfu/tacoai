@@ -76,6 +76,10 @@ export default function App() {
     setOnboardingStep((s) => s + 1)
   }, [])
 
+  const handleOnboardingPrev = useCallback(() => {
+    setOnboardingStep((s) => Math.max(0, s - 1))
+  }, [])
+
   const handleOnboardingSkip = useCallback(() => {
     setShowOnboarding(false)
     markOnboardingCompleted()
@@ -197,6 +201,7 @@ export default function App() {
   const contextLength = resolveModelConfigContextLength(currentModelConfig)
   const contextPercent = Math.min(Math.round((usedTokens / contextLength) * 100), 100)
   const projectTokenStats = tid ? chat.getProjectTokenStats(tid) : undefined
+  const runTokenStats = sessionId ? chat.getRunTokenStats(sessionId) : { inputTokens: 0, hitTokens: 0, outputTokens: 0 }
 
   // 主题持久化
   useEffect(() => {
@@ -376,7 +381,13 @@ export default function App() {
 
   async function handleSelectWorkspace() {
     const dir = await globalThis.window.taco.dialog.selectDirectory()
-    if (dir && tid) {
+    if (!dir) return
+    if (!tid) {
+      // 没有活跃项目 → 自动创建项目并绑定工作空间
+      const projectName = dir.split(/[/\\]/).pop() || '我的项目'
+      const newId = threadStore.createThread(projectName, providerSettings.activeModelConfigId || undefined)
+      threadStore.updateThread(newId, { workspace: dir })
+    } else {
       threadStore.updateThread(tid, { workspace: dir })
     }
   }
@@ -770,7 +781,6 @@ export default function App() {
             onOpenSettings={() => { setShowSettings(true); setMiddleView('settings') }}
             isSending={isThreadSending}
             isCompleted={isThreadCompleted}
-            contextPercent={contextPercent}
             memberInfo={auth.memberInfo}
             onLoginClick={auth.showLogin}
             onLogoutClick={auth.handleLogout}
@@ -972,6 +982,9 @@ export default function App() {
               onFileEdited={() => {}}
               onViewDiffFromEditor={fileViewer.handleViewDiffFromEditor}
               onOpenFileView={fileViewer.handleOpenFileView}
+              contextPercent={contextPercent}
+              projectTokenStats={projectTokenStats}
+              runTokenStats={runTokenStats}
               activeTaskStartedAt={activeTaskStartedAt}
             />
           </PaneErrorBoundary>
@@ -1011,6 +1024,7 @@ export default function App() {
         <OnboardingOverlay
           step={onboardingStep}
           onNext={handleOnboardingNext}
+          onPrev={handleOnboardingPrev}
           onSkip={handleOnboardingSkip}
           onComplete={handleOnboardingComplete}
           hasProviders={hasAnyProviders}

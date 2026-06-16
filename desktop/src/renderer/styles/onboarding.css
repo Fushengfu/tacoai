@@ -164,6 +164,17 @@
   background: rgba(255, 255, 255, 0.06);
 }
 
+.onboarding-btn-prev {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--muted, #888);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.onboarding-btn-prev:hover {
+  color: var(--text, #eaeaea);
+  background: rgba(255, 255, 255, 0.12);
+}
+
 /* ---- 响应式：小屏幕下卡片居中 ---- */
 @media (max-width: 420px) {
   .onboarding-tooltip {

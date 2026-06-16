@@ -83,6 +83,8 @@ export interface OnboardingOverlayProps {
   step: number
   /** 进入下一步 */
   onNext: () => void
+  /** 回到上一步 */
+  onPrev: () => void
   /** 跳过引导 */
   onSkip: () => void
   /** 引导完成 */
@@ -96,6 +98,7 @@ export interface OnboardingOverlayProps {
 export function OnboardingOverlay({
   step,
   onNext,
+  onPrev,
   onSkip,
   onComplete,
   hasProviders,
@@ -188,25 +191,23 @@ export function OnboardingOverlay({
 
           {/* 操作按钮 */}
           <div className="onboarding-tooltip-actions">
-            {step < STEPS.length - 1 ? (
-              <>
-                <button type="button" className="onboarding-btn onboarding-btn-primary" onClick={onNext}>
-                  {step === 0 ? '已完成配置 →' : step === 1 ? '已选择目录 →' : '下一步'}
-                </button>
-                <button type="button" className="onboarding-btn onboarding-btn-skip" onClick={onSkip}>
-                  跳过引导
-                </button>
-              </>
-            ) : (
-              <>
-                <button type="button" className="onboarding-btn onboarding-btn-primary" onClick={onComplete}>
-                  开始使用
-                </button>
-                <button type="button" className="onboarding-btn onboarding-btn-skip" onClick={onSkip}>
-                  跳过引导
-                </button>
-              </>
+            {step > 0 && (
+              <button type="button" className="onboarding-btn onboarding-btn-prev" onClick={onPrev}>
+                ← 上一步
+              </button>
             )}
+            {step < STEPS.length - 1 ? (
+              <button type="button" className="onboarding-btn onboarding-btn-primary" onClick={onNext}>
+                {step === 0 ? '已完成配置 →' : step === 1 ? '已选择目录 →' : '下一步'}
+              </button>
+            ) : (
+              <button type="button" className="onboarding-btn onboarding-btn-primary" onClick={onComplete}>
+                开始使用
+              </button>
+            )}
+            <button type="button" className="onboarding-btn onboarding-btn-skip" onClick={onSkip}>
+              跳过引导
+            </button>
           </div>
         </div>
       )}

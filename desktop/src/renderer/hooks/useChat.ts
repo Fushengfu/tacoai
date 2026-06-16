@@ -257,6 +257,13 @@ export type ProjectTokenStats = {
   updatedAt: number
 }
 
+/** 本轮次任务循环累计 token 统计 */
+export type RunTokenStats = {
+  inputTokens: number
+  hitTokens: number
+  outputTokens: number
+}
+
 type TokenUsageSnapshot = {
   promptTokens?: number
   completionTokens?: number
@@ -429,6 +436,8 @@ export function useChat() {
   const [projectTokenStatsByThread, setProjectTokenStatsByThread] = useState<Record<string, ProjectTokenStats>>(() =>
     normalizeProjectTokenStatsMap(loadJson('taco.projectTokenStatsByThread', {}))
   )
+  /** 每个 thread 本轮次任务循环累计 token 统计 */
+  const [runTokenStatsByThread, setRunTokenStatsByThread] = useState<Record<string, RunTokenStats>>({})
   /** 每个 thread 当前任务开始时间（用于实时耗时显示） */
   const [activeTaskStartedAtByThread, setActiveTaskStartedAtByThread] = useState<Record<string, number | undefined>>({})
   /** 刚完成的 thread（短暂显示 ✓ 后自动清除） */
@@ -876,6 +885,10 @@ export function useChat() {
     }
   }
 
+  function getRunTokenStats(threadId: string): RunTokenStats {
+    return runTokenStatsByThread[threadId] ?? { inputTokens: 0, hitTokens: 0, outputTokens: 0 }
+  }
+
   function clearProjectTokenStats(threadId: string) {
     const key = String(threadId ?? '').trim()
     if (!key) return
@@ -1083,6 +1096,14 @@ export function useChat() {
     let usageTurnCounted = false
     const projectKey = String(projectId ?? threadId ?? '').trim()
 
+    // 重置本轮次任务循环 token 统计
+    setRunTokenStatsByThread((prev) => {
+      if (!prev[threadId]) return prev
+      const next = { ...prev }
+      delete next[threadId]
+      return next
+    })
+
     /** 累加单轮 API 调用的 token 成本到项目统计 */
     const applyProjectUsage = (usage: TokenUsageSnapshot | null) => {
       if (!usage || !projectKey) return
@@ -1119,6 +1140,21 @@ export function useChat() {
         setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: currentTotal }))
       }
       applyProjectUsage(usage)
+      // 累加到本轮次任务循环统计
+      const currentAgg = usageToAggregate(usage)
+      if (currentAgg.inputTokens > 0 || currentAgg.outputTokens > 0) {
+        setRunTokenStatsByThread((prev) => {
+          const base = prev[threadId] ?? { inputTokens: 0, hitTokens: 0, outputTokens: 0 }
+          return {
+            ...prev,
+            [threadId]: {
+              inputTokens: base.inputTokens + currentAgg.inputTokens,
+              hitTokens: base.hitTokens + currentAgg.hitTokens,
+              outputTokens: base.outputTokens + currentAgg.outputTokens,
+            },
+          }
+        })
+      }
     }
 
     try {
@@ -1556,6 +1592,7 @@ export function useChat() {
     getUsageTotalTokens,
     getActiveTaskStartedAt,
     getProjectTokenStats,
+    getRunTokenStats,
     setMessages,
     clearMessages,
     deleteThreadMessages,

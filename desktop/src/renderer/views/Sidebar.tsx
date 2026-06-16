@@ -21,8 +21,6 @@ type SidebarProps = {
   isSending: (threadId: string) => boolean
   /** 判断某 thread 是否刚完成 */
   isCompleted: (threadId: string) => boolean
-  /** 当前会话上下文窗口占用百分比 */
-  contextPercent: number
   /** 登录状态 */
   memberInfo: MemberInfo | null
   onLoginClick: () => void
@@ -45,7 +43,6 @@ export function Sidebar({
   onOpenSettings,
   isSending,
   isCompleted,
-  contextPercent,
   memberInfo,
   onLoginClick,
   onLogoutClick,
@@ -159,18 +156,6 @@ export function Sidebar({
       </div>
 
       <div className="sidebar-footer">
-        <div className="context-bar">
-          <div className="context-bar-label">
-            <span>上下文</span>
-            <span>{contextPercent}%</span>
-          </div>
-          <div className="context-bar-track">
-            <div
-              className={`context-bar-fill${contextPercent > 80 ? ' warn' : ''}`}
-              style={{ width: `${contextPercent}%` }}
-            />
-          </div>
-        </div>
         <div className="sidebar-footer-divider" />
         <div className="sidebar-footer-actions">
           {memberInfo ? (

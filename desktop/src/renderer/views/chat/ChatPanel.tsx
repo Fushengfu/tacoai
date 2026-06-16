@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ActivePlan, AgentStep, AttachedAsset, AttachedImage, ChatMsg, FileChangeInfo, FileChangeStatus, QueuedMessage, Session } from '../../types'
+import type { ProjectTokenStats, RunTokenStats } from '../../hooks/useChat'
 import type { EditorId } from '../../../shared/ipc'
 import { MarkdownBubble } from './MarkdownBubble'
 import { DiffView } from '../DiffView'
@@ -8,6 +9,7 @@ import { ToolResultContent } from '../ToolResultContent'
 import { TerminalPanel } from '../terminal/TerminalPanel'
 import { useLanguage } from '../../hooks/useLanguage'
 import { ProviderSelect } from '../ProviderSelect'
+import { FlagCN, FlagUS } from '../FlagIcons'
 
 /* ------------------------------------------------------------------ */
 /*  PlanTracker — 实时计划进度追踪器                                      */
@@ -39,6 +41,12 @@ function formatElapsedHms(ms: number): string {
   const m = Math.floor((totalSeconds % 3600) / 60)
   const s = totalSeconds % 60
   return `${h}h${m}m${s}s`
+}
+
+function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return String(n)
 }
 
 function formatTaskTimingLabel(
@@ -211,6 +219,12 @@ type ChatPanelProps = {
   onRejectFile?: (filePath: string) => void
   /** 回滚到某条消息之前的 Git 版本 */
   onRollbackBeforeMsg?: (commitHash: string) => Promise<void>
+  /** 当前会话上下文窗口占用百分比 */
+  contextPercent: number
+  /** 当前项目的 token 使用统计 */
+  projectTokenStats?: ProjectTokenStats
+  /** 本轮次任务循环累计 token 统计 */
+  runTokenStats?: RunTokenStats
   /** 当前模型是否支持视觉理解 */
   supportsVision?: boolean
   /** 当前在编辑器中打开的文件路径（非变更文件） */
@@ -270,6 +284,7 @@ export function ChatPanel({
   onAcceptFile,
   onRejectFile,
   onRollbackBeforeMsg,
+  contextPercent,
   supportsVision,
   viewingFile,
   viewingSelection,
@@ -279,6 +294,8 @@ export function ChatPanel({
   onFileEdited,
   onViewDiffFromEditor,
   onOpenFileView,
+  projectTokenStats,
+  runTokenStats,
 }: Readonly<ChatPanelProps>) {
   const hasProviders = configuredProviders.length > 0
   const isNearBottomRef = useRef<boolean>(true)
@@ -295,6 +312,9 @@ export function ChatPanel({
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([])
   /** 文件附件（代码、文档、视频、音频等） - 以卡片形式显示 */
   const [attachedAssets, setAttachedAssets] = useState<AttachedAsset[]>([])
+  /** 语言切换下拉框展开状态 */
+  const [langDropdownOpen, setLangDropdownOpen] = useState(false)
+  const langDropdownRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const inputDivRef = useRef<HTMLDivElement>(null)
 
@@ -794,6 +814,18 @@ export function ChatPanel({
       return prev
     })
   }, [messages.length])
+
+  // 点击语言下拉框外部时关闭
+  useEffect(() => {
+    if (!langDropdownOpen) return
+    const handleClick = (e: MouseEvent) => {
+      if (langDropdownRef.current && !langDropdownRef.current.contains(e.target as Node)) {
+        setLangDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [langDropdownOpen])
 
   const totalHistoryCount = Math.max(messages.length, totalMessageCount ?? 0)
   const locallyHiddenMessageCount = Math.max(0, messages.length - visibleMessageCount)
@@ -2379,6 +2411,17 @@ export function ChatPanel({
                   disabled={!hasProviders}
                   placeholder={t('input.no_provider')}
                 />
+                {contextPercent > 0 && (
+                  <div className="composer-context-bar" title={`上下文 ${contextPercent}%`}>
+                    <div className="composer-context-bar-track">
+                      <div
+                        className={`composer-context-bar-fill${contextPercent > 80 ? ' warn' : ''}`}
+                        style={{ width: `${contextPercent}%` }}
+                      />
+                    </div>
+                    <span className="composer-context-bar-label">{contextPercent}%</span>
+                  </div>
+                )}
             </div>
             <div className="composer-right">
               {sending ? (
@@ -2412,21 +2455,43 @@ export function ChatPanel({
       {/* 底部控制栏：语言切换 + 项目目录 + 版本号 */}
       <div className="composer-bottom-bar">
         <div className="composer-bottom-left">
-          {/* 语言切换下拉框 */}
-          <select
-            className="bottom-bar-select"
-            value={language}
-            onChange={(e) => {
-              const newLang = e.target.value as 'zh-CN' | 'en-US'
-              if (newLang !== language) {
-                toggleLanguage()
-              }
-            }}
-            aria-label="切换语言"
-          >
-            <option value="zh-CN">🇨🇳 中文</option>
-            <option value="en-US">🇺🇸 English</option>
-          </select>
+          {/* 语言切换下拉框（自定义，支持 SVG 国旗） */}
+          <div className="bottom-bar-lang" ref={langDropdownRef}>
+            <button
+              className="bottom-bar-lang-btn"
+              onClick={() => setLangDropdownOpen(!langDropdownOpen)}
+              aria-label="切换语言"
+              aria-expanded={langDropdownOpen}
+            >
+              {language === 'zh-CN' ? (
+                <FlagCN className="lang-flag-icon" />
+              ) : (
+                <FlagUS className="lang-flag-icon" />
+              )}
+              <span>{language === 'zh-CN' ? '中文' : 'English'}</span>
+              <svg className="lang-arrow" viewBox="0 0 12 7" aria-hidden="true">
+                <path d="M1 1l5 5 5-5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </button>
+            {langDropdownOpen && (
+              <div className="bottom-bar-lang-menu">
+                <div
+                  className={`bottom-bar-lang-item${language === 'zh-CN' ? ' active' : ''}`}
+                  onClick={() => { if (language !== 'zh-CN') toggleLanguage(); setLangDropdownOpen(false) }}
+                >
+                  <FlagCN className="lang-flag-icon" />
+                  <span>中文</span>
+                </div>
+                <div
+                  className={`bottom-bar-lang-item${language === 'en-US' ? ' active' : ''}`}
+                  onClick={() => { if (language !== 'en-US') toggleLanguage(); setLangDropdownOpen(false) }}
+                >
+                  <FlagUS className="lang-flag-icon" />
+                  <span>English</span>
+                </div>
+              </div>
+            )}
+          </div>
           
           {/* 项目目录 - 可点击 */}
           <div className="bottom-bar-item workspace-item" onClick={onSelectWorkspace} title={workspace ? `工作空间: ${workspace}` : '选择工作空间'}>
@@ -2439,6 +2504,44 @@ export function ChatPanel({
               
         {/* 版本号 - 右侧 */}
         <div className="composer-bottom-right">
+          {runTokenStats && (
+            <>
+              <span className="token-stat-group-label">{t('stats.thisRun')}</span>
+              <div className="bottom-bar-token-stats" style={{ marginRight: '6px' }}>
+                <span className="token-stat-item" title={`${t('stats.input')} tokens（${t('stats.thisRun')}）`}>
+                  <span className="token-stat-label">{t('stats.input')}</span>
+                  {formatTokenCount(runTokenStats.inputTokens)}
+                </span>
+                <span className="token-stat-item" title={`${t('stats.cacheHit')} tokens（${t('stats.thisRun')}）`}>
+                  <span className="token-stat-label">{t('stats.cacheHit')}</span>
+                  {formatTokenCount(runTokenStats.hitTokens)}
+                </span>
+                <span className="token-stat-item" title={`${t('stats.output')} tokens（${t('stats.thisRun')}）`}>
+                  <span className="token-stat-label">{t('stats.output')}</span>
+                  {formatTokenCount(runTokenStats.outputTokens)}
+                </span>
+              </div>
+            </>
+          )}
+          {projectTokenStats && (projectTokenStats.inputTokens > 0 || projectTokenStats.outputTokens > 0) && (
+            <>
+              <span className="token-stat-group-label">{t('stats.total')}</span>
+              <div className="bottom-bar-token-stats">
+                <span className="token-stat-item" title={`${t('stats.input')} tokens`}>
+                  <span className="token-stat-label">{t('stats.input')}</span>
+                  {formatTokenCount(projectTokenStats.inputTokens)}
+                </span>
+                <span className="token-stat-item" title={`${t('stats.output')} tokens`}>
+                  <span className="token-stat-label">{t('stats.output')}</span>
+                  {formatTokenCount(projectTokenStats.outputTokens)}
+                </span>
+                <span className="token-stat-item token-stat-total" title={`${projectTokenStats.turns} ${t('stats.turns')}`}>
+                  <span className="token-stat-label">{t('stats.turns')}</span>
+                  {projectTokenStats.turns}
+                </span>
+              </div>
+            </>
+          )}
           <span className="composer-footer-version">v{window.taco.version}</span>
         </div>
       </div>
