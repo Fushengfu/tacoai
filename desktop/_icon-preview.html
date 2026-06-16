@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>模型选择下拉图标方案预览</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Microsoft YaHei", sans-serif;
+    background: #1a1a2e; color: #e0e0e0;
+    padding: 40px;
+    min-height: 100vh;
+  }
+  h1 { font-size: 24px; margin-bottom: 8px; color: #fff; }
+  .subtitle { font-size: 13px; color: #888; margin-bottom: 32px; }
+  .current-tag {
+    display: inline-block; background: #7c3aed; color: #fff;
+    font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-left: 8px;
+  }
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 20px;
+  }
+  .card {
+    background: #16213e; border: 1px solid #2a2a4a; border-radius: 12px;
+    padding: 32px 20px 20px; text-align: center;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    cursor: default;
+  }
+  .card:hover {
+    border-color: #7c3aed; box-shadow: 0 0 20px rgba(124,58,237,0.15);
+  }
+  .card.selected {
+    border-color: #22c55e; box-shadow: 0 0 24px rgba(34,197,94,0.2);
+    background: #0f1d2e;
+  }
+  .icon-display {
+    width: 80px; height: 80px; margin: 0 auto 16px;
+    border-radius: 50%; background: #0d1117;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .icon-display svg { width: 36px; height: 36px; color: #a0a0c0; }
+  .card.selected .icon-display svg { color: #22c55e; }
+  .card h3 { font-size: 15px; margin-bottom: 6px; color: #ccc; }
+  .card .desc { font-size: 12px; color: #777; line-height: 1.5; }
+  .badge {
+    display: inline-block; font-size: 10px; padding: 2px 6px; border-radius: 6px;
+    margin-top: 8px;
+  }
+  .badge-current { background: #7c3aed20; color: #a78bfa; }
+  .badge-recommend { background: #22c55e20; color: #4ade80; }
+
+  /* trigger 模拟 */
+  .trigger-row {
+    margin-top: 40px; padding: 24px; background: #16213e; border-radius: 12px;
+    border: 1px solid #2a2a4a;
+  }
+  .trigger-row h2 { font-size: 16px; margin-bottom: 20px; color: #ccc; }
+  .triggers { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+  .trigger {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 12px; border-radius: 8px;
+    background: #0d1117; border: 1px solid #333;
+    font-size: 13px; color: #ccc; cursor: default;
+    min-width: 140px; justify-content: space-between;
+  }
+  .trigger svg { width: 18px; height: 18px; color: #888; flex-shrink: 0; }
+  .trigger .brain { width: 16px; height: 16px; margin-right: -4px; }
+</style>
+</head>
+<body>
+
+<h1>模型选择下拉图标方案预览</h1>
+<p class="subtitle">点击卡片选中方案，对比实际效果。所有图标 viewBox="0 0 24 24"，stroke="currentColor"</p>
+
+<div class="grid" id="grid">
+  <!-- JS 动态生成 -->
+</div>
+
+<div class="trigger-row">
+  <h2>模拟实际 trigger 按钮效果</h2>
+  <div class="triggers" id="triggers"></div>
+</div>
+
+<script>
+const schemes = [
+  {
+    id: 0,
+    name: '方案 A：当前图标',
+    desc: '简单 chevron down，线条硬朗，当前正在使用。',
+    current: true,
+    svg: `<path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`
+  },
+  {
+    id: 1,
+    name: '方案 B：圆润 Chevron',
+    desc: 'stroke-linejoin=round 让转角更柔和，视觉更友好。',
+    recommend: true,
+    svg: `<path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`
+  },
+  {
+    id: 2,
+    name: '方案 C：双线箭头',
+    desc: '两条平行线构成 V 形，比单线更有存在感。',
+    svg: `<g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 10l4 4 4-4"/><path d="M10 10l2 2 2-2"/></g>`
+  },
+  {
+    id: 3,
+    name: '方案 D：填充三角',
+    desc: '实心三角形，最简洁直观，类似原生 select。',
+    svg: `<path d="M7 9l5 6 5-6z" fill="currentColor"/>`
+  },
+  {
+    id: 4,
+    name: '方案 E：圆角填充三角',
+    desc: '方案 D 的圆角版，更现代温和。',
+    svg: `<path d="M7.5 10l4.5 5 4.5-5z" fill="currentColor" stroke="currentColor" stroke-width="0.8" stroke-linejoin="round"/>`
+  },
+  {
+    id: 5,
+    name: '方案 F：点线展开',
+    desc: '三点竖排 + 短线，展开前微妙，展开后 rotate。适合动画。',
+    svg: `<g fill="currentColor"><circle cx="12" cy="4" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="20" r="1.5"/></g>`
+  },
+  {
+    id: 6,
+    name: '方案 G：菱角箭头',
+    desc: '锐角 V 形，专业感强，适合工具类产品。',
+    svg: `<path d="M6 8l6 8 6-8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>`
+  },
+  {
+    id: 7,
+    name: '方案 H：细线弧形',
+    desc: 'stroke-width=1.5，弧形转角，极其轻盈优雅。',
+    svg: `<path d="M8 9.5l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`
+  }
+];
+
+function renderGrid() {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = schemes.map(s => `
+    <div class="card" data-id="${s.id}" onclick="selectScheme(${s.id})">
+      <div class="icon-display">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+          ${s.svg}
+        </svg>
+      </div>
+      <h3>${s.name}</h3>
+      <p class="desc">${s.desc}</p>
+      ${s.current ? '<span class="badge badge-current">当前使用</span>' : ''}
+      ${s.recommend ? '<span class="badge badge-recommend">推荐</span>' : ''}
+    </div>
+  `).join('');
+}
+
+function renderTriggers(activeId) {
+  const triggers = document.getElementById('triggers');
+  const scheme = schemes[activeId];
+  triggers.innerHTML = `
+    <div class="trigger" style="width:160px">
+      <span>Claude 4 Sonnet</span>
+      <span style="display:flex;align-items:center;gap:4px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" class="brain" style="width:15px;height:15px;opacity:0.5">
+          <path d="M12 2C9.5 2 7.5 3 6.5 4.5C5 4.5 3.5 6 3.5 8C3.5 9.5 4 10.5 5 11.5C4 12.5 3.5 14 4 15.5C4.5 17 6 18 7.5 18C8 19.5 9.5 21 12 21"/>
+          <path d="M12 2C14.5 2 16.5 3 17.5 4.5C19 4.5 20.5 6 20.5 8C20.5 9.5 20 10.5 19 11.5C20 12.5 20.5 14 20 15.5C19.5 17 18 18 16.5 18C16 19.5 14.5 21 12 21"/>
+          <line x1="12" y1="2" x2="12" y2="21"/>
+        </svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px;color:#a0a0c0">
+          ${scheme.svg}
+        </svg>
+      </span>
+    </div>
+    <div class="trigger" style="width:140px">
+      <span>DeepSeek V3</span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px;color:#a0a0c0">
+        ${scheme.svg}
+      </svg>
+    </div>
+  `;
+}
+
+function selectScheme(id) {
+  document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
+  document.querySelector(`.card[data-id="${id}"]`).classList.add('selected');
+  renderTriggers(id);
+}
+
+// 初始
+renderGrid();
+renderTriggers(0);
+document.querySelector('.card[data-id="0"]').classList.add('selected');
+</script>
+
+</body>
+</html>

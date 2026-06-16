@@ -72,16 +72,18 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
-      - name: Setup MSVC compiler for native modules
-        uses: ilammy/msvc-dev-cmd@v1
-
       - name: Install dependencies
         run: npm ci
 
       - name: Build & Package (Windows x64 NSIS)
+        shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: npm run dist:win -- --publish always
+        run: |
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          Write-Host "Found Visual Studio at: $vsPath"
+          $vcvars = "$vsPath\VC\Auxiliary\Build\vcvars64.bat"
+          cmd /c "`"$vcvars`" >NUL && npm run dist:win -- --publish always"
 
       - name: Upload exe artifact
         uses: actions/upload-artifact@v4

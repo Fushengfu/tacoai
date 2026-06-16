@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>大脑图标方案 - 基于参考SVG</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #0d0d0d;
+  color: #e0e0e0;
+  padding: 40px 20px;
+}
+h1 { text-align: center; margin-bottom: 8px; font-size: 26px; color: #fff; }
+.subtitle { text-align: center; margin-bottom: 40px; font-size: 13px; color: #777; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 24px; max-width: 1200px; margin: 0 auto 60px; }
+.card {
+  background: #1a1a1a; border: 2px solid #2a2a2a; border-radius: 12px;
+  padding: 24px; cursor: pointer; transition: all 0.25s;
+}
+.card:hover { border-color: #6366f1; transform: translateY(-3px); box-shadow: 0 6px 20px rgba(99,102,241,0.15); }
+.card.selected { border-color: #6366f1; background: #1a1a2e; }
+.icon-wrap {
+  width: 160px; height: 160px; margin: 0 auto 16px;
+  display: flex; align-items: center; justify-content: center;
+}
+.icon-wrap svg { width: 140px; height: 140px; }
+.card h3 { font-size: 16px; margin-bottom: 6px; color: #fff; text-align: center; }
+.card p { font-size: 12px; color: #888; text-align: center; line-height: 1.5; }
+
+/* 场景预览 */
+.preview-section {
+  max-width: 700px; margin: 0 auto; padding: 32px 40px;
+  background: #1a1a1a; border-radius: 12px; border: 1px solid #2a2a2a;
+}
+.preview-section h2 { margin-bottom: 28px; font-size: 20px; }
+.preview-trigger {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 8px 14px; background: #2a2a2a; border: 1px solid #444;
+  border-radius: 8px; margin-bottom: 24px; cursor: default;
+}
+.preview-trigger svg { width: 22px; height: 22px; }
+.preview-trigger span { font-size: 14px; color: #ccc; }
+.preview-options { display: flex; flex-direction: column; gap: 8px; }
+.preview-option {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px; background: #2a2a2a; border-radius: 6px;
+}
+.preview-option:hover { background: #333; }
+.preview-option svg { width: 18px; height: 18px; }
+.preview-option span { font-size: 13px; color: #bbb; }
+</style>
+</head>
+<body>
+
+<h1>大脑图标方案</h1>
+<p class="subtitle">基于你提供的参考 SVG，8 种风格变体</p>
+
+<div class="grid">
+
+<!-- ====== 原始 SVG 数据 ====== -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+<path id="BRAIN" d="M1023.80318 572.11c-7.11 106.3-42.35 202.34-107.35 287.27-4.1 5.36-9.82 9.57-15.12 13.92-36.82 30.24-79.83 53.18-106.28 95.55-9.86 15.79-27.64 24.84-44.8 32.63-52 23.59-170.25 21.28-222.27-5-13.05-6.59-24.1-4-36.45 1-26.75 10.91-54 17.26-83.16 8.43-10.35-3.13-21.15-0.81-31.91 2-52.61 13.61-101 3.65-145.28-27.59-24.84-17.53-50.1-34.48-74.82-52.19-52.6-37.7-84.12-89.51-100.69-151.35-3.79-14.12-6.83-29.34-14.45-41.36-51.87-81.84-46.15-170-29.36-259.13 4.36-23.16 8-45.76 8.55-69.55 1.48-63.45 36.51-112.55 75-159 15-18.06 32.23-34.5 52.84-46.52 22.62-13.19 39.12-31.75 53.05-53.87 22.16-35.19 51.28-64.32 83.91-90.17 60.14-47.7 124.7-54.38 192.31-19.26 22.84 11.87 39.92 11.68 61.72-3.24C600.55318-7.27 663.93318-2.25 727.00318 45.76c34.71 26.45 65.13 57.2 88.11 94.16 17.44 28.06 39.47 50.49 65.42 70.51 63.12 48.7 97.09 114.3 106.88 192.81 1.73 13.83 5.75 26.74 11 39.46 17.13 41.3 27.16 83.95 25.39 129.41z m-532.22-82.05c0-41.28-0.51-82.58 0.22-123.86 0.34-19.68-6.17-25.05-24.4-16.57-28.71 13.37-54.87 29.42-75.76 54.37-18.07 21.56-43 19.44-49.31-2.28C338.00318 386.48 348.00318 375.48 357.00318 365.28c29.14-33.2 64.47-57.34 107.44-68.8 20.17-5.38 29-15.61 27.36-37.76-2-27.35-0.43-55 0-82.51 0.2-13.34-3.39-25-11.82-35.46-38.09-47.06-107.08-52.1-152.16-11.67-26.57 23.83-47.62 52.14-68.77 80.48-10 13.45-12.18 28.54-9.55 44.79 1.67 10.27 5.81 19.64 15 24.13 11.36 5.56 17.89-4.71 24.76-11.18 27.18-25.59 54-51.53 81.12-77.19 11.78-11.14 24.87-17.89 38.34-3.35 13.83 14.92 7.59 28.71-4.88 41.18-26.42 26.42-52.22 53.48-79.36 79.13-42 39.69-85.18 53.14-117-17.53-0.8-1.79-2.06-3.37-2.82-5.17-5.3-12.54-13-13.32-22.7-4.77-30.66 27-54.85 58.92-71 96.53-8.68 20.21-2.47 29.24 20.5 27 27.58-2.69 55.55-3.17 79.7 13.52 39.89 27.55 65 67.51 87.45 109.08 7.13 13.18 1.27 25.12-11 32.81-11.84 7.43-23.38 4.26-31.58-5.84-8-9.84-13.41-21.73-20.91-32-16.07-22.08-29.65-46.67-55.92-59.15-28-13.27-70.2-9.19-77.83 10.46C75.35318 538.69 76.00318 606.63 102.10318 673c10.24 26 30.39 7.33 45.25 2.52 13.09-4.22 30.68-8.51 21.07-30.27-10.3-23.32-19.55-47.13-30.48-70.14-7.64-16.09-9.9-31.05 7-41.21 17.92-10.77 29.77 0.58 38.23 15.37 17.11 29.91 30.88 61.36 39.2 94.91 7.08 28.51-3.28 51.89-29.5 66.7-12 6.75-24 13.85-37 18.12-18 5.94-22.48 17-17.42 33.74 11 36.47 27.53 69.61 59.74 92.13 29 20.25 58.23 40.08 88 59.18a88.82 88.82 0 0 0 62 13.6c12-1.72 18.84-7.48 20.29-20.89 4.55-42.27-6-63.41-43.47-82-13.51-6.68-23.52-14.52-18-31.76 5.28-16.6 18.25-21.52 32.56-16.9 22 7.12 37.56 1 52.14-15.63 11.08-12.63 25.52-15.31 38.88-2.87 12.76 11.88 9.91 25.55-1.06 36.38-20 19.74-21.93 41.56-13.19 67 3.73 10.84 3.77 23.11 4.48 34.79 1.78 29.05 13.7 36.29 39.37 22.54 20.36-10.9 32.56-26.25 31.82-51.64-1.35-46.17-1.25-92.42 0-138.59 0.57-21.24-10.35-29.83-26.71-40.49-51-33.27-97.06-41.31-139.14 13.53-8.78 11.45-22.68 11.63-33.76 0.52-11.83-11.85-10.81-25.12-0.18-36.79 14.54-16 29.78-31.65 49-42Q368.83318 608 360.78318 579c-7.13-25.65-0.69-50.78 1.35-76.06 1.18-14.73 10-22.79 25.1-23.71 16.77-1 21.19 9.86 24.71 23.4 3.93 15.07-1.42 29.26-2 43.86-1.72 41.78 13.48 66.87 51.45 83.58 20 8.8 31.3 7.18 30.51-19.1-1.23-40.27-0.34-80.6-0.32-120.91z m52.83-202.17c0 39.31-0.51 78.64 0.33 117.93 0.23 10.67-6.93 28 7 30.71 14.11 2.75 26.91-9.3 35.2-22.39 6.14-9.68 5.36-20.66 5.53-31.46 0.21-12.75-0.48-25.65 1.26-38.21 1.83-13.11 10.74-21.45 24.36-20.94 12.7 0.46 22.87 6.81 25.17 20.49 1.45 8.63 2.28 17.73 1.24 26.36-4.1 33.83 3.09 61.75 35.92 78.92 6.67 3.49 12 10.22 16.92 16.24 9.17 11.1 10.48 23.11 0.94 34.81-10 12.32-22.06 11.46-34 3.46a154.08 154.08 0 0 1-20.52-16.69c-14.2-13.54-29.35-16.63-48.48-10.1-43.14 14.72-57.91 39-52.12 85.37 2.09 16.74 8 24.07 25.39 24.9 34.27 1.63 65.23 13.19 91 36.6 12.35 11.21 22.53 23.77 9.92 40.52-11.59 15.4-25.56 11-39 1.87-18.86-12.77-38.68-23.39-61.55-26.76-12.58-1.84-24.42-1.63-24.37 16.07 0.2 77.63-0.87 155.3 1.28 232.88 0.83 30.23 40.63 57.76 60.19 42.7 20.15-15.52 35.75-8.69 54.2-2.68 31.76 10.36 61.48 1.18 81.62-24 9.82-12.25 12.08-23.25 1.08-36.67-25.82-31.51-55.25-52.87-99-43-17.43 3.94-29.2-4-32.52-21.19-3.27-17 7.81-25.43 22.52-29 10.36-2.49 21.2-4.42 31.79-4.26 16.43 0.26 26.11-4.82 27.29-22.77 1.42-21.61 11-36.94 35.5-31.68 23.95 5.15 17.66 24.71 15.5 40.79-1.67 12.39-7.93 24.12 0 36.87 33.54 54 55.4 57.77 102.86 16.32 7.29-6.37 13.3-14.32 19.34-22 30.43-38.6 28.9-46.1-13.08-67.7-5.24-2.69-10.14-6-15.33-8.82-26.75-14.46-36.36-34.93-29.51-66 7.1-32.18 20.85-61.08 34.87-90.18 8.58-17.82 21.95-30.66 41.95-20.71 20.47 10.18 11.69 28.41 5.26 43.78C881.00318 601 868.00318 622.45 861.33318 645.8c-8.33 29.5 20.67 27.08 36.21 35.36 16.22 8.66 22.53-0.81 27-15.27 17.88-57.71 19.9-115.75 3.47-173.9-11.3-40-53.89-53.1-86.55-26.76-10.56 8.52-19.6 19.35-27.83 30.25-13.57 18-25.42 37.3-39 55.3-7.66 10.15-18.61 15-31 7.67s-18.87-18.55-11-32.23c33.94-58.78 65-121.3 146.1-125.17 20.17-1 24.35-10.15 17.79-29.06-10.86-31.32-29.68-57.13-50-82.58-17.36-21.76-34.56-30.15-59-9.36-41.17 35-82.84 27.26-124.16-1A166.17 166.17 0 0 1 615.00318 228.49c-10.11-16.47-21-33.73 1.2-48.41 21.76-14.37 31.36 3.06 41.46 18.18 15.07 22.57 34.17 40.63 60.34 49.61 18.52 6.36 32.11-4.76 45.28-15 8.62-6.71 2.87-14.81-1-21.11-28-45.76-61.51-86.76-109.83-112.23-46.74-24.63-107.12 12-107.9 64.53-0.61 41.27-0.12 82.55-0.14 123.83z"/>
+</svg>
+
+<!-- 方案 A：原始填充 -->
+<div class="card selected" data-scheme="a">
+<div class="icon-wrap">
+<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<use href="#BRAIN" fill="#333333"/>
+</svg>
+</div>
+<h3>A. 原始填充</h3>
+<p>参考 SVG 原样，#333 填充，细节完整</p>
+</div>
+
+<!-- 方案 B：深色填充 -->
+<div class="card" data-scheme="b">
+<div class="icon-wrap">
+<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<use href="#BRAIN" fill="#1a1a1a"/>
+</svg>
+</div>
+<h3>B. 深色填充</h3>
+<p>#1a1a1a，更深沉稳重</p>
+</div>
+
+<!-- 方案 C：主题色填充 -->
+<div class="card" data-scheme="c">
+<div class="icon-wrap">
+<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<use href="#BRAIN" fill="#6366f1"/>
+</svg>
+</div>
+<h3>C. 主题色填充</h3>
+<p>#6366f1，匹配应用靛蓝主题</p>
+</div>
+
+<!-- 方案 D：描边轮廓 -->
+<div class="card" data-scheme="d">
+<div class="icon-wrap" style="background:transparent">
+<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<use href="#BRAIN" fill="none" stroke="#333" stroke-width="18"/>
+</svg>
+</div>
+<h3>D. 描边轮廓</h3>
+<p>纯描边，stroke-width=18</p>
+</div>
+
+<!-- 方案 E：细描边 -->
+<div class="card" data-scheme="e">
+<div class="icon-wrap">
+<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<use href="#BRAIN" fill="none" stroke="#555" stroke-width="10"/>
+</svg>
+</div>
+<h3>E. 细描边</h3>
+<p>更轻盈的线条，stroke-width=10</p>
+</div>
+
+<!-- 方案 F：主题色描边 -->
+<div class="card" data-scheme="f">
+<div class="icon-wrap">
+<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<use href="#BRAIN" fill="none" stroke="#6366f1" stroke-width="14"/>
+</svg>
+</div>
+<h3>F. 主题色描边</h3>
+<p>靛蓝描边，与主题统一</p>
+</div>
+
+<!-- 方案 G：双色（填充+描边） -->
+<div class="card" data-scheme="g">
+<div class="icon-wrap">
+<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<use href="#BRAIN" fill="#333" stroke="#6366f1" stroke-width="12"/>
+</svg>
+</div>
+<h3>G. 双色</h3>
+<p>填充 #333 + 描边 #6366f1，层次感</p>
+</div>
+
+<!-- 方案 H：渐变填充 -->
+<div class="card" data-scheme="h">
+<div class="icon-wrap">
+<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<linearGradient id="grad-h" x1="0%" y1="0%" x2="100%" y2="100%">
+<stop offset="0%" stop-color="#6366f1"/>
+<stop offset="50%" stop-color="#8b5cf6"/>
+<stop offset="100%" stop-color="#a78bfa"/>
+</linearGradient>
+</defs>
+<use href="#BRAIN" fill="url(#grad-h)"/>
+</svg>
+</div>
+<h3>H. 渐变填充</h3>
+<p>靛蓝→紫色渐变，科技感</p>
+</div>
+
+</div>
+
+<!-- 场景预览 -->
+<div class="preview-section">
+<h2>实际场景预览</h2>
+<div class="preview-trigger">
+<svg id="preview-icon" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<use href="#BRAIN" fill="#333333"/>
+</svg>
+<span>模型选择</span>
+</div>
+<div class="preview-options">
+<div class="preview-option">
+<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<use href="#BRAIN" fill="#333333"/>
+</svg>
+<span>GPT-4o</span>
+</div>
+<div class="preview-option">
+<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<use href="#BRAIN" fill="#333333"/>
+</svg>
+<span>Claude 3.5 Sonnet</span>
+</div>
+<div class="preview-option">
+<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<use href="#BRAIN" fill="#333333"/>
+</svg>
+<span>DeepSeek V3</span>
+</div>
+</div>
+</div>
+
+<script>
+const cards = document.querySelectorAll('.card');
+
+// 从卡片中提取 SVG 内容
+function getSvgContent(card) {
+  const svg = card.querySelector('.icon-wrap svg');
+  return svg ? svg.innerHTML : '';
+}
+
+// 初始加载：默认选中方案 A
+const selected = document.querySelector('.card.selected');
+if (selected) {
+  const content = getSvgContent(selected);
+  document.getElementById('preview-icon').innerHTML = content;
+  document.querySelectorAll('.preview-option svg').forEach(s => s.innerHTML = content);
+}
+
+cards.forEach(card => {
+  card.addEventListener('click', () => {
+    cards.forEach(c => c.classList.remove('selected'));
+    card.classList.add('selected');
+    const content = getSvgContent(card);
+    document.getElementById('preview-icon').innerHTML = content;
+    document.querySelectorAll('.preview-option svg').forEach(s => s.innerHTML = content);
+  });
+});
+</script>
+
+</body>
+</html>
