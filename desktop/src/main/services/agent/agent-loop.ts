@@ -131,6 +131,13 @@ import {
   compressAgentContext,
 } from './context-compressor'
 
+/** 自动重试延迟配置：基数 1 秒，指数退避，上限 16 秒 */
+const AUTO_RETRY_BASE_DELAY_MS = 1000
+const AUTO_RETRY_MAX_DELAY_MS = 16000
+
+/** 简单的异步等待 */
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
 /**
  * 调用 LLM 为一组早期消息生成摘要。
  * @param onEvent      事件回调，每次有新事件时调用
@@ -1049,7 +1056,9 @@ export async function runAgent(
         autoNetworkRetryCount++
 
         if (autoNetworkRetryCount <= 5) {
-          log('AGENT_AUTO_RETRY', { round, autoRetryCount: autoNetworkRetryCount, maxRetries: 5, errorType, error: msg }, logScope)
+          const delayMs = Math.min(AUTO_RETRY_BASE_DELAY_MS * Math.pow(2, autoNetworkRetryCount - 1), AUTO_RETRY_MAX_DELAY_MS)
+          log('AGENT_AUTO_RETRY', { round, autoRetryCount: autoNetworkRetryCount, maxRetries: 5, errorType, delayMs, error: msg }, logScope)
+          await sleep(delayMs)
           round-- // 不消耗轮次
           continue // 自动重试
         }
@@ -1155,7 +1164,9 @@ export async function runAgent(
         autoEmptyRetryCount++
 
         if (autoEmptyRetryCount <= 5) {
-          log('AGENT_AUTO_RETRY_EMPTY', { round, autoRetryCount: autoEmptyRetryCount, maxRetries: 5, rawPreview: rawTextContent.slice(0, 200) }, logScope)
+          const delayMs = Math.min(AUTO_RETRY_BASE_DELAY_MS * Math.pow(2, autoEmptyRetryCount - 1), AUTO_RETRY_MAX_DELAY_MS)
+          log('AGENT_AUTO_RETRY_EMPTY', { round, autoRetryCount: autoEmptyRetryCount, maxRetries: 5, delayMs, rawPreview: rawTextContent.slice(0, 200) }, logScope)
+          await sleep(delayMs)
           round-- // 不消耗轮次
           continue // 自动重试
         }

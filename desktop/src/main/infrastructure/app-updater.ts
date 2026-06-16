@@ -148,12 +148,13 @@ async function fetchVersionCheck(
   updateType: UpdateType,
   currentVersion: string,
 ): Promise<VersionCheckData> {
-  const query = new URLSearchParams({ type: updateType })
+  const query = new URLSearchParams({ type: updateType, arch: process.arch })
   const requestUrl = `${VERSION_CHECK_URL}?${query.toString()}`
 
   console.log('[app-update] [request] gateway version-check:', {
     url: requestUrl,
     type: updateType,
+    arch: process.arch,
     currentVersion,
   })
 
