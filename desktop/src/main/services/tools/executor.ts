@@ -792,7 +792,20 @@ async function execEditFile(args: Record<string, unknown>, workspace: string): P
     throw err
   }
 
-  const occurrences = countTextOccurrences(oldContent, oldText)
+  // ---- 行尾标准化：统一转为 LF 再匹配，解决 Windows CRLF 导致 oldText 匹配失败 ----
+  let lineEnding = '\n'
+  if (oldContent.includes('\r\n')) {
+    lineEnding = '\r\n'
+  } else if (oldContent.includes('\r')) {
+    lineEnding = '\r'
+  }
+
+  const normalizeLineEndings = (s: string) => s.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  const normalizedContent = normalizeLineEndings(oldContent)
+  const normalizedOldText = normalizeLineEndings(oldText)
+  const normalizedNewText = normalizeLineEndings(newText)
+
+  const occurrences = countTextOccurrences(normalizedContent, normalizedOldText)
   if (occurrences === 0) {
     return { content: `Error: oldText not found in file: ${resolved}`, success: false }
   }
@@ -804,12 +817,17 @@ async function execEditFile(args: Record<string, unknown>, workspace: string): P
   }
 
   const replacedCount = replaceAll ? occurrences : 1
-  const newContent = replaceAll
-    ? oldContent.split(oldText).join(newText)
-    : oldContent.replace(oldText, newText)
+  let newContent = replaceAll
+    ? normalizedContent.split(normalizedOldText).join(normalizedNewText)
+    : normalizedContent.replace(normalizedOldText, normalizedNewText)
 
-  if (newContent === oldContent) {
+  if (newContent === normalizedContent) {
     return { content: `Error: edit produced no changes for ${resolved}`, success: false }
+  }
+
+  // 还原原始行尾风格
+  if (lineEnding !== '\n') {
+    newContent = newContent.replace(/\n/g, lineEnding)
   }
 
   await fs.writeFile(resolved, newContent, 'utf-8')
