@@ -264,11 +264,6 @@
   color: #e8e9ee;
 }
 
-/* 弹性间距 — 把模式切换按钮推到右侧 */
-.wst-preview-tabs-spacer {
-  flex: 1;
-}
-
 /* 编辑 / 变更 模式切换按钮 */
 .wst-preview-mode-btn {
   padding: 4px 12px;

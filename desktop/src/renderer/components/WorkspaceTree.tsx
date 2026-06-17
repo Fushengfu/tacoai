@@ -994,9 +994,6 @@ export function WorkspaceTree({ workspace, className }: WorkspaceTreeProps) {
                     ))}
                   </div>
 
-                  {/* 弹性间距把模式切换按钮推到右侧 */}
-                  <div className="wst-preview-tabs-spacer" />
-
                   {/* 编辑 / 变更 模式切换 */}
                   <button
                     type="button"
