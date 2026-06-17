@@ -5,7 +5,7 @@
  * 用于 Agent 文件变更后的自动提交、版本历史查看、版本回退。
  */
 
-import { exec } from 'node:child_process'
+import { exec, execFile } from 'node:child_process'
 import * as fs from 'node:fs/promises'
 import * as nodePath from 'node:path'
 
@@ -13,7 +13,7 @@ import * as nodePath from 'node:path'
 /*  工具函数                                                           */
 /* ------------------------------------------------------------------ */
 
-/** 执行 git 命令，返回 stdout */
+/** 执行 git 命令（通过 shell），返回 stdout */
 function git(cwd: string, args: string): Promise<string> {
   return new Promise((resolve, reject) => {
     exec(`git ${args}`, { cwd, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
@@ -26,10 +26,36 @@ function git(cwd: string, args: string): Promise<string> {
   })
 }
 
-/** 执行 git 命令，返回原始 stdout（不 trim，保留换行） */
+/** 执行 git 命令（通过 shell），返回原始 stdout（不 trim，保留换行） */
 function gitRaw(cwd: string, args: string): Promise<string> {
   return new Promise((resolve, reject) => {
     exec(`git ${args}`, { cwd, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) {
+        reject(new Error(stderr.trim() || err.message))
+      } else {
+        resolve(stdout)
+      }
+    })
+  })
+}
+
+/** 执行 git 命令（直接 execFile，跳过 shell，跨平台安全），返回 stdout */
+function gitExecFile(cwd: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile('git', args, { cwd, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) {
+        reject(new Error(stderr.trim() || err.message))
+      } else {
+        resolve(stdout.trim())
+      }
+    })
+  })
+}
+
+/** 执行 git 命令（直接 execFile，跳过 shell），返回原始 stdout（不 trim） */
+function gitExecFileRaw(cwd: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile('git', args, { cwd, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
         reject(new Error(stderr.trim() || err.message))
       } else {
@@ -85,10 +111,6 @@ function parseGitNameList(raw: string): string[] {
   return Array.from(new Set(normalized)).sort((a, b) => a.localeCompare(b))
 }
 
-function shellQuote(value: string): string {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`
-}
-
 function normalizeGitRelativePath(filePath: string): string {
   return String(filePath ?? '')
     .trim()
@@ -123,7 +145,24 @@ async function readHeadText(cwd: string, filePath: string): Promise<string | nul
   const rel = normalizeGitRelativePath(filePath)
   if (!rel) return null
   try {
-    const out = await gitRaw(cwd, `show ${shellQuote(`HEAD:${rel}`)}`)
+    // 使用 execFile 直接传数组参数，跳过 shell，Windows/macOS 均可靠
+    const out = await gitExecFileRaw(cwd, ['show', `HEAD:${rel}`])
+    if (out.includes('\u0000')) return null
+    return out
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 从暂存区读取文件内容（git show :path）。
+ * 用于 HEAD 中不存在的文件（新增未提交的文件），也能获取旧版本进行 diff。
+ */
+async function readStagedText(cwd: string, filePath: string): Promise<string | null> {
+  const rel = normalizeGitRelativePath(filePath)
+  if (!rel) return null
+  try {
+    const out = await gitExecFileRaw(cwd, ['show', `:${rel}`])
     if (out.includes('\u0000')) return null
     return out
   } catch {
@@ -277,16 +316,20 @@ export async function gitStatus(cwd: string): Promise<GitWorkingTreeStatus> {
 }
 
 /**
- * 获取指定文件的差异快照（HEAD vs 工作区）
+ * 获取指定文件的差异快照（HEAD → 暂存区 → null vs 工作区）
  */
 export async function gitFileChange(cwd: string, filePath: string): Promise<GitFileChangeInfo | null> {
   if (!(await isGitRepo(cwd))) return null
   const rel = normalizeGitRelativePath(filePath)
   if (!rel) return null
-  const [oldContent, newContent] = await Promise.all([
-    readHeadText(cwd, rel),
-    readWorkingTreeText(cwd, rel),
-  ])
+
+  // oldContent 策略：HEAD → 暂存区 → null（新文件从未被跟踪）
+  let oldContent: string | null = await readHeadText(cwd, rel)
+  if (oldContent === null) {
+    oldContent = await readStagedText(cwd, rel)
+  }
+
+  const newContent = await readWorkingTreeText(cwd, rel)
   // 始终返回文件信息：即使内容完全相同也让 UI 展示无差异高亮的文件内容
   return { filePath: rel, oldContent, newContent }
 }
@@ -302,8 +345,8 @@ export async function gitStageFiles(cwd: string, filePaths: string[]): Promise<v
       .filter(Boolean),
   ))
   if (normalized.length === 0) return
-  const quoted = normalized.map((p) => shellQuote(p)).join(' ')
-  await git(cwd, `add -- ${quoted}`)
+  // 使用 execFile 直接传路径数组，跨平台安全（Windows cmd.exe 不识别单引号）
+  await gitExecFile(cwd, ['add', '--', ...normalized])
 }
 
 /**

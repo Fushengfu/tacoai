@@ -197,8 +197,8 @@
   color: var(--muted, #6a7078);
   background: transparent;
   white-space: nowrap;
-  max-width: 160px;
-  min-width: 0;
+  min-width: fit-content;
+  flex-shrink: 0;
   transition: background 0.12s, color 0.12s;
   user-select: none;
 }
