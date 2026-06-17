@@ -92,6 +92,76 @@ echo "这是中文内容" > file.txt
 \`\`\`
 `
 }
+function buildCodeSearchRules(platform: string): string {
+  if (platform === 'win32') {
+    return `## 代码搜索优化
+定位代码/内容时的工具选择策略：
+
+### 工具选择（Windows 环境）
+- **CMD**：优先 \`findstr /s /n\`（Windows 系统内置，所有版本可用）
+- **PowerShell**：优先 \`Select-String\`（PowerShell 内置，功能更强）
+- **Git Bash（若已安装）**：可用 \`grep -rn\`，但不保证所有 Windows 环境都安装了 Git Bash
+
+**重要**：Windows CMD 和 PowerShell **不支持** \`grep\` 命令（grep 不是 Windows 内置工具）。严禁在 Windows 上直接使用 \`grep\`，除非已确认当前 shell 是 Git Bash。
+
+### 正确用法示例
+
+**CMD（findstr）**：
+\`\`\`cmd
+findstr /s /n "关键字" *.ts              # 递归搜索所有 .ts 文件
+findstr /s /n /c:"TODO" *.tsx            # 搜索字面量字符串（含特殊字符时用 /c:）
+findstr /s /n "TODO FIXME" *.ts          # 多关键词（空格分隔，OR 语义）
+\`\`\`
+
+**PowerShell（Select-String）**：
+\`\`\`powershell
+Select-String -Path "*.ts" -Pattern "关键字" -Recurse  # 递归搜索
+Select-String -Path "*.ts" -Pattern "TODO|FIXME"        # 正则 OR
+Get-ChildItem -Recurse -Filter "*.ts" | Select-String -Pattern "关键字"  # find + grep 组合
+\`\`\`
+
+**Git Bash（grep，仅当已安装）**：
+\`\`\`bash
+grep -rn "关键字" .                    # 递归搜索，显示行号
+grep -rn "关键字" --include="*.ts" .   # 按文件类型过滤
+grep -rnE "TODO|FIXME" .              # 扩展正则
+\`\`\`
+
+### 降级策略
+1. 优先 \`findstr /s /n\`（CMD）或 \`Select-String\`（PowerShell），Windows 系统内置，始终可用
+2. 搜索不到时拆分关键词、扩大搜索范围再试
+3. 最后才 \`read_file\` 整文件（尽量避免）
+4. 若当前 shell 确认为 Git Bash，可用 \`grep -rn\` 作为替代（但不作为首选）
+
+大文件必须分块读取：先定位，再用 \`read_file(path, startLine, endLine)\``
+  }
+
+  return `## 代码搜索优化
+定位代码/内容时的工具选择策略：
+
+### 工具选择（按环境自适应）
+- **macOS / Linux**：优先 \`grep -rn\`（系统自带，行为稳定，无需额外安装）
+- **通用兜底**：\`grep -rn\`（所有 Unix 系统自带）
+
+### 正确用法示例
+\`\`\`bash
+# grep 搜索关键字
+grep -rn "关键字" .                  # 递归搜索，显示行号
+grep -rn "关键字" --include="*.ts" . # 按文件类型过滤
+grep -rnE "TODO|FIXME" .             # 多关键词正则（ERE 方式）
+grep -rn "function buildSystemPrompt" .  # 搜索函数定义
+
+# find 按文件名查找
+find . -name "*.ts" -path "*/renderer/*"
+\`\`\`
+
+### 降级策略
+1. 优先 \`grep -rn\`，始终可用无需降级
+2. 搜索不到时拆分关键词、扩大搜索范围再试
+3. 最后才 \`read_file\` 整文件（尽量避免）
+
+大文件必须分块读取：先定位，再用 \`read_file(path, startLine, endLine)\``
+}
 
 function buildAgentSystemPrompt(env: SystemEnv): string {
   const isZh = env.locale.startsWith('zh')
@@ -393,34 +463,7 @@ APK 构建成功（app-release.apk，70.0MB），已安装到华为手机。
 - 无并行能力时按依赖顺序串行执行
 - 用自然语言说明工具操作，不要提及工具名称
 
-## 代码搜索优化
-定位代码/内容时的工具选择策略：
-
-### 工具选择（按环境自适应）
-- **macOS / Linux**：优先 \`grep -rn\`（系统自带，行为稳定，无需额外安装）
-- **Windows (PowerShell/CMD)**：优先 \`Select-String\` 或 \`findstr\`
-- **通用兜底**：\`grep -rn\`（所有系统自带）
-
-### 正确用法示例
-\`\`\`bash
-# grep 搜索关键字（跨平台通用）
-grep -rn "关键字" .                  # 递归搜索，显示行号
-grep -rn "关键字" --include="*.ts" . # 按文件类型过滤
-grep -rn "TODO\|FIXME" .             # 多关键词正则（BRE 需转义 |）
-grep -rnE "TODO|FIXME" .             # 多关键词正则（ERE 无需转义）
-grep -rn "function buildSystemPrompt" .  # 搜索函数定义
-
-# find 按文件名查找
-find . -name "*.ts" -path "*/renderer/*"
-\`\`\`
-
-### 降级策略
-1. 优先 \`grep -rn\`，始终可用无需降级
-2. 搜索不到时拆分关键词、扩大搜索范围再试
-3. 最后才 \`read_file\` 整文件（尽量避免）
-
-大文件必须分块读取：先定位，再用 \`read_file(path, startLine, endLine)\`
-
+${buildCodeSearchRules(env.platform)}
 ## 文件操作
 - 找文件优先 find_file，看结构用 list_dir
 - 修改优先用 edit_file（局部替换），整文件覆盖用 write_file
