@@ -280,8 +280,10 @@ export const editorCommands: Record<EditorId, { label: string; macApp: string; c
 /** 文件/目录树条目 */
 export type FileTreeEntry = {
   name: string
-  /** 相对于 workspace 的路径 */
+  /** 相对于 workspace 的路径（使用 / 分隔符） */
   path: string
+  /** 绝对路径（平台原生分隔符） */
+  absPath: string
   isDirectory: boolean
   children?: FileTreeEntry[]
 }

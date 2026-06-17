@@ -471,9 +471,11 @@ function ConfirmDialog({
 
 function FileDiffView({
   filePath,
+  absPath,
   workspace,
 }: {
   filePath: string
+  absPath: string
   workspace: string
 }) {
   const [loading, setLoading] = useState(true)
@@ -497,7 +499,7 @@ function FileDiffView({
           setModified(change.newContent ?? '')
         } else {
           // 不是 Git 仓库：回退到 file.read() 直接加载文件内容
-          const result = await window.taco.file.read(filePath)
+          const result = await window.taco.file.read(absPath)
           if (cancelled) return
           if (result.isBinary) {
             setError('二进制文件无法预览')
@@ -518,7 +520,7 @@ function FileDiffView({
 
     load()
     return () => { cancelled = true }
-  }, [workspace, filePath])
+  }, [workspace, filePath, absPath])
 
   const fileName = filePath.split('/').pop() ?? filePath
   const language = getMonacoLanguage(fileName)
@@ -568,25 +570,6 @@ function FileDiffView({
 }
 
 /* ------------------------------------------------------------------ */
-/*  路径工具                                                           */
-/* ------------------------------------------------------------------ */
-
-/** 将相对路径解析为绝对路径（拼接 workspace 前缀） */
-function resolvePath(workspace: string, relPath: string): string {
-  // 已经是绝对路径，直接返回
-  if (relPath.startsWith('/') || /^[A-Za-z]:/.test(relPath)) return relPath
-  // 拼接 workspace
-  const base = workspace.endsWith('/') ? workspace.slice(0, -1) : workspace
-  return relPath ? `${base}/${relPath}` : base
-}
-
-/** 获取路径的父目录（不含尾部 /，根目录返回空字符串） */
-function parentDir(path: string): string {
-  const i = path.lastIndexOf('/')
-  return i >= 0 ? path.slice(0, i) : ''
-}
-
-/* ------------------------------------------------------------------ */
 /*  WorkspaceTree 主组件                                               */
 /* ------------------------------------------------------------------ */
 
@@ -601,17 +584,11 @@ export function WorkspaceTree({ workspace, className }: WorkspaceTreeProps) {
   const [treeError, setTreeError] = useState<string | null>(null)
   const [openFiles, setOpenFiles] = useState<FileTreeEntry[]>([])
   const [activeFileIndex, setActiveFileIndex] = useState<number>(-1)
-  const [tabViewModes, setTabViewModes] = useState<Record<string, 'edit' | 'diff'>>({})
+  /* 全局视图模式：编辑 / 变更 — 对所有文件生效 */
+  const [viewMode, setViewMode] = useState<'edit' | 'diff'>('edit')
 
   /* 当前激活的文件 */
   const activeFile = activeFileIndex >= 0 ? openFiles[activeFileIndex] : null
-  const currentViewMode = activeFile ? (tabViewModes[activeFile.path] || 'edit') : 'edit'
-
-  /* 设置当前标签的视图模式 */
-  const setCurrentViewMode = useCallback((mode: 'edit' | 'diff') => {
-    if (!activeFile) return
-    setTabViewModes(prev => ({ ...prev, [activeFile.path]: mode }))
-  }, [activeFile])
 
   /* 关闭指定标签 */
   const handleCloseTab = useCallback((index: number) => {
@@ -652,9 +629,8 @@ export function WorkspaceTree({ workspace, className }: WorkspaceTreeProps) {
   /* 输入弹窗 */
   const [dialog, setDialog] = useState<{
     type: 'createFile' | 'createDir' | 'rename'
-    parentPath: string  // 父目录路径（create 时）或当前路径（rename 时）
+    entry: FileTreeEntry  // create 时为父目录，rename 时为要重命名的条目
     defaultName?: string
-    entry?: FileTreeEntry // rename/delete 时的条目
   } | null>(null)
   /* 删除确认 */
   const [confirmDelete, setConfirmDelete] = useState<FileTreeEntry | null>(null)
@@ -771,7 +747,7 @@ export function WorkspaceTree({ workspace, className }: WorkspaceTreeProps) {
     setIsOpen(false)
     setOpenFiles([])
     setActiveFileIndex(-1)
-    setTabViewModes({})
+    setViewMode('edit')
     setFileStatuses({})
     setChangedDirs(new Set())
     setContextMenu(null)
@@ -835,19 +811,18 @@ export function WorkspaceTree({ workspace, className }: WorkspaceTreeProps) {
     if (action === 'createFile') {
       setDialog({
         type: 'createFile',
-        parentPath: entry.path,
+        entry,
       })
     } else if (action === 'createDir') {
       setDialog({
         type: 'createDir',
-        parentPath: entry.path,
+        entry,
       })
     } else if (action === 'rename') {
       setDialog({
         type: 'rename',
-        parentPath: entry.path,
-        defaultName: entry.name,
         entry,
+        defaultName: entry.name,
       })
     } else if (action === 'delete') {
       setConfirmDelete(entry)
@@ -862,12 +837,12 @@ export function WorkspaceTree({ workspace, className }: WorkspaceTreeProps) {
     let absOldPath: string | null = null
 
     if (dialog.type === 'rename') {
-      // rename: parentPath 是文件自身路径，需要取其父目录再拼新名
-      const filePath = dialog.parentPath
-      absOldPath = resolvePath(workspace, filePath)
-      const dir = parentDir(filePath)
-      const relNewPath = dir ? `${dir}/${value}` : value
-      absNewPath = resolvePath(workspace, relNewPath)
+      // 使用 entry.absPath 作为旧路径，拼接新路径
+      absOldPath = dialog.entry.absPath
+      const lastSep = Math.max(absOldPath.lastIndexOf('/'), absOldPath.lastIndexOf('\\'))
+      absNewPath = lastSep >= 0
+        ? absOldPath.slice(0, lastSep) + '/' + value
+        : value
 
       // 如果名称没变，直接关闭
       if (value === dialog.defaultName) {
@@ -875,10 +850,8 @@ export function WorkspaceTree({ workspace, className }: WorkspaceTreeProps) {
         return
       }
     } else {
-      // createFile / createDir: parentPath 是父目录
-      const dir = dialog.parentPath
-      const relNewPath = dir ? `${dir}/${value}` : value
-      absNewPath = resolvePath(workspace, relNewPath)
+      // createFile / createDir：entry 是父目录，新路径 = 父目录 absPath + '/' + 文件名
+      absNewPath = dialog.entry.absPath + '/' + value
     }
 
     try {
@@ -896,19 +869,17 @@ export function WorkspaceTree({ workspace, className }: WorkspaceTreeProps) {
       console.error('[WorkspaceTree] 操作失败:', err)
     }
     setDialog(null)
-  }, [dialog, workspace, refreshTree])
+  }, [dialog, refreshTree])
 
   /* 删除确认 */
   const handleDeleteConfirm = useCallback(async () => {
     if (!confirmDelete) return
 
-    const absPath = resolvePath(workspace, confirmDelete.path)
-
     try {
       if (confirmDelete.isDirectory) {
-        await window.taco.file.deleteDirectory(absPath)
+        await window.taco.file.deleteDirectory(confirmDelete.absPath)
       } else {
-        await window.taco.file.delete(absPath)
+        await window.taco.file.delete(confirmDelete.absPath)
       }
       treeDirtyRef.current = true
       // 强制刷新绕过缓存，使目录树立即同步
@@ -922,16 +893,11 @@ export function WorkspaceTree({ workspace, className }: WorkspaceTreeProps) {
         setActiveFileIndex(newActive)
         return newFiles
       })
-      setTabViewModes(prev => {
-        const next = { ...prev }
-        delete next[confirmDelete.path]
-        return next
-      })
     } catch (err: any) {
       console.error('[WorkspaceTree] 删除失败:', err)
     }
     setConfirmDelete(null)
-  }, [confirmDelete, workspace, refreshTree])
+  }, [confirmDelete, refreshTree])
 
   return (
     <>
@@ -1034,15 +1000,15 @@ export function WorkspaceTree({ workspace, className }: WorkspaceTreeProps) {
                   {/* 编辑 / 变更 模式切换 */}
                   <button
                     type="button"
-                    className={`wst-preview-mode-btn ${currentViewMode === 'edit' ? 'wst-preview-mode-btn-active' : ''}`}
-                    onClick={() => setCurrentViewMode('edit')}
+                    className={`wst-preview-mode-btn ${viewMode === 'edit' ? 'wst-preview-mode-btn-active' : ''}`}
+                    onClick={() => setViewMode('edit')}
                   >
                     编辑
                   </button>
                   <button
                     type="button"
-                    className={`wst-preview-mode-btn ${currentViewMode === 'diff' ? 'wst-preview-mode-btn-active' : ''}`}
-                    onClick={() => setCurrentViewMode('diff')}
+                    className={`wst-preview-mode-btn ${viewMode === 'diff' ? 'wst-preview-mode-btn-active' : ''}`}
+                    onClick={() => setViewMode('diff')}
                   >
                     变更
                   </button>
@@ -1050,7 +1016,7 @@ export function WorkspaceTree({ workspace, className }: WorkspaceTreeProps) {
 
                 {/* 视图内容 */}
                 <div className="wst-preview-content">
-                  {currentViewMode === 'edit' ? (
+                  {viewMode === 'edit' ? (
                     <FileEditor
                       filePath={activeFile.path}
                       workspace={workspace}
@@ -1059,6 +1025,7 @@ export function WorkspaceTree({ workspace, className }: WorkspaceTreeProps) {
                   ) : (
                     <FileDiffView
                       filePath={activeFile.path}
+                      absPath={activeFile.absPath}
                       workspace={workspace}
                     />
                   )}

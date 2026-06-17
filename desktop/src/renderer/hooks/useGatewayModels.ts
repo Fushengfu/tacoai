@@ -38,18 +38,28 @@ export function useGatewayModels() {
     if (!isAutoRefresh && fetchedRef.current) return
     if (!isAutoRefresh) fetchedRef.current = true
 
-    setLoading(true)
-    setError(null)
+    // 自动刷新时不改动 loading / error 状态，避免 UI 闪屏
+    if (!isAutoRefresh) {
+      setLoading(true)
+      setError(null)
+    }
     try {
       const res = await window.taco.gateway.getModels()
       const list = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : [])
-      setModels(list)
+      setModels(prev => {
+        // 数据未变化则返回旧引用，React 不会触发重渲染 → 避免闪屏
+        if (JSON.stringify(prev) === JSON.stringify(list)) return prev
+        return list
+      })
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      setError(msg)
-      setModels([])
+      // 自动刷新失败时保持现有模型列表不动
+      if (!isAutoRefresh) {
+        const msg = err instanceof Error ? err.message : String(err)
+        setError(msg)
+        setModels([])
+      }
     } finally {
-      setLoading(false)
+      if (!isAutoRefresh) setLoading(false)
     }
   }
 

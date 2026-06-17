@@ -54,7 +54,7 @@ export function validateModelConfig(config: {
     if (model.length > 200) {
       errors.push('Model 名称过长')
     }
-    if (/[^a-zA-Z0-9._\/\-]/.test(model)) {
+    if (/[^a-zA-Z0-9._\/\-:]/.test(model)) {
       errors.push('Model 名称包含非法字符')
     }
   }

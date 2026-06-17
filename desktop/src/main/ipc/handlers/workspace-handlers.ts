@@ -73,9 +73,9 @@ async function readWorkspaceTree(
       const children = await readWorkspaceTree(
         nodePath.join(dir, entry.name), relPath, depth + 1, maxDepth, active,
       )
-      result.push({ name: entry.name, path: relPath, isDirectory: true, children })
+      result.push({ name: entry.name, path: relPath, absPath: nodePath.join(dir, entry.name), isDirectory: true, children })
     } else {
-      result.push({ name: entry.name, path: relPath, isDirectory: false })
+      result.push({ name: entry.name, path: relPath, absPath: nodePath.join(dir, entry.name), isDirectory: false })
     }
   }
   return result

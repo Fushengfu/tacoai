@@ -671,14 +671,14 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
     usage: [
       '用于快速理解目录结构，优先以较小 maxDepth 查看骨架。',
       '当只需目录骨架时将 includeFiles 设为 false，减少无关噪声。',
-      '定位目标后再配合 find_file/read_file 深入；内容搜索统一优先 run_command + rg。',
+      '定位目标后再配合 find_file/read_file 深入；内容搜索统一优先 run_command + grep。',
     ],
   },
   run_command: {
     usage: [
       '用于构建、测试、运行和验证真实结果，优先执行最小必要命令。',
       '明确设置 cwd 到目标项目目录，避免在错误目录执行。',
-      '代码搜索默认优先使用 rg；定位文件名可配合 find 命令，搜索不到再拆分关键词继续 rg。',
+      '代码搜索默认优先使用 grep；定位文件名可配合 find 命令，搜索不到再拆分关键词继续 grep。',
       '命令失败时返回关键 stdout/stderr，并给出下一步处理动作。',
       '注意：在同一轮询中，避免连续执行同一个命令，如果尝试执行失败请更换别的方式或者别的命令。',
     ],

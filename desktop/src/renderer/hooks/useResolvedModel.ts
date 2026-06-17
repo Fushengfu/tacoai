@@ -47,20 +47,26 @@ export function useResolvedModel(params: {
     ? (gatewayModels.models ?? []).find((m) => m.id === currentModelConfigId)
     : null
 
-  const currentModelConfig: ModelConfig | undefined = localModelConfig ?? (gatewayModelMatch ? {
-    id: gatewayModelMatch.id,
-    provider: gatewayModelMatch.provider as ProviderId,
-    name: gatewayModelMatch.displayName || gatewayModelMatch.name,
-    baseUrl: gatewayModelMatch.baseUrl,
-    apiKey: gatewayModelMatch.apiKey,
-    model: gatewayModelMatch.model,
-    contextLength: String(gatewayModelMatch.contextLength ?? ''),
-    temperature: gatewayModelMatch.temperature,
-    supportsVision: Boolean(gatewayModelMatch.supportsVision),
-    supportsReasoning: Boolean(gatewayModelMatch.supportsReasoning),
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  } : undefined)
+  const currentModelConfig: ModelConfig | undefined = useMemo(() => {
+    if (localModelConfig) return localModelConfig
+    if (gatewayModelMatch) {
+      return {
+        id: gatewayModelMatch.id,
+        provider: gatewayModelMatch.provider as ProviderId,
+        name: gatewayModelMatch.displayName || gatewayModelMatch.name,
+        baseUrl: gatewayModelMatch.baseUrl,
+        apiKey: gatewayModelMatch.apiKey,
+        model: gatewayModelMatch.model,
+        contextLength: String(gatewayModelMatch.contextLength ?? ''),
+        temperature: gatewayModelMatch.temperature,
+        supportsVision: Boolean(gatewayModelMatch.supportsVision),
+        supportsReasoning: Boolean(gatewayModelMatch.supportsReasoning),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }
+    }
+    return undefined
+  }, [localModelConfig, gatewayModelMatch])
 
   const currentProvider: ProviderId | undefined = currentModelConfig?.provider
   const activeProviderLabel = currentModelConfig ? resolveModelConfigDisplayLabel(currentModelConfig) : ''
