@@ -128,14 +128,15 @@ The following links are hosted on servers in mainland China for high-speed downl
 
 | Platform | Download Link | Installation |
 |----------|---------------|--------------|
-| **macOS** (Apple Silicon) | [Taco AI-0.4.5-arm64.dmg](https://store.bjctykj.com/app-versions/macOS/1781579820_Taco_AI-0.4.5-arm64.dmg) | Double-click the `.dmg`, then drag into the `Applications` folder |
-| **Windows** (x64) | [Taco AI Setup 0.4.5-x64.exe](https://store.bjctykj.com/app-versions/Windows/1781579810_Taco_AI-0.4.5-x64.exe) | Double-click the `.exe` and follow the installation wizard |
+| **macOS** (Apple Silicon) | [Taco AI-0.4.7-arm64.dmg](https://store.bjctykj.com/app-versions/macOS/1782096266_Taco_AI-0.4.7-arm64.dmg) | Double-click the `.dmg`, then drag into the `Applications` folder |
+| **Windows** (x64) | [Taco AI Setup 0.4.7-x64.exe](https://store.bjctykj.com/app-versions/Windows/1782096341_Taco_AI-0.4.7-x64.exe) | Double-click the `.exe` and follow the installation wizard |
+| **Windows** (ARM64) | [Taco AI Setup 0.4.7-arm64.exe](https://store.bjctykj.com/app-versions/Windows/1782096649_Taco_AI-0.4.7-arm64.exe) | Double-click the `.exe` and follow the installation wizard |
 
 ### International Users
 
 International users should download the installer for your platform from the [GitHub Releases](https://github.com/Fushengfu/tacoai/releases) page.
 
-Current version: **v0.4.5**
+Current version: **v0.4.7**
 
 > For building from source, see [Quick Start](#quick-start) below.
 
@@ -233,4 +234,4 @@ taco/
 
 ## Version
 
-Current version: **v0.4.5**
+Current version: **v0.4.7**
