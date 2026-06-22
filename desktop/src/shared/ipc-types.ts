@@ -331,6 +331,53 @@ export type SkillInfo = {
   tools?: string[]
   /** Skill 允许按需读取的附属资源路径模式 */
   resources?: string[]
+  /** 分类标签（如 "git", "security", "testing"） */
+  tags?: string[]
+  /** 功能分类（如 "development", "automation", "security"） */
+  category?: string
+  /** 项目主页 URL */
+  homepage?: string
+  /** 开源许可证（如 "MIT", "Apache-2.0"） */
+  license?: string
+}
+
+/** Skill 预览信息（安装前预览用） */
+export type SkillPreview = {
+  id: string
+  name: string
+  description: string
+  version: string
+  author: string
+  category?: string
+  tags?: string[]
+  homepage?: string
+  license?: string
+  tools?: string[]
+  resources?: string[]
+  requiresBins?: string[]
+  requiresEnv?: string[]
+  sourceUrl: string
+  /** 安全审核结果 */
+  security?: {
+    riskLevel: 'low' | 'medium' | 'high' | 'critical'
+    warnings: string[]
+  }
+}
+
+/** Skill 安装进度 */
+export type InstallProgress = {
+  step: 'fetching_meta' | 'downloading_resources' | 'installing' | 'done' | 'failed'
+  message: string
+  current?: number
+  total?: number
+}
+
+/** Skill 更新信息 */
+export type SkillUpdateInfo = {
+  hasUpdate: boolean
+  currentVersion: string
+  latestVersion: string
+  sourceUrl: string
 }
 
 /* ------------------------------------------------------------------ */

@@ -93,6 +93,7 @@ export {
   resolveChatStoreMessageSeqRange,
   listChatStoreSessions,
   loadChatStoreSessionPage,
+  loadChatStoreMessageById,
   saveChatStoreSessionPatch,
   deleteChatStoreSession,
 } from './chat-store'

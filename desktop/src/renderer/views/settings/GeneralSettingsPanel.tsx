@@ -42,7 +42,14 @@ export function GeneralSettingsPanel({
   onOpenLogDir,
   onUpdateAutoApproveCategories,
 }: GeneralSettingsPanelProps) {
-  const handleAutoApproveChange = (catId: string, checked: boolean) => {
+  const handleAutoApproveChange = (catId: string, checked: boolean, level?: string) => {
+    // danger 级别勾选时二次确认
+    if (checked && level === 'danger') {
+      const confirmed = window.confirm(
+        '警告：此操作属于危险级别（可导致不可逆的文件损坏或系统修改）。确定要开启自动授权吗？'
+      )
+      if (!confirmed) return
+    }
     const next = new Set(autoApproveCategories)
     if (checked) next.add(catId)
     else next.delete(catId)
@@ -227,7 +234,7 @@ export function GeneralSettingsPanel({
               type="checkbox"
               className="settings-toggle"
               checked={autoApproveCategories.has(cat.id)}
-              onChange={(e) => handleAutoApproveChange(cat.id, e.target.checked)}
+              onChange={(e) => handleAutoApproveChange(cat.id, e.target.checked, cat.level)}
             />
           </label>
         ))}

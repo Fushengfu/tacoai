@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import type { ModelConfig, ThemeMode } from '../types'
-import type { SkillInfo, ProjectNote, ProjectTaskMemory, NoteCategory, McpServerInfo, MemoryScopeStats, AppUpdateCheckResult } from '../../shared/ipc'
+import type { SkillInfo, SkillPreview, SkillUpdateInfo, ProjectNote, ProjectTaskMemory, NoteCategory, McpServerInfo, MemoryScopeStats, AppUpdateCheckResult } from '../../shared/ipc'
 import { PROVIDER_DEFAULT_BASE_URLS } from '../constants'
 import {
   loadUploadSettings,
@@ -85,6 +85,11 @@ export function SettingsPage({
   const [installInput, setInstallInput] = useState('')
   const [installing, setInstalling] = useState(false)
   const [installError, setInstallError] = useState('')
+  const [previewResult, setPreviewResult] = useState<SkillPreview | null>(null)
+  const [previewing, setPreviewing] = useState(false)
+  const [previewError, setPreviewError] = useState('')
+  const [checkingUpdates, setCheckingUpdates] = useState<Record<string, boolean>>({})
+  const [updateInfo, setUpdateInfo] = useState<Record<string, SkillUpdateInfo | null>>({})
 
   // Notes 状态
   const [notes, setNotes] = useState<ProjectNote[]>([])
@@ -480,12 +485,92 @@ export function SettingsPage({
         return [...prev, newSkill]
       })
       setInstallInput('')
+      setPreviewResult(null)
     } catch (err) {
       setInstallError(err instanceof Error ? err.message : String(err))
     } finally {
       setInstalling(false)
     }
   }
+
+  const handlePreviewSkill = async () => {
+    const source = installInput.trim()
+    if (!source) return
+    setPreviewing(true)
+    setPreviewError('')
+    setPreviewResult(null)
+    try {
+      const result = await window.taco.skills.preview(source)
+      setPreviewResult(result)
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPreviewing(false)
+    }
+  }
+
+  const handleInstallPreset = async (presetId: string) => {
+    setInstalling(true)
+    setInstallError('')
+    try {
+      const newSkill = await window.taco.skills.installPreset(presetId)
+      setSkills((prev) => {
+        const exists = prev.findIndex((s) => s.id === newSkill.id)
+        if (exists >= 0) {
+          const next = [...prev]
+          next[exists] = newSkill
+          return next
+        }
+        return [...prev, newSkill]
+      })
+    } catch (err) {
+      setInstallError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setInstalling(false)
+    }
+  }
+
+  const handleSkillCheckUpdate = async (skillId: string) => {
+    setCheckingUpdates((prev) => ({ ...prev, [skillId]: true }))
+    try {
+      const result = await window.taco.skills.checkUpdate(skillId)
+      setUpdateInfo((prev) => ({ ...prev, [skillId]: result }))
+    } catch {
+      setUpdateInfo((prev) => ({ ...prev, [skillId]: null }))
+    } finally {
+      setCheckingUpdates((prev) => ({ ...prev, [skillId]: false }))
+    }
+  }
+
+  const installedSkillIds = useMemo(() => new Set(skills.map((s) => s.id)), [skills])
+
+  // 预设 Skills 列表（与 services/skills/skills-service.ts 中 PRESET_SKILLS 同步）
+  const presetSkillsList = useMemo<SkillPreview[]>(() => [
+    {
+      id: 'conventional-commits', name: 'Conventional Commits',
+      description: '自动生成规范的 Git commit message，遵循 Conventional Commits 格式',
+      version: '1.0.0', author: 'Taco Community', category: 'development',
+      tags: ['git', 'commit'], sourceUrl: '', tools: ['run_command'],
+    },
+    {
+      id: 'security-auditor', name: '安全审计',
+      description: '代码修改后自动检查 SQL 注入、XSS、硬编码密钥等安全问题',
+      version: '1.0.0', author: 'Taco Community', category: 'security',
+      tags: ['security', 'audit'], sourceUrl: '', tools: ['read_file', 'find_file', 'run_command'],
+    },
+    {
+      id: 'docker-helper', name: 'Docker 助手',
+      description: 'Docker 容器管理、Dockerfile 编写优化、docker-compose 配置',
+      version: '1.0.0', author: 'Taco Community', category: 'devops',
+      tags: ['docker', 'container'], sourceUrl: '', tools: ['run_command', 'read_file', 'write_file'],
+    },
+    {
+      id: 'project-doc-generator', name: '项目文档生成器',
+      description: '自动分析项目结构生成 README、API 文档、架构说明',
+      version: '1.0.0', author: 'Taco Community', category: 'documentation',
+      tags: ['documentation', 'readme'], sourceUrl: '', tools: ['read_file', 'find_file', 'list_dir', 'write_file'],
+    },
+  ], [])
 
   const selectedModel = editingModelId
     ? (modelConfigs.find((item) => item.id === editingModelId)
@@ -842,12 +927,22 @@ export function SettingsPage({
               installInput={installInput}
               installing={installing}
               installError={installError}
-              skillsLoading={skillsLoading}
-              skills={skills}
               onInstallInputChange={setInstallInput}
               onInstallSkill={handleInstallSkill}
+              previewResult={previewResult}
+              previewing={previewing}
+              previewError={previewError}
+              onPreviewSkill={handlePreviewSkill}
+              presetSkills={presetSkillsList}
+              installedIds={installedSkillIds}
+              onInstallPreset={handleInstallPreset}
+              skillsLoading={skillsLoading}
+              skills={skills}
               onToggleSkill={handleToggleSkill}
               onUninstallSkill={handleUninstallSkill}
+              checkingUpdates={checkingUpdates}
+              updateInfo={updateInfo}
+              onCheckUpdate={handleSkillCheckUpdate}
             />
           )}
 

@@ -586,6 +586,8 @@ export class BridgeManager {
       case 'bridge:switch-model':
       case 'bridge:request-state':
       case 'bridge:load-older-messages':
+      case 'bridge:get-message-detail':
+      case 'bridge:get-step-detail':
       case 'bridge:poll-task-status': {
         this.lastHeartbeatReceived = Date.now()
         if (this.dataHandler) {

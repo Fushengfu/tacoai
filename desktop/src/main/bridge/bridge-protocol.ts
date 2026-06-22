@@ -123,6 +123,8 @@ export interface BridgeChatMessage {
   streaming?: boolean
   /** Agent 执行步骤 */
   agentSteps?: BridgeAgentStep[]
+  /** 是否已对 agentSteps 做了轻量化（按需加载标记） */
+  agentStepsTruncated?: boolean
   /** 活跃的执行计划 */
   activePlan?: BridgeActivePlan
   /** 单轮任务耗时 */
@@ -414,6 +416,8 @@ export type BridgeClientMessage =
   | BridgeSwitchModel
   | BridgeLoadOlderMessages
   | BridgePollTaskStatus
+  | BridgeGetMessageDetail
+  | BridgeGetStepDetail
 
 /** 移动端重试确认响应 */
 export interface BridgeRetryResponse {
@@ -496,6 +500,23 @@ export interface BridgeLoadOlderMessages {
 export interface BridgePollTaskStatus {
   type: 'bridge:poll-task-status'
   sessionId?: string
+  requestId?: string
+}
+
+/** 按需加载消息详情（手机端展开历史消息时请求完整 agentSteps） */
+export interface BridgeGetMessageDetail {
+  type: 'bridge:get-message-detail'
+  sessionId: string
+  messageId: string
+  requestId?: string
+}
+
+/** 按需加载步骤详情（手机端展开单个步骤时请求完整 heavy 字段） */
+export interface BridgeGetStepDetail {
+  type: 'bridge:get-step-detail'
+  sessionId: string
+  messageId: string
+  stepRound: number
   requestId?: string
 }
 

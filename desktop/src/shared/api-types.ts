@@ -24,6 +24,7 @@ import type {
   GatewayModelsResponse,
   GitFileChange,
   GitWorkingTreeStatus,
+  InstallProgress,
   McpServerInfo,
   MemoryScopeExportResult,
   MemoryScopeStats,
@@ -32,6 +33,8 @@ import type {
   ProjectTaskMemory,
   RendererErrorPayload,
   SkillInfo,
+  SkillPreview,
+  SkillUpdateInfo,
   SystemInfo,
 } from './ipc-types'
 
@@ -171,12 +174,18 @@ export type TacoApi = {
   skills: {
     /** 列出所有已安装的 skills */
     list: (workspace?: string) => Promise<SkillInfo[]>
-    /** 安装 skill（从 URL 或本地路径） */
-    install: (source: string) => Promise<SkillInfo>
+    /** 预览 skill（从 URL 或本地路径，不安装） */
+    preview: (source: string) => Promise<SkillPreview>
+    /** 安装 skill（从 URL 或本地路径，支持进度回调） */
+    install: (source: string, onProgress?: (progress: InstallProgress) => void) => Promise<SkillInfo>
+    /** 安装预设 skill */
+    installPreset: (presetId: string) => Promise<SkillInfo>
     /** 卸载 skill */
     uninstall: (id: string) => Promise<void>
     /** 启用/禁用 skill */
     toggle: (id: string, enabled: boolean) => Promise<void>
+    /** 检查 skill 更新 */
+    checkUpdate: (id: string) => Promise<SkillUpdateInfo | null>
   }
   notes: {
     /** 列出指定工作空间的所有笔记 */

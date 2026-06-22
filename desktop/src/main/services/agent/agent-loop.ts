@@ -118,7 +118,6 @@ import { compactLine, maskSensitiveText, summarizeRunCommand, extractIdentifiers
 
 const MAX_TOOL_ROUNDS = 1000 // 防止无限循环 
 const AGENT_LOOP_TIMEOUT_MS = 24 * 60 * 60 * 1000 // 24小时超时
-let confirmCounter = 0
 
 /* ------------------------------------------------------------------ */
 /*  AI 摘要压缩                                                        */
@@ -1064,7 +1063,7 @@ export async function runAgent(
         }
 
         // 自动重试 5 次后仍失败，弹出重试按钮
-        const retryId = `retry-${Date.now()}-${++confirmCounter}`
+        const retryId = `retry-${crypto.randomUUID()}`
         log('AGENT_RETRYABLE_ERROR', { round, retryId, errorType, error: msg, autoRetriesExhausted: true }, logScope)
 
         onEvent?.({
@@ -1172,7 +1171,7 @@ export async function runAgent(
         }
 
         // 自动重试 5 次后仍失败，弹出重试按钮
-        const retryId = `retry-${Date.now()}-${++confirmCounter}`
+        const retryId = `retry-${crypto.randomUUID()}`
         log('AGENT_EMPTY_RESPONSE', { round, retryId, rawPreview: rawTextContent.slice(0, 200), autoRetriesExhausted: true }, logScope)
 
         onEvent?.({
@@ -1296,7 +1295,7 @@ export async function runAgent(
     // ── 检查是否有 propose_plan（计划确认）──
     const planCall = toolCalls.find((tc) => tc.function.name === 'propose_plan')
     if (planCall) {
-      const confirmId = `plan-${Date.now()}-${++confirmCounter}`
+      const confirmId = `plan-${crypto.randomUUID()}`
       log('AGENT_PLAN', { confirmId, plan: planCall.function.arguments }, logScope)
 
       // 以 plan 类型的 risk 触发确认流程（复用现有 confirm 机制）
@@ -1417,7 +1416,7 @@ export async function runAgent(
     const risks = assessToolCallsRisk(toolCalls, workspace)
 
     if (risks.length > 0) {
-      const confirmId = `confirm-${Date.now()}-${++confirmCounter}`
+      const confirmId = `confirm-${crypto.randomUUID()}`
       log('AGENT_RISK', { confirmId, risks }, logScope)
 
       // 通知前端：需要用户确认

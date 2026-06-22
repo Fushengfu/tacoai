@@ -64,7 +64,10 @@ const DANGER_PATTERNS: [RegExp, string, RiskCategory][] = [
   // 破坏性操作
   [/\brm\s+(-[a-zA-Z]*r|-[a-zA-Z]*f|--recursive|--force)/i, '递归/强制删除文件', 'destructive_cmd'],
   [/\brm\s+-rf\b/i, '递归强制删除', 'destructive_cmd'],
+  [/\brm\s+-r\b/i, '递归删除', 'destructive_cmd'],
+  [/\brm\s+--recursive\b/i, '递归删除', 'destructive_cmd'],
   [/\brmdir\b/i, '删除目录', 'destructive_cmd'],
+  [/\bdel\s+\/s\b/i, '递归强制删除 (Windows)', 'destructive_cmd'],
   // 系统修改
   [/\bchmod\b/i, '修改文件权限', 'system_modify'],
   [/\bchown\b/i, '修改文件所有者', 'system_modify'],

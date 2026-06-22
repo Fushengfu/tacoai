@@ -11,7 +11,7 @@ import type { BridgeStatusPayload } from '../../../shared/ipc'
 import { getBridgeManager } from '../../bridge/bridge-manager'
 import type { BridgeChatMessage as BridgeChatMessageType } from '../../bridge/bridge-protocol'
 import { getAppState } from '../../system/app-state'
-import { loadChatStoreSessionPage } from '../../data/memory-db'
+import { loadChatStoreSessionPage, loadChatStoreMessageById } from '../../data/memory-db'
 import { log, logError } from '../../system/logger'
 import { agentAbortControllers } from './chat-handlers'
 import { handleGatewayGetModels } from './gateway-handlers'
@@ -107,7 +107,7 @@ export function setupBridgeSwitchProjectLoadedHandler(): void {
       const mgr = getBridgeManager()
       mgr.sendHostMessage({
         type: 'bridge:state',
-        messages: stripDataUrlFromMessages(page.messages) as BridgeChatMessageType[],
+        messages: stripAgentStepsForBridge(stripDataUrlFromMessages(page.messages)) as BridgeChatMessageType[],
         threadId: activeThread.id,
         workspace: activeThread.workspace,
         modelLabel: modelConfig?.model || modelConfig?.name || '',
@@ -226,6 +226,66 @@ function stripDataUrlFromMessages(messages: unknown[]): unknown[] {
     }
 
     return result
+  })
+}
+
+/**
+ * 对消息的 agentSteps 进行按需加载预处理（步骤级）：
+ * - 如果消息中有任意步骤处于活跃状态（running / calling / confirm），保留完整 agentSteps
+ * - 否则（全部 done），保留完整步骤结构（名称/状态/风险），只清空 heavy 字段
+ *   （thinking / toolCalls.arguments / toolResults.content / fileChange）
+ *   标记 agentStepsTruncated=true
+ *
+ * 这样 bridge:state 推送时不会超过 Relay 的 10MB 限制，手机端正常展示步骤列表，
+ * 点展开某个步骤时通过 bridge:get-step-detail 按需加载该步骤的详细内容。
+ */
+function stripAgentStepsForBridge(messages: unknown[]): unknown[] {
+  return messages.map((msg: any) => {
+    if (!msg || typeof msg !== 'object') return msg
+    if (msg.role !== 'assistant') return msg
+    const agentSteps: any[] | undefined = msg.agentSteps
+    if (!Array.isArray(agentSteps) || agentSteps.length === 0) return msg
+
+    // 检查是否有活跃步骤（未完成的）
+    const hasActive = agentSteps.some(
+      (s: any) => s.status === 'running' || s.status === 'calling' || s.status === 'confirm'
+    )
+
+    if (hasActive) {
+      // 当前正在执行的消息：保留完整 agentSteps，不截断
+      return msg
+    }
+
+    // 历史消息：保留完整步骤结构，只清空 heavy 字段
+    const stripped = agentSteps.map((s: any) => ({
+      round: s.round,
+      status: s.status,
+      ...(s.systemTitle ? { systemTitle: s.systemTitle } : {}),
+      ...(s.systemDetail ? { systemDetail: s.systemDetail } : {}),
+      ...(s.confirmId ? { confirmId: s.confirmId } : {}),
+      thinking: '', // 清空思考内容，按需加载
+      // 保留工具调用结构（含名称），清空参数
+      toolCalls: Array.isArray(s.toolCalls)
+        ? s.toolCalls.map((tc: any) => ({
+            id: tc.id,
+            type: 'function',
+            function: { name: tc.function?.name || tc.name || '', arguments: '' },
+          }))
+        : [],
+      // 保留工具结果结构（含名称/成功状态），清空内容和文件变更
+      toolResults: Array.isArray(s.toolResults)
+        ? s.toolResults.map((tr: any) => ({
+            tool_call_id: tr.tool_call_id || '',
+            name: tr.name || '',
+            content: '', // 清空结果内容，按需加载
+            success: tr.success ?? false,
+          }))
+        : [],
+      // 保留风险信息（体积小）
+      ...(Array.isArray(s.risks) && s.risks.length > 0 ? { risks: s.risks } : {}),
+    }))
+
+    return { ...msg, agentSteps: stripped, agentStepsTruncated: true }
   })
 }
 
@@ -509,7 +569,7 @@ export function setupBridgeDataHandler(): void {
               respond({
                 type: 'bridge:state',
                 requestId,
-                messages: stripDataUrlFromMessages(page.messages) as BridgeChatMessageType[],
+                messages: stripAgentStepsForBridge(stripDataUrlFromMessages(page.messages)) as BridgeChatMessageType[],
                 threadId: activeThread.id,
                 workspace: activeThread.workspace,
                 modelLabel: modelConfig?.model || modelConfig?.name || '',
@@ -553,7 +613,7 @@ export function setupBridgeDataHandler(): void {
           respond({
             type: 'bridge:older-messages',
             requestId,
-            messages: stripDataUrlFromMessages(page.messages),
+            messages: stripAgentStepsForBridge(stripDataUrlFromMessages(page.messages)),
             totalCount: page.totalCount,
             startSeq: page.startSeq,
             endSeq: page.endSeq,
@@ -675,6 +735,82 @@ export function setupBridgeDataHandler(): void {
           break
         }
 
+        /* ---- 按需加载消息详情（手机端点展开时请求完整 agentSteps） ---- */
+        case 'bridge:get-message-detail': {
+          const rawSessionId = String(msg.sessionId || '').trim()
+          const messageId = String(msg.messageId || '').trim()
+          if (!rawSessionId || !messageId) {
+            respond({ type: 'bridge:message-detail', requestId, messageId, error: 'sessionId and messageId required' })
+            break
+          }
+          // 移动端传过来的是 threadId（projectId），需要解析为实际 sessionId
+          const state = await getAppState()
+          const activeThread = state.threadsState.threads.find((t: any) => t.id === rawSessionId)
+          const sessionId = activeThread?.activeSessionId || activeThread?.sessions?.[0]?.id || rawSessionId
+          const fullMsg = loadChatStoreMessageById(sessionId, messageId)
+          if (!fullMsg) {
+            respond({ type: 'bridge:message-detail', requestId, messageId, error: 'message not found' })
+            break
+          }
+          respond({
+            type: 'bridge:message-detail',
+            requestId,
+            messageId,
+            message: stripDataUrlFromMessages([fullMsg])[0],
+          })
+          break
+        }
+
+        /* ---- 按需加载步骤详情（手机端点展开单个步骤时请求完整 heavy 字段） ---- */
+        case 'bridge:get-step-detail': {
+          const rawSessionId = String(msg.sessionId || '').trim()
+          const messageId = String(msg.messageId || '').trim()
+          const stepRound = Number(msg.stepRound)
+          if (!rawSessionId || !messageId || isNaN(stepRound)) {
+            respond({ type: 'bridge:step-detail', requestId, messageId, stepRound, error: 'sessionId, messageId, and stepRound required' })
+            break
+          }
+          // 移动端传过来的是 threadId（projectId），需要解析为实际 sessionId
+          const state = await getAppState()
+          const activeThread = state.threadsState.threads.find((t: any) => t.id === rawSessionId)
+          const sessionId = activeThread?.activeSessionId || activeThread?.sessions?.[0]?.id || rawSessionId
+          const fullMsg = loadChatStoreMessageById(sessionId, messageId)
+          if (!fullMsg) {
+            respond({ type: 'bridge:step-detail', requestId, messageId, stepRound, error: 'message not found' })
+            break
+          }
+          const agentSteps: any[] = Array.isArray((fullMsg as any).agentSteps) ? (fullMsg as any).agentSteps : []
+          const step = agentSteps.find((s: any) => s.round === stepRound)
+          if (!step) {
+            respond({ type: 'bridge:step-detail', requestId, messageId, stepRound, error: 'step not found' })
+            break
+          }
+          // 只返回 heavy 字段：thinking、toolCalls 的 arguments、toolResults 的 content 和 fileChange
+          respond({
+            type: 'bridge:step-detail',
+            requestId,
+            messageId,
+            stepRound,
+            stepDetail: {
+              thinking: step.thinking || '',
+              toolCallsArgs: Array.isArray(step.toolCalls)
+                ? step.toolCalls.map((tc: any) => ({
+                    id: tc.id,
+                    arguments: tc.function?.arguments || tc.arguments || '',
+                  }))
+                : [],
+              toolResultsDetail: Array.isArray(step.toolResults)
+                ? step.toolResults.map((tr: any) => ({
+                    tool_call_id: tr.tool_call_id || '',
+                    content: tr.content || '',
+                    fileChange: tr.fileChange || null,
+                  }))
+                : [],
+            },
+          })
+          break
+        }
+
         default:
           respond({ type: 'error', requestId, message: `Unknown request type: ${type}` })
           break
@@ -725,7 +861,7 @@ export function setupBridgeStateSnapshotResponse(): void {
       const mgr = getBridgeManager()
       mgr.sendHostMessage({
         type: 'bridge:state',
-        messages: stripDataUrlFromMessages(payload.messages) as BridgeChatMessageType[],
+        messages: stripAgentStepsForBridge(stripDataUrlFromMessages(payload.messages)) as BridgeChatMessageType[],
         threadId: payload.threadId,
         activeAgentRequestId: payload.activeAgentRequestId,
         workspace: payload.workspace,

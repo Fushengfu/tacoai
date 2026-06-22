@@ -1,2 +1,2 @@
-// re-export: 实际代码已迁移到 services/git/
-export * from '../services/git/git-service'
+// re-export: 统一 Git 抽象层（native CLI / isomorphic-git 自动切换）
+export * from '../services/git/universal-git'

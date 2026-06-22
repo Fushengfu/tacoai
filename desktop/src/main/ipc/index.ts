@@ -25,7 +25,7 @@ import type {
 import type { RiskCategory } from '../tools'
 import { setAutoApproveCategories } from '../tools'
 import { gitLog, gitCommit, gitRollback, gitCommitFiles, gitStatus, gitFileChange, gitStageFiles, gitStageAll } from '../project/git'
-import { initSkills, listSkills, installSkill, uninstallSkill, toggleSkill, refreshSkills } from '../project/skills'
+import { initSkills, listSkills, installSkill, installPreset, uninstallSkill, toggleSkill, refreshSkills, previewSkill, checkSkillUpdate } from '../project/skills'
 import { listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, getMemoryScopeStats, exportMemoryScope } from '../data/notes'
 import { initMcp, listMcpServers, saveMcpServer, removeMcpServer, toggleMcpServer } from '../automation/mcp'
 import { getLogDir } from '../system/logger'
@@ -214,9 +214,12 @@ export function registerIpcHandlers() {
   // Skills
   initSkills().catch((err) => console.error('Skills 初始化失败:', err))
   ipcMain.handle(IpcChannel.SKILLS_LIST, (_e, workspace?: string) => listSkills(workspace))
+  ipcMain.handle(IpcChannel.SKILLS_PREVIEW, (_e, source: string) => previewSkill(source))
   ipcMain.handle(IpcChannel.SKILLS_INSTALL, (_e, source: string) => installSkill(source))
+  ipcMain.handle(IpcChannel.SKILLS_INSTALL_PRESET, (_e, presetId: string) => installPreset(presetId))
   ipcMain.handle(IpcChannel.SKILLS_UNINSTALL, (_e, id: string) => uninstallSkill(id))
   ipcMain.handle(IpcChannel.SKILLS_TOGGLE, (_e, id: string, enabled: boolean) => toggleSkill(id, enabled))
+  ipcMain.handle(IpcChannel.SKILLS_CHECK_UPDATE, (_e, id: string) => checkSkillUpdate(id))
 
   // Notes / Memory
   ipcMain.handle(IpcChannel.NOTES_LIST, (_e, workspace: string, projectId?: string) => listNotes(workspace, projectId))

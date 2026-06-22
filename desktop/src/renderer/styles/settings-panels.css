@@ -897,6 +897,291 @@
   transform: translateX(16px);
 }
 
+/* ── Skills Preset Grid ── */
+.skills-preset-section {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+}
+.skills-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.skills-section-desc {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+.skills-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+.skill-preset-card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: all 0.15s ease;
+}
+.skill-preset-card:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.skill-preset-card.installed {
+  opacity: 0.55;
+}
+.skill-preset-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.skill-preset-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+.skill-preset-version {
+  font-size: 10px;
+  color: var(--muted);
+}
+.skill-preset-desc {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.skill-preset-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.skill-preset-category {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(76, 200, 120, 0.12);
+  color: #4cc878;
+}
+.skill-preset-category.security {
+  background: rgba(245, 101, 101, 0.12);
+  color: #f56565;
+}
+.skill-preset-category.documentation {
+  background: rgba(76, 123, 255, 0.12);
+  color: #60a5fa;
+}
+.skill-preset-category.devops {
+  background: rgba(255, 180, 50, 0.12);
+  color: #f6ad55;
+}
+.skill-preset-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.skill-tag {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.4);
+}
+.skill-preset-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: auto;
+  padding-top: 6px;
+}
+.skill-preset-author {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.2);
+}
+.skill-preset-install-btn {
+  background: var(--accent-2);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.skill-preset-install-btn:hover:not(:disabled) {
+  opacity: 0.85;
+}
+.skill-preset-install-btn.installed {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  cursor: default;
+}
+
+/* ── Skills Install Preview ── */
+.skills-install-preview-btn {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+.skills-install-preview-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.14);
+}
+.skills-install-preview-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.skill-preview-card {
+  margin-top: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.skill-preview-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.skill-preview-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+.skill-preview-version {
+  font-size: 11px;
+  color: var(--muted);
+}
+.skill-preview-desc {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.skill-preview-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+  flex-wrap: wrap;
+}
+.skill-preview-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.skill-preview-label {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+  flex-shrink: 0;
+}
+.skill-tool-chip {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.5);
+  font-family: ui-monospace, monospace;
+}
+.skill-preview-security {
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 11px;
+}
+.skill-preview-security.low {
+  background: rgba(76, 200, 120, 0.06);
+  border: 1px solid rgba(76, 200, 120, 0.15);
+  color: #4cc878;
+}
+.skill-preview-security.medium {
+  background: rgba(255, 180, 50, 0.06);
+  border: 1px solid rgba(255, 180, 50, 0.15);
+  color: #f6ad55;
+}
+.skill-preview-security.high {
+  background: rgba(245, 101, 101, 0.06);
+  border: 1px solid rgba(245, 101, 101, 0.15);
+  color: #f56565;
+}
+.skill-preview-security.critical {
+  background: rgba(245, 101, 101, 0.1);
+  border: 1px solid rgba(245, 101, 101, 0.3);
+  color: #f56565;
+}
+.skill-security-warnings {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  font-size: 10px;
+  opacity: 0.8;
+}
+.skill-security-warnings li {
+  margin-bottom: 2px;
+}
+
+/* ── Skills Card Enhancements ── */
+.skill-card-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.skill-card-update {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.skill-update-checking {
+  font-size: 11px;
+  color: var(--muted);
+}
+.skill-update-available {
+  font-size: 11px;
+  color: #f6ad55;
+  font-weight: 500;
+}
+.skill-update-uptodate {
+  font-size: 11px;
+  color: #4cc878;
+}
+.skill-update-check-btn {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.skill-update-check-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+.skills-list-section {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+}
+
 /* ── Notes Panel ── */
 .notes-panel {
   display: flex;

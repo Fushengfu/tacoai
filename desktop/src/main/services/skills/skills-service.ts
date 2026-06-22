@@ -15,6 +15,7 @@ import { app } from 'electron'
 import { execFile as execFileCb } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { SkillInfo } from '../../../shared/ipc-types'
+import type { SkillPreview } from '../../../shared/ipc-types'
 import { log } from '../../system/logger'
 
 const execFile = promisify(execFileCb)
@@ -247,6 +248,144 @@ const BUILTIN_SKILLS: SkillInfo[] = [
 - **mcp_call**: 调用指定 MCP 服务器上的目标工具；arguments 必须严格符合目标 schema`,
   },
 ]
+
+/* ------------------------------------------------------------------ */
+/*  预设 Skills（可一键安装）                                             */
+/* ------------------------------------------------------------------ */
+
+/** 预设 Skill 列表 — 从社区精选、无需编写 SKILL.md 即可一键安装 */
+export const PRESET_SKILLS: SkillPreview[] = [
+  {
+    id: 'conventional-commits',
+    name: 'Conventional Commits',
+    description: '自动生成规范的 Git commit message，遵循 Conventional Commits 格式（feat/fix/refactor 等），保持提交历史清晰可读',
+    version: '1.0.0',
+    author: 'Taco Community',
+    category: 'development',
+    tags: ['git', 'commit', 'conventional-commits'],
+    sourceUrl: '',
+    tools: ['run_command'],
+  },
+  {
+    id: 'security-auditor',
+    name: '安全审计',
+    description: '代码修改后自动检查常见安全问题：SQL 注入、XSS、硬编码密钥、不安全依赖、敏感信息泄露等',
+    version: '1.0.0',
+    author: 'Taco Community',
+    category: 'security',
+    tags: ['security', 'audit', 'vulnerability'],
+    sourceUrl: '',
+    tools: ['read_file', 'find_file', 'run_command'],
+  },
+  {
+    id: 'docker-helper',
+    name: 'Docker 助手',
+    description: 'Docker 容器管理、Dockerfile 编写优化、docker-compose 配置、镜像构建和调试辅助',
+    version: '1.0.0',
+    author: 'Taco Community',
+    category: 'devops',
+    tags: ['docker', 'container', 'devops'],
+    sourceUrl: '',
+    tools: ['run_command', 'read_file', 'write_file'],
+    requiresBins: ['docker'],
+  },
+  {
+    id: 'project-doc-generator',
+    name: '项目文档生成器',
+    description: '自动分析项目结构生成 README、API 文档、架构说明，保持文档与代码同步',
+    version: '1.0.0',
+    author: 'Taco Community',
+    category: 'documentation',
+    tags: ['documentation', 'readme', 'api-docs'],
+    sourceUrl: '',
+    tools: ['read_file', 'find_file', 'list_dir', 'write_file'],
+  },
+]
+
+/** 预设 Skill 的指令模板 */
+const PRESET_INSTRUCTIONS: Record<string, string> = {
+  'conventional-commits': `# Skill: Conventional Commits
+
+遵循 Conventional Commits 规范生成 commit message：
+
+## 格式
+\`\`\`
+type(scope): description
+
+[optional body]
+
+[optional footer]
+\`\`\`
+
+## 类型
+- feat: 新功能
+- fix: Bug 修复
+- refactor: 重构
+- docs: 文档
+- style: 代码格式
+- test: 测试
+- chore: 构建/工具
+- perf: 性能优化
+- ci: CI/CD 变更
+
+## 规则
+- 每次修改尽量保持原子性，一个 commit 只做一件事
+- commit message 使用英文，简明扼要
+- 在执行 git push 前提醒用户确认
+- 使用 git log 查看最近提交历史以保持一致风格`,
+
+  'security-auditor': `# Skill: 安全审计
+
+当代码被修改后，自动对变更进行安全检查：
+
+## 检查项
+- SQL 注入：检查是否使用了字符串拼接构造 SQL
+- XSS：检查 HTML/JSX 中是否直接插入用户输入
+- 硬编码密钥：检查是否有 API key、token、password 硬编码
+- 路径遍历：检查文件路径是否由用户输入拼接
+- 不安全依赖：检查 package.json 中是否有已知漏洞的依赖版本
+- 敏感信息泄露：检查日志/错误消息中是否打印敏感数据
+
+## 流程
+1. 获取修改的文件列表
+2. 逐一检查变更内容
+3. 发现问题时给出具体行号和修复建议
+4. 在最终回复中汇总报告`,
+
+  'docker-helper': `# Skill: Docker 助手
+
+Docker 容器管理、镜像构建和调试辅助：
+
+## 能力
+- Dockerfile 编写优化：检查最佳实践、镜像层缓存、多阶段构建
+- docker-compose 配置：服务编排、网络、卷管理
+- 容器调试：查看日志、进入容器、资源使用监控
+- 镜像管理：构建、打标签、推送
+
+## 注意事项
+- 操作前先确认 Docker 是否运行（docker info）
+- 删除容器/镜像前提醒用户确认
+- 使用 --rm 创建临时容器，避免残留
+- docker-compose 优先使用项目已有的配置文件`,
+
+  'project-doc-generator': `# Skill: 项目文档生成器
+
+自动分析项目并生成/更新文档：
+
+## 能力
+- 分析 package.json / Cargo.toml 等获取项目元信息
+- 扫描源代码结构生成目录树和模块说明
+- 提取 API 路由、函数签名生成 API 文档
+- 更新或生成 README.md（包含安装、使用、架构说明）
+- 检测过时文档并提醒更新
+
+## 流程
+1. 先了解项目结构（list_dir、read_file）
+2. 提取关键信息（入口文件、主要模块、依赖列表）
+3. 生成文档，遵循项目的现有风格
+4. 生成后展示给用户确认`,
+
+}
 
 /* ------------------------------------------------------------------ */
 /*  类型与缓存                                                          */
@@ -576,6 +715,61 @@ export async function uninstallSkill(id: string) {
   await refreshSkills(lastWorkspaceForRefresh || undefined)
 }
 
+export async function previewSkill(source: string): Promise<SkillPreview> {
+  let instructions: string
+  let meta: ParsedSkillMeta = {
+    requires: { ...EMPTY_REQUIRES },
+    env: {},
+    tools: [],
+    resources: [],
+  }
+  let remoteGitHubSource: GitHubSkillSource | null = null
+
+  if (source.startsWith('http://') || source.startsWith('https://')) {
+    remoteGitHubSource = parseGitHubSkillSource(source)
+    if (remoteGitHubSource) {
+      instructions = await downloadGitHubTextFile(remoteGitHubSource, remoteGitHubSource.skillMdPath)
+      meta = parseSkillMeta(instructions)
+    } else {
+      const rawUrl = toRawGitHubUrl(source)
+      const resp = await fetch(rawUrl)
+      if (!resp.ok) throw new Error(`Failed to fetch skill: ${resp.status} ${resp.statusText}`)
+      instructions = await resp.text()
+      meta = parseSkillMeta(instructions)
+    }
+  } else {
+    const filePath = source.endsWith('SKILL.md') ? source : path.join(source, 'SKILL.md')
+    try {
+      instructions = await fs.readFile(filePath, 'utf-8')
+      meta = parseSkillMeta(instructions)
+    } catch {
+      throw new Error(`Cannot read skill file: ${filePath}`)
+    }
+  }
+
+  const id = toSkillId(meta.name || `skill-${Date.now()}`)
+  const securityCheck = auditSkillSecurity(instructions, meta)
+
+  return {
+    id,
+    name: meta.name || id,
+    description: meta.description || '',
+    version: meta.version || '1.0.0',
+    author: meta.author || 'Unknown',
+    category: inferCategory(meta.name, meta.description, meta.tools),
+    tags: inferTags(meta.name, meta.description, meta.tools),
+    tools: meta.tools,
+    resources: meta.resources,
+    requiresBins: meta.requires.bins,
+    requiresEnv: meta.requires.env,
+    sourceUrl: source.startsWith('http') ? source : source,
+    security: {
+      riskLevel: securityCheck.riskLevel,
+      warnings: securityCheck.warnings,
+    },
+  }
+}
+
 export async function installSkill(source: string): Promise<SkillInfo> {
   let instructions: string
   let meta: ParsedSkillMeta = {
@@ -688,6 +882,76 @@ export async function installSkill(source: string): Promise<SkillInfo> {
     author: nextItem.author,
     source: nextItem.source,
     sourceUrl: nextItem.sourceUrl,
+    enabled: nextItem.enabled,
+    instructions,
+  }
+}
+
+export async function checkSkillUpdate(id: string): Promise<{ hasUpdate: boolean; currentVersion: string; latestVersion: string; sourceUrl: string } | null> {
+  const skill = allSkills.find((s) => s.id === id)
+  if (!skill || !skill.sourceUrl) return null
+  if (skill.source !== 'remote') return null
+
+  const source = skill.sourceUrl
+  if (!source.startsWith('http://') && !source.startsWith('https://')) return null
+
+  try {
+    const remoteGitHubSource = parseGitHubSkillSource(source)
+    if (!remoteGitHubSource) return null
+
+    const instructions = await downloadGitHubTextFile(remoteGitHubSource, remoteGitHubSource.skillMdPath)
+    const meta = parseSkillMeta(instructions)
+    const latestVersion = meta.version || '0.0.0'
+
+    return {
+      hasUpdate: latestVersion !== skill.version,
+      currentVersion: skill.version,
+      latestVersion,
+      sourceUrl: source,
+    }
+  } catch {
+    return null
+  }
+}
+
+export async function installPreset(presetId: string): Promise<SkillInfo> {
+  const preset = PRESET_SKILLS.find((p) => p.id === presetId)
+  if (!preset) throw new Error(`Preset skill not found: ${presetId}`)
+  
+  const instructions = PRESET_INSTRUCTIONS[presetId]
+  if (!instructions) throw new Error(`Preset instructions not found: ${presetId}`)
+
+  const id = preset.id
+  const persisted = await loadPersistedSkills()
+
+  // Save instructions file
+  await saveSkillInstructions(id, instructions)
+
+  const existing = persisted.find((s) => s.id === id)
+  const nextItem: PersistedSkill = {
+    id,
+    name: preset.name,
+    description: preset.description,
+    version: preset.version,
+    author: preset.author,
+    source: 'local',
+    enabled: true,
+    instructionsFile: `${id}/SKILL.md`,
+    tools: dedupeList(preset.tools ?? []),
+    resources: dedupeList(preset.resources ?? []),
+  }
+  const next = upsertPersistedSkill(persisted, nextItem)
+  await savePersistedSkills(next)
+  await refreshSkills(lastWorkspaceForRefresh || undefined)
+
+  const latest = allSkills.find((s) => s.id === id)
+  return latest ? { ...latest } : {
+    id: nextItem.id,
+    name: nextItem.name,
+    description: nextItem.description,
+    version: nextItem.version,
+    author: nextItem.author,
+    source: nextItem.source,
     enabled: nextItem.enabled,
     instructions,
   }
@@ -1043,7 +1307,12 @@ function parseSkillMeta(content: string): ParsedSkillMeta {
 
   if (!meta.name) {
     const titleMatch = content.match(/^#\s+(.+)$/m)
-    if (titleMatch) meta.name = titleMatch[1].trim()
+    if (titleMatch) {
+      let name = titleMatch[1].trim()
+      // 去掉 "Skill: " 前缀（常见于 preset 和社区 skill 的标题格式）
+      name = name.replace(/^Skill:\s*/i, '')
+      meta.name = name
+    }
   }
 
   return meta
@@ -1514,6 +1783,32 @@ function toSkillId(input: string): string {
   return slug || `skill-${Date.now()}`
 }
 
+function inferCategory(name?: string, description?: string, tools?: string[]): string {
+  const text = `${name ?? ''} ${description ?? ''} ${(tools ?? []).join(' ')}`.toLowerCase()
+  if (/\bdocker\b|\bcontainer\b|\bkubernetes\b|\bdevops\b/.test(text)) return 'devops'
+  if (/\bsecurity\b|\baudit\b|\bvulnerability\b|\bpenetration\b/.test(text)) return 'security'
+  if (/\btest\b|\bqa\b|\bquality\b|\bcoverage\b|\blint/.test(text)) return 'testing'
+  if (/\bdoc\b|\breadme\b|\bapi\s*doc|documentation/.test(text)) return 'documentation'
+  if (/\bgit\b|\bcommit\b|\bversion\s*control|\brepository/.test(text)) return 'development'
+  if (/\bapi\b|\brest\b|\bgraphql\b/.test(text)) return 'api'
+  if (/\bdatabase\b|\bsql\b|\bmongodb\b|\bredis\b/.test(text)) return 'database'
+  if (/\bdeploy\b|\bci\s*\/\s*cd|\bgithub\s*actions/.test(text)) return 'devops'
+  return 'development'
+}
+
+function inferTags(name?: string, description?: string, tools?: string[]): string[] {
+  const text = `${name ?? ''} ${description ?? ''}`.toLowerCase()
+  const tags: string[] = []
+  if (/\bgit\b/.test(text)) tags.push('git')
+  if (/\bcommit\b/.test(text)) tags.push('commit')
+  if (/\bdocker\b/.test(text)) tags.push('docker')
+  if (/\bsecurity\b|\baudit\b/.test(text)) tags.push('security')
+  if (/\btest\b/.test(text)) tags.push('testing')
+  if (/\bdoc\b|\breadme\b/.test(text)) tags.push('documentation')
+  if (/\bapi\b/.test(text)) tags.push('api')
+  return tags.length > 0 ? tags : ['utility']
+}
+
 /* ------------------------------------------------------------------ */
 /*  安全审核                                                            */
 /* ------------------------------------------------------------------ */
@@ -1543,7 +1838,7 @@ function auditSkillSecurity(instructions: string, meta: ParsedSkillMeta): SkillS
 
   // 1. 检查危险命令执行
   const dangerousCommands = [
-    { pattern: /rm\s+-rf|rm\s+-f|rmdir\s+\/s|del\s+\/f/g, weight: 10, msg: '包含强制删除命令' },
+    { pattern: /rm\s+-rf|rm\s+-f|rm\s+-r\b(?!f)|rm\s+--recursive|rmdir\s+\/s|del\s+\/[sf]/g, weight: 10, msg: '包含强制删除命令' },
     { pattern: /chmod\s+[0-7]{3,4}|chown|icacls/g, weight: 8, msg: '包含权限修改命令' },
     { pattern: /sudo\s+|runas\s+/g, weight: 9, msg: '包含提权操作' },
     { pattern: /mkfs|fdisk|diskpart|format\s+/g, weight: 10, msg: '包含磁盘格式化命令' },
@@ -1613,8 +1908,8 @@ function auditSkillSecurity(instructions: string, meta: ParsedSkillMeta): SkillS
       riskScore += 5
     }
     if (value.includes('$(') || value.includes('`')) {
-      warnings.push(`环境变量包含命令替换: ${key}`)
-      riskScore += 6
+      warnings.push(`环境变量包含命令替换（一票否决）: ${key}`)
+      riskScore += 15
     }
   }
 

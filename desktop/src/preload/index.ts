@@ -25,6 +25,10 @@ import type {
   BridgeStatusPayload,
   GatewayModelsResponse,
   MobileApkInfo,
+  SkillInfo,
+  SkillPreview,
+  SkillUpdateInfo,
+  InstallProgress,
 } from '../shared/ipc'
 
 // 沙盒化 preload 无法使用 os 模块，用 process 和环境变量替代
@@ -301,12 +305,28 @@ const tacoApi: TacoApi = {
   skills: {
     list: (workspace?: string) =>
       ipcRenderer.invoke(IpcChannel.SKILLS_LIST, workspace),
-    install: (source: string) =>
-      ipcRenderer.invoke(IpcChannel.SKILLS_INSTALL, source),
+    preview: (source: string): Promise<SkillPreview> =>
+      ipcRenderer.invoke(IpcChannel.SKILLS_PREVIEW, source),
+    install: (source: string, onProgress?: (progress: InstallProgress) => void): Promise<SkillInfo> => {
+      if (onProgress) {
+        const handler = (_event: Electron.IpcRendererEvent, progress: InstallProgress) => onProgress(progress)
+        ipcRenderer.on('skills:install-progress', handler)
+        const promise = ipcRenderer.invoke(IpcChannel.SKILLS_INSTALL, source)
+        promise.finally(() => {
+          ipcRenderer.removeListener('skills:install-progress', handler)
+        })
+        return promise
+      }
+      return ipcRenderer.invoke(IpcChannel.SKILLS_INSTALL, source)
+    },
+    installPreset: (presetId: string): Promise<SkillInfo> =>
+      ipcRenderer.invoke(IpcChannel.SKILLS_INSTALL_PRESET, presetId),
     uninstall: (id: string) =>
       ipcRenderer.invoke(IpcChannel.SKILLS_UNINSTALL, id),
     toggle: (id: string, enabled: boolean) =>
       ipcRenderer.invoke(IpcChannel.SKILLS_TOGGLE, id, enabled),
+    checkUpdate: (id: string): Promise<SkillUpdateInfo | null> =>
+      ipcRenderer.invoke(IpcChannel.SKILLS_CHECK_UPDATE, id),
   },
   notes: {
     list: (workspace: string, projectId?: string) =>

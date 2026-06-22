@@ -192,7 +192,7 @@ export class BridgeSyncManager {
       if (!this.mergeTimer) {
         this.mergeTimer = setTimeout(() => {
           this.flushMergeBuffer()
-        }, 100) // 100ms后刷新缓冲区
+        }, 50) // 50ms后刷新缓冲区（优化：减少关键消息延迟）
       }
     } else {
       // 关键修复: 非delta消息(如bridge:project-states)被节流时，不能丢弃

@@ -188,3 +188,29 @@ export function deleteChatStoreSession(sessionId: string): void {
     WHERE session_id = ?
   `).run(normalized)
 }
+
+/**
+ * 按消息 ID 加载单条消息（用于移动端按需展开 agentSteps 详情）。
+ * 返回消息 JSON 对象，未找到时返回 null。
+ */
+export function loadChatStoreMessageById(sessionId: string, messageId: string): Record<string, unknown> | null {
+  const database = getDb()
+  const normalizedSessionId = String(sessionId || '').trim()
+  const normalizedMessageId = String(messageId || '').trim()
+  if (!normalizedSessionId || !normalizedMessageId) return null
+
+  const row = database.prepare(`
+    SELECT message_json
+    FROM chat_messages
+    WHERE session_id = ? AND message_id = ?
+    LIMIT 1
+  `).get(normalizedSessionId, normalizedMessageId) as Record<string, unknown> | undefined
+
+  if (!row || row.message_json == null) return null
+
+  try {
+    return JSON.parse(String(row.message_json))
+  } catch {
+    return null
+  }
+}
