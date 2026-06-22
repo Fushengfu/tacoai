@@ -6,7 +6,6 @@ import { MarkdownBubble } from './MarkdownBubble'
 import { DiffView } from '../DiffView'
 import { FileEditor } from '../editor/FileEditor'
 import { ToolResultContent } from '../ToolResultContent'
-import { TerminalPanel } from '../terminal/TerminalPanel'
 import { useLanguage } from '../../hooks/useLanguage'
 import { ProviderSelect } from '../ProviderSelect'
 import { FlagCN, FlagUS } from '../FlagIcons'
@@ -209,8 +208,6 @@ type ChatPanelProps = {
   showTerminal: boolean
   /** 切换终端 */
   onToggleTerminal: () => void
-  /** 终端工作目录 */
-  terminalCwd?: string
   /** 当前选中文件的审核状态 */
   selectedFileStatus?: FileChangeStatus
   /** 保存文件回调 */
@@ -279,7 +276,6 @@ export function ChatPanel({
   onCloseDiff,
   showTerminal,
   onToggleTerminal,
-  terminalCwd,
   selectedFileStatus,
   onAcceptFile,
   onRejectFile,
@@ -2244,10 +2240,7 @@ export function ChatPanel({
 
       </section>
 
-      {/* Terminal（打开时显示在对话区域下方） */}
-      {showTerminal && !selectedFileChange && !viewingFile && (
-        <TerminalPanel cwd={terminalCwd} onClose={onToggleTerminal} />
-      )}
+      {/* Terminal 已提升至 App.tsx 层，各项目独立存活 */}
 
       {previewImageUrl && (
         <div className="image-lightbox" onClick={() => setPreviewImageUrl(null)}>

@@ -21,6 +21,10 @@ import './WorkspaceTree.css'
 export interface WorkspaceTreeProps {
   workspace: string
   className?: string
+  /** 受控模式：外部传入的开关状态 */
+  isOpen?: boolean
+  /** 受控模式：开关变化回调 */
+  onOpenChange?: (open: boolean) => void
 }
 
 /* ------------------------------------------------------------------ */
@@ -577,8 +581,18 @@ const DEFAULT_TREE_WIDTH = 280
 const MIN_TREE_WIDTH = 180
 const MAX_TREE_WIDTH = 500
 
-export function WorkspaceTree({ workspace, className }: WorkspaceTreeProps) {
-  const [isOpen, setIsOpen] = useState(false)
+export function WorkspaceTree({ workspace, className, isOpen: isOpenProp, onOpenChange }: WorkspaceTreeProps) {
+  const [isOpenInternal, setIsOpenInternal] = useState(false)
+  const isControlled = isOpenProp !== undefined
+  const isOpen = isControlled ? isOpenProp : isOpenInternal
+
+  const setIsOpen = useCallback((next: boolean) => {
+    if (isControlled) {
+      onOpenChange?.(next)
+    } else {
+      setIsOpenInternal(next)
+    }
+  }, [isControlled, onOpenChange])
   const [tree, setTree] = useState<FileTreeEntry[]>([])
   const [treeLoading, setTreeLoading] = useState(false)
   const [treeError, setTreeError] = useState<string | null>(null)
@@ -740,7 +754,7 @@ export function WorkspaceTree({ workspace, className }: WorkspaceTreeProps) {
     setIsOpen(true)
     loadTree()
     treeDirtyRef.current = false
-  }, [loadTree])
+  }, [loadTree, setIsOpen])
 
   /* 关闭面板 */
   const close = useCallback(() => {
@@ -753,7 +767,7 @@ export function WorkspaceTree({ workspace, className }: WorkspaceTreeProps) {
     setContextMenu(null)
     setDialog(null)
     setConfirmDelete(null)
-  }, [])
+  }, [setIsOpen])
 
   /* 点击面板的"目录"按钮时，如果标记为脏则刷新 */
   const handleToggle = useCallback(() => {
@@ -762,7 +776,7 @@ export function WorkspaceTree({ workspace, className }: WorkspaceTreeProps) {
     } else {
       open()
     }
-  }, [isOpen, open, close])
+  }, [isOpen, open, close, setIsOpen])
 
   /* 监听工作区变更，自动刷新目录树 */
   useEffect(() => {

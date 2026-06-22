@@ -141,17 +141,17 @@ export type TacoApi = {
   }
   terminal: {
     /** 创建终端进程 */
-    spawn: (cwd?: string) => void
+    spawn: (terminalId: string, cwd?: string) => void
     /** 向终端发送输入（键盘数据） */
-    input: (data: string) => void
-    /** 监听终端输出数据 */
-    onOutput: (callback: (data: string) => void) => () => void
-    /** 监听终端退出 */
-    onExit: (callback: (data: { code: number | null }) => void) => () => void
+    input: (terminalId: string, data: string) => void
+    /** 监听终端输出数据（仅接收指定 terminalId 的输出） */
+    onOutput: (terminalId: string, callback: (data: string) => void) => () => void
+    /** 监听终端退出（仅接收指定 terminalId 的退出事件） */
+    onExit: (terminalId: string, callback: (data: { code: number | null }) => void) => () => void
     /** 调整终端大小 */
-    resize: (cols: number, rows: number) => void
+    resize: (terminalId: string, cols: number, rows: number) => void
     /** 关闭终端 */
-    kill: () => void
+    kill: (terminalId: string) => void
   }
   git: {
     /** 获取 Taco 提交历史 */

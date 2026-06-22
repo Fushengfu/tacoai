@@ -21,9 +21,8 @@ import { useLayout } from './hooks/useLayout'
 import { useBrowser } from './hooks/useBrowser'
 import { Sidebar } from './views/Sidebar'
 import { ChatPanel } from './views/chat/ChatPanel'
-import { ChatStatusOverlay } from './views/chat/ChatStatusOverlay'
 import { SettingsPage } from './views/SettingsModal'
-import TokenReportPanel from './views/token-report'
+import { TokenReportSidebar } from './views/token-report/TokenReportSidebar'
 import { BridgePanel } from './views/bridge/BridgePanel'
 import { MobileDownloadPanel } from './views/bridge/MobileDownloadPanel'
 import { LoginModal, type MemberInfo } from './views/LoginModal'
@@ -34,6 +33,7 @@ import { useUpdateCheck } from './hooks/useUpdateCheck'
 import { useBridgeInit } from './hooks/useBridgeInit'
 import { useFileViewer } from './hooks/useFileViewer'
 import { WorkspaceTree } from './components/WorkspaceTree'
+import { TerminalPanel } from './views/terminal/TerminalPanel'
 
 export default function App() {
   /* ---- 业务 hooks ---- */
@@ -53,10 +53,10 @@ export default function App() {
   const [draft, setDraft] = useState('')
   const [showSettings, setShowSettings] = useState(false)
   const [showTokenReport, setShowTokenReport] = useState(false)
-  const [showTerminal, setShowTerminal] = useState(false)
-  const [showStatusOverlay, setShowStatusOverlay] = useState(false)
+  const [terminalOpenMap, setTerminalOpenMap] = useState<Record<string, boolean>>({})
   const [showBridgePanel, setShowBridgePanel] = useState(false)
   const [showMobileDownloadPanel, setShowMobileDownloadPanel] = useState(false)
+  const [showWorkspaceTree, setShowWorkspaceTree] = useState(false)
   const [editor, setEditor] = useState<EditorId>(() =>
     (localStorage.getItem('taco.editor') as EditorId) || 'cursor'
   )
@@ -66,7 +66,7 @@ export default function App() {
     return 'dark'
   })
 
-  type MiddleView = 'chat' | 'settings' | 'token-report'
+  type MiddleView = 'chat' | 'settings'
   const [middleView, setMiddleView] = useState<MiddleView>('chat')
 
   /* ---- 首次使用引导 ---- */
@@ -167,6 +167,15 @@ export default function App() {
   const currentProjectRules = activeThread?.projectRules ?? ''
   const currentWorkspace: string = activeThread?.workspace ?? ''
 
+  // 各项目的工作空间映射（供终端获取 cwd）
+  const projectWorkspaces = useMemo(() => {
+    const map: Record<string, string | undefined> = {}
+    for (const t of threadStore.threads) {
+      map[t.id] = t.workspace || undefined
+    }
+    return map
+  }, [threadStore.threads])
+
   const currentModelConfigId = threadStore.activeThread?.modelConfigId ?? providerSettings.activeModelConfigId
   
   // 解析当前模型配置（优先本地自定义，回退到网关模型）
@@ -252,7 +261,6 @@ export default function App() {
       // 清空 UI 状态
       setDraft('')
       fileViewer.reset()
-      setShowTerminal(false)
 
       // 通知主进程：项目切换完成，可以推送 bridge:state 给移动端
       // 使用 ensureSessionLoaded 的完成时机，而非硬编码延迟
@@ -329,7 +337,6 @@ export default function App() {
     threadStore.createThread('新项目', providerSettings.activeModelConfigId || undefined)
     setDraft('')
     fileViewer.reset()
-    setShowTerminal(false)
   }
 
   function handleSwitchThread(id: string) {
@@ -677,35 +684,22 @@ export default function App() {
               </button>
             )}
             {messages.length > 0 && (
-              <button className="pill" type="button" onClick={handleClearChat}>
+              <button className="pill" type="button" onClick={() => { setShowBridgePanel(false); setShowMobileDownloadPanel(false); setShowTokenReport(false); setShowWorkspaceTree(false); handleClearChat() }}>
                 清空会话记录
               </button>
             )}
             <button
-              className={`pill terminal-toggle ${showTerminal ? 'active' : ''}`}
+              className={`pill terminal-toggle ${terminalOpenMap[tid] ? 'active' : ''}`}
               type="button"
-              onClick={() => setShowTerminal((v) => !v)}
-              title={showTerminal ? '关闭终端' : '打开终端'}
+              onClick={() => setTerminalOpenMap((prev) => ({ ...prev, [tid]: !prev[tid] }))}
+              title={terminalOpenMap[tid] ? '关闭终端' : '打开终端'}
             >
               {'>'}_
             </button>
             <button
-              className={`pill status-toggle ${showStatusOverlay ? 'active' : ''}`}
-              type="button"
-              onClick={() => setShowStatusOverlay((v) => !v)}
-              title="模型用量"
-            >
-              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-                <rect x="1.5" y="1.5" width="13" height="13" rx="2" fill="none" stroke="currentColor" strokeWidth="1.4" />
-                <rect x="4" y="10" width="2" height="3" rx="0.5" fill="currentColor" />
-                <rect x="7" y="7" width="2" height="6" rx="0.5" fill="currentColor" />
-                <rect x="10" y="4" width="2" height="9" rx="0.5" fill="currentColor" />
-              </svg>
-            </button>
-            <button
               className={`pill bridge-toggle ${showBridgePanel ? 'active' : ''}`}
               type="button"
-              onClick={() => setShowBridgePanel((v) => !v)}
+              onClick={() => { setShowMobileDownloadPanel(false); setShowTokenReport(false); setShowWorkspaceTree(false); setShowBridgePanel((v) => !v) }}
               title="跨端桥接"
             >
               <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
@@ -720,7 +714,7 @@ export default function App() {
             <button
               className={`pill mobile-download-toggle ${showMobileDownloadPanel ? 'active' : ''}`}
               type="button"
-              onClick={() => setShowMobileDownloadPanel((v) => !v)}
+              onClick={() => { setShowBridgePanel(false); setShowTokenReport(false); setShowWorkspaceTree(false); setShowMobileDownloadPanel((v) => !v) }}
               title="下载手机端"
             >
               <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
@@ -730,9 +724,9 @@ export default function App() {
               </svg>
             </button>
             <button
-              className={`pill token-report-toggle ${middleView === 'token-report' ? 'active' : ''}`}
+              className={`pill token-report-toggle ${showTokenReport ? 'active' : ''}`}
               type="button"
-              onClick={() => { setShowTokenReport((v) => !v); setMiddleView(middleView === 'token-report' ? 'chat' : 'token-report') }}
+              onClick={() => { setShowBridgePanel(false); setShowMobileDownloadPanel(false); setShowWorkspaceTree(false); setShowTokenReport((v) => !v) }}
               title="Token使用报表"
             >
               <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
@@ -743,7 +737,18 @@ export default function App() {
               </svg>
             </button>
             {currentWorkspace && (
-              <WorkspaceTree workspace={currentWorkspace} />
+              <WorkspaceTree
+                workspace={currentWorkspace}
+                isOpen={showWorkspaceTree}
+                onOpenChange={(open) => {
+                  if (open) {
+                    setShowBridgePanel(false)
+                    setShowMobileDownloadPanel(false)
+                    setShowTokenReport(false)
+                  }
+                  setShowWorkspaceTree(open)
+                }}
+              />
             )}
           </div>
         </div>
@@ -872,65 +877,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Token报表页面 */}
-        {middleView === 'token-report' && showTokenReport && (
-          <div className="middle-view">
-            <PaneErrorBoundary
-              pane="token-report"
-              title="Token报表"
-              resetKey={`${showTokenReport ? '1' : '0'}:${tid}`}
-              onError={reportPaneRenderError}
-            >
-              <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-                {/* Tab栏 */}
-                <div style={{ 
-                  display: 'flex', 
-                  alignItems: 'center', 
-                  padding: '12px 20px', 
-                  borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
-                  gap: '12px',
-                }}>
-                  <button
-                    type="button"
-                    onClick={() => { setShowTokenReport(false); setMiddleView('chat') }}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: 'var(--muted)',
-                      fontSize: '13px',
-                      cursor: 'pointer',
-                      padding: '4px 8px',
-                      borderRadius: '6px',
-                    }}
-                  >
-                    ← 返回
-                  </button>
-                  <span style={{ fontWeight: 600, fontSize: '16px' }}>Token使用报表</span>
-                </div>
-                {/* 报表内容 */}
-                <TokenReportPanel
-                  projectTokenStats={threadStore.threads.reduce((acc, t) => {
-                    acc[t.id] = chat.getProjectTokenStats(t.id)
-                    return acc
-                  }, {} as Record<string, import('./hooks/useChat').ProjectTokenStats>)}
-                  threadTitles={threadStore.threads.reduce((acc, t) => {
-                    acc[t.id] = t.title || `任务 ${t.id.slice(0, 8)}`
-                    return acc
-                  }, {} as Record<string, string>)}
-                  threadModels={threadStore.threads.reduce((acc, t) => {
-                    const config = providerSettings.getModelConfig(t.modelConfigId || '')
-                    acc[t.id] = { 
-                      model: config?.model || 'unknown', 
-                      provider: config?.provider || 'unknown' 
-                    }
-                    return acc
-                  }, {} as Record<string, { model: string; provider: string }>)}
-                />
-              </div>
-            </PaneErrorBoundary>
-          </div>
-        )}
-
         <div className="middle-view" style={{ display: middleView === 'chat' || (middleView === 'settings' && !showSettings) ? 'flex' : 'none' }}>
           <PaneErrorBoundary
             key={tid}
@@ -973,9 +919,8 @@ export default function App() {
               selectedFileStatus={undefined}
               onAcceptFile={async () => {}}
               onRejectFile={async () => {}}
-              showTerminal={showTerminal}
-              onToggleTerminal={() => setShowTerminal((v) => !v)}
-              terminalCwd={currentWorkspace || undefined}
+              showTerminal={terminalOpenMap[tid] || false}
+              onToggleTerminal={() => setTerminalOpenMap((prev) => ({ ...prev, [tid]: false }))}
               onRollbackBeforeMsg={async () => {}}
               supportsVision={Boolean(currentModelConfig?.supportsVision)}
               viewingFile={fileViewer.viewingFile}
@@ -992,19 +937,23 @@ export default function App() {
               activeTaskStartedAt={activeTaskStartedAt}
             />
           </PaneErrorBoundary>
-        </div>
 
-        <ChatStatusOverlay
-          open={showStatusOverlay}
-          onClose={() => setShowStatusOverlay(false)}
-          providerLabel={
-            providerSettings.configuredModels.length > 0 ? activeProviderLabel : undefined
-          }
-          contextPercent={contextPercent}
-          usedTokens={usedTokens}
-          contextLength={contextLength}
-          projectTokenStats={projectTokenStats}
-        />
+          {/* 各项目独立终端：仅活跃项目可见，其余隐藏但保持挂载（PTY 进程存活） */}
+          {Object.keys(terminalOpenMap).filter((k) => terminalOpenMap[k]).map((projectId) => (
+            <div
+              key={`terminal-wrapper-${projectId}`}
+              style={{
+                display: projectId === tid ? undefined : 'none',
+                flex: '0 0 auto',
+              }}
+            >
+              <TerminalPanel
+                cwd={projectWorkspaces[projectId]}
+                onClose={() => setTerminalOpenMap((prev) => ({ ...prev, [projectId]: false }))}
+              />
+            </div>
+          ))}
+        </div>
 
       </div>
 
@@ -1014,6 +963,44 @@ export default function App() {
 
       {showMobileDownloadPanel && (
         <MobileDownloadPanel onClose={() => setShowMobileDownloadPanel(false)} />
+      )}
+
+      {showTokenReport && (
+        <TokenReportSidebar
+          onClose={() => setShowTokenReport(false)}
+          projectTokenStats={threadStore.threads.reduce((acc, t) => {
+            acc[t.id] = chat.getProjectTokenStats(t.id)
+            return acc
+          }, {} as Record<string, import('./hooks/useChat').ProjectTokenStats>)}
+          threadTitles={threadStore.threads.reduce((acc, t) => {
+            acc[t.id] = t.title || `任务 ${t.id.slice(0, 8)}`
+            return acc
+          }, {} as Record<string, string>)}
+          threadModels={threadStore.threads.reduce((acc, t) => {
+            // 优先查找本地自定义模型配置
+            const config = providerSettings.getModelConfig(t.modelConfigId || '')
+            if (config) {
+              acc[t.id] = { 
+                model: config.name || config.model || 'unknown', 
+                provider: config.provider || 'unknown' 
+              }
+            } else if (t.modelConfigId) {
+              // 回退查找系统内置网关模型
+              const gwModel = (gatewayModels.models ?? []).find(m => m.id === t.modelConfigId)
+              if (gwModel) {
+                acc[t.id] = { 
+                  model: gwModel.displayName || gwModel.name || 'unknown', 
+                  provider: gwModel.provider || 'unknown' 
+                }
+              } else {
+                acc[t.id] = { model: 'unknown', provider: 'unknown' }
+              }
+            } else {
+              acc[t.id] = { model: 'unknown', provider: 'unknown' }
+            }
+            return acc
+          }, {} as Record<string, { model: string; provider: string }>)}
+        />
       )}
 
       {auth.showLoginModal && (

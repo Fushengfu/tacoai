@@ -4,6 +4,12 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 
+/** 生成唯一终端 ID */
+let terminalSeq = 0
+function generateTerminalId(): string {
+  return `term-${Date.now()}-${++terminalSeq}`
+}
+
 type TerminalPanelProps = {
   /** 终端工作目录 */
   cwd?: string
@@ -15,6 +21,8 @@ export function TerminalPanel({ cwd, onClose }: Readonly<TerminalPanelProps>) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
+  // 每个 TerminalPanel 实例有唯一 terminalId，用于隔离多终端
+  const terminalIdRef = useRef<string>(generateTerminalId())
   const [panelHeight, setPanelHeight] = useState<number>(() => {
     try {
       const saved = Number(localStorage.getItem('taco.terminalPanelHeight') || '')
@@ -32,6 +40,8 @@ export function TerminalPanel({ cwd, onClose }: Readonly<TerminalPanelProps>) {
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
+
+    const tid = terminalIdRef.current
 
     // 创建 xterm 实例
     const term = new Terminal({
@@ -76,26 +86,26 @@ export function TerminalPanel({ cwd, onClose }: Readonly<TerminalPanelProps>) {
     requestAnimationFrame(() => {
       try { fitAddon.fit() } catch { /* ignore */ }
 
-      // 连接 IPC：终端输出 → xterm
-      const cleanupOutput = window.taco.terminal.onOutput((data) => {
+      // 连接 IPC：终端输出 → xterm（按 terminalId 过滤）
+      const cleanupOutput = window.taco.terminal.onOutput(tid, (data) => {
         term.write(data)
       })
 
-      // 终端退出
-      const cleanupExit = window.taco.terminal.onExit(({ code }) => {
+      // 终端退出（按 terminalId 过滤）
+      const cleanupExit = window.taco.terminal.onExit(tid, ({ code }) => {
         term.writeln(`\r\n\x1b[90m[进程已退出，代码: ${code ?? 'unknown'}]\x1b[0m`)
       })
 
       // xterm 键盘输入 → 终端进程
       const disposeData = term.onData((data) => {
-        window.taco.terminal.input(data)
+        window.taco.terminal.input(tid, data)
       })
 
       // 启动 PTY 终端进程
-      window.taco.terminal.spawn(cwd)
+      window.taco.terminal.spawn(tid, cwd)
 
       // 通知 PTY 初始大小
-      window.taco.terminal.resize(term.cols, term.rows)
+      window.taco.terminal.resize(tid, term.cols, term.rows)
 
       // 存储清理函数供卸载使用
       ;(term as unknown as { _ipcCleanup: () => void })._ipcCleanup = () => {
@@ -111,7 +121,7 @@ export function TerminalPanel({ cwd, onClose }: Readonly<TerminalPanelProps>) {
       if (cleanup) cleanup()
 
       // 杀掉终端进程
-      window.taco.terminal.kill()
+      window.taco.terminal.kill(tid)
 
       // 销毁 xterm
       term.dispose()
@@ -119,7 +129,6 @@ export function TerminalPanel({ cwd, onClose }: Readonly<TerminalPanelProps>) {
       fitAddonRef.current = null
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
-  // cwd 不放入依赖：终端只在挂载时创建一次
 
   // 监听容器大小变化，自动 fit + resize PTY
   const handleResize = useCallback(() => {
@@ -128,7 +137,7 @@ export function TerminalPanel({ cwd, onClose }: Readonly<TerminalPanelProps>) {
     if (!fitAddon || !term) return
     try {
       fitAddon.fit()
-      window.taco.terminal.resize(term.cols, term.rows)
+      window.taco.terminal.resize(terminalIdRef.current, term.cols, term.rows)
     } catch { /* ignore */ }
   }, [])
 
@@ -170,14 +179,15 @@ export function TerminalPanel({ cwd, onClose }: Readonly<TerminalPanelProps>) {
 
   // 重启终端
   const handleRestart = useCallback(() => {
-    window.taco.terminal.kill()
+    const tid = terminalIdRef.current
+    window.taco.terminal.kill(tid)
     const term = termRef.current
     if (term) {
       term.clear()
       term.reset()
       setTimeout(() => {
-        window.taco.terminal.spawn(cwd)
-        window.taco.terminal.resize(term.cols, term.rows)
+        window.taco.terminal.spawn(tid, cwd)
+        window.taco.terminal.resize(tid, term.cols, term.rows)
       }, 150)
     }
   }, [cwd])

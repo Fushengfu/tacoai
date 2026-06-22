@@ -249,33 +249,41 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.FILE_WRITE, filePath, content),
   },
   terminal: {
-    spawn: (cwd?: string) =>
-      ipcRenderer.send(IpcChannel.TERMINAL_SPAWN, { cwd }),
+    spawn: (terminalId: string, cwd?: string) =>
+      ipcRenderer.send(IpcChannel.TERMINAL_SPAWN, { terminalId, cwd }),
 
-    input: (data: string) =>
-      ipcRenderer.send(IpcChannel.TERMINAL_INPUT, data),
+    input: (terminalId: string, data: string) =>
+      ipcRenderer.send(IpcChannel.TERMINAL_INPUT, { terminalId, data }),
 
-    onOutput: (callback: (data: string) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, data: string) => callback(data)
+    onOutput: (terminalId: string, callback: (data: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: { terminalId: string; data: string }) => {
+        if (payload.terminalId === terminalId) {
+          callback(payload.data)
+        }
+      }
       ipcRenderer.on(IpcChannel.TERMINAL_OUTPUT, handler)
       return () => {
         ipcRenderer.removeListener(IpcChannel.TERMINAL_OUTPUT, handler)
       }
     },
 
-    onExit: (callback: (data: { code: number | null }) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, data: { code: number | null }) => callback(data)
+    onExit: (terminalId: string, callback: (data: { code: number | null }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: { terminalId: string; code: number | null }) => {
+        if (payload.terminalId === terminalId) {
+          callback({ code: payload.code })
+        }
+      }
       ipcRenderer.on(IpcChannel.TERMINAL_EXIT, handler)
       return () => {
         ipcRenderer.removeListener(IpcChannel.TERMINAL_EXIT, handler)
       }
     },
 
-    resize: (cols: number, rows: number) =>
-      ipcRenderer.send(IpcChannel.TERMINAL_RESIZE, { cols, rows }),
+    resize: (terminalId: string, cols: number, rows: number) =>
+      ipcRenderer.send(IpcChannel.TERMINAL_RESIZE, { terminalId, cols, rows }),
 
-    kill: () =>
-      ipcRenderer.send(IpcChannel.TERMINAL_KILL),
+    kill: (terminalId: string) =>
+      ipcRenderer.send(IpcChannel.TERMINAL_KILL, { terminalId }),
   },
   git: {
     log: (cwd: string) =>

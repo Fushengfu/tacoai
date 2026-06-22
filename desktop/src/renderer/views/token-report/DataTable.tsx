@@ -2,7 +2,7 @@
  * 数据表格组件
  */
 
-import { formatTokens, formatCost, calculateCost } from './types'
+import { formatTokens } from './types'
 import type { TokenReportEntry } from './types'
 import { CalendarIcon } from './Icons'
 
@@ -127,7 +127,6 @@ function TaskTable({ entries }: { entries: TokenReportEntry[] }) {
               <th style={{ padding: '12px', textAlign: 'right', fontWeight: 600 }}>缓存</th>
               <th style={{ padding: '12px', textAlign: 'right', fontWeight: 600 }}>总计</th>
               <th style={{ padding: '12px', textAlign: 'right', fontWeight: 600 }}>轮次</th>
-              <th style={{ padding: '12px', textAlign: 'right', fontWeight: 600 }}>费用</th>
             </tr>
           </thead>
         </table>
@@ -136,9 +135,7 @@ function TaskTable({ entries }: { entries: TokenReportEntry[] }) {
       <div style={{ flex: 1, overflow: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
           <tbody>
-            {entries.map((entry, idx) => {
-              const cost = calculateCost(entry.model, entry.inputTokens, entry.outputTokens)
-              return (
+            {entries.map((entry, idx) => (
                 <tr 
                   key={idx} 
                   style={{ 
@@ -165,12 +162,8 @@ function TaskTable({ entries }: { entries: TokenReportEntry[] }) {
                   <td style={{ padding: '12px', textAlign: 'right', color: '#ec4899' }}>
                     {entry.turns}
                   </td>
-                  <td style={{ padding: '12px', textAlign: 'right', color: '#ef4444', fontWeight: 500 }}>
-                    {formatCost(cost)}
-                  </td>
                 </tr>
-              )
-            })}
+            ))}
           </tbody>
         </table>
       </div>
@@ -207,7 +200,6 @@ function DailyModelTable({ entries }: { entries: TokenReportEntry[] }) {
               <th style={{ padding: '12px', textAlign: 'right', fontWeight: 600 }}>缓存</th>
               <th style={{ padding: '12px', textAlign: 'right', fontWeight: 600 }}>总计</th>
               <th style={{ padding: '12px', textAlign: 'right', fontWeight: 600 }}>轮次</th>
-              <th style={{ padding: '12px', textAlign: 'right', fontWeight: 600 }}>费用</th>
             </tr>
           </thead>
         </table>
@@ -254,15 +246,10 @@ function DailyModelTable({ entries }: { entries: TokenReportEntry[] }) {
                     <td style={{ padding: '10px 12px', textAlign: 'right', color: '#ec4899', fontWeight: 500 }}>
                       {dayTotal.turns}
                     </td>
-                    <td style={{ padding: '10px 12px', textAlign: 'right', color: '#ef4444', fontWeight: 500 }}>
-                      {formatCost(dayEntries.reduce((sum, e) => sum + calculateCost(e.model, e.inputTokens, e.outputTokens), 0))}
-                    </td>
                   </tr>
                   {/* 该日期下的各模型数据 */}
-                  {dayEntries.map((entry, idx) => {
-                    const cost = calculateCost(entry.model, entry.inputTokens, entry.outputTokens)
-                    return (
-                      <tr 
+                  {dayEntries.map((entry, idx) => (
+                    <tr 
                         key={`${date}-${idx}`}
                         style={{ 
                           borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
@@ -289,12 +276,8 @@ function DailyModelTable({ entries }: { entries: TokenReportEntry[] }) {
                         <td style={{ padding: '10px 12px', textAlign: 'right', color: '#ec4899' }}>
                           {entry.turns}
                         </td>
-                        <td style={{ padding: '10px 12px', textAlign: 'right', color: '#ef4444', fontWeight: 500 }}>
-                          {formatCost(cost)}
-                        </td>
                       </tr>
-                    )
-                  })}
+                  ))}
                 </>
               )
             })}

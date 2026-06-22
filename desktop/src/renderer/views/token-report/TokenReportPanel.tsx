@@ -176,7 +176,7 @@ export default function TokenReportPanel({
       <div style={{ 
         display: 'flex',
         flexDirection: 'column',
-        height: '100%',
+        flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
         color: 'var(--muted)',
@@ -195,7 +195,8 @@ export default function TokenReportPanel({
     <div style={{ 
       display: 'flex',
       flexDirection: 'column',
-      height: '100%',
+      flex: 1,
+      minHeight: 0,
       overflow: 'hidden',
       background: 'linear-gradient(120deg, var(--main-bg-start) 0%, var(--main-bg-end) 100%)',
     }}>

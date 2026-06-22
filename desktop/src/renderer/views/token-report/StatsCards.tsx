@@ -2,7 +2,7 @@
  * 统计卡片组件
  */
 
-import { formatTokens, formatCost } from './types'
+import { formatTokens } from './types'
 import type { TokenReportEntry } from './types'
 
 export function StatsCards({ 
@@ -21,9 +21,6 @@ export function StatsCards({
     turns: acc.turns + entry.turns,
   }), { inputTokens: 0, outputTokens: 0, hitTokens: 0, missTokens: 0, totalTokens: 0, turns: 0 })
 
-  const totalCost = entries.reduce((sum, entry) => 
-    sum + ((entry.inputTokens / 1_000_000) * 1.0 + (entry.outputTokens / 1_000_000) * 3.0), 0)
-
   return (
     <div style={{ 
       display: 'grid',
@@ -37,8 +34,6 @@ export function StatsCards({
         { label: '输出Token', value: formatTokens(totalStats.outputTokens), color: '#f59e0b' },
         { label: '缓存命中', value: formatTokens(totalStats.hitTokens), color: '#8b5cf6' },
         { label: '对话轮次', value: totalStats.turns.toString(), color: '#ec4899' },
-        ...(viewMode === 'task' || viewMode === 'daily-model' ? 
-          [{ label: '预估费用', value: formatCost(totalCost), color: '#ef4444' }] : []),
       ].map(({ label, value, color }) => (
         <div key={label} style={{ 
           background: 'rgba(255, 255, 255, 0.03)',
