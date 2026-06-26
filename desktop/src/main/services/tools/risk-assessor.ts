@@ -5,13 +5,18 @@
  */
 
 import path from 'node:path'
+import { parse as shellQuoteParse } from 'shell-quote'
 import type { ToolCall } from './definitions'
+import { getDb } from '../../repositories/memory-db/schema'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
 export type RiskLevel = 'safe' | 'warning' | 'danger'
+
+/** 授权级别：控制 Agent 工具调用的整体授权策略 */
+export type AuthLevel = 'auto' | 'standard' | 'manual'
 
 export type RiskInfo = {
   toolCallId: string
@@ -80,6 +85,51 @@ const DANGER_PATTERNS: [RegExp, string, RiskCategory][] = [
   [/\bwget\b.*\|\s*(sh|bash)\b/i, '下载并执行脚本', 'network_script'],
 ]
 
+/** 只读搜索命令集合（通过 shell-quote 解析后提取命令名匹配） */
+const SEARCH_COMMANDS = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack'])
+/** 无害管道过滤器，常与搜索命令组合使用（sort、head 等） */
+const HARMLESS_PIPE_FILTERS = new Set(['sort', 'head', 'tail', 'wc', 'uniq', 'cat'])
+
+/** 通过 shell-quote 解析命令字符串，提取所有命令名并判断是否纯搜索操作 */
+function isProbablySearch(command: string): boolean {
+  let parsed: unknown[]
+  try {
+    parsed = shellQuoteParse(command)
+  } catch {
+    return false
+  }
+
+  const names: string[] = []
+  let expectCmd = true
+
+  for (const token of parsed) {
+    if (typeof token === 'object' && token !== null && 'op' in token) {
+      const { op } = token as { op: string }
+      if (op === ';' || op === '&&' || op === '|' || op === '||') {
+        expectCmd = true
+      }
+    } else if (typeof token === 'string' && expectCmd) {
+      // 跳过环境变量赋值 FOO=bar cmd
+      if (!token.includes('=')) {
+        names.push(token)
+        expectCmd = false
+      }
+    }
+  }
+
+  if (names.length === 0) return false
+
+  return names.every((name, i, arr) => {
+    if (SEARCH_COMMANDS.has(name)) return true
+    if (HARMLESS_PIPE_FILTERS.has(name)) return true
+    // sudo + 搜索命令
+    if (name === 'sudo' && arr[i + 1] && SEARCH_COMMANDS.has(arr[i + 1])) return true
+    // git grep
+    if (name === 'git' && arr[i + 1] === 'grep') return true
+    return false
+  })
+}
+
 /** 警告级别的命令模式：[正则, 描述, 分类] */
 const WARNING_PATTERNS: [RegExp, string, RiskCategory][] = [
   [/\bgit\s+push\b/i, 'Git push', 'git_ops'],
@@ -135,6 +185,66 @@ export function getAutoApproveCategories(): RiskCategory[] {
   return [...autoApproveCategories]
 }
 
+/* ------------------------------------------------------------------ */
+/*  授权级别（Auto / Standard / Manual）                                 */
+/* ------------------------------------------------------------------ */
+
+/** 当前授权级别，默认 standard */
+let globalAuthLevel: AuthLevel = 'standard'
+
+/** 设置当前授权级别（内存） */
+export function setGlobalAuthLevel(level: AuthLevel) {
+  globalAuthLevel = level
+}
+
+/** 获取当前授权级别 */
+export function getGlobalAuthLevel(): AuthLevel {
+  return globalAuthLevel
+}
+
+/** 计算项目 scope 标识符，用于 app_state_meta 表 key */
+export function computeProjectScope(projectId: string): string {
+  return `auth_level:${projectId}`
+}
+
+/** 持久化授权级别到 app_state_meta 表 */
+export function saveAuthLevel(projectId: string, level: AuthLevel) {
+  const key = computeProjectScope(projectId)
+  const db = getDb()
+  const updatedAt = new Date().toISOString()
+  db.prepare(`
+    INSERT INTO app_state_meta (meta_key, meta_value, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(meta_key) DO UPDATE SET
+      meta_value = excluded.meta_value,
+      updated_at = excluded.updated_at
+  `).run(key, level, updatedAt)
+}
+
+/** 从 app_state_meta 表加载授权级别 */
+export function loadAuthLevel(projectId: string): AuthLevel {
+  const key = computeProjectScope(projectId)
+  const db = getDb()
+  const row = db.prepare(`
+    SELECT meta_value FROM app_state_meta WHERE meta_key = ?
+  `).get(key) as Record<string, unknown> | undefined
+  if (!row) {
+    globalAuthLevel = 'standard'
+    return 'standard'
+  }
+  const value = String(row.meta_value ?? '').trim()
+  if (value === 'auto' || value === 'manual') {
+    globalAuthLevel = value
+    return value
+  }
+  globalAuthLevel = 'standard'
+  return 'standard'
+}
+
+/* ------------------------------------------------------------------ */
+/*  风险评估                                                            */
+/* ------------------------------------------------------------------ */
+
 function isPathWithinWorkspace(workspace: string, targetPath: string): boolean {
   const normalizedWs = path.normalize(workspace)
   const normalizedTarget = path.normalize(targetPath)
@@ -143,6 +253,9 @@ function isPathWithinWorkspace(workspace: string, targetPath: string): boolean {
 
 /** 评估一批工具调用的风险等级 */
 export function assessToolCallsRisk(toolCalls: ToolCall[], workspace?: string): RiskInfo[] {
+  // auto 模式：全部放行
+  if (globalAuthLevel === 'auto') return []
+
   const risks: RiskInfo[] = []
 
   for (const tc of toolCalls) {
@@ -151,29 +264,38 @@ export function assessToolCallsRisk(toolCalls: ToolCall[], workspace?: string): 
 
     const toolName = tc.function.name
 
+    // manual 模式：忽略 autoApproveCategories，全部标为风险（除了笔记和计划进度工具）
+    const forceRisk = globalAuthLevel === 'manual'
+    const ignoreAutoApprove = forceRisk
+
     // 浏览器工具：首次需要确认，确认后本次会话自动放行
-    if (toolName.startsWith(BROWSER_TOOL_PREFIX) && !browserAutoApproved && !autoApproveCategories.has('browser_ops')) {
-      const url = String(args.url ?? args.selector ?? args.expression ?? '')
-      risks.push({
-        toolCallId: tc.id,
-        toolName,
-        level: 'warning',
-        reason: `浏览器操作: ${toolName.replace(BROWSER_TOOL_PREFIX, '')}`,
-        detail: url || '(无参数)',
-      })
-      continue
+    // manual 模式下忽略 autoApproveCategories / browserAutoApproved，始终拦截
+    if (toolName.startsWith(BROWSER_TOOL_PREFIX)) {
+      if (ignoreAutoApprove || (!browserAutoApproved && !autoApproveCategories.has('browser_ops'))) {
+        const url = String(args.url ?? args.selector ?? args.expression ?? '')
+        risks.push({
+          toolCallId: tc.id,
+          toolName,
+          level: 'warning',
+          reason: `浏览器操作: ${toolName.replace(BROWSER_TOOL_PREFIX, '')}`,
+          detail: url || '(无参数)',
+        })
+        continue
+      }
     }
 
-    if (toolName.startsWith(DESKTOP_TOOL_PREFIX) && !desktopAutoApproved && !autoApproveCategories.has('desktop_ops')) {
-      const info = String(args.action ?? args.key ?? args.text ?? '')
-      risks.push({
-        toolCallId: tc.id,
-        toolName,
-        level: 'warning',
-        reason: `桌面操作: ${toolName.replace(DESKTOP_TOOL_PREFIX, '')}`,
-        detail: info || '(无参数)',
-      })
-      continue
+    if (toolName.startsWith(DESKTOP_TOOL_PREFIX)) {
+      if (ignoreAutoApprove || (!desktopAutoApproved && !autoApproveCategories.has('desktop_ops'))) {
+        const info = String(args.action ?? args.key ?? args.text ?? '')
+        risks.push({
+          toolCallId: tc.id,
+          toolName,
+          level: 'warning',
+          reason: `桌面操作: ${toolName.replace(DESKTOP_TOOL_PREFIX, '')}`,
+          detail: info || '(无参数)',
+        })
+        continue
+      }
     }
 
     if (toolName === 'read_file') {
@@ -190,6 +312,17 @@ export function assessToolCallsRisk(toolCalls: ToolCall[], workspace?: string): 
             toolName,
             level: 'danger',
             reason: '读取工作空间外文件',
+            detail: candidate,
+          })
+          continue
+        }
+        // manual 模式下，工作空间内文件也检查（用户可能不信任）
+        if (ignoreAutoApprove) {
+          risks.push({
+            toolCallId: tc.id,
+            toolName,
+            level: 'warning',
+            reason: '读取文件（手动确认模式）',
             detail: candidate,
           })
           continue
@@ -211,10 +344,15 @@ export function assessToolCallsRisk(toolCalls: ToolCall[], workspace?: string): 
       const command = String(args.command ?? '')
       if (!command) continue
 
+      // 通过 shell-quote 解析命令字符串，提取所有命令名。
+      // 如果整个命令链都是搜索/只读操作（如 grep | sort | head），跳过风险检测。
+      // shell-quote 能正确区分命令名与参数：grep "rm -rf" 中的 rm 是参数不是命令。
+      if (isProbablySearch(command)) continue
+
       // 先检查危险级别
       for (const [pattern, reason, category] of DANGER_PATTERNS) {
         if (pattern.test(command)) {
-          if (autoApproveCategories.has(category)) break
+          if (!ignoreAutoApprove && autoApproveCategories.has(category)) break
           risks.push({
             toolCallId: tc.id,
             toolName,
@@ -230,7 +368,7 @@ export function assessToolCallsRisk(toolCalls: ToolCall[], workspace?: string): 
       if (!risks.some((r) => r.toolCallId === tc.id)) {
         for (const [pattern, reason, category] of WARNING_PATTERNS) {
           if (pattern.test(command)) {
-            if (autoApproveCategories.has(category)) break
+            if (!ignoreAutoApprove && autoApproveCategories.has(category)) break
             risks.push({
               toolCallId: tc.id,
               toolName,

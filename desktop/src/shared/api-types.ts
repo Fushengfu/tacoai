@@ -106,6 +106,8 @@ export type TacoApi = {
     abort: (requestId: string) => void
     /** 设置自动授权分类（不需要用户确认的操作类型） */
     setAutoApprove: (categories: string[]) => void
+    /** 设置授权级别（auto/standard/manual），跟随项目持久化 */
+    setAuthLevel: (level: string, projectId: string) => void
   }
   dialog: {
     /** 打开目录选择对话框，返回选中的路径或 null */
@@ -178,8 +180,6 @@ export type TacoApi = {
     preview: (source: string) => Promise<SkillPreview>
     /** 安装 skill（从 URL 或本地路径，支持进度回调） */
     install: (source: string, onProgress?: (progress: InstallProgress) => void) => Promise<SkillInfo>
-    /** 安装预设 skill */
-    installPreset: (presetId: string) => Promise<SkillInfo>
     /** 卸载 skill */
     uninstall: (id: string) => Promise<void>
     /** 启用/禁用 skill */

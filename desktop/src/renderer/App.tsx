@@ -164,8 +164,31 @@ export default function App() {
   const sessionQueue = hasValidActiveSession ? chat.getQueue(sessionId) : []
   const activeTaskStartedAt = hasValidActiveSession ? chat.getActiveTaskStartedAt(sessionId) : undefined
 
-  const currentProjectRules = activeThread?.projectRules ?? ''
   const currentWorkspace: string = activeThread?.workspace ?? ''
+
+  // 从 .taco/rules.md 文件加载项目规则
+  const [projectRulesFromFile, setProjectRulesFromFile] = useState('')
+  useEffect(() => {
+    const ws = currentWorkspace
+    if (!ws) {
+      setProjectRulesFromFile('')
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const result = await window.taco.file.read(`${ws}/.taco/rules.md`)
+        if (!cancelled && result && typeof result.content === 'string') {
+          setProjectRulesFromFile(result.content)
+        }
+      } catch {
+        if (!cancelled) setProjectRulesFromFile('')
+      }
+    })()
+    return () => { cancelled = true }
+  }, [currentWorkspace])
+
+  const currentProjectRules = projectRulesFromFile
 
   // 各项目的工作空间映射（供终端获取 cwd）
   const projectWorkspaces = useMemo(() => {
@@ -485,7 +508,7 @@ export default function App() {
     chat.sendMessage({
       threadId: sid,
       projectId: threadId,
-      projectRules: thread?.projectRules ?? '',
+      projectRules: currentProjectRules,
       content: contentParts,
       provider: modelConfig.provider,
       modelConfig,
@@ -862,11 +885,6 @@ export default function App() {
                 onRemoveModelConfig={providerSettings.removeModelConfig}
                 themeMode={themeMode}
                 onThemeModeChange={setThemeMode}
-                projectRules={currentProjectRules}
-                onProjectRulesChange={(rules) => {
-                  if (!tid) return
-                  threadStore.updateThread(tid, { projectRules: rules })
-                }}
                 onClose={() => { setShowSettings(false); setMiddleView('chat') }}
                 workspace={currentWorkspace}
                 projectId={tid}
@@ -935,6 +953,7 @@ export default function App() {
               projectTokenStats={projectTokenStats}
               runTokenStats={runTokenStats}
               activeTaskStartedAt={activeTaskStartedAt}
+              projectId={tid}
             />
           </PaneErrorBoundary>
 

@@ -12,10 +12,6 @@ type SkillsSettingsPanelProps = {
   previewing: boolean
   previewError: string
   onPreviewSkill: () => void
-  // 预设
-  presetSkills: SkillPreview[]
-  installedIds: Set<string>
-  onInstallPreset: (presetId: string) => void
   // 已安装 Skills
   skillsLoading: boolean
   skills: SkillInfo[]
@@ -48,9 +44,6 @@ export function SkillsSettingsPanel({
   previewing,
   previewError,
   onPreviewSkill,
-  presetSkills,
-  installedIds,
-  onInstallPreset,
   skillsLoading,
   skills,
   onToggleSkill,
@@ -61,50 +54,6 @@ export function SkillsSettingsPanel({
 }: SkillsSettingsPanelProps) {
   return (
     <div className="skills-panel">
-      {/* ── 发现 Skills ── */}
-      <div className="skills-preset-section">
-        <div className="skills-section-title">发现 Skills</div>
-        <div className="skills-section-desc">精选社区 Skills，一键安装启用</div>
-        <div className="skills-preset-grid">
-          {presetSkills.map((preset) => {
-            const isInstalled = installedIds.has(preset.id)
-            const category = preset.category || 'development'
-            return (
-              <div key={preset.id} className={`skill-preset-card ${isInstalled ? 'installed' : ''}`}>
-                <div className="skill-preset-header">
-                  <span className="skill-preset-name">{preset.name}</span>
-                  <span className="skill-preset-version">v{preset.version}</span>
-                </div>
-                <div className="skill-preset-desc">{preset.description}</div>
-                <div className="skill-preset-meta">
-                  <span className={`skill-preset-category ${category}`}>
-                    {CATEGORY_LABELS[category] || category}
-                  </span>
-                  {preset.tags && preset.tags.length > 0 && (
-                    <span className="skill-preset-tags">
-                      {preset.tags.map((tag) => (
-                        <span key={tag} className="skill-tag">{tag}</span>
-                      ))}
-                    </span>
-                  )}
-                </div>
-                <div className="skill-preset-footer">
-                  <span className="skill-preset-author">作者: {preset.author}</span>
-                  <button
-                    type="button"
-                    className={`skill-preset-install-btn ${isInstalled ? 'installed' : ''}`}
-                    onClick={() => onInstallPreset(preset.id)}
-                    disabled={isInstalled || installing}
-                  >
-                    {isInstalled ? '已安装' : '安装'}
-                  </button>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-
       {/* ── 从 URL 安装 ── */}
       <div className="skills-install-section">
         <div className="skills-section-title">从 URL 安装</div>

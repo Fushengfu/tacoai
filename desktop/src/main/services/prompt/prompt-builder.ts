@@ -24,24 +24,19 @@ export type SystemEnv = {
 
 function buildAgentImageRoutingRule(supportsVision: boolean): string {
   if (supportsVision) {
-    return `- 当用户消息已附带图片时，优先直接使用模型视觉理解能力；仅在模型无法完成、或用户明确要求时再使用 MCP 图像分析工具。
-- 截图工具（browser_screenshot/desktop_screenshot）会自动上传到云存储并返回 cloudUrl，可直接作为图片URL传递给视觉理解模型，无需额外调用 MCP 图像工具。`
+    return `- 当用户消息已附带图片时，直接使用模型视觉理解能力。
+- 浏览器/桌面自动化截图后，如需分析截图内容，请调用 analyze_image 工具（image 参数传 cloudUrl，视觉模型只支持 data: URL 和 https: 链接，不支持本地文件路径）。视觉模型会针对性分析并返回文本描述。`
   }
-  return '- 你需要图片分析时必须使用mcp工具来分析'
+  return '- 浏览器/桌面自动化截图后，如需分析截图内容，请调用 analyze_image 工具（image 参数传 cloudUrl，视觉模型只支持 data: URL 和 https: 链接，不支持本地文件路径）。视觉模型会针对性分析并返回文本描述。'
 }
 
 function buildAgentImageAnalysisRules(supportsVision: boolean): string {
+  const lines: string[] = []
   if (supportsVision) {
-    return [
-      '- 当模型配置已开启"支持视觉理解"且用户提供图片时，可直接基于图片完成理解。',
-      '- 截图工具（browser_screenshot/desktop_screenshot）会自动上传到云存储并返回 cloudUrl，可直接作为图片URL传递给视觉理解模型，无需额外调用 MCP 图像工具。',
-      '- 若任务需要 MCP 图像工具（例如用户明确要求或模型视觉能力不足），先调用 `mcp_list_tools` 确认参数定义，再调用 `mcp_call`。',
-    ].join('\n')
+    lines.push('- 当模型配置已开启"支持视觉理解"且用户提供图片时，可直接基于图片完成理解。')
   }
-  return [
-    '- 当用户询问里带有图片时，你需要图片分析时必须使用mcp工具来分析。',
-    '- 如果用户提供设计图要求还原页面设计时，请使用 `mcp_call` 调用 `minimax:understand_image` 工具进行图片理解与分析，在调用之前请先使用 `mcp_list_tools` 确认 `minimax:understand_image` 工具的参数定义，并在调用时prompt参数要要求分解结果输出必须包含文本形式的每个页面的设计排版布局信息。',
-  ].join('\n')
+  lines.push('- 浏览器/桌面自动化截图后，使用 analyze_image 工具分析截图内容，image 参数传 cloudUrl（视觉模型只支持 data: URL 和 https: 链接，不支持本地文件路径），同时传 goal（分析目的）。')
+  return lines.join('\n')
 }
 
 function buildWindowsEncodingRules(platform: string): string {
@@ -474,6 +469,7 @@ ${buildCodeSearchRules(env.platform)}
 - 可验证时优先 run_command（测试/构建/lint）
 - 执行失败时先读错误并定位根因，再决定修复或降级
 - 同一命令（含等价参数）最多重试3次，达到上限后必须切换策略
+- 优先使用 delete_file 工具删除文件（默认走回收站可恢复）。如需永久删除，可使用 rm 命令
 - 禁止使用破坏性命令（如 rm -rf），除非用户明确授权
 
 ${buildWindowsEncodingRules(env.platform)}
@@ -485,10 +481,9 @@ ${buildWindowsEncodingRules(env.platform)}
 
 ## MCP工具
 - 仅在确有需要时调用
-- 先查看 mcp-tooling 技能了解使用说明
 - 调用 mcp_list_tools 确认可用工具与 inputSchema，不猜字段名
+- 调用 mcp_call 前必须先 mcp_list_tools，严格按 schema 组装 arguments
 - 调用失败先检查参数和连接，再给降级方案
-- 图像分析类MCP必须传递"分析目标/成功判定标准"
 
 # 上下文处理规则
 
@@ -576,11 +571,11 @@ ${buildAgentImageAnalysisRules(env.supportsVision)}
 - 用户明确要求读取工作空间外文件时，先 read_file 发起工具调用，系统会弹窗请求授权
 - 若用户拒绝授权，告知无法读取并给出替代方案（粘贴内容/移动文件到工作空间）
 
-## 项目记忆（save_note）
-- 仅记录核心信息：架构约定、环境配置、重要规则、稳定不变的约定
-- 采用追加模式，将所有关键信息维护在同一条主记录中（如"项目知识库"），避免碎片化创建新笔记。
-- 记录内容要求精炼、可执行，避免重复和冗长原文
-- 删除过时记忆时使用 delete_note
+## 项目规则文件
+- 每个项目根目录下的 \`.taco/rules.md\` 是该项目的规则文件（Markdown 格式），包含架构约定、环境配置、代码规范等重要信息
+- 每轮对话开始前，系统会自动读取该文件内容并注入到上下文中
+- 需要记录新的项目规则时，使用 read_file 先读取当前文件内容，再用 edit_file 追加或更新对应段落
+- 不要创建多条分散的笔记，所有项目规则维护在这一份 \`.taco/rules.md\` 文件中
 
 ## 计划管理
 - 多步骤/高不确定任务先 propose_plan，等待确认后执行
@@ -627,7 +622,7 @@ export function buildSystemPrompt(options: {
   let prompt = buildAgentSystemPrompt(env)
 
   if (projectRules) {
-    prompt += `\n\n# 项目规则（用户自定义）\n${projectRules}\n\n执行要求：在不违反安全边界与系统约束的前提下，优先遵守以上项目规则。`
+    prompt += `\n\n# 项目规则（用户自定义或者项目知识库）\n${projectRules}\n\n执行要求：在不违反安全边界与系统约束的前提下，优先遵守以上项目规则。`
   }
 
   return prompt

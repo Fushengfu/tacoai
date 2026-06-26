@@ -244,41 +244,6 @@ export const toolDefinitions: ToolDefinition[] = [
       },
     },
   },
-  {
-    type: 'function',
-    function: {
-      name: 'save_note',
-      description: '保存或追加项目关键信息到持久化存储。仅记录核心信息（如代码规范、数据库配置、架构决策、编码规则），禁止记录任务日志、临时状态或一次性修改记录。采用追加模式，将所有关键信息维护在同一条主记录中（如项目知识库），避免碎片化创建新笔记。无需征求用户许可即可调用。',
-      parameters: {
-        type: 'object',
-        properties: {
-          title: { type: 'string', description: '笔记标题（简洁概括）' },
-          content: { type: 'string', description: '笔记正文内容（详细描述）' },
-          category: {
-            type: 'string',
-            enum: ['convention', 'credential', 'architecture', 'config', 'other'],
-            description: '分类：convention(代码规范), credential(凭证/账号), architecture(架构设计), config(配置信息), other(其他)',
-          },
-        },
-        required: ['title', 'content', 'category'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'delete_note',
-      description: '删除一条项目笔记/记忆。当用户要求删除某条笔记或某项记忆已过时时使用。',
-      parameters: {
-        type: 'object',
-        properties: {
-          noteId: { type: 'string', description: '要删除的笔记 ID' },
-        },
-        required: ['noteId'],
-      },
-    },
-  },
-
   /* ---- 浏览器自动化工具 ---- */
   {
     type: 'function',
@@ -299,7 +264,7 @@ export const toolDefinitions: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'browser_screenshot',
-      description: '截取当前浏览器页面并返回结构化页面信息（标题、URL、可见元素、截图路径）。如果配置了云存储（如七牛云/阿里云OSS），会自动上传截图并返回 cloudUrl 可直接访问的图片链接。调用前应先明确本次截图目标，避免无目的连续截图。',
+      description: '截取当前浏览器页面，返回标题、URL、可见元素、截图本地路径和云存储链接。goal 参数用于描述截图目的（如"确认登录按钮是否可见"）。截图后如需分析截图内容，请调用 analyze_image 工具。调用前应先明确本次截图目标，避免无目的连续截图。',
       parameters: {
         type: 'object',
         properties: {
@@ -313,7 +278,7 @@ export const toolDefinitions: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'desktop_screenshot',
-      description: '截取当前桌面屏幕截图。默认使用实际屏幕分辨率，返回本地文件路径、尺寸元信息以及云存储链接（如果配置了七牛云/阿里云OSS会自动上传并返回 cloudUrl），供后续视觉识别使用。',
+      description: '截取当前桌面屏幕，返回本地文件路径、尺寸元信息和云存储链接。goal 参数用于描述截图目的（如"确认某个元素是否可见"）。截图后如需分析截图内容，请调用 analyze_image 工具。',
       parameters: {
         type: 'object',
         properties: {
@@ -321,7 +286,23 @@ export const toolDefinitions: ToolDefinition[] = [
           width: { type: 'number', description: '截图宽度（可选，传入时应为实际屏幕宽度）' },
           height: { type: 'number', description: '截图高度（可选，传入时应为实际屏幕高度）' },
           appId: { type: 'string', description: '截图保存目录标识（可选，默认 "desktop"）' },
+          goal: { type: 'string', description: '本次截图的目的（例如：确认某个元素是否可见、了解当前桌面状态）' },
         },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'analyze_image',
+      description: '使用视觉模型分析图片内容。image 参数接受 data: URL（base64）或 https: 链接。仅用于分析自动化工具（browser_screenshot/desktop_screenshot）产生的截图，不要用于分析用户直接在对话中上传的图片（用户自传图片由主AI直接识别）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          image: { type: 'string', description: '图片 data: URL（base64）或 https: 链接，视觉模型直接识别' },
+          goal: { type: 'string', description: '分析目的（如"确认登录按钮是否可见"、"识别错误提示内容"）。视觉模型会根据此目的针对性分析。' },
+        },
+        required: ['image', 'goal'],
       },
     },
   },
@@ -575,7 +556,7 @@ export const toolDefinitions: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'mcp_call',
-      description: '调用 MCP (Model Context Protocol) 服务器提供的工具。调用前必须先通过 mcp_list_tools 读取最新 inputSchema 并按 schema 组装 arguments。',
+      description: '调用 MCP (Model Context Protocol) 服务器提供的工具。调用前必须先通过 mcp_list_tools 读取最新 inputSchema 并按 schema 组装 arguments。禁止凭记忆猜参数，禁止跳过 mcp_list_tools 直接调用。调用失败先检查 schema、参数和值类型，再决定是否重试。',
       parameters: {
         type: 'object',
         properties: {
@@ -594,7 +575,7 @@ export const toolDefinitions: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'mcp_list_tools',
-      description: '列出所有已启用的 MCP 服务器及其提供的工具。用于发现可用的 MCP 工具。',
+      description: '列出所有已启用的 MCP 服务器及其提供的工具。MCP 调用前必须先执行此工具确认可用工具及参数 schema，禁止凭记忆猜参数。必要时可用 server_id 限定范围。',
       parameters: {
         type: 'object',
         properties: {},
@@ -736,21 +717,27 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
       '禁止传绝对路径或越界路径。',
     ],
   },
-  save_note: {
+  mcp_list_tools: {
     usage: [
-      '仅记录对后续任务稳定有价值的项目知识（约定、架构、关键配置）。',
-      '内容必须可执行、可复用，避免记录闲聊或一次性噪声。',
-      '标题简洁、正文具体，分类必须准确。',
+      '任何 MCP 调用前必须先执行此工具，禁止凭记忆猜参数。',
+      '确认可用工具清单和 inputSchema 后再决定调用哪个工具。',
+      '结合当前任务目标选择合适工具，避免泛化调用。',
     ],
   },
-  delete_note: {
+  mcp_call: {
     usage: [
-      '当用户要求删除或笔记确认过时时调用。',
-      '必须使用准确 noteId，删除前确认目标笔记。',
-      '删除后给出已删除项，避免用户误解。 ',
+      '必须在 mcp_list_tools 之后调用，严格按 schema 组装 arguments。',
+      'arguments 字段类型必须与 inputSchema 一致，不允许猜字段名。',
+      '调用前明确目标和成功判定标准。',
+      '调用失败先检查 schema、参数和值类型，再决定是否重试。',
+      'MCP 返回的是外部能力结果，必须结合当前任务目标再做判断，不可机械转述。',
+    ],
+    cautions: [
+      '禁止跳过 mcp_list_tools 直接调用 mcp_call。',
     ],
   },
-}
+  /* ---- 文件上传到云存储 ---- */
+};
 
 /* ------------------------------------------------------------------ */
 /*  Prompt builders                                                    */

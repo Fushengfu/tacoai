@@ -50,7 +50,6 @@ const SKILL_TOOL_GROUPS: Record<string, string[]> = {
     'browser_select',
   ],
   desktop: ['desktop_screenshot', 'desktop_action'],
-  mcp: ['mcp_list_tools', 'mcp_call'],
   files: ['read_file', 'write_file', 'edit_file', 'delete_file', 'list_dir', 'find_file'],
   command: ['run_command'],
   planning: ['propose_plan', 'update_plan_progress'],
@@ -65,7 +64,7 @@ const BUILTIN_SKILLS: SkillInfo[] = [
   {
     id: 'code-review',
     name: '代码审查',
-    description: '在修改代码后自动检查潜在问题，提供代码审查建议',
+    description: '代码修改后自动检查潜在问题，提供代码审查建议。触发场景：修改代码文件后自动执行检查（无需用户主动要求）',
     version: '1.0.0',
     author: 'Taco',
     source: 'builtin',
@@ -82,7 +81,11 @@ const BUILTIN_SKILLS: SkillInfo[] = [
   {
     id: 'auto-test',
     name: '自动测试',
-    description: '修改代码后自动运行相关测试并报告结果',
+    description: `修改代码后自动运行相关测试并报告结果。
+
+【触发场景】以下任一情况，自动触发此技能：
+- 修改了代码文件（.ts/.tsx/.js/.py/.go/.rs 等）后，自动查找并运行相关测试
+- 用户要求"跑测试"、"运行测试"、"test"时，使用 run_command 执行测试命令`,
     version: '1.0.0',
     author: 'Taco',
     source: 'builtin',
@@ -102,7 +105,12 @@ const BUILTIN_SKILLS: SkillInfo[] = [
   {
     id: 'git-best-practice',
     name: 'Git 最佳实践',
-    description: '遵循 Git 最佳实践，自动生成规范的 commit message',
+    description: `遵循 Git 最佳实践，自动生成规范的 commit message。
+
+【触发场景】以下任一情况，自动触发此技能：
+- 执行 git commit 时，自动使用 Conventional Commits 格式生成 commit message
+- 执行 git push 前提醒用户确认
+- 用户提到"提交"、"commit"、"推送"、"push"时，遵循原子性提交原则`,
     version: '1.0.0',
     author: 'Taco',
     source: 'builtin',
@@ -119,12 +127,20 @@ const BUILTIN_SKILLS: SkillInfo[] = [
   - test: 测试
   - chore: 构建/工具
 - 每次修改尽量保持原子性，一个 commit 只做一件事
-  - 在执行 git push 前提醒用户确认`,
+- 在执行 git push 前提醒用户确认`,
   },
   {
     id: 'browser-automation',
     name: '浏览器自动化',
-    description: '操控外部浏览器执行自动化操作：页面导航、元素点击、表单填写、内容提取、UI 验证等',
+    description: `操控 Taco 内置浏览器面板执行自动化操作：页面导航、元素点击、表单填写、内容提取、UI 验证。
+
+【触发场景】以下任一情况，必须立即调用 read_skill('browser-automation') 激活此技能：
+- 用户要求打开/访问/查看某个网页、URL 或网站
+- 用户要求查看本地前端页面（localhost、127.0.0.1 等）
+- 用户要求截取网页、验证网页显示效果
+- 用户要求在网页上执行操作（点击、填表、登录、搜索）
+- 用户提到"前端页面"、"网页"、"网站"、"URL"、"浏览器"
+- 用户要求从网页提取数据或内容`,
     version: '1.0.0',
     author: 'Taco',
     source: 'builtin',
@@ -132,7 +148,7 @@ const BUILTIN_SKILLS: SkillInfo[] = [
     tools: SKILL_TOOL_GROUPS.browser,
     instructions: `# Skill: 浏览器自动化
 
-你可以通过浏览器自动化工具操控外部浏览器，执行以下类型的任务：
+你可以通过浏览器自动化工具操控 Taco 内置浏览器面板，执行以下类型的任务：
 
 ## 适用场景
 - **前端开发验证**: 打开本地开发服务器（如 http://localhost:3000），验证 UI 显示效果
@@ -147,7 +163,7 @@ const BUILTIN_SKILLS: SkillInfo[] = [
 2. **browser_get_console_logs / browser_get_info** → 先确认页面状态与错误信息
 3. **browser_screenshot** → 仅在需要视觉确认时截图（必须有明确目标）
 4. **browser_click / browser_type** → 执行具体操作
-5. **browser_screenshot / browser_get_content** → 验证操作结果
+5. **browser_screenshot → analyze_image / browser_get_content** → 验证操作结果
 6. 重复步骤 3-5 直到完成
 
 ## 关键注意事项
@@ -157,11 +173,11 @@ const BUILTIN_SKILLS: SkillInfo[] = [
 - 遇到错误时优先查看 browser_get_console_logs，再决定是否截图
 - 表单填写时注意使用 clear: true 清空后再输入
 - 对于需要登录的页面，先完成登录流程再进行后续操作
-- 截图会自动上传到云存储,返回cloudUrl字段,可直接让AI分析图片,无需使用MCP工具
+- 截图后如需分析截图内容，请使用 analyze_image 工具，image 参数传 cloudUrl（视觉模型只支持 data: URL 和 https: 链接，不支持本地文件路径），goal 参数描述分析目的
 
 ## 工具速查
 - **browser_navigate**: 打开指定 URL；需要隔离浏览器会话时传 appId
-- **browser_screenshot**: 获取页面截图和页面基础信息；调用时必须填写 goal
+- **browser_screenshot**: 获取页面截图和页面基础信息；截图后使用 analyze_image 工具分析内容
 - **browser_click**: 点击页面元素或指定坐标；优先使用稳定 selector
 - **browser_type**: 向输入元素输入文本；需要覆盖旧值时使用 clear: true
 - **browser_scroll**: 滚动页面或指定可滚动元素；通过 direction、amount 和 selector 控制范围
@@ -178,7 +194,16 @@ const BUILTIN_SKILLS: SkillInfo[] = [
   {
     id: 'desktop-automation',
     name: '桌面自动化',
-    description: '执行桌面级自动化操作：屏幕截图、界面识别、鼠标点击、键盘输入、窗口交互等',
+    description: `执行桌面级自动化操作：屏幕截图、界面识别、鼠标点击、键盘输入、窗口交互。
+
+【核心原则】桌面操作必须先截图识别再行动，禁止不截图直接盲操作（你不知道屏幕当前状态）。
+
+【触发场景】以下任一情况，必须立即调用 read_skill('desktop-automation') 激活此技能：
+- 用户要求截取桌面屏幕、查看桌面内容
+- 用户要求点击/操作桌面应用程序界面或系统 UI
+- 用户提到"桌面"、"屏幕"、"窗口"、"菜单栏"、"系统托盘"、"Dock"、"任务栏"
+- 用户要求执行桌面级键盘快捷键或鼠标操作
+- 用户要求操作系统设置、文件管理器等桌面应用`,
     version: '1.0.0',
     author: 'Taco',
     source: 'builtin',
@@ -186,206 +211,43 @@ const BUILTIN_SKILLS: SkillInfo[] = [
     tools: SKILL_TOOL_GROUPS.desktop,
     instructions: `# Skill: 桌面自动化
 
-你可以通过桌面自动化工具操控系统界面，执行以下类型的任务：
+你可以通过桌面自动化工具操控系统界面。
 
-## 适用场景
-- **桌面软件操作**: 点击按钮、输入文本、切换窗口、操作系统级弹窗
-- **界面排查**: 对当前屏幕截图，识别界面元素并验证状态
-- **系统设置操作**: 通过桌面交互完成系统或应用设置变更
-- **视觉定位任务**: 在未知坐标时先截图分析，再执行点击或输入
+## 核心铁律：必须先截图，禁止盲操作
 
-## 操作流程模式
-典型的桌面操作应遵循“截图-执行-校验”的循环：
+桌面环境没有 DOM 选择器、没有元素树、没有坐标参考系。你不知道屏幕上有什么、窗口是否切换、界面是否变化。不截图就操作等于蒙着眼睛点鼠标，99% 会点错位置。
 
-1. **desktop_screenshot** → 获取当前屏幕截图
-2. **desktop_action** → 执行点击、双击、输入、快捷键、拖拽等动作
-3. **desktop_screenshot** → 再次截图复核界面状态变化
+**即使你认为你知道坐标，也必须先截图确认。** 窗口位置可能变了、分辨率可能不同、系统可能有弹窗遮挡。
 
-## 关键注意事项
-- 如果用户已经明确提供坐标、按键或输入内容，可直接使用 desktop_action
-- 如果目标只是语义描述（例如“点击保存按钮”），可以先截图通过 MCP 视觉工具分析定位
-- 点击后若需要立即输入，先确认焦点已切换成功
-- 关键动作后必须复核结果，避免只报告“已执行”
-- 桌面操作不要混用浏览器 DOM 工具，桌面任务只使用桌面相关工具
+## 强制操作流程
 
-## 工具速查
-- **desktop_screenshot**: 截取当前桌面屏幕,返回本地图片路径、cloudUrl与尺寸信息
-- **desktop_action**: 执行点击、双击、输入、快捷键、拖拽、滚动等桌面动作；按 action 类型填写参数`,
-  },
-  {
-    id: 'mcp-tooling',
-    name: 'MCP 工具调用',
-    description: '调用外部 MCP 服务器提供的工具能力，例如图片理解、网络检索、专业工具链等',
-    version: '1.0.0',
-    author: 'Taco',
-    source: 'builtin',
-    enabled: true,
-    tools: SKILL_TOOL_GROUPS.mcp,
-    instructions: `# Skill: MCP 工具调用
+每次桌面操作必须严格遵循以下循环，不得跳过任何步骤：
 
-当任务需要使用外部 MCP (Model Context Protocol) 服务提供的能力时，遵循以下流程：
+1. **desktop_screenshot** → 截取当前屏幕（第一步就必须截图，不截图不知道屏幕状态）
+2. **analyze_image({ image: cloudUrl, goal: "..." })** → 视觉模型分析截图，确认目标元素是否存在、位置在哪
+3. **desktop_action** → 根据分析结果执行点击、双击、输入、快捷键等操作
+4. **desktop_screenshot** → 再次截图，确认操作结果是否符合预期
+5. 如果结果不符，从步骤 2 重新开始
 
-## 适用场景
-- **外部专业工具**: 需要使用 MCP 服务端提供的专用能力，而不是本地内置工具
-- **动态工具发现**: 当前不知道 MCP 工具的参数结构，需要先读取 schema
-- **根据搜索查询执行网页搜索**: 需要使用 MCP 服务端提供的 \`minimax:web_search\` 工具进行网页搜索
+## 何时可以跳过截图
 
+只有以下情况可以不截图直接执行：
+- 全局快捷键（如 Cmd+Tab、Cmd+Space）：不受屏幕状态影响
+- 用户明确说"按 Cmd+S 保存"之类的全局组合键
 
-## 操作流程模式
-1. **mcp_list_tools** → 先读取当前可用 MCP 工具清单与 inputSchema
-2. **确认目标工具** → 根据工具名、用途和参数 schema 选出正确工具
-3. **mcp_call** → 严格按 schema 组装 arguments 调用
-4. **核对返回结果** → 用返回结果继续任务，不得凭猜测补字段
+任何涉及鼠标点击或坐标的操作，一律必须先截图。
 
 ## 关键注意事项
-- 任何 MCP 调用前，都必须先执行 mcp_list_tools，禁止凭记忆猜参数
-- 图片分析类工具必须提供明确目标和成功判定标准，避免泛化描述
-- 调用失败先检查 schema、参数和值类型，再决定是否重试
-- MCP 返回的是外部能力结果，必须结合当前任务目标再做判断，不可机械转述
+- 用户说"点击保存按钮"→ 你不知道按钮在哪，必须截图找
+- 用户说"输入 xxx"→ 你不知道光标在哪，必须先截图确认焦点
+- analyze_image 的 image 参数传 cloudUrl（https 链接），视觉模型只支持 data: URL 和 https: 链接，不支持本地文件路径
+- 操作完成后必须截图验证，禁止只说"已执行"
 
 ## 工具速查
-- **mcp_list_tools**: 列出已启用 MCP 服务器、工具清单与输入 schema；必要时用 server_id 限定范围
-- **mcp_call**: 调用指定 MCP 服务器上的目标工具；arguments 必须严格符合目标 schema`,
+- **desktop_screenshot**: 截取当前桌面屏幕，返回 cloudUrl 与尺寸信息；截图后立即用 analyze_image 分析
+- **desktop_action**: 执行点击、双击、输入、快捷键、拖拽、滚动等桌面动作`,
   },
 ]
-
-/* ------------------------------------------------------------------ */
-/*  预设 Skills（可一键安装）                                             */
-/* ------------------------------------------------------------------ */
-
-/** 预设 Skill 列表 — 从社区精选、无需编写 SKILL.md 即可一键安装 */
-export const PRESET_SKILLS: SkillPreview[] = [
-  {
-    id: 'conventional-commits',
-    name: 'Conventional Commits',
-    description: '自动生成规范的 Git commit message，遵循 Conventional Commits 格式（feat/fix/refactor 等），保持提交历史清晰可读',
-    version: '1.0.0',
-    author: 'Taco Community',
-    category: 'development',
-    tags: ['git', 'commit', 'conventional-commits'],
-    sourceUrl: '',
-    tools: ['run_command'],
-  },
-  {
-    id: 'security-auditor',
-    name: '安全审计',
-    description: '代码修改后自动检查常见安全问题：SQL 注入、XSS、硬编码密钥、不安全依赖、敏感信息泄露等',
-    version: '1.0.0',
-    author: 'Taco Community',
-    category: 'security',
-    tags: ['security', 'audit', 'vulnerability'],
-    sourceUrl: '',
-    tools: ['read_file', 'find_file', 'run_command'],
-  },
-  {
-    id: 'docker-helper',
-    name: 'Docker 助手',
-    description: 'Docker 容器管理、Dockerfile 编写优化、docker-compose 配置、镜像构建和调试辅助',
-    version: '1.0.0',
-    author: 'Taco Community',
-    category: 'devops',
-    tags: ['docker', 'container', 'devops'],
-    sourceUrl: '',
-    tools: ['run_command', 'read_file', 'write_file'],
-    requiresBins: ['docker'],
-  },
-  {
-    id: 'project-doc-generator',
-    name: '项目文档生成器',
-    description: '自动分析项目结构生成 README、API 文档、架构说明，保持文档与代码同步',
-    version: '1.0.0',
-    author: 'Taco Community',
-    category: 'documentation',
-    tags: ['documentation', 'readme', 'api-docs'],
-    sourceUrl: '',
-    tools: ['read_file', 'find_file', 'list_dir', 'write_file'],
-  },
-]
-
-/** 预设 Skill 的指令模板 */
-const PRESET_INSTRUCTIONS: Record<string, string> = {
-  'conventional-commits': `# Skill: Conventional Commits
-
-遵循 Conventional Commits 规范生成 commit message：
-
-## 格式
-\`\`\`
-type(scope): description
-
-[optional body]
-
-[optional footer]
-\`\`\`
-
-## 类型
-- feat: 新功能
-- fix: Bug 修复
-- refactor: 重构
-- docs: 文档
-- style: 代码格式
-- test: 测试
-- chore: 构建/工具
-- perf: 性能优化
-- ci: CI/CD 变更
-
-## 规则
-- 每次修改尽量保持原子性，一个 commit 只做一件事
-- commit message 使用英文，简明扼要
-- 在执行 git push 前提醒用户确认
-- 使用 git log 查看最近提交历史以保持一致风格`,
-
-  'security-auditor': `# Skill: 安全审计
-
-当代码被修改后，自动对变更进行安全检查：
-
-## 检查项
-- SQL 注入：检查是否使用了字符串拼接构造 SQL
-- XSS：检查 HTML/JSX 中是否直接插入用户输入
-- 硬编码密钥：检查是否有 API key、token、password 硬编码
-- 路径遍历：检查文件路径是否由用户输入拼接
-- 不安全依赖：检查 package.json 中是否有已知漏洞的依赖版本
-- 敏感信息泄露：检查日志/错误消息中是否打印敏感数据
-
-## 流程
-1. 获取修改的文件列表
-2. 逐一检查变更内容
-3. 发现问题时给出具体行号和修复建议
-4. 在最终回复中汇总报告`,
-
-  'docker-helper': `# Skill: Docker 助手
-
-Docker 容器管理、镜像构建和调试辅助：
-
-## 能力
-- Dockerfile 编写优化：检查最佳实践、镜像层缓存、多阶段构建
-- docker-compose 配置：服务编排、网络、卷管理
-- 容器调试：查看日志、进入容器、资源使用监控
-- 镜像管理：构建、打标签、推送
-
-## 注意事项
-- 操作前先确认 Docker 是否运行（docker info）
-- 删除容器/镜像前提醒用户确认
-- 使用 --rm 创建临时容器，避免残留
-- docker-compose 优先使用项目已有的配置文件`,
-
-  'project-doc-generator': `# Skill: 项目文档生成器
-
-自动分析项目并生成/更新文档：
-
-## 能力
-- 分析 package.json / Cargo.toml 等获取项目元信息
-- 扫描源代码结构生成目录树和模块说明
-- 提取 API 路由、函数签名生成 API 文档
-- 更新或生成 README.md（包含安装、使用、架构说明）
-- 检测过时文档并提醒更新
-
-## 流程
-1. 先了解项目结构（list_dir、read_file）
-2. 提取关键信息（入口文件、主要模块、依赖列表）
-3. 生成文档，遵循项目的现有风格
-4. 生成后展示给用户确认`,
-
-}
 
 /* ------------------------------------------------------------------ */
 /*  类型与缓存                                                          */
@@ -911,49 +773,6 @@ export async function checkSkillUpdate(id: string): Promise<{ hasUpdate: boolean
     }
   } catch {
     return null
-  }
-}
-
-export async function installPreset(presetId: string): Promise<SkillInfo> {
-  const preset = PRESET_SKILLS.find((p) => p.id === presetId)
-  if (!preset) throw new Error(`Preset skill not found: ${presetId}`)
-  
-  const instructions = PRESET_INSTRUCTIONS[presetId]
-  if (!instructions) throw new Error(`Preset instructions not found: ${presetId}`)
-
-  const id = preset.id
-  const persisted = await loadPersistedSkills()
-
-  // Save instructions file
-  await saveSkillInstructions(id, instructions)
-
-  const existing = persisted.find((s) => s.id === id)
-  const nextItem: PersistedSkill = {
-    id,
-    name: preset.name,
-    description: preset.description,
-    version: preset.version,
-    author: preset.author,
-    source: 'local',
-    enabled: true,
-    instructionsFile: `${id}/SKILL.md`,
-    tools: dedupeList(preset.tools ?? []),
-    resources: dedupeList(preset.resources ?? []),
-  }
-  const next = upsertPersistedSkill(persisted, nextItem)
-  await savePersistedSkills(next)
-  await refreshSkills(lastWorkspaceForRefresh || undefined)
-
-  const latest = allSkills.find((s) => s.id === id)
-  return latest ? { ...latest } : {
-    id: nextItem.id,
-    name: nextItem.name,
-    description: nextItem.description,
-    version: nextItem.version,
-    author: nextItem.author,
-    source: nextItem.source,
-    enabled: nextItem.enabled,
-    instructions,
   }
 }
 

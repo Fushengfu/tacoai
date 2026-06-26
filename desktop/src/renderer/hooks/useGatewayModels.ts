@@ -15,6 +15,7 @@ export function useGatewayModels() {
   const [error, setError] = useState<string | null>(null)
   const fetchedRef = useRef(false)
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const lastStatusRef = useRef<string | null>(null) // 状态去重：相同状态不重复处理
 
   /** 启动定时刷新 */
   const startAutoRefresh = () => {
@@ -78,6 +79,12 @@ export function useGatewayModels() {
     // Listen for bridge status changes
     const unsub = window.taco.bridge.onStatusChange((s) => {
       if (!mounted) return
+
+      // 状态去重：相同状态不重复处理，防止无效的 IPC 通知导致 UI 抖动
+      const statusKey = s.tokenExpired ? 'tokenExpired' : s.status
+      if (lastStatusRef.current === statusKey) return
+      lastStatusRef.current = statusKey
+
       if (s.tokenExpired) {
         fetchedRef.current = false
         setModels([])

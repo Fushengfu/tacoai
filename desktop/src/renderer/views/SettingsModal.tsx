@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import type { ModelConfig, ThemeMode } from '../types'
-import type { SkillInfo, SkillPreview, SkillUpdateInfo, ProjectNote, ProjectTaskMemory, NoteCategory, McpServerInfo, MemoryScopeStats, AppUpdateCheckResult } from '../../shared/ipc'
+import type { SkillInfo, SkillPreview, SkillUpdateInfo, ProjectTaskMemory, McpServerInfo, MemoryScopeStats, AppUpdateCheckResult } from '../../shared/ipc'
 import { PROVIDER_DEFAULT_BASE_URLS } from '../constants'
 import {
   loadUploadSettings,
@@ -92,11 +92,6 @@ export function SettingsPage({
   const [updateInfo, setUpdateInfo] = useState<Record<string, SkillUpdateInfo | null>>({})
 
   // Notes 状态
-  const [notes, setNotes] = useState<ProjectNote[]>([])
-  const [notesLoading, setNotesLoading] = useState(false)
-  const [editingNote, setEditingNote] = useState<Partial<ProjectNote & { category: NoteCategory }> | null>(null)
-  const [noteSaving, setNoteSaving] = useState(false)
-  const [expandedNoteIds, setExpandedNoteIds] = useState<Set<string>>(new Set())
   const [taskMemories, setTaskMemories] = useState<ProjectTaskMemory[]>([])
   const [taskMemoriesLoading, setTaskMemoriesLoading] = useState(false)
   const [expandedTaskMemoryIds, setExpandedTaskMemoryIds] = useState<Set<string>>(new Set())
@@ -140,11 +135,40 @@ export function SettingsPage({
   const [mcpLoading, setMcpLoading] = useState(false)
   const [mcpEditing, setMcpEditing] = useState<Partial<McpServerInfo> | null>(null)
   const [mcpSaving, setMcpSaving] = useState(false)
-  const [projectRulesDraft, setProjectRulesDraft] = useState(projectRules ?? '')
+  const [projectRulesDraft, setProjectRulesDraft] = useState('')
+  const [projectRulesFilePath, setProjectRulesFilePath] = useState('.taco/rules.md')
+  const [projectRulesLoading, setProjectRulesLoading] = useState(false)
 
-  useEffect(() => {
-    setProjectRulesDraft(projectRules ?? '')
-  }, [projectRules])
+  const loadProjectRulesFromFile = useCallback(async (ws: string) => {
+    if (!ws) {
+      setProjectRulesDraft('')
+      return
+    }
+    setProjectRulesLoading(true)
+    try {
+      const result = await window.taco.file.read(`${ws}/.taco/rules.md`)
+      if (result && typeof result.content === 'string') {
+        setProjectRulesDraft(result.content)
+      } else {
+        setProjectRulesDraft('')
+      }
+    } catch {
+      // 文件不存在，初始为空
+      setProjectRulesDraft('')
+    } finally {
+      setProjectRulesLoading(false)
+    }
+  }, [])
+
+  const handleSaveProjectRules = useCallback(async () => {
+    const ws = (workspace ?? '').trim()
+    if (!ws) return
+    try {
+      await window.taco.file.write(`${ws}/.taco/rules.md`, projectRulesDraft)
+    } catch (err) {
+      console.error('保存项目规则失败:', err)
+    }
+  }, [workspace, projectRulesDraft])
 
   useEffect(() => {
     if (modelConfigs.length <= 0 && pendingModelDrafts.size === 0) {
@@ -276,31 +300,33 @@ export function SettingsPage({
     }
   }, [tab])
 
+  // 切到"通用"标签时从文件加载项目规则
+  useEffect(() => {
+    if (tab === 'general' && workspace) {
+      loadProjectRulesFromFile(workspace)
+    }
+  }, [tab, workspace, loadProjectRulesFromFile])
+
   // ── Notes 逻辑 ──
   const loadNotes = useCallback(async () => {
     if (!hasNotesScope) {
-      setNotes([])
       setTaskMemories([])
       setMemoryStats(null)
       setMemoryExportPath('')
       return
     }
-    setNotesLoading(true)
     setTaskMemoriesLoading(true)
     setMemoryStatsLoading(true)
     try {
-      const [list, memories, stats] = await Promise.all([
-        window.taco.notes.list(notesWorkspace, notesProjectId || undefined),
+      const [memories, stats] = await Promise.all([
         window.taco.notes.listTaskMemories(notesWorkspace, notesProjectId || undefined),
         window.taco.notes.stats(notesWorkspace, notesProjectId || undefined),
       ])
-      setNotes(list)
       setTaskMemories(memories)
       setMemoryStats(stats)
     } catch (err) {
       console.error('加载笔记失败:', err)
     } finally {
-      setNotesLoading(false)
       setTaskMemoriesLoading(false)
       setMemoryStatsLoading(false)
     }
@@ -309,64 +335,6 @@ export function SettingsPage({
   useEffect(() => {
     if (tab === 'notes') loadNotes()
   }, [tab, loadNotes])
-
-  const handleSaveNote = async () => {
-    if (!hasNotesScope || !editingNote) return
-    const title = (editingNote.title || '').trim()
-    const content = (editingNote.content || '').trim()
-    if (!title || !content) return
-    setNoteSaving(true)
-    try {
-      const now = new Date().toISOString()
-      const note: ProjectNote = {
-        id: editingNote.id || `note-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        title,
-        content,
-        category: editingNote.category || 'other',
-        createdAt: editingNote.createdAt || now,
-        updatedAt: now,
-      }
-      const saved = await window.taco.notes.save(notesWorkspace, note, notesProjectId || undefined)
-      setNotes((prev) => {
-        const idx = prev.findIndex((n) => n.id === saved.id)
-        if (idx >= 0) {
-          const next = [...prev]
-          next[idx] = saved
-          return next
-        }
-        return [...prev, saved]
-      })
-      setEditingNote(null)
-    } catch (err) {
-      console.error('保存笔记失败:', err)
-    } finally {
-      setNoteSaving(false)
-    }
-  }
-
-  const handleDeleteNote = async (id: string) => {
-    if (!hasNotesScope) return
-    try {
-      await window.taco.notes.delete(notesWorkspace, id, notesProjectId || undefined)
-      setNotes((prev) => prev.filter((n) => n.id !== id))
-      setExpandedNoteIds((prev) => {
-        const next = new Set(prev)
-        next.delete(id)
-        return next
-      })
-    } catch (err) {
-      console.error('删除笔记失败:', err)
-    }
-  }
-
-  const toggleNoteExpanded = (id: string) => {
-    setExpandedNoteIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
 
   const toggleTaskMemoryExpanded = (id: string) => {
     setExpandedTaskMemoryIds((prev) => {
@@ -509,27 +477,6 @@ export function SettingsPage({
     }
   }
 
-  const handleInstallPreset = async (presetId: string) => {
-    setInstalling(true)
-    setInstallError('')
-    try {
-      const newSkill = await window.taco.skills.installPreset(presetId)
-      setSkills((prev) => {
-        const exists = prev.findIndex((s) => s.id === newSkill.id)
-        if (exists >= 0) {
-          const next = [...prev]
-          next[exists] = newSkill
-          return next
-        }
-        return [...prev, newSkill]
-      })
-    } catch (err) {
-      setInstallError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setInstalling(false)
-    }
-  }
-
   const handleSkillCheckUpdate = async (skillId: string) => {
     setCheckingUpdates((prev) => ({ ...prev, [skillId]: true }))
     try {
@@ -541,36 +488,6 @@ export function SettingsPage({
       setCheckingUpdates((prev) => ({ ...prev, [skillId]: false }))
     }
   }
-
-  const installedSkillIds = useMemo(() => new Set(skills.map((s) => s.id)), [skills])
-
-  // 预设 Skills 列表（与 services/skills/skills-service.ts 中 PRESET_SKILLS 同步）
-  const presetSkillsList = useMemo<SkillPreview[]>(() => [
-    {
-      id: 'conventional-commits', name: 'Conventional Commits',
-      description: '自动生成规范的 Git commit message，遵循 Conventional Commits 格式',
-      version: '1.0.0', author: 'Taco Community', category: 'development',
-      tags: ['git', 'commit'], sourceUrl: '', tools: ['run_command'],
-    },
-    {
-      id: 'security-auditor', name: '安全审计',
-      description: '代码修改后自动检查 SQL 注入、XSS、硬编码密钥等安全问题',
-      version: '1.0.0', author: 'Taco Community', category: 'security',
-      tags: ['security', 'audit'], sourceUrl: '', tools: ['read_file', 'find_file', 'run_command'],
-    },
-    {
-      id: 'docker-helper', name: 'Docker 助手',
-      description: 'Docker 容器管理、Dockerfile 编写优化、docker-compose 配置',
-      version: '1.0.0', author: 'Taco Community', category: 'devops',
-      tags: ['docker', 'container'], sourceUrl: '', tools: ['run_command', 'read_file', 'write_file'],
-    },
-    {
-      id: 'project-doc-generator', name: '项目文档生成器',
-      description: '自动分析项目结构生成 README、API 文档、架构说明',
-      version: '1.0.0', author: 'Taco Community', category: 'documentation',
-      tags: ['documentation', 'readme'], sourceUrl: '', tools: ['read_file', 'find_file', 'list_dir', 'write_file'],
-    },
-  ], [])
 
   const selectedModel = editingModelId
     ? (modelConfigs.find((item) => item.id === editingModelId)
@@ -859,6 +776,8 @@ export function SettingsPage({
               recallDebugEnabled={recallDebugEnabled}
               themeMode={themeMode}
               projectRulesDraft={projectRulesDraft}
+              projectRulesFilePath={projectRulesFilePath}
+              projectRulesLoading={projectRulesLoading}
               cachedUpdateStatus={cachedUpdateStatus}
               updateChecking={updateChecking}
               updateCheckSummary={updateCheckSummary}
@@ -879,7 +798,7 @@ export function SettingsPage({
               }}
               onThemeModeChange={onThemeModeChange}
               onProjectRulesDraftChange={setProjectRulesDraft}
-              onProjectRulesChange={onProjectRulesChange}
+              onProjectRulesChange={handleSaveProjectRules}
               onCheckUpdate={handleCheckUpdate}
               onOpenLogDir={() => window.taco.shell.openLogDir({ projectId, workspace: workspace || undefined })}
               onUpdateAutoApproveCategories={updateAutoApproveCategories}
@@ -933,9 +852,6 @@ export function SettingsPage({
               previewing={previewing}
               previewError={previewError}
               onPreviewSkill={handlePreviewSkill}
-              presetSkills={presetSkillsList}
-              installedIds={installedSkillIds}
-              onInstallPreset={handleInstallPreset}
               skillsLoading={skillsLoading}
               skills={skills}
               onToggleSkill={handleToggleSkill}
@@ -954,20 +870,12 @@ export function SettingsPage({
               memoryStatsLoading={memoryStatsLoading}
               memoryExporting={memoryExporting}
               memoryExportPath={memoryExportPath}
-              notes={notes}
-              notesLoading={notesLoading}
               taskMemories={taskMemories}
               taskMemoriesLoading={taskMemoriesLoading}
-              editingNote={editingNote}
-              expandedNoteIds={expandedNoteIds}
               expandedTaskMemoryIds={expandedTaskMemoryIds}
               onRefreshNotes={loadNotes}
               onExportMemoryScope={handleExportMemoryScope}
-              onEditingNoteChange={setEditingNote}
-              onSaveNote={handleSaveNote}
-              onDeleteNote={handleDeleteNote}
               onDeleteTaskMemory={handleDeleteTaskMemory}
-              onToggleNoteExpanded={toggleNoteExpanded}
               onToggleTaskMemoryExpanded={toggleTaskMemoryExpanded}
             />
           )}

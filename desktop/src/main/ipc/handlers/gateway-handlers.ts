@@ -8,6 +8,15 @@ import { net, BrowserWindow } from 'electron'
 import type { IpcMainInvokeEvent } from 'electron'
 import { IpcChannel } from '../../../shared/ipc'
 import { getBridgeManager } from '../../bridge/bridge-manager'
+import type { GatewayModelItem } from '../../../shared/ipc-types'
+
+/** 网关模型列表缓存（前端下拉框拉取时写入，analyze_image 等工具直接读取，零网络请求） */
+let gatewayModelListCache: GatewayModelItem[] | null = null
+
+/** 获取网关模型列表缓存 */
+export function getGatewayModelListCache(): GatewayModelItem[] | null {
+  return gatewayModelListCache
+}
 
 /** 检测是否为 token 失效错误 */
 function isTokenExpiredError(errorMsg: string): boolean {
@@ -66,7 +75,12 @@ export async function handleGatewayGetModels(_event: IpcMainInvokeEvent): Promis
       console.log('[Gateway]', '获取模型列表', response.body)
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
-        return json.data ?? json
+        // API 返回结构: { code, data: { data: [...], object: "list" }, message }
+        // 模型列表在 json.data.data 里，两层 data 嵌套
+        const raw = json?.data?.data ?? json?.data ?? json
+        const models = (Array.isArray(raw) ? raw : []) as GatewayModelItem[]
+        gatewayModelListCache = models
+        return models
       }
 
       // 401 或 Token 失效错误：尝试刷新 Token 后重试

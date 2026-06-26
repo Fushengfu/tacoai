@@ -496,14 +496,17 @@ export function saveAppProvidersStateToDb(payload: AppStateProvidersPayload): Ap
     : (modelConfigs[0]?.id ?? '')
   const updatedAt = new Date().toISOString()
 
-  /* 安全防护：如果传入的 modelConfigs 为空，检查数据库是否有数据 */
+  /* 空 modelConfigs：清空数据库中的全部模型配置 */
   if (modelConfigs.length <= 0) {
-    const current = loadAppProvidersStateFromDb()
-    if (current.data && current.data.modelConfigs.length > 0) {
-      console.warn('[app-state] 拒绝用空数据覆盖已有模型配置，保留数据库当前状态')
-      return { data: current.data, updatedAt: current.updatedAt || updatedAt }
+    try {
+      runInTransaction(database, () => {
+        database.prepare('DELETE FROM app_model_configs').run()
+        writeAppStateMetaRaw('active_model_config_id', '', database, updatedAt)
+      })
+    } catch (err) {
+      logError('SAVE_PROVIDERS', '清空模型配置失败', err)
+      throw err
     }
-    /* 数据库也为空（首次启动），无需任何操作 */
     return { data: { modelConfigs: [], activeModelConfigId: '' }, updatedAt }
   }
 

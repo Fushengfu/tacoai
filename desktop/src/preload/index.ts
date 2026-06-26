@@ -212,6 +212,9 @@ const tacoApi: TacoApi = {
 
     setAutoApprove: (categories: string[]) =>
       ipcRenderer.send(IpcChannel.AGENT_AUTO_APPROVE, categories),
+
+    setAuthLevel: (level: string, projectId: string) =>
+      ipcRenderer.send(IpcChannel.AGENT_SET_AUTH_LEVEL, { projectId, level }),
   },
   dialog: {
     selectDirectory: () => ipcRenderer.invoke(IpcChannel.SELECT_DIRECTORY),
@@ -327,8 +330,6 @@ const tacoApi: TacoApi = {
       }
       return ipcRenderer.invoke(IpcChannel.SKILLS_INSTALL, source)
     },
-    installPreset: (presetId: string): Promise<SkillInfo> =>
-      ipcRenderer.invoke(IpcChannel.SKILLS_INSTALL_PRESET, presetId),
     uninstall: (id: string) =>
       ipcRenderer.invoke(IpcChannel.SKILLS_UNINSTALL, id),
     toggle: (id: string, enabled: boolean) =>

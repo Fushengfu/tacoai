@@ -23,9 +23,10 @@ import type {
   BridgeStatusPayload,
 } from '../../shared/ipc'
 import type { RiskCategory } from '../tools'
-import { setAutoApproveCategories } from '../tools'
+import { setAutoApproveCategories, setGlobalAuthLevel, saveAuthLevel } from '../tools'
+import type { AuthLevel } from '../tools'
 import { gitLog, gitCommit, gitRollback, gitCommitFiles, gitStatus, gitFileChange, gitStageFiles, gitStageAll } from '../project/git'
-import { initSkills, listSkills, installSkill, installPreset, uninstallSkill, toggleSkill, refreshSkills, previewSkill, checkSkillUpdate } from '../project/skills'
+import { initSkills, listSkills, installSkill, uninstallSkill, toggleSkill, refreshSkills, previewSkill, checkSkillUpdate } from '../project/skills'
 import { listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, getMemoryScopeStats, exportMemoryScope } from '../data/notes'
 import { initMcp, listMcpServers, saveMcpServer, removeMcpServer, toggleMcpServer } from '../automation/mcp'
 import { getLogDir } from '../system/logger'
@@ -145,6 +146,14 @@ export function registerIpcHandlers() {
     setAutoApproveCategories(categories)
   })
 
+  ipcMain.on(IpcChannel.AGENT_SET_AUTH_LEVEL, (_e, payload: { projectId: string; level: string }) => {
+    const { projectId, level } = payload
+    if (level === 'auto' || level === 'standard' || level === 'manual') {
+      saveAuthLevel(projectId, level as AuthLevel)
+      setGlobalAuthLevel(level as AuthLevel)
+    }
+  })
+
   // File dialogs
   ipcMain.handle(IpcChannel.SELECT_DIRECTORY, handleSelectDirectory)
   ipcMain.handle(IpcChannel.SELECT_ATTACHMENTS, handleSelectAttachments)
@@ -216,7 +225,6 @@ export function registerIpcHandlers() {
   ipcMain.handle(IpcChannel.SKILLS_LIST, (_e, workspace?: string) => listSkills(workspace))
   ipcMain.handle(IpcChannel.SKILLS_PREVIEW, (_e, source: string) => previewSkill(source))
   ipcMain.handle(IpcChannel.SKILLS_INSTALL, (_e, source: string) => installSkill(source))
-  ipcMain.handle(IpcChannel.SKILLS_INSTALL_PRESET, (_e, presetId: string) => installPreset(presetId))
   ipcMain.handle(IpcChannel.SKILLS_UNINSTALL, (_e, id: string) => uninstallSkill(id))
   ipcMain.handle(IpcChannel.SKILLS_TOGGLE, (_e, id: string, enabled: boolean) => toggleSkill(id, enabled))
   ipcMain.handle(IpcChannel.SKILLS_CHECK_UPDATE, (_e, id: string) => checkSkillUpdate(id))

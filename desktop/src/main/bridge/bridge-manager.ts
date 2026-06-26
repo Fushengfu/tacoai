@@ -453,9 +453,10 @@ export class BridgeManager {
 
     this.setStatus('connecting')
     const url = `${this.relayUrl}?token=${encodeURIComponent(this.token)}&role=host`
-    this.ws = new WebSocket(url)
+    const ws = new WebSocket(url)
+    this.ws = ws
 
-    this.ws.on('open', () => {
+    ws.on('open', () => {
       logBridge('WebSocket connected')
       // 防御性检查：如果 ws 在 open 事件前已被置 null（如连接立即失败），跳过后续操作
       if (!this.ws) {
@@ -491,7 +492,7 @@ export class BridgeManager {
       this.previousClientCount = 0
     })
 
-    this.ws.on('message', (raw: WebSocket.Data) => {
+    ws.on('message', (raw: WebSocket.Data) => {
       try {
         const msg = JSON.parse(raw.toString()) as BridgeMessage
         this.handleRelayMessage(msg)
@@ -500,16 +501,26 @@ export class BridgeManager {
       }
     })
 
-    this.ws.on('close', (code: number, reason: Buffer) => {
+    ws.on('close', (code: number, reason: Buffer) => {
       logBridge(`WebSocket closed: ${code} ${reason.toString()}`)
+      // 校验：只有 this.ws 仍是当前已关闭的实例时才处理，防止旧连接的 close 事件误杀新连接
+      if (this.ws !== ws) {
+        logBridge('WebSocket close event from old connection, ignoring')
+        return
+      }
       this.stopHeartbeat()
       this.ws = null
       this.setStatus('disconnected')
       this.attemptReconnect(orderedProjectIds)
     })
 
-    this.ws.on('error', (err: Error) => {
+    ws.on('error', (err: Error) => {
       logBridgeError('WebSocket error', err)
+      // 校验：只有 this.ws 仍是当前实例时才处理
+      if (this.ws !== ws) {
+        logBridge('WebSocket error event from old connection, ignoring')
+        return
+      }
       this.error = err.message || 'WebSocket 连接错误'
       this.stopHeartbeat()
       this.setStatus('disconnected')

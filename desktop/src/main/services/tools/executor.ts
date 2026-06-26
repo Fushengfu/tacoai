@@ -18,9 +18,11 @@ import { getAllowedToolsForSkills, readActiveSkillDetail, readActiveSkillResourc
 import { normalizeToolName, toolDefinitions, type ToolCall, type ToolResult, type FileChange } from './definitions'
 import { assessToolCallsRisk, type RiskInfo, type RiskCategory, type RiskLevel } from './risk-assessor'
 import { getWorkspaceTree } from './workspace-tree'
-import { uploadDataUrlToStorage } from '../llm/llm-client'
-import { loadUploadConfigFromDb, saveUploadConfigToDb } from '../../data/memory-db'
+import { uploadDataUrlToStorage, requestChatCompletion, requestChatCompletionStream, isBuiltinProvider } from '../llm/llm-client'
+import type { ChatMessage, ProviderOverrides, ProviderKey } from '../llm/llm-client'
+import { loadUploadConfigFromDb, saveUploadConfigToDb, loadAppProvidersStateFromDb } from '../../data/memory-db'
 import type { IpcUploadConfig } from '../../../shared/ipc'
+import { getGatewayModelListCache } from '../../ipc/handlers/gateway-handlers'
 
 // 从数据库加载云存储配置（与 upload-handlers.ts 逻辑一致）
 // 提取为共享函数，供 uploadScreenshotToCloud 和 execUploadFile 共用
@@ -117,6 +119,7 @@ type ExecResult = { content: string; success: boolean }
 type ToolRuntimeContext = {
   allowedToolNames?: Set<string>
   activatedSkillIds?: Set<string>
+  overrides?: ProviderOverrides
 }
 
 const ALWAYS_AVAILABLE_TOOL_NAMES = [
@@ -131,11 +134,171 @@ const ALWAYS_AVAILABLE_TOOL_NAMES = [
   'find_file',
   'read_skill',
   'read_skill_resource',
-  'save_note',
-  'delete_note',
   'mcp_list_tools',
   'mcp_call',
 ]
+
+/* ------------------------------------------------------------------ */
+/*  视觉模型图片分析（analyze_image 工具）                                 */
+/* ------------------------------------------------------------------ */
+
+const VISION_ANALYSIS_SYSTEM_PROMPT = `你是一个截图分析助手。根据用户的截图目的来分析截图内容。
+
+请遵循以下规则：
+- 只描述截图中实际存在的内容，不要猜测或编造
+- 重点关注与截图目的直接相关的元素（按钮、文本、输入框、状态提示等）
+- 如果目的是确认某个元素是否存在，明确指出该元素是否可见及其大致位置
+- 如果目的是了解页面/桌面状态，描述当前的整体布局和关键内容
+- 输出简洁、结构化，优先回应截图目的，不要在无目的时冗长描述所有细节
+- 使用中文回复`
+
+async function execAnalyzeImage(
+  args: Record<string, unknown>,
+  workspace: string,
+  runtimeContext?: ToolRuntimeContext,
+): Promise<ExecResult> {
+  const image = typeof args.image === 'string' ? args.image.trim() : ''
+  const goal = typeof args.goal === 'string' ? args.goal : undefined
+
+  if (!image) {
+    return { content: 'Error: image parameter is required (file path or data: URL)', success: false }
+  }
+  if (!goal) {
+    return { content: 'Error: goal parameter is required', success: false }
+  }
+
+  // 解析图片为 data: URL
+  let dataUrl: string
+  if (image.startsWith('data:')) {
+    // data: URL 直接使用
+    dataUrl = image
+  } else if (image.startsWith('http://') || image.startsWith('https://')) {
+    // https: 链接直接使用（视觉模型支持）
+    dataUrl = image
+  } else {
+    // 本地文件路径：读取并转为 data: URL
+    try {
+      const resolvedPath = path.isAbsolute(image) ? image : path.resolve(workspace, image)
+      const buffer = await fs.readFile(resolvedPath)
+      const ext = path.extname(resolvedPath).toLowerCase()
+      const mimeTypes: Record<string, string> = {
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.gif': 'image/gif',
+        '.webp': 'image/webp',
+        '.bmp': 'image/bmp',
+      }
+      const mime = mimeTypes[ext] || 'image/png'
+      dataUrl = `data:${mime};base64,${buffer.toString('base64')}`
+    } catch (err) {
+      return { content: `Error: failed to read image file: ${err instanceof Error ? err.message : String(err)}`, success: false }
+    }
+  }
+
+  // 选择视觉模型
+  const overrides = runtimeContext?.overrides
+  let selectedProvider: ProviderKey | null = null
+  let effectiveOverrides: ProviderOverrides | undefined = overrides
+
+  // 1. 先从 overrides（当前对话的 provider）中找
+  if (overrides) {
+    for (const [key, cfg] of Object.entries(overrides)) {
+      if (cfg.supportsVision === true && cfg.apiKey && cfg.model) {
+        selectedProvider = key as ProviderKey
+        break
+      }
+    }
+  }
+
+  // 2. overrides 中找不到，从 DB 加载所有已配置的 provider
+  if (!selectedProvider) {
+    try {
+      const providersState = loadAppProvidersStateFromDb()
+      if (providersState.data) {
+        for (const cfg of providersState.data.modelConfigs) {
+          if (cfg.supportsVision && cfg.apiKey && cfg.model) {
+            selectedProvider = cfg.provider as ProviderKey
+            const parsedTemp = cfg.temperature ? Number(cfg.temperature) : undefined
+            effectiveOverrides = {
+              [cfg.provider]: {
+                baseUrl: cfg.baseUrl || undefined,
+                apiKey: cfg.apiKey,
+                model: cfg.model,
+                temperature: parsedTemp !== undefined && Number.isFinite(parsedTemp) && parsedTemp >= 0 && parsedTemp <= 2 ? parsedTemp : undefined,
+                supportsVision: true,
+                supportsReasoning: cfg.supportsReasoning,
+              },
+            }
+            log('ANALYZE_IMAGE_VISION_FALLBACK_DB', { provider: cfg.provider, model: cfg.model })
+            break
+          }
+        }
+      }
+    } catch (dbErr) {
+      log('ANALYZE_IMAGE_DB_LOAD_FAIL', { error: dbErr instanceof Error ? dbErr.message : String(dbErr) })
+    }
+  }
+
+  // 3. 从网关模型缓存中查找（前端下拉框已拉取，内存读取，零网络请求）
+  if (!selectedProvider) {
+    const gwModels = getGatewayModelListCache()
+    if (gwModels && gwModels.length > 0) {
+      for (const m of gwModels) {
+        if (m.supportsVision && m.apiKey && m.model) {
+          selectedProvider = m.provider as ProviderKey
+          const parsedTemp = m.temperature ? Number(m.temperature) : undefined
+          effectiveOverrides = {
+            [m.provider]: {
+              baseUrl: m.baseUrl || undefined,
+              apiKey: m.apiKey,
+              model: m.model,
+              temperature: parsedTemp !== undefined && Number.isFinite(parsedTemp) && parsedTemp >= 0 && parsedTemp <= 2 ? parsedTemp : undefined,
+              supportsVision: true,
+              supportsReasoning: m.supportsReasoning,
+            },
+          }
+          log('ANALYZE_IMAGE_VISION_FALLBACK_GATEWAY', { provider: m.provider, model: m.model })
+          break
+        }
+      }
+    } else {
+      log('ANALYZE_IMAGE_GATEWAY_CACHE_EMPTY', {})
+    }
+  }
+
+  if (!selectedProvider) {
+    return { content: 'Error: no vision-capable model available. Please configure a vision model in settings.', success: false }
+  }
+
+  // 调用视觉模型分析图片
+  try {
+    const messages: ChatMessage[] = [
+      { role: 'system', content: VISION_ANALYSIS_SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: dataUrl } },
+          { type: 'text', text: `截图目的：${goal}` },
+        ],
+      } as ChatMessage,
+    ]
+
+    const stream = requestChatCompletionStream(selectedProvider, messages, effectiveOverrides)
+    let accumulated = ''
+    for await (const chunk of stream) {
+      accumulated += chunk
+    }
+    if (accumulated.trim()) {
+      log('ANALYZE_IMAGE_SUCCESS', { provider: selectedProvider, contentLength: accumulated.length })
+      return { content: accumulated.trim(), success: true }
+    }
+    return { content: 'Error: vision model returned empty response', success: false }
+  } catch (err) {
+    log('ANALYZE_IMAGE_FAIL', { error: err instanceof Error ? err.message : String(err) })
+    return { content: `Error: vision analysis failed: ${err instanceof Error ? err.message : String(err)}`, success: false }
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /*  Workspace 安全检查                                                  */
@@ -527,17 +690,15 @@ async function executeTool(
         return await execRunCommand(args, workspace, signal)
       case 'find_file':
         return await execFindFile(args, workspace)
-      case 'save_note':
-        return await execSaveNote(args, workspace, projectId)
-      case 'delete_note':
-        return await execDeleteNote(args, workspace, projectId)
       /* ---- 浏览器自动化 ---- */
       case 'browser_navigate':
         return await execBrowserAction('navigate', args, projectId)
       case 'browser_screenshot':
-        return await execBrowserAction('screenshot', args, projectId)
+        return await execBrowserAction('screenshot', args, projectId, runtimeContext)
       case 'desktop_screenshot':
-        return await execDesktopScreenshot(args, logScope)
+        return await execDesktopScreenshot(args, logScope, runtimeContext)
+      case 'analyze_image':
+        return await execAnalyzeImage(args, workspace, runtimeContext)
       case 'browser_click':
         return await execBrowserAction('click', args, projectId)
       case 'browser_type':
@@ -859,7 +1020,7 @@ async function execDeleteFile(args: Record<string, unknown>, workspace: string):
     throw err
   }
 
-  await fs.unlink(resolved)
+  await shell.trashItem(resolved)
 
   const relPath = toPosixPath(path.relative(workspace, resolved))
   return {
@@ -994,6 +1155,9 @@ async function execRunCommand(
   const command = String(args.command ?? '').trim()
   if (!command) return { content: 'Error: command is required', success: false }
 
+  // delete_file 默认走回收站（shell.trashItem），推荐 AI 优先使用
+  // 此处不对 rm / unlink 等命令做硬拦截，AI 可根据需求自行选择永久删除
+
   const check = resolveSafe(workspace, String(args.cwd ?? '.'))
   const cwd = 'error' in check ? workspace : check.resolved
 
@@ -1043,40 +1207,6 @@ async function execRunCommand(
       success: false,
     }
   }
-}
-
-/* ------------------------------------------------------------------ */
-/*  项目笔记工具                                                        */
-/* ------------------------------------------------------------------ */
-
-async function execSaveNote(args: Record<string, unknown>, workspace: string, projectId?: string): Promise<ExecResult> {
-  const title = String(args.title ?? '').trim()
-  const content = String(args.content ?? '').trim()
-  const category = String(args.category ?? 'other') as import('../../../shared/ipc-types').NoteCategory
-  if (!title) return { content: 'Error: title is required', success: false }
-  if (!content) return { content: 'Error: content is required', success: false }
-
-  const { saveNote } = await import('../../data/notes')
-  const id = `note-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const now = new Date().toISOString()
-  const saved = await saveNote(workspace, {
-    id,
-    title,
-    content,
-    category,
-    createdAt: now,
-    updatedAt: now,
-  }, projectId)
-  return { content: `项目笔记已保存：「${saved.title}」(${saved.id})`, success: true }
-}
-
-async function execDeleteNote(args: Record<string, unknown>, workspace: string, projectId?: string): Promise<ExecResult> {
-  const noteId = String(args.noteId ?? '').trim()
-  if (!noteId) return { content: 'Error: noteId is required', success: false }
-
-  const { deleteNote } = await import('../../data/notes')
-  await deleteNote(workspace, noteId, projectId)
-  return { content: `项目笔记已删除：${noteId}`, success: true }
 }
 
 /* ---- 文件上传到云存储 ---- */
@@ -1211,6 +1341,7 @@ async function execBrowserAction(
   action: BrowserActionType,
   args: Record<string, unknown>,
   projectId?: string,
+  runtimeContext?: ToolRuntimeContext,
 ): Promise<ExecResult> {
   const appId = args.appId ? String(args.appId) : scopedBrowserAppId(projectId)
   const mergedArgs = appId ? { ...args, appId } : args
@@ -1249,9 +1380,9 @@ async function execBrowserAction(
             viewport: pageInfo.viewport,
             visibleElements: pageInfo.elements ?? [],
             hint: cloudUrl
-              ? '截图已上传到云存储，可直接使用 cloudUrl 访问图片'
+              ? '截图已上传到云存储。如需分析截图内容，请调用 analyze_image 工具，image 参数传 cloudUrl。'
               : screenshotPath
-              ? '截图已保存到本地'
+              ? '截图已保存到本地。如需分析截图内容，请调用 analyze_image 工具。'
               : undefined,
           }, null, 2),
           success: true,
@@ -1387,7 +1518,7 @@ function openMacScreenRecordingSettings(): void {
   void shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture').catch(() => {})
 }
 
-async function execDesktopScreenshot(args: Record<string, unknown>, logScope?: string): Promise<ExecResult> {
+async function execDesktopScreenshot(args: Record<string, unknown>, logScope?: string, runtimeContext?: ToolRuntimeContext): Promise<ExecResult> {
   const rawWidth = args.width
   const rawHeight = args.height
   const width = rawWidth === undefined ? undefined : Number(rawWidth)
@@ -1484,7 +1615,7 @@ async function execDesktopScreenshot(args: Record<string, unknown>, logScope?: s
   const payload = {
     displayId: source.display_id,
     screenshotPath,
-    cloudUrl: cloudUrl || undefined,  // 添加cloudUrl字段
+    cloudUrl: cloudUrl || undefined,
     width: size.width,
     height: size.height,
     displayWidth: display.size.width,
@@ -1492,6 +1623,9 @@ async function execDesktopScreenshot(args: Record<string, unknown>, logScope?: s
     displayBoundsX: display.bounds.x,
     displayBoundsY: display.bounds.y,
     displayScaleFactor: display.scaleFactor,
+    hint: cloudUrl
+      ? '截图已上传到云存储。如需分析截图内容，请调用 analyze_image 工具，image 参数传 cloudUrl。'
+      : '截图已保存到本地。如需分析截图内容，请调用 analyze_image 工具，image 参数传 data URL。',
   }
 
   log('DESKTOP_SCREENSHOT_RESULT', {

@@ -15,6 +15,8 @@ import { shortText, normalizeStringArray, safeParseObject, toText } from './memo
 import type { TaskMemoryEntry } from './memory-normalize'
 import { listNotes } from '../notes/notes-crud'
 import { loadTaskMemoriesForRecall } from './memory-crud'
+import fs from 'node:fs/promises'
+import path from 'node:path'
 
 /* ------------------------------------------------------------------ */
 /*  类型                                                                 */
@@ -296,6 +298,76 @@ async function selectRecallCandidatesByTool(
 }
 
 /* ------------------------------------------------------------------ */
+/*  项目规则文件（.taco/rules.md）                                       */
+/* ------------------------------------------------------------------ */
+
+const RULES_DIR = '.taco'
+const RULES_FILE = 'rules.md'
+
+/**
+ * 读取项目规则文件。若文件不存在但 DB 中有历史手动记忆，则自动迁移到文件。
+ * 返回一个合成 ProjectNote 数组（最多一个元素）。
+ */
+async function readProjectRulesOrMigrate(
+  workspace: string,
+  projectId?: string,
+): Promise<ProjectNote[]> {
+  const rulesPath = path.join(workspace, RULES_DIR, RULES_FILE)
+
+  // 1. 尝试读取规则文件
+  try {
+    const content = await fs.readFile(rulesPath, 'utf-8')
+    return [{
+      id: 'project-rules',
+      title: '项目规则',
+      content,
+      category: 'other' as ProjectNote['category'],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }]
+  } catch (err: any) {
+    if (err.code !== 'ENOENT') {
+      log('PROJECT_RULES_READ_ERROR', { error: err.message })
+      return []
+    }
+  }
+
+  // 2. 文件不存在，尝试从 DB 迁移历史手动记忆
+  try {
+    const dbNotes = await listNotes(workspace, projectId)
+    if (!dbNotes || dbNotes.length === 0) return []
+
+    const lines: string[] = ['# 项目规则（从历史手动记忆迁移）', '']
+    for (const note of dbNotes) {
+      lines.push(`## ${note.title}`)
+      lines.push(`- 分类: ${note.category}`)
+      lines.push(`- 时间: ${note.updatedAt || note.createdAt || ''}`)
+      lines.push('')
+      lines.push(note.content)
+      lines.push('')
+      lines.push('---')
+      lines.push('')
+    }
+    const content = lines.join('\n')
+    await fs.mkdir(path.join(workspace, RULES_DIR), { recursive: true })
+    await fs.writeFile(rulesPath, content, 'utf-8')
+    log('PROJECT_RULES_MIGRATED', { count: dbNotes.length, path: rulesPath })
+
+    return [{
+      id: 'project-rules',
+      title: '项目规则',
+      content,
+      category: 'other' as ProjectNote['category'],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }]
+  } catch (migrateErr: any) {
+    log('PROJECT_RULES_MIGRATE_ERROR', { error: migrateErr.message })
+    return []
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  召回主逻辑                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -305,12 +377,12 @@ export async function recallBackgroundContext(
   userQuery: string,
   options?: BuildBackgroundContextOptions,
 ): Promise<{ notes: ProjectNote[]; taskMemories: TaskMemoryEntry[]; recalled: RecalledItem[]; meta: RecallMeta; debugCandidates: RecallDebugCandidate[] }> {
-  const manualNotes = (await listNotes(workspace, projectId))
-    .map((note) => ({
+  const manualNotes = await readProjectRulesOrMigrate(workspace, projectId)
+    .then((notes) => notes.map((note) => ({
       ...note,
       title: stripControlChars(note.title),
       content: stripControlChars(note.content),
-    }))
+    })))
   const taskMemories = (await loadTaskMemoriesForRecall(workspace, projectId))
     .map((task) => ({
       ...task,

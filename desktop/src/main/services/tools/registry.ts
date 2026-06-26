@@ -24,6 +24,7 @@ const ALWAYS_AVAILABLE_TOOL_NAMES = [
   'mcp_list_tools',
   'mcp_call',
   'upload_file',
+  'analyze_image',
 ]
 
 function filterToolDefinitions(allowedToolNames?: Iterable<string>): ToolDefinition[] {

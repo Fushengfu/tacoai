@@ -15,6 +15,7 @@ export type {
   RiskLevel,
   RiskInfo,
   RiskCategory,
+  AuthLevel,
 } from '../services/tools/risk-assessor'
 
 export {
@@ -44,4 +45,9 @@ export {
 export {
   assessToolCallsRisk,
   RISK_CATEGORY_INFO,
+  setGlobalAuthLevel,
+  getGlobalAuthLevel,
+  saveAuthLevel,
+  loadAuthLevel,
+  computeProjectScope,
 } from '../services/tools/risk-assessor'

@@ -337,6 +337,14 @@
   margin: 0.15em 0;
 }
 
+/* Markdown 内嵌图片缩略图 */
+.markdown-inline-image {
+  transition: opacity 0.15s ease;
+}
+.markdown-inline-image:hover {
+  opacity: 0.85;
+}
+
 /* ---- Thinking Block（<think> 标签折叠组件） ---- */
 .thinking-block {
   margin-bottom: 10px;

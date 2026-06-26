@@ -7,6 +7,8 @@ type GeneralSettingsPanelProps = {
   recallDebugEnabled: boolean
   themeMode: ThemeMode
   projectRulesDraft: string
+  projectRulesFilePath: string
+  projectRulesLoading: boolean
   cachedUpdateStatus: AppUpdateCheckResult | null
   updateChecking: boolean
   updateCheckSummary: string
@@ -28,6 +30,8 @@ export function GeneralSettingsPanel({
   recallDebugEnabled,
   themeMode,
   projectRulesDraft,
+  projectRulesFilePath,
+  projectRulesLoading,
   cachedUpdateStatus,
   updateChecking,
   updateCheckSummary,
@@ -76,9 +80,9 @@ export function GeneralSettingsPanel({
       </div>
 
       <div className="settings-card" style={{ marginTop: 16 }}>
-        <div className="settings-card-title">项目规则注入</div>
+        <div className="settings-card-title">项目规则</div>
         <div className="settings-card-desc">
-          这里填写的规则会在每次请求时自动注入到 system prompt（仅当前项目生效）。
+          此项目根目录下的 <code>{projectRulesFilePath}</code> 文件。AI 每轮对话都会自动读取此文件内容作为项目规则注入上下文。可直接在此编辑内容，点击"保存"写入文件。
         </div>
         <label className="settings-field">
           <span>规则内容</span>
@@ -87,7 +91,8 @@ export function GeneralSettingsPanel({
             rows={6}
             value={projectRulesDraft}
             onChange={(e) => onProjectRulesDraftChange(e.target.value)}
-            placeholder="例如：\n1. 后端统一使用 snake_case JSON 字段\n2. 禁止引入新的全局状态管理库\n3. 所有新增接口必须补充错误码说明"
+            disabled={projectRulesLoading}
+            placeholder={projectRulesLoading ? '正在读取文件...' : '例如：\n1. 后端统一使用 snake_case JSON 字段\n2. 禁止引入新的全局状态管理库\n3. 所有新增接口必须补充错误码说明'}
           />
         </label>
         <div className="settings-action-row">
@@ -98,7 +103,7 @@ export function GeneralSettingsPanel({
             type="button"
             className="settings-action-btn"
             onClick={() => onProjectRulesChange?.(projectRulesDraft.trim())}
-            disabled={!onProjectRulesChange}
+            disabled={!onProjectRulesChange || projectRulesLoading}
           >
             保存项目规则
           </button>

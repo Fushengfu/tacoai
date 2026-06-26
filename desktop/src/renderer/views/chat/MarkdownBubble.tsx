@@ -199,9 +199,11 @@ type MarkdownBubbleProps = {
   streaming?: boolean
   workspace?: string
   onOpenProjectFile?: (filePath: string) => void
+  /** 点击图片时触发预览回调（传入图片 src） */
+  onImagePreview?: (src: string) => void
 }
 
-export function MarkdownBubble({ content, streaming, workspace, onOpenProjectFile }: Readonly<MarkdownBubbleProps>) {
+export function MarkdownBubble({ content, streaming, workspace, onOpenProjectFile, onImagePreview }: Readonly<MarkdownBubbleProps>) {
   const parsed = useMemo(() => parseThinkTag(content), [content])
 
   // 思考完成状态：如果没有思考内容则忽略；流式中跟随 thinkingDone
@@ -243,6 +245,25 @@ export function MarkdownBubble({ content, streaming, workspace, onOpenProjectFil
             // 覆盖 pre 元素：避免 react-markdown v10 自动包裹 <pre> 导致嵌套
             pre({ children }) {
               return <>{children}</>
+            },
+            // 覆盖 img 元素：缩略图展示 + 点击预览
+            img({ src, alt, ...props }) {
+              if (!src) return null
+              return (
+                <img
+                  src={src}
+                  alt={alt || '图片'}
+                  className="markdown-inline-image"
+                  style={{ maxWidth: '300px', maxHeight: '200px', cursor: 'pointer', borderRadius: '4px', display: 'block', margin: '8px 0' }}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (onImagePreview) {
+                      onImagePreview(src)
+                    }
+                  }}
+                  {...props}
+                />
+              )
             },
             code({ className, children, node, ...rest }) {
               const rawCode = extractText(children)

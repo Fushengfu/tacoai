@@ -92,7 +92,6 @@ export const IpcChannel = {
   /** Skills 管理 */
   SKILLS_LIST: 'skills:list',
   SKILLS_INSTALL: 'skills:install',
-  SKILLS_INSTALL_PRESET: 'skills:install-preset',
   SKILLS_UNINSTALL: 'skills:uninstall',
   SKILLS_TOGGLE: 'skills:toggle',
   SKILLS_PREVIEW: 'skills:preview',
@@ -100,6 +99,8 @@ export const IpcChannel = {
 
   /** Agent 自动授权分类设置 */
   AGENT_AUTO_APPROVE: 'agent:auto-approve',
+  /** Agent 授权级别设置（auto / standard / manual） */
+  AGENT_SET_AUTH_LEVEL: 'agent:set-auth-level',
 
   /** 项目笔记/记忆 */
   NOTES_LIST: 'notes:list',

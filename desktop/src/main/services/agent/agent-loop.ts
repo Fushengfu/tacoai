@@ -14,7 +14,7 @@ import { createHash } from 'node:crypto'
 import type { ChatMessage, ProviderOverrides, TokenUsage } from '../../ai/llm'
 import type { ProviderKey } from '../../ai/llm'
 import { requestChatCompletion, requestStreamWithTools } from '../../ai/llm'
-import { getFilteredToolDefinitions, buildAllowedToolNamesForRequest, executeToolCalls, assessToolCallsRisk, setBrowserAutoApproved, setDesktopAutoApproved, getWorkspaceTree, getToolDesignPromptBlock, getAutoApproveCategories } from '../../tools'
+import { getFilteredToolDefinitions, buildAllowedToolNamesForRequest, executeToolCalls, assessToolCallsRisk, setBrowserAutoApproved, setDesktopAutoApproved, getWorkspaceTree, getToolDesignPromptBlock, getAutoApproveCategories, loadAuthLevel, getGlobalAuthLevel } from '../../tools'
 import type { ToolCall, ToolResult, RiskInfo } from '../../tools'
 import { log } from '../../system/logger'
 import { gitCommit, gitEnsureRepo } from '../../project/git'
@@ -160,6 +160,11 @@ export async function runAgent(
 ): Promise<void> {
   const taskStartedAt = Date.now()
   const isGitAutoOpsEnabled = () => getAutoApproveCategories().includes('git_ops')
+
+  // 加载项目授权级别（跟随项目持久化）
+  if (projectId) {
+    loadAuthLevel(projectId)
+  }
   
   // 超时保护
   const loopTimeoutTimer = setTimeout(() => {
@@ -1298,18 +1303,26 @@ export async function runAgent(
       const confirmId = `plan-${crypto.randomUUID()}`
       log('AGENT_PLAN', { confirmId, plan: planCall.function.arguments }, logScope)
 
-      // 以 plan 类型的 risk 触发确认流程（复用现有 confirm 机制）
-      const planRisks: RiskInfo[] = [{
-        toolCallId: planCall.id,
-        toolName: 'propose_plan',
-        level: 'warning',
-        reason: '执行计划需要确认',
-        detail: planCall.function.arguments,
-      }]
-      onEvent?.({ type: 'confirm', confirmId, toolCalls: [planCall], risks: planRisks })
+      let approved: boolean
 
-      const approved = await waitForConfirm(confirmId, signal)
-      log('AGENT_PLAN_CONFIRM', { confirmId, approved }, logScope)
+      // auto 模式：跳过计划确认，直接批准
+      if (getGlobalAuthLevel() === 'auto') {
+        log('AGENT_PLAN_AUTO_APPROVED', { confirmId, reason: 'auto mode' }, logScope)
+        approved = true
+      } else {
+        // 以 plan 类型的 risk 触发确认流程（复用现有 confirm 机制）
+        const planRisks: RiskInfo[] = [{
+          toolCallId: planCall.id,
+          toolName: 'propose_plan',
+          level: 'warning',
+          reason: '执行计划需要确认',
+          detail: planCall.function.arguments,
+        }]
+        onEvent?.({ type: 'confirm', confirmId, toolCalls: [planCall], risks: planRisks })
+
+        approved = await waitForConfirm(confirmId, signal)
+        log('AGENT_PLAN_CONFIRM', { confirmId, approved }, logScope)
+      }
 
       // 等待确认期间可能被中断
       if (signal?.aborted) {
@@ -1491,6 +1504,7 @@ export async function runAgent(
     const results = await executeToolCalls(toolCalls, workspace, signal, logScope, projectId, {
       allowedToolNames,
       activatedSkillIds,
+      overrides,
     })
     if (signal?.aborted) {
       log('AGENT_ABORTED', { round, reason: 'signal aborted during tool execution' }, logScope)

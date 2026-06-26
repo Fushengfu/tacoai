@@ -224,6 +224,8 @@ type ChatPanelProps = {
   runTokenStats?: RunTokenStats
   /** 当前模型是否支持视觉理解 */
   supportsVision?: boolean
+  /** 当前项目 ID（用于授权级别持久化） */
+  projectId?: string
   /** 当前在编辑器中打开的文件路径（非变更文件） */
   viewingFile?: string | null
   /** 文件编辑器初始定位（行/列） */
@@ -292,6 +294,7 @@ export function ChatPanel({
   onOpenFileView,
   projectTokenStats,
   runTokenStats,
+  projectId,
 }: Readonly<ChatPanelProps>) {
   const hasProviders = configuredProviders.length > 0
   const isNearBottomRef = useRef<boolean>(true)
@@ -303,6 +306,23 @@ export function ChatPanel({
   
   // ── 语言切换 ──
   const { language, toggleLanguage, t, isZhCN } = useLanguage()
+
+  // ── 授权级别（跟随项目持久化）──
+  const [authLevel, setAuthLevel] = useState<'auto' | 'standard' | 'manual'>(() => {
+    if (projectId) {
+      const stored = localStorage.getItem(`taco-auth-level:${projectId}`)
+      if (stored === 'auto' || stored === 'manual') return stored
+    }
+    return 'standard'
+  })
+
+  const handleAuthLevelChange = useCallback((level: 'auto' | 'standard' | 'manual') => {
+    setAuthLevel(level)
+    if (projectId) {
+      localStorage.setItem(`taco-auth-level:${projectId}`, level)
+      window.taco.agent.setAuthLevel(level, projectId)
+    }
+  }, [projectId])
 
   // ── 图片附件状态 ──
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([])
@@ -1459,7 +1479,7 @@ export function ChatPanel({
         </button>
         {isThinkOpen && (
           <div className="step-thinking-body">
-            <MarkdownBubble content={cleaned} workspace={workspace} onOpenProjectFile={(path) => openFile(path)} />
+            <MarkdownBubble content={cleaned} workspace={workspace} onOpenProjectFile={(path) => openFile(path)} onImagePreview={setPreviewImageUrl} />
           </div>
         )}
       </div>
@@ -1950,6 +1970,7 @@ export function ChatPanel({
                           content={visibleContent}
                           workspace={workspace}
                           onOpenProjectFile={(path) => openFile(path)}
+                          onImagePreview={setPreviewImageUrl}
                         />
                       ) : null
                     })()}
@@ -2216,6 +2237,7 @@ export function ChatPanel({
                     streaming
                     workspace={workspace}
                     onOpenProjectFile={(path) => openFile(path)}
+                    onImagePreview={setPreviewImageUrl}
                   />
                 ) : (
                   <div className="typing-indicator">
@@ -2414,6 +2436,18 @@ export function ChatPanel({
                     </div>
                     <span className="composer-context-bar-label">{contextPercent}%</span>
                   </div>
+                )}
+                {projectId && (
+                  <select
+                    className="composer-auth-select"
+                    value={authLevel}
+                    onChange={(e) => handleAuthLevelChange(e.target.value as 'auto' | 'standard' | 'manual')}
+                    title="授权级别"
+                  >
+                    <option value="auto">自动执行</option>
+                    <option value="standard">标准</option>
+                    <option value="manual">手动确认</option>
+                  </select>
                 )}
             </div>
             <div className="composer-right">

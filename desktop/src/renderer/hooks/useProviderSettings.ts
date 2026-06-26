@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AppStateModelConfig, AppStateProvidersPayload } from '../../shared/ipc'
 import type { ModelConfig, ProviderForms, ProviderId } from '../types'
 import { providers, resolveModelConfigDisplayLabel, PROVIDER_DEFAULT_BASE_URLS } from '../constants'
@@ -139,6 +139,7 @@ export function useProviderSettings() {
   const [modelConfigs, setModelConfigs] = useState<ModelConfig[]>([])
   const [activeModelConfigId, setActiveModelConfigIdState] = useState('')
   const [hydrated, setHydrated] = useState(false)
+  const hydrateFailedRef = useRef(false)
 
   useEffect(() => {
     let cancelled = false
@@ -171,9 +172,8 @@ export function useProviderSettings() {
         setActiveModelConfigIdState(nextActiveModelConfigId)
         if (!cancelled) setHydrated(true)
       } catch (err) {
-        console.error('[app-state] 加载模型配置失败（允许实时保存，空数据覆盖由后端防护）:', err)
-        /* 即使 DB 加载失败，也必须设置 hydrated=true，否则实时保存永久禁用。
-           空数据覆盖数据库的风险由 saveAppProvidersStateToDb 中的安全防护兜底（检测到空数组且 DB 有数据时拒绝覆盖）。 */
+        console.error('[app-state] 加载模型配置失败，跳过空数据保存:', err)
+        hydrateFailedRef.current = true
         if (!cancelled) setHydrated(true)
       }
     }
@@ -186,7 +186,10 @@ export function useProviderSettings() {
 
   useEffect(() => {
     if (!hydrated) return
+    /* 首次加载失败时 modelConfigs 为空，跳过保存以免误清 DB 数据 */
+    if (hydrateFailedRef.current && modelConfigs.length <= 0) return
     const payload = toPersistPayload(modelConfigs, activeModelConfigId)
+    hydrateFailedRef.current = false
     void window.taco.appState.saveProviders(payload).catch((err) => {
       console.error('[app-state] 保存模型配置失败:', err)
     })
