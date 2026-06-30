@@ -6,7 +6,7 @@
  * 点击文件节点 → 预览/编辑，Ctrl+S 保存；支持 Git 变更对比。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import type { FileTreeEntry } from '../../shared/ipc'
 import { FileEditor } from '../views/editor/FileEditor'
 import { DiffEditor } from '@monaco-editor/react'
@@ -25,6 +25,12 @@ export interface WorkspaceTreeProps {
   isOpen?: boolean
   /** 受控模式：开关变化回调 */
   onOpenChange?: (open: boolean) => void
+}
+
+/** 暴露给父组件的命令式接口 */
+export interface WorkspaceTreeHandle {
+  /** 打开指定文件到标签页（自动打开面板、加载目录树） */
+  openFile: (filePath: string) => void
 }
 
 /* ------------------------------------------------------------------ */
@@ -581,7 +587,7 @@ const DEFAULT_TREE_WIDTH = 280
 const MIN_TREE_WIDTH = 180
 const MAX_TREE_WIDTH = 500
 
-export function WorkspaceTree({ workspace, className, isOpen: isOpenProp, onOpenChange }: WorkspaceTreeProps) {
+const WorkspaceTree = forwardRef<WorkspaceTreeHandle, WorkspaceTreeProps>(function WorkspaceTree({ workspace, className, isOpen: isOpenProp, onOpenChange }, ref) {
   const [isOpenInternal, setIsOpenInternal] = useState(false)
   const isControlled = isOpenProp !== undefined
   const isOpen = isControlled ? isOpenProp : isOpenInternal
@@ -913,6 +919,35 @@ export function WorkspaceTree({ workspace, className, isOpen: isOpenProp, onOpen
     setConfirmDelete(null)
   }, [confirmDelete, refreshTree])
 
+  /* 暴露命令式接口给父组件 */
+  useImperativeHandle(ref, () => ({
+    openFile(filePath: string) {
+      // 打开面板
+      setIsOpen(true)
+      // 目录树为空则加载
+      if (tree.length === 0) {
+        loadTree()
+      }
+      // 构造 FileTreeEntry 并加入标签页
+      const fileName = filePath.split('/').pop() || filePath
+      const entry: FileTreeEntry = {
+        name: fileName,
+        path: filePath,
+        absPath: `${workspace}/${filePath}`,
+        isDirectory: false,
+      }
+      setOpenFiles(prev => {
+        const existingIdx = prev.findIndex(f => f.path === filePath)
+        if (existingIdx >= 0) {
+          setActiveFileIndex(existingIdx)
+          return prev
+        }
+        setActiveFileIndex(prev.length)
+        return [...prev, entry]
+      })
+    },
+  }), [setIsOpen, tree.length, loadTree, workspace])
+
   return (
     <>
       {/* 触发按钮 */}
@@ -1087,6 +1122,7 @@ export function WorkspaceTree({ workspace, className, isOpen: isOpenProp, onOpen
       )}
     </>
   )
-}
+})
 
+export { WorkspaceTree }
 export default WorkspaceTree

@@ -361,6 +361,10 @@ export function setupBridgeClientConnectedHandler(): void {
       // 同步所有项目的 modelConfigId（供 project-states 推送给移动端）
       mgr.syncProjectModelConfigs(state.threadsState.threads)
 
+      // 立即推送项目状态给刚连接的移动端，确保移动端同步所有项目运行状态
+      // （哪些在处理中、活跃任务 ID 等），避免移动端重连后显示过期状态
+      mgr.pushProjectsOnDemand(orderedProjectIds)
+
       // 不再主动推送全量快照，改为等待手机端发送 bridge:request-state 请求
       // 手机端优先从本地 SQLite 缓存加载消息，按需请求快照
       log('BRIDGE_CLIENT_CONNECTED_NO_SNAPSHOT', {

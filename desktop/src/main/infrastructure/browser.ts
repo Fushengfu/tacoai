@@ -294,6 +294,31 @@ async function getElementCenter(wc: Electron.WebContents, selector: string): Pro
 }
 
 /**
+ * Playwright 风格的自动等待：轮询等待元素在 DOM 中出现，超时后抛出错误。
+ * 用于 click/type/hover/drag 等依赖选择器的操作前自动等待。
+ */
+async function waitForElement(
+  wc: Electron.WebContents,
+  selector: string,
+  timeoutMs: number = 5000,
+): Promise<void> {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    const exists = await wc.executeJavaScript(`
+      (function() {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return false;
+        const style = getComputedStyle(el);
+        return style.display !== 'none' && style.visibility !== 'hidden' && el.offsetParent !== null;
+      })()
+    `).catch(() => false)
+    if (exists) return
+    await new Promise(r => setTimeout(r, 200))
+  }
+  throw new Error(`等待元素超时 (${timeoutMs}ms): ${selector}`)
+}
+
+/**
  * 在外部 BrowserWindow 上执行浏览器自动化操作。
  *
  * 使用 Electron 内置的 CDP (debugger API) 和 webContents 原生接口：
@@ -323,14 +348,14 @@ async function executeExternalBrowserAction(payload: BrowserActionPayload, appId
     const tryCdp = async (fromSurface: boolean): Promise<string> => {
       const result = await withTimeout(
         wc.debugger.sendCommand('Page.captureScreenshot', { format: 'png', fromSurface }) as Promise<{ data: string }>,
-        6000,
+        3000,
         `Page.captureScreenshot fromSurface=${fromSurface}`
       )
       if (!result?.data) throw new Error('empty screenshot data')
       return `data:image/png;base64,${result.data}`
     }
     const tryCapturePage = async (): Promise<string> => {
-      const image = await withTimeout(wc.capturePage(), 6000, 'webContents.capturePage')
+      const image = await withTimeout(wc.capturePage(), 4000, 'webContents.capturePage')
       const dataUrl = image.toDataURL()
       if (!dataUrl) throw new Error('empty capturePage data')
       return dataUrl
@@ -359,26 +384,33 @@ async function executeExternalBrowserAction(payload: BrowserActionPayload, appId
     const extWinExisting = getExternalBrowserWin(appId)
     if (extWinExisting) {
       const currentUrl = extWinExisting.webContents.getURL()
+      // 更新 windowLabel 备注（如果传了新的）
+      const existingInst = browserInstances.get(appId)
+      if (existingInst && params.windowLabel) {
+        existingInst.windowLabel = String(params.windowLabel)
+      }
       if (isSameOriginUrl(currentUrl, finalUrl)) {
         focusExternalBrowser(appId)
         return { success: true, data: `浏览器[${appId}]已在 ${currentUrl}，已聚焦窗口（未重新加载）` }
       }
     }
 
-    openExternalBrowser(finalUrl, appId)
-    // 等待页面加载完成
+    openExternalBrowser(finalUrl, appId, params.windowLabel ? String(params.windowLabel) : undefined)
+    // 等待页面加载完成 + CDP stealth 注入就绪（类 Playwright page.goto 行为）
     const extWin = getExternalBrowserWin(appId)
     if (extWin) {
       await new Promise<void>((resolve) => {
         const timer = setTimeout(resolve, 10000)
         extWin.webContents.once('did-finish-load', () => { clearTimeout(timer); resolve() })
       })
+      // 确保 CDP 附加 + stealth 注入完成，后续操作不再有竞态
+      await ensureCdpAttached(extWin.webContents, appId).catch(() => {})
     }
     return { success: true, data: `已在浏览器[${appId}]中打开 ${finalUrl}` }
   }
 
   const extWin = getExternalBrowserWin(appId)
-  if (!extWin) return { success: false, error: `浏览器[${appId}]未打开，请先使用 browser_navigate 打开目标页面` }
+  if (!extWin) return { success: false, error: `浏览器[${appId}]未打开，请先导航到目标页面（使用 run_skill_script('browser-automation', 'navigate', {url})）` }
 
   const wc = extWin.webContents
 
@@ -410,7 +442,7 @@ async function executeExternalBrowserAction(payload: BrowserActionPayload, appId
           if (!extWin.isVisible()) {
             extWin.showInactive()
             temporarilyShown = true
-            await sleep(120)
+            await sleep(300)
           }
           dataUrl = await captureScreenshotDataUrl(wc)
         } finally {
@@ -473,6 +505,8 @@ async function executeExternalBrowserAction(payload: BrowserActionPayload, appId
         let cx: number, cy: number
 
         if (selector) {
+          // Playwright 风格：操作前自动等待元素可见
+          await waitForElement(wc, selector)
           // 通过选择器定位
           await wc.executeJavaScript(`
             document.querySelector(${JSON.stringify(selector)})?.scrollIntoView({ block: 'center', behavior: 'instant' })
@@ -510,8 +544,14 @@ async function executeExternalBrowserAction(payload: BrowserActionPayload, appId
         const submit = Boolean(params.submit)
         const clearFirst = params.clear !== false // 默认 true，先清空
 
+        // Playwright 风格：操作前自动等待元素可见
+        if (selector) {
+          await waitForElement(wc, selector)
+        }
+
         // 滚动到目标元素可见
         if (selector) {
+          await waitForElement(wc, selector)
           await wc.executeJavaScript(`
             document.querySelector(${JSON.stringify(selector)})?.scrollIntoView({ block: 'center', behavior: 'instant' })
           `)
@@ -880,6 +920,7 @@ async function executeExternalBrowserAction(payload: BrowserActionPayload, appId
 
         // 起点
         if (params.fromSelector) {
+          await waitForElement(wc, String(params.fromSelector))
           await wc.executeJavaScript(`
             document.querySelector(${JSON.stringify(String(params.fromSelector))})?.scrollIntoView({ block: 'center', behavior: 'instant' })
           `)
@@ -1052,6 +1093,8 @@ interface BrowserInstance {
   appId: string
   seed: string
   ua: string
+  /** AI 自定义备注标签（仅用于 list 时辨认用途，不影响 appId 定位） */
+  windowLabel?: string
 }
 
 /** appId → BrowserWindow 实例映射 */
@@ -1473,12 +1516,14 @@ function buildStealthJS(seed: string, ua: string): string {
 `
 }
 
-/** 打开浏览器窗口（指定 appId），如已存在则复用 */
-export function openExternalBrowser(url: string, appId: string = DEFAULT_APP_ID) {
-  console.log(`[Browser] openExternalBrowser called: url="${url}", appId="${appId}"`)
+/** 打开浏览器窗口（指定 appId），如已存在则复用。windowLabel 仅作备注，不影响 appId 定位 */
+export function openExternalBrowser(url: string, appId: string = DEFAULT_APP_ID, windowLabel?: string) {
+  console.log(`[Browser] openExternalBrowser called: url="${url}", appId="${appId}", windowLabel="${windowLabel || ''}"`)
 
   const existing = browserInstances.get(appId)
   if (existing && !existing.win.isDestroyed()) {
+    // 更新 windowLabel 备注
+    if (windowLabel) existing.windowLabel = windowLabel
     const currentUrl = existing.win.webContents.getURL()
     console.log(`[Browser] 已有窗口, currentUrl="${currentUrl}"`)
     if (isSameOriginUrl(currentUrl, url)) {
@@ -1523,6 +1568,7 @@ export function openExternalBrowser(url: string, appId: string = DEFAULT_APP_ID)
     appId,
     seed: profile.seed,
     ua: profile.ua,
+    windowLabel: windowLabel || undefined,
   }
   browserInstances.set(appId, instance)
   syncMainWindowPriority()
@@ -1591,10 +1637,10 @@ export function openExternalBrowser(url: string, appId: string = DEFAULT_APP_ID)
     win.loadURL(errorHtml)
   })
 
-  // stealth 脚本仅在 dom-ready 注入
-  const stealthScript = buildStealthJS(profile.seed, profile.ua)
+  // CDP 级别的 stealth 注入由 ensureCdpAttached 统一管理（首次交互操作时触发），
+  // 此处不再通过 dom-ready + executeJavaScript 重复注入，避免双重注入竞态。
   wc.on('dom-ready', () => {
-    wc.executeJavaScript(stealthScript).catch(() => {})
+    // 页面加载完成的轻量标记，不再注入 stealth
   })
 
   // 拦截新窗口请求（target="_blank"、window.open 等）→ 在当前窗口导航
@@ -1724,6 +1770,39 @@ function getBrowserInstance(appId: string = DEFAULT_APP_ID): BrowserInstance | n
   const inst = browserInstances.get(appId)
   if (inst && !inst.win.isDestroyed()) return inst
   return null
+}
+
+/** 列出所有活跃的浏览器窗口详细信息（含备注标签） */
+export function listBrowserInstances(): Array<{
+  appId: string
+  windowLabel?: string
+  url: string
+  title: string
+  width: number
+  height: number
+}> {
+  const infos: Array<{
+    appId: string
+    windowLabel?: string
+    url: string
+    title: string
+    width: number
+    height: number
+  }> = []
+  for (const [appId, inst] of browserInstances) {
+    if (!inst.win.isDestroyed()) {
+      const bounds = inst.win.getBounds()
+      infos.push({
+        appId,
+        windowLabel: inst.windowLabel,
+        url: inst.win.webContents.getURL(),
+        title: inst.win.getTitle(),
+        width: bounds.width,
+        height: bounds.height,
+      })
+    }
+  }
+  return infos
 }
 
 /** 列出所有活跃的浏览器窗口 appId */

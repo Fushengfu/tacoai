@@ -4,7 +4,6 @@ import type { ProjectTokenStats, RunTokenStats } from '../../hooks/useChat'
 import type { EditorId } from '../../../shared/ipc'
 import { MarkdownBubble } from './MarkdownBubble'
 import { DiffView } from '../DiffView'
-import { FileEditor } from '../editor/FileEditor'
 import { ToolResultContent } from '../ToolResultContent'
 import { useLanguage } from '../../hooks/useLanguage'
 import { ProviderSelect } from '../ProviderSelect'
@@ -175,6 +174,12 @@ type ChatPanelProps = {
   activeTaskStartedAt?: number
   draft: string
   onDraftChange: (value: string) => void
+  /** 当前项目附带的图片（按项目隔离，由 App.tsx 管理） */
+  attachedImages: AttachedImage[]
+  onAttachedImagesChange: (value: AttachedImage[] | ((prev: AttachedImage[]) => AttachedImage[])) => void
+  /** 当前项目附带的文件（按项目隔离，由 App.tsx 管理） */
+  attachedAssets: AttachedAsset[]
+  onAttachedAssetsChange: (value: AttachedAsset[] | ((prev: AttachedAsset[]) => AttachedAsset[])) => void
   sending: boolean
   onSend: (content: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } } | { type: 'video_url'; video_url: { url: string } } | { type: 'audio_url'; audio_url: { url: string } }>) => void
   onStop: () => void
@@ -226,20 +231,6 @@ type ChatPanelProps = {
   supportsVision?: boolean
   /** 当前项目 ID（用于授权级别持久化） */
   projectId?: string
-  /** 当前在编辑器中打开的文件路径（非变更文件） */
-  viewingFile?: string | null
-  /** 文件编辑器初始定位（行/列） */
-  viewingSelection?: { line: number; column: number } | null
-  /** 工作空间路径（FileEditor 需要） */
-  viewingWorkspace?: string
-  /** 关闭文件编辑器 */
-  onCloseFileEditor?: () => void
-  /** 文件保存后的回调（刷新目录树等） */
-  onFileSaved?: () => void
-  /** 文件编辑后的回调（用于同步变更列表） */
-  onFileEdited?: (change: FileChangeInfo) => void
-  /** 从编辑器切换到 Diff 视图 */
-  onViewDiffFromEditor?: () => void
   /** 在中间区域打开文件查看/编辑 */
   onOpenFileView?: (filePath: string, forceDiff?: boolean, selection?: { line: number; column: number } | null) => void
 }
@@ -251,6 +242,10 @@ export function ChatPanel({
   activeTaskStartedAt,
   draft,
   onDraftChange,
+  attachedImages,
+  onAttachedImagesChange,
+  attachedAssets,
+  onAttachedAssetsChange,
   sending,
   onSend,
   onStop,
@@ -284,13 +279,6 @@ export function ChatPanel({
   onRollbackBeforeMsg,
   contextPercent,
   supportsVision,
-  viewingFile,
-  viewingSelection,
-  viewingWorkspace,
-  onCloseFileEditor,
-  onFileSaved,
-  onFileEdited,
-  onViewDiffFromEditor,
   onOpenFileView,
   projectTokenStats,
   runTokenStats,
@@ -324,10 +312,7 @@ export function ChatPanel({
     }
   }, [projectId])
 
-  // ── 图片附件状态 ──
-  const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([])
-  /** 文件附件（代码、文档、视频、音频等） - 以卡片形式显示 */
-  const [attachedAssets, setAttachedAssets] = useState<AttachedAsset[]>([])
+  // ── 图片附件和文件附件状态（由 App.tsx 按项目隔离管理，通过 props 传入）──
   /** 语言切换下拉框展开状态 */
   const [langDropdownOpen, setLangDropdownOpen] = useState(false)
   const langDropdownRef = useRef<HTMLDivElement>(null)
@@ -352,7 +337,7 @@ export function ChatPanel({
       if (target.classList.contains('file-chip-remove')) {
         chip.remove()
         // 从 attachedAssets 中移除
-        setAttachedAssets(prev => prev.filter(a => a.path !== path))
+        onAttachedAssetsChange(prev => prev.filter(a => a.path !== path))
         // 更新 draft
         updateDraftFromDiv()
       }
@@ -401,6 +386,72 @@ export function ChatPanel({
     onDraftChange(text)
   }
 
+  /** 从 div 提取文本（与 updateDraftFromDiv 逻辑一致，但不触发 onDraftChange） */
+  function extractDivText(div: HTMLDivElement): string {
+    let text = ''
+    for (const node of div.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        text += node.textContent || ''
+      } else if (node.nodeType === Node.ELEMENT_NODE) {
+        const el = node as Element
+        if (el.classList.contains('file-attachment-chip')) {
+          const path = el.getAttribute('data-file-path')
+          if (path) {
+            text += `[FILE]${path}[/FILE]`
+          }
+        } else {
+          text += el.textContent || ''
+        }
+      }
+    }
+    return text
+  }
+
+  /** 将 draft 文本渲染到 contentEditable div（文本节点 + 附件卡片） */
+  function renderDraftToDiv(div: HTMLDivElement, draftText: string) {
+    div.innerHTML = ''
+    const fileRegex = /\[FILE\]([^\[]+)\[\/FILE\]/g
+    let lastIndex = 0
+    let match: RegExpExecArray | null
+    while ((match = fileRegex.exec(draftText)) !== null) {
+      // 文件标签前的普通文本
+      if (match.index > lastIndex) {
+        div.appendChild(document.createTextNode(draftText.slice(lastIndex, match.index)))
+      }
+      // 附件卡片
+      const filePath = match[1]
+      const chip = document.createElement('span')
+      chip.className = 'file-attachment-chip'
+      chip.setAttribute('data-file-path', filePath)
+      chip.contentEditable = 'false'
+      chip.innerHTML = `📄 ${toAssetName(filePath)} <span class="file-chip-remove">×</span>`
+      chip.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement
+        if (target.classList.contains('file-chip-remove')) {
+          chip.remove()
+          onAttachedAssetsChange((prev) => prev.filter((a) => a.path !== filePath))
+          updateDraftFromDiv()
+        }
+      })
+      div.appendChild(chip)
+      lastIndex = match.index + match[0].length
+    }
+    // 剩余文本
+    if (lastIndex < draftText.length) {
+      div.appendChild(document.createTextNode(draftText.slice(lastIndex)))
+    }
+  }
+
+  // 同步 draft prop → contentEditable div（切换项目时 draft 变了但 div 未变）
+  useEffect(() => {
+    const div = inputDivRef.current
+    if (!div) return
+    const divText = extractDivText(div)
+    if (divText !== draft) {
+      renderDraftToDiv(div, draft)
+    }
+  }, [draft])
+
   /** 读取文件为 base64 data URL */
   function readFileAsDataUrl(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -432,7 +483,7 @@ export function ChatPanel({
         uploadStatus: 'pending',
         uploadProgress: 0,
       }
-      setAttachedImages((prev) => [...prev, placeholder].slice(0, MAX_IMAGES))
+      onAttachedImagesChange((prev) => [...prev, placeholder].slice(0, MAX_IMAGES))
       
       // 异步上传
       uploadImage(file, id)
@@ -443,14 +494,14 @@ export function ChatPanel({
   async function uploadImage(file: File, id: string) {
     try {
       // 更新状态为uploading
-      setAttachedImages((prev) => prev.map(img => 
+      onAttachedImagesChange((prev) => prev.map(img => 
         img.id === id ? { ...img, uploadStatus: 'uploading', uploadProgress: 10 } : img
       ))
       
       // 读取为data URL
       const dataUrl = await readFileAsDataUrl(file)
       
-      setAttachedImages((prev) => prev.map(img => 
+      onAttachedImagesChange((prev) => prev.map(img => 
         img.id === id ? { ...img, dataUrl, uploadProgress: 30 } : img
       ))
       
@@ -462,7 +513,7 @@ export function ChatPanel({
         throw new Error('上传返回的 URL 为空')
       }
       
-      setAttachedImages((prev) => prev.map(img => 
+      onAttachedImagesChange((prev) => prev.map(img => 
         img.id === id ? { 
           ...img, 
           cloudUrl: result.publicUrl, 
@@ -472,7 +523,7 @@ export function ChatPanel({
       ))
     } catch (err) {
       console.error('图片上传失败:', err)
-      setAttachedImages((prev) => prev.map(img => 
+      onAttachedImagesChange((prev) => prev.map(img => 
         img.id === id ? { 
           ...img, 
           uploadStatus: 'error', 
@@ -485,11 +536,11 @@ export function ChatPanel({
   }
 
   function removeImage(id: string) {
-    setAttachedImages((prev) => prev.filter((img) => img.id !== id))
+    onAttachedImagesChange((prev) => prev.filter((img) => img.id !== id))
   }
 
   function removeAsset(id: string) {
-    setAttachedAssets((prev) => prev.filter((item) => item.id !== id))
+    onAttachedAssetsChange((prev) => prev.filter((item) => item.id !== id))
   }
 
   function toAssetName(filePath: string): string {    const normalized = String(filePath ?? '').replace(/\\/g, '/')
@@ -611,7 +662,7 @@ export function ChatPanel({
       for (const filePath of assetPaths) {
         insertFileChip(filePath)
         // 添加到 attachedAssets 状态
-        setAttachedAssets((prev) => {
+        onAttachedAssetsChange((prev) => {
           const exists = prev.some(a => a.path === filePath)
           if (exists) return prev
           return [...prev, {
@@ -639,7 +690,7 @@ export function ChatPanel({
       while (Date.now() - startTime < maxWait) {
         // 使用函数式更新获取最新状态
         let allDone = false
-        setAttachedImages(prev => {
+        onAttachedImagesChange(prev => {
           const stillPending = prev.filter(img => 
             img.uploadStatus === 'pending' || img.uploadStatus === 'uploading'
           )
@@ -666,10 +717,10 @@ export function ChatPanel({
     }
     
     // 2. 添加已上传的图片（使用 cloudUrl）
-    // 注意：上面的等待循环通过 setAttachedImages 更新了内部状态，
+    // 注意：上面的等待循环通过 onAttachedImagesChange 更新了内部状态，
     // 但闭包中的 attachedImages 变量仍指向旧值。必须用函数式更新读取最新状态。
     let latestImages: AttachedImage[] = []
-    setAttachedImages(prev => { latestImages = prev; return prev })
+    onAttachedImagesChange(prev => { latestImages = prev; return prev })
     const doneImages = latestImages.filter(img => img.uploadStatus === 'done' && img.cloudUrl)
     for (const img of doneImages) {
       parts.push({ type: 'image_url', image_url: { url: img.cloudUrl } })
@@ -695,8 +746,8 @@ export function ChatPanel({
     
     
     // 清空附件状态
-    setAttachedImages([])
-    setAttachedAssets([])
+    onAttachedImagesChange([])
+    onAttachedAssetsChange([])
     
     // 清空输入框
     onDraftChange('')
@@ -850,6 +901,31 @@ export function ChatPanel({
   const visibleMessages = locallyHiddenMessageCount > 0
     ? messages.slice(-visibleMessageCount)
     : messages
+
+  // 扫描所有可见消息中待确认的步骤（底部浮动通知条使用）
+  const pendingConfirms = useMemo(() => {
+    const results: Array<{
+      confirmId: string
+      isPlan: boolean
+      planData?: { summary?: string; steps?: string[]; reasoning?: string }
+      risks?: AgentStep['risks']
+    }> = []
+    for (const msg of visibleMessages) {
+      if (!msg.agentSteps) continue
+      for (const step of msg.agentSteps) {
+        if (step.status !== 'confirm' && step.status !== 'retry_confirm') continue
+        if (!step.confirmId) continue
+        if (respondedConfirms.has(step.confirmId)) continue
+        const isPlan = step.risks?.some((r) => r.toolName === 'propose_plan') ?? false
+        let planData: { summary?: string; steps?: string[]; reasoning?: string } | undefined
+        if (isPlan) {
+          try { planData = JSON.parse(step.risks![0].detail) } catch { /* ignore */ }
+        }
+        results.push({ confirmId: step.confirmId, isPlan, planData, risks: step.risks })
+      }
+    }
+    return results
+  }, [visibleMessages, respondedConfirms])
 
   const loadOlderMessages = useCallback(() => {
     if (!hasHiddenHistory) return
@@ -1453,7 +1529,7 @@ export function ChatPanel({
     setEditingAttachments([])
   }
 
-  const showPendingThinkingHint = sending && !showStreamBubble && !selectedFileChange && !viewingFile
+  const showPendingThinkingHint = sending && !showStreamBubble && !selectedFileChange
   /* ---- Agent 步骤内部渲染辅助函数 ---- */
 
   function renderStepThinking(msg: ChatMsg, step: AgentStep, isStepRunning: boolean) {
@@ -1765,7 +1841,7 @@ export function ChatPanel({
       )}
 
       {/* Diff 视图（选中变更文件时覆盖对话区域） */}
-      {selectedFileChange && !viewingFile && (
+      {selectedFileChange && (
         <section className="diff-overlay">
           <DiffView
             change={selectedFileChange}
@@ -1773,43 +1849,17 @@ export function ChatPanel({
             status={selectedFileStatus}
             onAccept={onAcceptFile ? () => onAcceptFile(selectedFileChange.filePath) : undefined}
             onReject={onRejectFile ? () => onRejectFile(selectedFileChange.filePath) : undefined}
-            workspace={viewingWorkspace}
-            onSaved={onFileSaved}
-          />
-        </section>
-      )}
-
-      {/* 文件编辑器（点击目录树中的普通文件时覆盖对话区域） */}
-      {viewingFile && viewingWorkspace && onCloseFileEditor && (
-        <section className="diff-overlay">
-          <FileEditor
-            filePath={viewingFile}
-            workspace={viewingWorkspace}
-            onClose={onCloseFileEditor}
-            onSaved={(change) => {
-              onFileSaved?.()
-              if (change && onFileEdited) {
-                onFileEdited({
-                  filePath: change.filePath,
-                  oldContent: change.oldContent,
-                  newContent: change.newContent,
-                })
-              }
-            }}
-            onViewDiff={onViewDiffFromEditor}
-            onNavigateToFile={(nextFilePath, line, column) => {
-              onOpenFileView?.(nextFilePath, false, { line, column })
-            }}
-            initialSelection={viewingSelection ?? null}
+            workspace={workspace}
+            onSaved={() => {}}
           />
         </section>
       )}
 
       {/* Conversation */}
       <section
-        className={`conversation ${showTerminal && !selectedFileChange && !viewingFile ? 'with-terminal' : ''}`}
+        className={`conversation ${showTerminal && !selectedFileChange ? 'with-terminal' : ''}`}
         ref={scrollRef}
-        style={selectedFileChange || viewingFile ? { display: 'none' } : undefined}
+        style={selectedFileChange ? { display: 'none' } : undefined}
       >
         {totalHistoryCount === 0 && !showStreamBubble && (
           <div className="empty-state">
@@ -2261,6 +2311,39 @@ export function ChatPanel({
         </div>
 
       </section>
+
+      {/* 底部浮动确认通知条 — 出现确认时始终可见，不随内容滚动 */}
+      {pendingConfirms.length > 0 && (
+        <div className="confirm-bar">
+          {pendingConfirms.map((pc, i) => (
+            <div key={pc.confirmId} className="confirm-bar-item">
+              <div className="confirm-bar-title">
+                <span className="confirm-bar-icon">{pc.isPlan ? '\u{1F4CB}' : '\u26A0\uFE0F'}</span>
+                <span>{pc.isPlan ? '执行计划 — 需要你的确认' : '操作授权 — 需要你的确认'}</span>
+                {pendingConfirms.length > 1 && (
+                  <span className="confirm-bar-count">({i + 1}/{pendingConfirms.length})</span>
+                )}
+              </div>
+              {pc.isPlan && pc.planData?.summary && (
+                <div className="confirm-bar-summary">{pc.planData.summary}</div>
+              )}
+              {!pc.isPlan && pc.risks && pc.risks.length > 0 && (
+                <div className="confirm-bar-summary">
+                  {pc.risks.map((r) => r.reason).join('；')}
+                </div>
+              )}
+              <div className="confirm-bar-actions">
+                <button type="button" className="agent-confirm-btn approve" onClick={() => handleConfirmResponse(pc.confirmId, true)}>
+                  {pc.isPlan ? '确认执行' : '允许执行'}
+                </button>
+                <button type="button" className="agent-confirm-btn deny" onClick={() => handleConfirmResponse(pc.confirmId, false)}>
+                  {pc.isPlan ? '需要调整' : '拒绝'}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Terminal 已提升至 App.tsx 层，各项目独立存活 */}
 

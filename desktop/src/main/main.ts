@@ -11,6 +11,7 @@ import { logError, logInfo, getLogDir } from './infrastructure/logger'
 import { IpcChannel } from '../shared/ipc'
 import { shutdownAllMcp } from './infrastructure/mcp'
 import { cleanupAllTerminals } from './infrastructure/terminal'
+import { cleanupAllAITerminals } from './services/terminal/ai-terminal-manager'
 import { scheduleStartupUpdateCheck } from './infrastructure/app-updater'
 import { startUsageReporter, stopUsageReporter } from './usage-reporter'
 import {
@@ -184,6 +185,8 @@ app.on('before-quit', (event) => {
   setForceQuit(true)
   // 清理所有终端进程
   cleanupAllTerminals()
+  // 清理所有 AI 终端进程
+  cleanupAllAITerminals()
   // 停止使用统计上报
   stopUsageReporter()
   // 通知 renderer 立即保存状态
@@ -211,6 +214,8 @@ app.on('window-all-closed', () => {
   shutdownAllMcp()
   // 清理所有终端进程
   cleanupAllTerminals()
+  // 清理所有 AI 终端进程
+  cleanupAllAITerminals()
   if (process.platform !== 'darwin') {
     app.quit()
   }

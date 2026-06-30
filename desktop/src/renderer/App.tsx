@@ -33,6 +33,7 @@ import { useUpdateCheck } from './hooks/useUpdateCheck'
 import { useBridgeInit } from './hooks/useBridgeInit'
 import { useFileViewer } from './hooks/useFileViewer'
 import { WorkspaceTree } from './components/WorkspaceTree'
+import type { WorkspaceTreeHandle } from './components/WorkspaceTree'
 import { TerminalPanel } from './views/terminal/TerminalPanel'
 
 export default function App() {
@@ -50,13 +51,16 @@ export default function App() {
   const fileViewer = useFileViewer({ onSwitchToChat: () => setMiddleView('chat') })
   
   /* ---- 本地 UI 状态 ---- */
-  const [draft, setDraft] = useState('')
+  const [draftByProject, setDraftByProject] = useState<Record<string, string>>({})
+  const [imagesByProject, setImagesByProject] = useState<Record<string, AttachedImage[]>>({})
+  const [assetsByProject, setAssetsByProject] = useState<Record<string, AttachedAsset[]>>({})
   const [showSettings, setShowSettings] = useState(false)
   const [showTokenReport, setShowTokenReport] = useState(false)
   const [terminalOpenMap, setTerminalOpenMap] = useState<Record<string, boolean>>({})
   const [showBridgePanel, setShowBridgePanel] = useState(false)
   const [showMobileDownloadPanel, setShowMobileDownloadPanel] = useState(false)
   const [showWorkspaceTree, setShowWorkspaceTree] = useState(false)
+  const workspaceTreeRef = useRef<WorkspaceTreeHandle>(null)
   const [editor, setEditor] = useState<EditorId>(() =>
     (localStorage.getItem('taco.editor') as EditorId) || 'cursor'
   )
@@ -143,6 +147,37 @@ export default function App() {
   /* ---- Derived state ---- */
   const activeThread = threadStore.activeThread
   const tid = activeThread?.id ?? ''
+
+  // 按项目记忆输入框草稿，切换项目时自动保留/恢复
+  const draft = useMemo(() => tid ? (draftByProject[tid] ?? '') : '', [tid, draftByProject])
+  const setDraft = useCallback((value: string) => {
+    if (tid) {
+      setDraftByProject((prev) => ({ ...prev, [tid]: value }))
+    }
+  }, [tid])
+
+  // 按项目记忆附件图片
+  const attachedImages = useMemo(() => tid ? (imagesByProject[tid] ?? []) : [], [tid, imagesByProject])
+  const setAttachedImages = useCallback((value: AttachedImage[] | ((prev: AttachedImage[]) => AttachedImage[])) => {
+    if (tid) {
+      setImagesByProject((prev) => {
+        const next = typeof value === 'function' ? value(prev[tid] ?? []) : value
+        return { ...prev, [tid]: next }
+      })
+    }
+  }, [tid])
+
+  // 按项目记忆文件附件
+  const attachedAssets = useMemo(() => tid ? (assetsByProject[tid] ?? []) : [], [tid, assetsByProject])
+  const setAttachedAssets = useCallback((value: AttachedAsset[] | ((prev: AttachedAsset[]) => AttachedAsset[])) => {
+    if (tid) {
+      setAssetsByProject((prev) => {
+        const next = typeof value === 'function' ? value(prev[tid] ?? []) : value
+        return { ...prev, [tid]: next }
+      })
+    }
+  }, [tid])
+
   const sessions = activeThread?.sessions ?? []
   const sessionId = useMemo(() => {
     if (!activeThread || sessions.length <= 0) return ''
@@ -281,8 +316,6 @@ export default function App() {
         }
       }
       
-      // 清空 UI 状态
-      setDraft('')
       fileViewer.reset()
 
       // 通知主进程：项目切换完成，可以推送 bridge:state 给移动端
@@ -358,13 +391,11 @@ export default function App() {
 
   function handleNewThread() {
     threadStore.createThread('新项目', providerSettings.activeModelConfigId || undefined)
-    setDraft('')
     fileViewer.reset()
   }
 
   function handleSwitchThread(id: string) {
     threadStore.switchThread(id)
-    setDraft('')
     fileViewer.reset()
   }
 
@@ -376,20 +407,33 @@ export default function App() {
       }
     }
     chat.clearProjectTokenStats(threadId)
+    setDraftByProject((prev) => {
+      const next = { ...prev }
+      delete next[threadId]
+      return next
+    })
+    setImagesByProject((prev) => {
+      const next = { ...prev }
+      delete next[threadId]
+      return next
+    })
+    setAssetsByProject((prev) => {
+      const next = { ...prev }
+      delete next[threadId]
+      return next
+    })
     threadStore.deleteThread(threadId)
   }
 
   function handleNewSession() {
     if (!tid) return
     threadStore.createSession(tid)
-    setDraft('')
     fileViewer.reset()
   }
 
   function handleSwitchSession(sid: string) {
     if (!tid) return
     threadStore.switchSession(tid, sid)
-    setDraft('')
     fileViewer.reset()
   }
 
@@ -761,6 +805,7 @@ export default function App() {
             </button>
             {currentWorkspace && (
               <WorkspaceTree
+                ref={workspaceTreeRef}
                 workspace={currentWorkspace}
                 isOpen={showWorkspaceTree}
                 onOpenChange={(open) => {
@@ -900,7 +945,7 @@ export default function App() {
             key={tid}
             pane="chat"
             title="聊天面板"
-            resetKey={`${sessionId}:${messages.length}:${fileViewer.selectedFile ?? ''}:${fileViewer.viewingFile ?? ''}`}
+            resetKey={`${sessionId}:${messages.length}`}
             onError={reportPaneRenderError}
           >
             <ChatPanel
@@ -909,6 +954,10 @@ export default function App() {
               streamingContent={sessionStreamingContent}
               draft={draft}
               onDraftChange={setDraft}
+              attachedImages={attachedImages}
+              onAttachedImagesChange={setAttachedImages}
+              attachedAssets={attachedAssets}
+              onAttachedAssetsChange={setAttachedAssets}
               sending={sessionSending}
               onSend={(contentParts) => handleSend(contentParts)}
               onStop={() => sessionId && chat.stopSending(sessionId)}
@@ -941,14 +990,10 @@ export default function App() {
               onToggleTerminal={() => setTerminalOpenMap((prev) => ({ ...prev, [tid]: false }))}
               onRollbackBeforeMsg={async () => {}}
               supportsVision={Boolean(currentModelConfig?.supportsVision)}
-              viewingFile={fileViewer.viewingFile}
-              viewingSelection={fileViewer.viewingSelection}
-              viewingWorkspace={currentWorkspace || undefined}
-              onCloseFileEditor={fileViewer.handleCloseFileEditor}
-              onFileSaved={() => {}}
-              onFileEdited={() => {}}
-              onViewDiffFromEditor={fileViewer.handleViewDiffFromEditor}
-              onOpenFileView={fileViewer.handleOpenFileView}
+              onOpenFileView={(path) => {
+                setShowWorkspaceTree(true)
+                workspaceTreeRef.current?.openFile(path)
+              }}
               contextPercent={contextPercent}
               projectTokenStats={projectTokenStats}
               runTokenStats={runTokenStats}
