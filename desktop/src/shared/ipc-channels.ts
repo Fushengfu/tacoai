@@ -207,4 +207,7 @@ export const IpcChannel = {
   WINDOW_MINIMIZE: 'window:minimize',
   /** renderer → main, 关闭主窗口 */
   WINDOW_CLOSE: 'window:close',
+
+  /** main → renderer, 语音输入快捷键切换 */
+  VOICE_TOGGLE: 'voice:toggle',
 } as const

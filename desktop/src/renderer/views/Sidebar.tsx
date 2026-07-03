@@ -1,4 +1,5 @@
 import type { Thread } from '../types'
+import type { AppUpdateCheckResult } from '../../shared/ipc'
 import { formatTime } from '../lib/storage'
 import { useState } from 'react'
 import type { MemberInfo } from './LoginModal'
@@ -25,6 +26,16 @@ type SidebarProps = {
   memberInfo: MemberInfo | null
   onLoginClick: () => void
   onLogoutClick: () => void
+  /** 版本检查 */
+  updateStatus: AppUpdateCheckResult | null
+  updateChecking: boolean
+  onCheckUpdate: () => void
+  /** 独立配置页 */
+  onOpenModels: () => void
+  onOpenUpload: () => void
+  onOpenSkills: () => void
+  onOpenNotes: () => void
+  onOpenMcp: () => void
 }
 
 export function Sidebar({
@@ -46,6 +57,14 @@ export function Sidebar({
   memberInfo,
   onLoginClick,
   onLogoutClick,
+  updateStatus,
+  updateChecking,
+  onCheckUpdate,
+  onOpenModels,
+  onOpenUpload,
+  onOpenSkills,
+  onOpenNotes,
+  onOpenMcp,
 }: Readonly<SidebarProps>) {
   const [draggingThreadId, setDraggingThreadId] = useState<string | null>(null)
   const [dragOverThreadId, setDragOverThreadId] = useState<string | null>(null)
@@ -158,34 +177,104 @@ export function Sidebar({
       <div className="sidebar-footer">
         <div className="sidebar-footer-divider" />
         <div className="sidebar-footer-actions">
-          {memberInfo ? (
-            <div className="sidebar-user-area">
-              <div className="sidebar-user-avatar" title={memberInfo.nickname || memberInfo.username}>
-                {memberInfo.avatar ? (
-                  <img src={memberInfo.avatar} alt="" />
-                ) : (
-                  <span>{(memberInfo.nickname || memberInfo.username).charAt(0).toUpperCase()}</span>
-                )}
-              </div>
-              <div className="sidebar-user-popover">
-                <button
-                  className="ghost-btn sidebar-logout-btn"
-                  type="button"
-                  onClick={onLogoutClick}
-                  title="退出登录"
-                >
-                  退出登录
-                </button>
-              </div>
+          <div className="sidebar-user-area">
+            <div className="sidebar-user-avatar" title={memberInfo ? (memberInfo.nickname || memberInfo.username) : '未登录'}>
+              {memberInfo?.avatar ? (
+                <img src={memberInfo.avatar} alt="" />
+              ) : memberInfo ? (
+                <span>{(memberInfo.nickname || memberInfo.username).charAt(0).toUpperCase()}</span>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                  <circle cx="12" cy="7" r="4"/>
+                </svg>
+              )}
             </div>
-          ) : (
-            <button className="ghost-btn sidebar-login-btn" type="button" onClick={onLoginClick}>
-              登录
-            </button>
-          )}
-          <span className="sidebar-settings-btn" role="button" tabIndex={0} onClick={onOpenSettings} onKeyDown={(e) => { if (e.key === 'Enter') onOpenSettings() }}>
-            Settings
-          </span>
+            {memberInfo && <span className="sidebar-user-nickname">{memberInfo.nickname || memberInfo.username}</span>}
+            <div className="sidebar-user-popover">
+              {!memberInfo && (
+                <>
+                  <div className="sidebar-popover-login-cta">
+                    <div className="sidebar-popover-login-cta-title">登录以解锁更多功能</div>
+                    <div className="sidebar-popover-login-cta-desc">登录后可同步项目数据、使用云端模型</div>
+                    <button
+                      className="sidebar-popover-login-cta-btn"
+                      type="button"
+                      onClick={onLoginClick}
+                    >
+                      立即登录 / 注册
+                    </button>
+                  </div>
+                  <div className="sidebar-popover-divider" />
+                </>
+              )}
+              <button
+                className="ghost-btn sidebar-update-btn"
+                type="button"
+                onClick={onOpenSettings}
+              >
+                设置
+              </button>
+              <button
+                className="ghost-btn sidebar-update-btn"
+                type="button"
+                onClick={onOpenModels}
+              >
+                模型配置
+              </button>
+              <button
+                className="ghost-btn sidebar-update-btn"
+                type="button"
+                onClick={onOpenUpload}
+              >
+                上传配置
+              </button>
+              <button
+                className="ghost-btn sidebar-update-btn"
+                type="button"
+                onClick={onOpenSkills}
+              >
+                Skills
+              </button>
+              <button
+                className="ghost-btn sidebar-update-btn"
+                type="button"
+                onClick={onOpenNotes}
+              >
+                记忆
+              </button>
+              <button
+                className="ghost-btn sidebar-update-btn"
+                type="button"
+                onClick={onOpenMcp}
+              >
+                MCP
+              </button>
+              <div className="sidebar-popover-divider" />
+              <button
+                className="ghost-btn sidebar-update-btn"
+                type="button"
+                onClick={onCheckUpdate}
+                disabled={updateChecking}
+              >
+                {updateChecking ? '检查中...' : updateStatus?.success && updateStatus.hasUpdate ? `新版本 v${updateStatus.latestVersion || ''}` : '检查更新'}
+              </button>
+              {memberInfo && (
+                <>
+                  <div className="sidebar-popover-divider" />
+                  <button
+                    className="ghost-btn sidebar-logout-btn"
+                    type="button"
+                    onClick={onLogoutClick}
+                    title="退出登录"
+                  >
+                    退出登录
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
         </div>
       </div>
     </aside>

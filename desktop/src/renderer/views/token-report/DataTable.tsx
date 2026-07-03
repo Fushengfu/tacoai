@@ -16,7 +16,7 @@ function DailyTable({ entries }: { entries: TokenReportEntry[] }) {
   return (
     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
       <thead>
-        <tr style={{ background: 'rgba(255, 255, 255, 0.05)', borderBottom: '1px solid rgba(255, 255, 255, 0.06)' }}>
+        <tr style={{ background: 'var(--tr-bg-alt)', borderBottom: '1px solid var(--tr-border)' }}>
           <th style={{ padding: '12px', textAlign: 'left', fontWeight: 600 }}>日期</th>
           <th style={{ padding: '12px', textAlign: 'right', fontWeight: 600 }}>输入</th>
           <th style={{ padding: '12px', textAlign: 'right', fontWeight: 600 }}>输出</th>
@@ -30,8 +30,8 @@ function DailyTable({ entries }: { entries: TokenReportEntry[] }) {
           <tr 
             key={idx} 
             style={{ 
-              borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
-              background: idx % 2 === 0 ? 'transparent' : 'rgba(255, 255, 255, 0.02)',
+              borderBottom: '1px solid var(--tr-border-light)',
+              background: idx % 2 === 0 ? 'transparent' : 'var(--tr-bg-row)',
             }}
           >
             <td style={{ padding: '12px' }}>
@@ -64,7 +64,7 @@ function ModelTable({ entries }: { entries: TokenReportEntry[] }) {
   return (
     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
       <thead>
-        <tr style={{ background: 'rgba(255, 255, 255, 0.05)', borderBottom: '1px solid rgba(255, 255, 255, 0.06)' }}>
+        <tr style={{ background: 'var(--tr-bg-alt)', borderBottom: '1px solid var(--tr-border)' }}>
           <th style={{ padding: '12px', textAlign: 'left', fontWeight: 600 }}>模型</th>
           <th style={{ padding: '12px', textAlign: 'right', fontWeight: 600 }}>输入</th>
           <th style={{ padding: '12px', textAlign: 'right', fontWeight: 600 }}>输出</th>
@@ -78,8 +78,8 @@ function ModelTable({ entries }: { entries: TokenReportEntry[] }) {
           <tr 
             key={idx} 
             style={{ 
-              borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
-              background: idx % 2 === 0 ? 'transparent' : 'rgba(255, 255, 255, 0.02)',
+              borderBottom: '1px solid var(--tr-border-light)',
+              background: idx % 2 === 0 ? 'transparent' : 'var(--tr-bg-row)',
             }}
           >
             <td style={{ padding: '12px' }}>
@@ -117,10 +117,10 @@ function TaskTable({ entries }: { entries: TokenReportEntry[] }) {
       maxHeight: '500px',
     }}>
       {/* 固定表头 */}
-      <div style={{ flexShrink: 0, borderBottom: '1px solid rgba(255, 255, 255, 0.06)' }}>
+      <div style={{ flexShrink: 0, borderBottom: '1px solid var(--tr-border)' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
           <thead>
-            <tr style={{ background: 'rgba(255, 255, 255, 0.05)' }}>
+            <tr style={{ background: 'var(--tr-bg-alt)' }}>
               <th style={{ padding: '12px', textAlign: 'left', fontWeight: 600 }}>任务</th>
               <th style={{ padding: '12px', textAlign: 'right', fontWeight: 600 }}>输入</th>
               <th style={{ padding: '12px', textAlign: 'right', fontWeight: 600 }}>输出</th>
@@ -139,8 +139,8 @@ function TaskTable({ entries }: { entries: TokenReportEntry[] }) {
                 <tr 
                   key={idx} 
                   style={{ 
-                    borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
-                    background: idx % 2 === 0 ? 'transparent' : 'rgba(255, 255, 255, 0.02)',
+                    borderBottom: '1px solid var(--tr-border-light)',
+                    background: idx % 2 === 0 ? 'transparent' : 'var(--tr-bg-row)',
                   }}
                 >
                   <td style={{ padding: '12px' }}>
@@ -180,7 +180,7 @@ function DailyModelTable({ entries }: { entries: TokenReportEntry[] }) {
     return acc
   }, {} as Record<string, TokenReportEntry[]>)
 
-  const dates = Object.keys(groupedByDate).sort()
+  const dates = Object.keys(groupedByDate).sort().reverse()
 
   return (
     <div style={{ 
@@ -189,10 +189,19 @@ function DailyModelTable({ entries }: { entries: TokenReportEntry[] }) {
       maxHeight: '600px',
     }}>
       {/* 固定表头 */}
-      <div style={{ flexShrink: 0, borderBottom: '1px solid rgba(255, 255, 255, 0.06)' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+      <div style={{ flexShrink: 0, borderBottom: '1px solid var(--tr-border)' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', tableLayout: 'fixed' }}>
+          <colgroup>
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '22%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '8%' }} />
+          </colgroup>
           <thead>
-            <tr style={{ background: 'rgba(255, 255, 255, 0.05)' }}>
+            <tr style={{ background: 'var(--tr-bg-alt)' }}>
               <th style={{ padding: '12px', textAlign: 'left', fontWeight: 600 }}>日期</th>
               <th style={{ padding: '12px', textAlign: 'left', fontWeight: 600 }}>模型</th>
               <th style={{ padding: '12px', textAlign: 'right', fontWeight: 600 }}>输入</th>
@@ -206,7 +215,16 @@ function DailyModelTable({ entries }: { entries: TokenReportEntry[] }) {
       </div>
       {/* 可滚动表体 */}
       <div style={{ flex: 1, overflow: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', tableLayout: 'fixed' }}>
+          <colgroup>
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '22%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '8%' }} />
+          </colgroup>
           <tbody>
             {dates.map((date) => {
               const dayEntries = groupedByDate[date]
@@ -225,11 +243,13 @@ function DailyModelTable({ entries }: { entries: TokenReportEntry[] }) {
                     key={`header-${date}`}
                     style={{ 
                       background: 'rgba(59, 130, 246, 0.1)',
-                      borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
+                      borderBottom: '1px solid var(--tr-border)',
                     }}
                   >
-                    <td colSpan={2} style={{ padding: '10px 12px', fontWeight: 600, color: '#3b82f6', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <CalendarIcon /> {date}
+                    <td colSpan={2} style={{ padding: '10px 12px', fontWeight: 600, color: '#3b82f6' }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+                        <CalendarIcon /> {date}
+                      </span>
                     </td>
                     <td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: 'monospace', color: '#10b981', fontWeight: 500 }}>
                       {formatTokens(dayTotal.inputTokens)}
@@ -252,8 +272,8 @@ function DailyModelTable({ entries }: { entries: TokenReportEntry[] }) {
                     <tr 
                         key={`${date}-${idx}`}
                         style={{ 
-                          borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
-                          background: idx % 2 === 0 ? 'transparent' : 'rgba(255, 255, 255, 0.02)',
+                          borderBottom: '1px solid var(--tr-border-light)',
+                          background: idx % 2 === 0 ? 'transparent' : 'var(--tr-bg-row)',
                         }}
                       >
                         <td style={{ padding: '10px 12px', paddingLeft: '24px', color: 'var(--muted)' }}>↳</td>

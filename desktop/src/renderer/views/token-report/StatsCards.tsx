@@ -36,8 +36,8 @@ export function StatsCards({
         { label: '对话轮次', value: totalStats.turns.toString(), color: '#ec4899' },
       ].map(({ label, value, color }) => (
         <div key={label} style={{ 
-          background: 'rgba(255, 255, 255, 0.03)',
-          border: '1px solid rgba(255, 255, 255, 0.06)',
+          background: 'var(--tr-bg)',
+          border: '1px solid var(--tr-border)',
           borderRadius: '12px',
           padding: '14px',
         }}>

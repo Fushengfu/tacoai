@@ -1,25 +1,16 @@
-import type { ThemeMode } from '../../types'
-import type { AppUpdateCheckResult } from '../../../shared/ipc'
-
 type GeneralSettingsPanelProps = {
   browserDebugMode: boolean
   browserHiddenMode: boolean
   recallDebugEnabled: boolean
-  themeMode: ThemeMode
   projectRulesDraft: string
   projectRulesFilePath: string
   projectRulesLoading: boolean
-  cachedUpdateStatus: AppUpdateCheckResult | null
-  updateChecking: boolean
-  updateCheckSummary: string
   autoApproveCategories: Set<string>
   onBrowserDebugModeChange: (val: boolean) => void
   onBrowserHiddenModeChange: (val: boolean) => void
   onRecallDebugEnabledChange: (val: boolean) => void
-  onThemeModeChange: (mode: ThemeMode) => void
   onProjectRulesDraftChange: (val: string) => void
   onProjectRulesChange?: (rules: string) => void
-  onCheckUpdate: () => void
   onOpenLogDir: () => void
   onUpdateAutoApproveCategories: (categories: Set<string>) => void
 }
@@ -28,21 +19,15 @@ export function GeneralSettingsPanel({
   browserDebugMode,
   browserHiddenMode,
   recallDebugEnabled,
-  themeMode,
   projectRulesDraft,
   projectRulesFilePath,
   projectRulesLoading,
-  cachedUpdateStatus,
-  updateChecking,
-  updateCheckSummary,
   autoApproveCategories,
   onBrowserDebugModeChange,
   onBrowserHiddenModeChange,
   onRecallDebugEnabledChange,
-  onThemeModeChange,
   onProjectRulesDraftChange,
   onProjectRulesChange,
-  onCheckUpdate,
   onOpenLogDir,
   onUpdateAutoApproveCategories,
 }: GeneralSettingsPanelProps) {
@@ -62,24 +47,8 @@ export function GeneralSettingsPanel({
 
   return (
     <>
-      <div className="settings-card" style={{ marginTop: 16 }}>
-        <div className="settings-card-title">主题样式</div>
-        <div className="settings-grid">
-          <label className="settings-field">
-            <span>界面主题</span>
-            <select
-              value={themeMode}
-              onChange={(e) => onThemeModeChange(e.target.value as ThemeMode)}
-            >
-              <option value="dark">深色默认</option>
-              <option value="ocean">海蓝</option>
-              <option value="graphite">石墨</option>
-            </select>
-          </label>
-        </div>
-      </div>
-
-      <div className="settings-card" style={{ marginTop: 16 }}>
+      {/* 项目规则 */}
+      <div className="settings-card">
         <div className="settings-card-title">项目规则</div>
         <div className="settings-card-desc">
           此项目根目录下的 <code>{projectRulesFilePath}</code> 文件。AI 每轮对话都会自动读取此文件内容作为项目规则注入上下文。可直接在此编辑内容，点击"保存"写入文件。
@@ -110,106 +79,49 @@ export function GeneralSettingsPanel({
         </div>
       </div>
 
-      {/* 系统维护 */}
-      <div className="settings-card" style={{ marginTop: 16 }}>
-        <div className="settings-card-title">系统维护</div>
-        {cachedUpdateStatus?.success && cachedUpdateStatus.hasUpdate && (
-          <div className="settings-update-notice">
-            <span>
-              检测到新版本 v{cachedUpdateStatus.latestVersion || ''}，
-              可点击查看并确认是否升级。
-            </span>
-            <button
-              type="button"
-              className="settings-update-notice-btn"
-              onClick={onCheckUpdate}
-              disabled={updateChecking}
-            >
-              查看更新
-            </button>
-          </div>
-        )}
-        <div className="settings-action-row">
-          <div className="settings-action-info">
-            <strong>版本检查与升级</strong>
-            <small>检查前会先调用登录接口获取 token，再请求版本检查接口；发现新版本后可点击下载更新包。</small>
-            {updateCheckSummary && <small>{updateCheckSummary}</small>}
-          </div>
-          <button
-            type="button"
-            className="settings-action-btn"
-            onClick={onCheckUpdate}
-            disabled={updateChecking}
-          >
-            {updateChecking ? '检查中...' : '检查更新'}
-          </button>
-        </div>
+      {/* 调试与自动化 */}
+      <div className="settings-card">
+        <div className="settings-card-title">调试与自动化</div>
+
         <div className="settings-action-row">
           <div className="settings-action-info">
             <strong>日志目录</strong>
-            <small>查看 AI 请求、响应及工具调用的完整日志记录，用于调试和问题排查。</small>
+            <small>查看 AI 请求、响应及工具调用的完整日志。</small>
           </div>
-          <button
-            type="button"
-            className="settings-action-btn"
-            onClick={onOpenLogDir}
-          >
+          <button type="button" className="settings-action-btn" onClick={onOpenLogDir}>
             打开日志目录
           </button>
         </div>
-      </div>
 
-      {/* 调试 */}
-      <div className="settings-card" style={{ marginTop: 16 }}>
-        <div className="settings-card-title">调试</div>
+        <hr className="settings-card-divider" />
 
         <label className="settings-toggle-row">
           <span className="settings-toggle-label">
             <strong>记忆召回调试日志</strong>
-            <small>开启后记录本轮召回候选、分数、入选原因与预算裁剪详情（仅日志可见）。</small>
+            <small>记录本轮召回候选、分数、入选原因与预算裁剪详情（仅日志可见）。</small>
           </span>
-          <input
-            type="checkbox"
-            className="settings-toggle"
-            checked={recallDebugEnabled}
-            onChange={(e) => onRecallDebugEnabledChange(e.target.checked)}
-          />
-        </label>
-      </div>
-
-      {/* 浏览器自动化 */}
-      <div className="settings-card" style={{ marginTop: 16 }}>
-        <div className="settings-card-title">浏览器自动化</div>
-
-        <label className="settings-toggle-row">
-          <span className="settings-toggle-label">
-            <strong>调试模式</strong>
-            <small>开启后，打开浏览器窗口时自动开启 DevTools 控制台，方便调试页面。对已打开的窗口立即生效。</small>
-          </span>
-          <input
-            type="checkbox"
-            className="settings-toggle"
-            checked={browserDebugMode}
-            onChange={(e) => onBrowserDebugModeChange(e.target.checked)}
-          />
+          <input type="checkbox" className="settings-toggle" checked={recallDebugEnabled} onChange={(e) => onRecallDebugEnabledChange(e.target.checked)} />
         </label>
 
         <label className="settings-toggle-row">
           <span className="settings-toggle-label">
-            <strong>隐藏窗口模式</strong>
-            <small>开启后，AI 打开浏览器时默认隐藏窗口（后台执行）。关闭后会显示浏览器窗口。</small>
+            <strong>浏览器调试模式</strong>
+            <small>打开浏览器窗口时自动开启 DevTools 控制台。</small>
           </span>
-          <input
-            type="checkbox"
-            className="settings-toggle"
-            checked={browserHiddenMode}
-            onChange={(e) => onBrowserHiddenModeChange(e.target.checked)}
-          />
+          <input type="checkbox" className="settings-toggle" checked={browserDebugMode} onChange={(e) => onBrowserDebugModeChange(e.target.checked)} />
+        </label>
+
+        <label className="settings-toggle-row">
+          <span className="settings-toggle-label">
+            <strong>浏览器隐藏窗口</strong>
+            <small>AI 打开浏览器时默认隐藏窗口（后台执行）。</small>
+          </span>
+          <input type="checkbox" className="settings-toggle" checked={browserHiddenMode} onChange={(e) => onBrowserHiddenModeChange(e.target.checked)} />
         </label>
       </div>
 
-      {/* 代理自动授权设置 */}
-      <div className="settings-card" style={{ marginTop: 16 }}>
+      {/* 代理自动授权 */}
+      <div className="settings-card">
         <div className="settings-card-title">代理自动授权</div>
         <div className="settings-card-desc">
           勾选的操作类型将在 Agent 模式下自动执行，无需每次手动确认。未勾选的操作仍需用户授权。

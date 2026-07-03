@@ -21,7 +21,7 @@ import {
   importProjectNotes,
 } from '../../data/memory-db'
 import { TACO_HOME, projectScope, workspaceHash } from '../../../shared/paths'
-import { shortText, normalizeIso, pathExists, readJsonArray } from '../memory/memory-utils'
+import { shortText, normalizeIso, pathExists, readJsonArray } from '../../sdk/agent/memory/memory-utils'
 
 /* ------------------------------------------------------------------ */
 /*  常量 & 路径                                                           */

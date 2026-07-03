@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Editor from '@monaco-editor/react'
 import type { Monaco } from '@monaco-editor/react'
 import type { editor as monacoEditor } from 'monaco-editor'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import type { FileTreeEntry } from '../../../shared/ipc'
 import { configureMonaco, getMonacoLanguage, MONACO_COMMON_OPTIONS } from '../../lib/monaco-setup'
 
@@ -114,6 +116,7 @@ export function FileEditor({
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null)
+  const [isPreview, setIsPreview] = useState(false)
 
   const editorRef = useRef<monacoEditor.IStandaloneCodeEditor | null>(null)
   const monacoRef = useRef<Monaco | null>(null)
@@ -131,6 +134,7 @@ export function FileEditor({
   const isModified = content !== null && content !== originalContent
   const ext = filePath.includes('.') ? filePath.split('.').pop()?.toLowerCase() ?? '' : ''
   const isImageFile = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'svg'].includes(ext)
+  const isMarkdown = ext === 'md' || fileName.endsWith('.md')
 
   /** 加载文件内容 */
   useEffect(() => {
@@ -358,6 +362,16 @@ export function FileEditor({
           {isTruncated && <span className="file-editor-truncated">尾部预览</span>}
         </div>
         <div className="file-editor-actions">
+          {isMarkdown && (
+            <button
+              type="button"
+              className={`file-editor-btn preview${isPreview ? ' active' : ''}`}
+              onClick={() => setIsPreview((p) => !p)}
+              title={isPreview ? '切换到编辑模式' : '预览 Markdown'}
+            >
+              {isPreview ? '编辑' : '预览'}
+            </button>
+          )}
           {onViewDiff && (
             <button type="button" className="file-editor-btn diff" onClick={onViewDiff} title="查看变更 Diff">
               Diff
@@ -393,6 +407,10 @@ export function FileEditor({
           <div className="file-editor-status">
             <span>二进制文件，无法编辑</span>
             <span className="file-editor-size-detail">{formatSize(fileSize)}</span>
+          </div>
+        ) : isMarkdown && isPreview && content !== null ? (
+          <div className="file-editor-markdown-preview">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
           </div>
         ) : content !== null ? (
           <Editor

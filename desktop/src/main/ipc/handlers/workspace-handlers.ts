@@ -11,7 +11,7 @@ import { watch as fsWatch, type Dirent, type FSWatcher } from 'node:fs'
 import * as nodePath from 'node:path'
 import { IpcChannel } from '../../../shared/ipc'
 import type { FileTreeEntry } from '../../../shared/ipc'
-import { log } from '../../system/logger'
+import { log } from '../../infrastructure/logger'
 
 /* ------------------------------------------------------------------ */
 /*  Workspace tree                                                     */

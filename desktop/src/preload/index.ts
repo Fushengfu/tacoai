@@ -432,6 +432,15 @@ const tacoApi: TacoApi = {
     getModels: (): Promise<GatewayModelsResponse> =>
       ipcRenderer.invoke(IpcChannel.GATEWAY_GET_MODELS),
   },
+  voice: {
+    onToggle: (callback: () => void) => {
+      const handler = () => callback()
+      ipcRenderer.on(IpcChannel.VOICE_TOGGLE, handler)
+      return () => {
+        ipcRenderer.removeListener(IpcChannel.VOICE_TOGGLE, handler)
+      }
+    },
+  },
   bridge: {
     /** 获取手机端 APK 下载信息（从版本检查 API 获取 download_url） */
     getMobileApkInfo: (packageName: string): Promise<MobileApkInfo | null> =>

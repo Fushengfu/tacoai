@@ -169,7 +169,15 @@ function imageMimeFromPath(filePath: string): string | null {
 export async function handleFileRead(
   _event: IpcMainInvokeEvent, filePath: string,
 ): Promise<{ content: string | null; size: number; isBinary: boolean; dataUrl?: string; truncated?: boolean }> {
-  const stat = await fs.stat(filePath)
+  let stat: Awaited<ReturnType<typeof fs.stat>>
+  try {
+    stat = await fs.stat(filePath)
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') {
+      return { content: '', size: 0, isBinary: false }
+    }
+    throw err
+  }
   const size = stat.size
   const imageMime = imageMimeFromPath(filePath)
 

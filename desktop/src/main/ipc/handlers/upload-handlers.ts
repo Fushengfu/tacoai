@@ -10,9 +10,9 @@ import * as fsSync from 'node:fs'
 import * as nodePath from 'node:path'
 import { IpcChannel } from '../../../shared/ipc'
 import type { IpcUploadConfig } from '../../../shared/ipc'
-import { uploadDataUrlToStorage } from '../../ai/llm'
+import { uploadDataUrlToStorage } from '../../sdk/agent/llm/client'
 import { loadUploadConfigFromDb, saveUploadConfigToDb } from '../../data/memory-db'
-import { log } from '../../system/logger'
+import { log } from '../../infrastructure/logger'
 
 /* ------------------------------------------------------------------ */
 /*  Image upload to cloud storage                                      */

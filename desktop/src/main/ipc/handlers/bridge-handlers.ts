@@ -10,9 +10,9 @@ import { IpcChannel } from '../../../shared/ipc'
 import type { BridgeStatusPayload } from '../../../shared/ipc'
 import { getBridgeManager } from '../../bridge/bridge-manager'
 import type { BridgeChatMessage as BridgeChatMessageType } from '../../bridge/bridge-protocol'
-import { getAppState } from '../../system/app-state'
+import { getAppState } from '../../infrastructure/app-state'
 import { loadChatStoreSessionPage, loadChatStoreMessageById } from '../../data/memory-db'
-import { log, logError } from '../../system/logger'
+import { log, logError } from '../../infrastructure/logger'
 import { agentAbortControllers } from './chat-handlers'
 import { handleGatewayGetModels } from './gateway-handlers'
 
@@ -421,7 +421,7 @@ export function setupBridgeDataHandler(): void {
             respond({ type: 'bridge:workspace-tree', requestId, tree: [], error: 'path required' })
             break
           }
-          const { getWorkspaceTree } = await import('../../tools')
+          const { getWorkspaceTree } = await import('../../sdk/agent/tools')
           const result = await getWorkspaceTree(cwd)
           
           // 将扁平 entries 转换为嵌套树形结构（适配移动端期望的格式）

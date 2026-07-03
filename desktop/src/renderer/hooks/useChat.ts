@@ -1291,12 +1291,20 @@ export function useChat() {
             const finishedAt = Date.now()
             if (typeof event.finalText === 'string') accumulated = event.finalText
             if (activePlan && !activePlan.endedAt) activePlan.endedAt = finishedAt
+            // 清除所有待确认步骤（防止主进程超时自动拒绝后 UI 残留确认按钮）
+            for (const s of steps) {
+              if (s.status === 'confirm' || s.status === 'retry_confirm') s.status = 'done'
+            }
             flushAgentMsg(accumulated, buildTaskTiming(taskStartedAt, finishedAt))
             cleanup()
             resolve()
           } else if (event.type === 'error') {
             const finishedAt = Date.now()
             if (activePlan && !activePlan.endedAt) activePlan.endedAt = finishedAt
+            // 清除所有待确认步骤（防止主进程超时自动拒绝后 UI 残留确认按钮）
+            for (const s of steps) {
+              if (s.status === 'confirm' || s.status === 'retry_confirm') s.status = 'done'
+            }
             flushAgentMsg(accumulated, buildTaskTiming(taskStartedAt, finishedAt))
             cleanup()
             reject(new Error(event.message))

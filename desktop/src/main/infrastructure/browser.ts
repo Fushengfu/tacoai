@@ -10,6 +10,7 @@ import { BrowserWindow, app, ipcMain, session } from 'electron'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import * as nodePath from 'node:path'
 import { IpcChannel } from '../../shared/ipc-channels'
+import { mainWindow } from '../window/window-manager'
 import type {
   BrowserActionPayload,
   BrowserActionResult,
@@ -1147,15 +1148,13 @@ function loadOrCreateProfile(appId: string): BrowserProfile {
 
 /** 向渲染进程发送外部浏览器状态 */
 function sendExternalStatus(status: ExternalBrowserStatus) {
-  const mainWin = BrowserWindow.getAllWindows().find(w => !browserInstances.has(getAppIdByWin(w)))
-  if (mainWin && !mainWin.isDestroyed()) {
-    mainWin.webContents.send(IpcChannel.EXTERNAL_BROWSER_STATUS, status)
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(IpcChannel.EXTERNAL_BROWSER_STATUS, status)
   }
 }
 
 function getMainWindow(): BrowserWindow | null {
-  const mainWin = BrowserWindow.getAllWindows().find(w => !browserInstances.has(getAppIdByWin(w)))
-  if (mainWin && !mainWin.isDestroyed()) return mainWin
+  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
   return null
 }
 
@@ -1715,8 +1714,12 @@ export function openExternalBrowser(url: string, appId: string = DEFAULT_APP_ID,
       if (wc.debugger?.isAttached()) wc.debugger.detach()
     } catch { /* ignore */ }
     forceCloseAppIds.delete(appId)
-    browserInstances.delete(appId)
-    sendExternalStatus({ type: 'closed', appId })
+    // 仅在 closeExternalBrowser 还未清理时才清理（避免重复发送 closed 通知）
+    const current = browserInstances.get(appId)
+    if (current && current.win === win) {
+      browserInstances.delete(appId)
+      sendExternalStatus({ type: 'closed', appId })
+    }
     syncMainWindowPriority()
   })
 
@@ -1735,8 +1738,11 @@ export function closeExternalBrowser(appId: string = DEFAULT_APP_ID) {
     forceCloseAppIds.add(appId)
     inst.win.close()
   }
+  // 无论窗口状态如何，清理实例并通知渲染进程
   browserInstances.delete(appId)
   syncMainWindowPriority()
+  // 始终通知渲染进程清除标签（不再依赖 closed 事件可能送达）
+  sendExternalStatus({ type: 'closed', appId })
 }
 
 /** 在指定 appId 的浏览器窗口中导航 */

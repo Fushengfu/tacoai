@@ -258,6 +258,10 @@ export type TacoApi = {
     /** 从 AI 网关获取模型列表（需要已登录） */
     getModels: () => Promise<GatewayModelsResponse>
   }
+  voice: {
+    /** 监听语音输入快捷键切换事件，返回取消监听函数 */
+    onToggle: (callback: () => void) => () => void
+  }
   bridge: {
     /** 获取手机端 APK 下载信息（从版本检查 API 获取 download_url，失败返回 null） */
     getMobileApkInfo: (packageName: string) => Promise<MobileApkInfo | null>

@@ -1289,11 +1289,17 @@ body.is-dragging * {
   line-height: 1;
 }
 
-/* ── 授权级别下拉框 ── */
-.composer-auth-select {
-  appearance: none;
-  -webkit-appearance: none;
-  padding: 0 18px 0 6px;
+/* ── 授权级别自定义下拉框 ── */
+.composer-auth-dropdown {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.composer-auth-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
   height: 22px;
   font-size: 11px;
   color: var(--muted);
@@ -1301,20 +1307,127 @@ body.is-dragging * {
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 4px;
   cursor: pointer;
-  flex-shrink: 0;
   outline: none;
   transition: border-color 0.2s, color 0.2s;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23888'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 4px center;
+  white-space: nowrap;
+  font-family: inherit;
 }
-.composer-auth-select:hover {
+.composer-auth-btn:hover {
   border-color: rgba(255, 255, 255, 0.25);
   color: var(--fg);
 }
-.composer-auth-select:focus {
+.composer-auth-btn:focus-visible {
   border-color: var(--accent);
+}
+
+.auth-mode-icon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+.composer-auth-btn:hover .auth-mode-icon {
+  opacity: 1;
+}
+
+.auth-mode-label {
+  line-height: 1;
+}
+
+.auth-mode-arrow {
+  width: 8px;
+  height: 5px;
+  flex-shrink: 0;
+  opacity: 0.5;
+}
+
+.composer-auth-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: 180px;
+  background: var(--panel-bg, #1e1e2e);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  padding: 4px;
+  z-index: 1001;
+  animation: auth-menu-in 0.15s ease-out;
+}
+
+@keyframes auth-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.composer-auth-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.composer-auth-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.composer-auth-item.active {
+  background: rgba(86, 217, 197, 0.1);
+}
+.composer-auth-item .auth-mode-icon {
+  margin-top: 1px;
+  width: 18px;
+  height: 18px;
+  color: var(--muted);
+}
+.composer-auth-item.active .auth-mode-icon {
+  color: var(--accent);
+}
+
+.auth-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.auth-item-title {
+  font-size: 13px;
+  font-weight: 500;
   color: var(--fg);
+  line-height: 1.3;
+}
+
+.auth-item-desc {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.3;
+}
+
+/* 白色主题下覆盖 */
+:root[data-theme='light'] .composer-auth-btn {
+  border-color: rgba(0, 0, 0, 0.12);
+}
+:root[data-theme='light'] .composer-auth-btn:hover {
+  border-color: rgba(0, 0, 0, 0.25);
+}
+:root[data-theme='light'] .composer-auth-menu {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.1);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+:root[data-theme='light'] .composer-auth-item:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+:root[data-theme='light'] .composer-auth-item.active {
+  background: rgba(44, 154, 142, 0.1);
 }
 
 .composer-right {
@@ -1439,6 +1552,31 @@ body.is-dragging * {
   height: 1px;
   background: rgba(255, 255, 255, 0.08);
   margin: 4px 8px;
+}
+
+.provider-select-add-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent-2);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.provider-select-add-btn:hover {
+  background: rgba(59, 130, 246, 0.12);
+}
+
+.provider-select-add-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
 }
 
 .system-option {
@@ -1844,3 +1982,165 @@ body.is-dragging * {
   height: 16px;
   flex-shrink: 0;
 }
+
+/* ================================================================== */
+/*  Light theme overrides                                              */
+/* ================================================================== */
+
+/* ---- Bubble ---- */
+:root[data-theme='light'] .bubble {
+  background: rgba(0,0,0,0.02);
+  border-color: rgba(0,0,0,0.06);
+}
+
+/* ---- Code blocks ---- */
+:root[data-theme='light'] .code-block-wrapper {
+  background: rgba(0,0,0,0.03);
+  border-color: rgba(0,0,0,0.08);
+}
+:root[data-theme='light'] .code-block-header {
+  background: rgba(0,0,0,0.03);
+  border-bottom-color: rgba(0,0,0,0.08);
+}
+:root[data-theme='light'] .code-block-lang {
+  color: rgba(0,0,0,0.35);
+}
+:root[data-theme='light'] .code-copy-btn {
+  background: rgba(0,0,0,0.06);
+  border-color: rgba(0,0,0,0.1);
+  color: rgba(0,0,0,0.45);
+}
+:root[data-theme='light'] .code-copy-btn:hover {
+  background: rgba(0,0,0,0.1);
+  color: rgba(0,0,0,0.7);
+}
+:root[data-theme='light'] .code-block {
+  background: rgba(0,0,0,0.03);
+  border-color: rgba(0,0,0,0.08);
+}
+
+:root[data-theme='light'] .inline-code {
+  background: rgba(0,0,0,0.06);
+}
+
+/* ---- Composer (输入框) ---- */
+:root[data-theme='light'] .composer-card {
+  background: rgba(245,245,247,0.92);
+  border-color: rgba(0,0,0,0.08);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.08);
+}
+
+:root[data-theme='light'] .composer-input:empty::before {
+  color: rgba(0,0,0,0.2);
+}
+
+/* ---- Provider dropdown ---- */
+:root[data-theme='light'] .provider-select-dropdown {
+  background: rgba(255,255,255,0.97);
+  border-color: rgba(0,0,0,0.1);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+}
+:root[data-theme='light'] .provider-select-option:hover {
+  background: rgba(0,0,0,0.05);
+}
+:root[data-theme='light'] .provider-select-divider {
+  background: rgba(0,0,0,0.08);
+}
+:root[data-theme='light'] .provider-select-add-btn:hover {
+  background: rgba(59, 130, 246, 0.10);
+}
+
+/* ---- Language menu ---- */
+:root[data-theme='light'] .bottom-bar-lang-menu {
+  background: #fff;
+  border-color: rgba(0,0,0,0.1);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+}
+
+/* ---- Conversation scrollbar ---- */
+:root[data-theme='light'] .conversation {
+  scrollbar-color: rgba(0,0,0,0.15) transparent;
+}
+:root[data-theme='light'] .conversation::-webkit-scrollbar-thumb {
+  background: rgba(0,0,0,0.15);
+}
+
+/* ---- Session tabs ---- */
+:root[data-theme='light'] .session-tab:hover {
+  background: rgba(0,0,0,0.05);
+}
+:root[data-theme='light'] .session-tab-close:hover {
+  background: rgba(0,0,0,0.08);
+}
+
+/* ---- Message action buttons ---- */
+:root[data-theme='light'] .msg-action-btn {
+  border-color: rgba(0,0,0,0.14);
+  background: rgba(0,0,0,0.06);
+  color: rgba(0,0,0,0.55);
+}
+
+/* ---- Editor select ---- */
+:root[data-theme='light'] .editor-select {
+  background: rgba(0,0,0,0.04);
+  border-color: rgba(0,0,0,0.1);
+  color: var(--muted);
+}
+:root[data-theme='light'] .editor-select:hover {
+  background: rgba(0,0,0,0.08);
+}
+
+/* ---- Pill buttons ---- */
+:root[data-theme='light'] .pill {
+  background: rgba(0,0,0,0.05);
+  border-color: rgba(0,0,0,0.08);
+}
+:root[data-theme='light'] .pill:hover {
+  background: rgba(0,0,0,0.1);
+}
+
+/* ---- Composer attach button ---- */
+:root[data-theme='light'] .composer-attach-btn:hover {
+  background: rgba(0,0,0,0.06);
+}
+
+/* ---- Bubble misc ---- */
+:root[data-theme='light'] .bubble th {
+  background: rgba(0,0,0,0.03);
+}
+
+:root[data-theme='light'] .drag-bar:hover::after {
+  color: rgba(0,0,0,0.2);
+}
+
+/* ---- Bottom bar items ---- */
+:root[data-theme='light'] .bottom-bar-item:hover {
+  background: rgba(0,0,0,0.05);
+}
+
+/* ---- Input context bar ---- */
+:root[data-theme='light'] .composer-context-bar-track {
+  background: rgba(0,0,0,0.08);
+}
+
+/* ---- Token stats ---- */
+:root[data-theme='light'] .bottom-bar-token-stats {
+  background: rgba(0,0,0,0.04);
+}
+:root[data-theme='light'] .token-stat-total {
+  border-left-color: rgba(0,0,0,0.12);
+}
+:root[data-theme='light'] .token-stat-group-label {
+  background: rgba(0,0,0,0.04);
+}
+
+/* ---- Assistant thinking inline ---- */
+:root[data-theme='light'] .assistant-thinking-inline {
+  color: rgba(0,0,0,0.55);
+}
+
+/* ---- Assistant task meta (time cost) ---- */
+:root[data-theme='light'] .assistant-task-meta {
+  color: rgba(0,0,0,0.5);
+}
+

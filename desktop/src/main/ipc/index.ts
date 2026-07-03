@@ -22,18 +22,18 @@ import type {
   McpServerInfo,
   BridgeStatusPayload,
 } from '../../shared/ipc'
-import type { RiskCategory } from '../tools'
-import { setAutoApproveCategories, setGlobalAuthLevel, saveAuthLevel } from '../tools'
-import type { AuthLevel } from '../tools'
-import { gitLog, gitCommit, gitRollback, gitCommitFiles, gitStatus, gitFileChange, gitStageFiles, gitStageAll } from '../project/git'
-import { initSkills, listSkills, installSkill, uninstallSkill, toggleSkill, refreshSkills, previewSkill, checkSkillUpdate } from '../project/skills'
-import { listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, getMemoryScopeStats, exportMemoryScope } from '../data/notes'
-import { initMcp, listMcpServers, saveMcpServer, removeMcpServer, toggleMcpServer } from '../automation/mcp'
-import { getLogDir } from '../system/logger'
-import { log } from '../system/logger'
-import { handleTerminalSpawn, handleTerminalInput, handleTerminalResize, handleTerminalKill } from '../system/terminal'
-import { openExternalBrowser, closeExternalBrowser, navigateExternalBrowser, focusExternalBrowser } from '../automation/browser'
-import { checkAndPromptForUpdate, getLastUpdateCheckResult, fetchMobileApkInfo } from '../system/app-updater'
+import type { RiskCategory } from '../sdk/agent/tools'
+import { setAutoApproveCategories, setGlobalAuthLevel, saveAuthLevel } from '../sdk/agent/tools'
+import type { AuthLevel } from '../sdk/agent/tools'
+import { gitLog, gitCommit, gitRollback, gitCommitFiles, gitStatus, gitFileChange, gitStageFiles, gitStageAll } from '../sdk/agent/git/service'
+import { initSkills, listSkills, installSkill, uninstallSkill, toggleSkill, refreshSkills, previewSkill, checkSkillUpdate } from '../sdk/agent/skills/service'
+import { listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, getMemoryScopeStats, exportMemoryScope } from '../data/notes/index'
+import { initMcp, listMcpServers, saveMcpServer, removeMcpServer, toggleMcpServer } from '../infrastructure/mcp'
+import { getLogDir } from '../infrastructure/logger'
+import { log } from '../infrastructure/logger'
+import { handleTerminalSpawn, handleTerminalInput, handleTerminalResize, handleTerminalKill } from '../infrastructure/terminal'
+import { openExternalBrowser, closeExternalBrowser, navigateExternalBrowser, focusExternalBrowser } from '../infrastructure/browser'
+import { checkAndPromptForUpdate, getLastUpdateCheckResult, fetchMobileApkInfo } from '../infrastructure/app-updater'
 import type { FileTreeEntry } from '../../shared/ipc'
 
 // Import from split modules
@@ -148,6 +148,7 @@ export function registerIpcHandlers() {
 
   ipcMain.on(IpcChannel.AGENT_SET_AUTH_LEVEL, (_e, payload: { projectId: string; level: string }) => {
     const { projectId, level } = payload
+    if (!projectId || !projectId.trim()) return // projectId 为空时不处理
     if (level === 'auto' || level === 'standard' || level === 'manual') {
       saveAuthLevel(projectId, level as AuthLevel)
       setGlobalAuthLevel(level as AuthLevel)

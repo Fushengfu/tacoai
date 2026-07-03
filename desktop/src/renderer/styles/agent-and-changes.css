@@ -1146,28 +1146,62 @@
   animation: confirm-bar-slide-up 0.3s ease;
   box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.3), 0 0 12px rgba(245, 158, 11, 0.08);
   z-index: 10;
+  max-height: 60vh;
+  overflow-y: auto;
 }
 .confirm-bar-item {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
-.confirm-bar-title {
+/* 可点击标题栏 */
+.confirm-bar-header-btn {
   display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
+  padding: 4px 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
   font-size: 13px;
   font-weight: 600;
-  color: #f59e0b;
+  transition: opacity 0.15s;
+}
+.confirm-bar-header-btn:hover {
+  opacity: 0.8;
+}
+.confirm-bar-chevron {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.4);
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+  transition: transform 0.2s;
 }
 .confirm-bar-icon {
-  font-size: 16px;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.confirm-bar-label {
+  color: #f59e0b;
+  flex: 1;
 }
 .confirm-bar-count {
   font-size: 11px;
   font-weight: 400;
   color: rgba(255, 255, 255, 0.35);
-  margin-left: auto;
+  flex-shrink: 0;
+}
+/* 展开内容区 */
+.confirm-bar-expanded {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 22px;
 }
 .confirm-bar-summary {
   font-size: 12px;
@@ -1180,6 +1214,25 @@
 }
 .confirm-bar-summary:empty {
   display: none;
+}
+/* 计划步骤列表 — 直接复用 .agent-steps / .agent-step 样式，无需重复定义 */
+/* 选择理由 */
+.confirm-bar-reasoning {
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 6px;
+}
+.confirm-bar-reasoning-title {
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.35);
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+.confirm-bar-reasoning-text {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+  line-height: 1.5;
 }
 .confirm-bar-actions {
   display: flex;
@@ -2387,4 +2440,360 @@
 
 .context-menu-item.danger:hover {
   background: rgba(245, 101, 101, 0.15);
+}
+
+/* ================================================================== */
+/*  Light theme overrides                                              */
+/* ================================================================== */
+
+/* ---- Agent steps group ---- */
+:root[data-theme='light'] .agent-steps-group {
+  border-color: rgba(0,0,0,0.08);
+  background: rgba(0,0,0,0.02);
+}
+:root[data-theme='light'] .agent-steps-group-header {
+  background: linear-gradient(135deg, rgba(0,0,0,0.02), rgba(0,0,0,0.01));
+}
+:root[data-theme='light'] .agent-steps-group-header:hover {
+  background: linear-gradient(135deg, rgba(0,0,0,0.05), rgba(0,0,0,0.02));
+}
+:root[data-theme='light'] .agent-steps-group-count {
+  background: rgba(0,0,0,0.05);
+  border-color: rgba(0,0,0,0.08);
+}
+:root[data-theme='light'] .agent-steps-group-body {
+  border-top-color: rgba(0,0,0,0.06);
+}
+
+/* ---- Agent step cards ---- */
+:root[data-theme='light'] .agent-step {
+  border-color: rgba(0,0,0,0.06);
+}
+:root[data-theme='light'] .agent-step-header {
+  background: rgba(0,0,0,0.02);
+}
+:root[data-theme='light'] .agent-step-header:hover {
+  background: rgba(0,0,0,0.05);
+}
+:root[data-theme='light'] .agent-step-body {
+  border-top-color: rgba(0,0,0,0.06);
+}
+:root[data-theme='light'] .agent-step-result-content {
+  background: rgba(0,0,0,0.04);
+}
+
+/* ---- Tool results (command / diff / file) ---- */
+:root[data-theme='light'] .tool-result-command,
+:root[data-theme='light'] .tool-result-diff,
+:root[data-theme='light'] .tool-result-file {
+  background: #f6f8fa;
+  border-color: rgba(0,0,0,0.08);
+}
+:root[data-theme='light'] .tool-result-command-header,
+:root[data-theme='light'] .tool-result-diff-header,
+:root[data-theme='light'] .tool-result-file-header {
+  background: rgba(0,0,0,0.03);
+  border-bottom-color: rgba(0,0,0,0.06);
+}
+:root[data-theme='light'] .tool-result-command-output {
+  color: rgba(30,30,30,0.85);
+}
+:root[data-theme='light'] .tool-result-command-output.error {
+  color: #c53030;
+}
+:root[data-theme='light'] .tool-result-error-note {
+  background: rgba(248,113,113,0.05);
+  border-top-color: rgba(248,113,113,0.12);
+}
+:root[data-theme='light'] .tool-result-diff-line-no,
+:root[data-theme='light'] .tool-result-file-no {
+  color: rgba(0,0,0,0.15);
+}
+:root[data-theme='light'] .tool-result-diff-sep {
+  background: rgba(0,0,0,0.02);
+  border-top-color: rgba(0,0,0,0.04);
+  border-bottom-color: rgba(0,0,0,0.04);
+}
+:root[data-theme='light'] .tool-result-show-more {
+  background: rgba(0,0,0,0.02);
+  border-top-color: rgba(0,0,0,0.06);
+}
+:root[data-theme='light'] .tool-result-show-more:hover {
+  background: rgba(0,0,0,0.05);
+}
+:root[data-theme='light'] .tool-result-tree {
+  background: rgba(0,0,0,0.03);
+  color: rgba(30,30,30,0.85);
+}
+
+/* ---- Agent tool blocks ---- */
+:root[data-theme='light'] .agent-tool-block {
+  background: rgba(0,0,0,0.02);
+  border-color: rgba(0,0,0,0.05);
+}
+:root[data-theme='light'] .agent-tool-block-chevron {
+  color: rgba(0,0,0,0.3);
+}
+:root[data-theme='light'] .agent-tool-block-path {
+  color: rgba(0,0,0,0.5);
+}
+:root[data-theme='light'] .agent-tool-block-path .agent-step-path-link {
+  color: rgba(0,0,0,0.65);
+}
+:root[data-theme='light'] .agent-tool-block-seq {
+  color: rgba(0,0,0,0.35);
+}
+
+/* ---- PlanTracker ---- */
+:root[data-theme='light'] .plan-tracker-title {
+  color: rgba(0,0,0,0.85);
+}
+:root[data-theme='light'] .plan-tracker-elapsed {
+  color: rgba(0,0,0,0.5);
+}
+:root[data-theme='light'] .plan-tracker-summary {
+  color: rgba(0,0,0,0.55);
+}
+:root[data-theme='light'] .plan-tracker-bar {
+  background: rgba(0,0,0,0.06);
+}
+:root[data-theme='light'] .plan-step-text {
+  color: rgba(0,0,0,0.75);
+}
+:root[data-theme='light'] .plan-tracker-step.in_progress .plan-step-text {
+  color: rgba(0,0,0,0.9);
+}
+:root[data-theme='light'] .plan-step-note {
+  color: rgba(0,0,0,0.35);
+}
+:root[data-theme='light'] .plan-step-icon.pending {
+  color: rgba(0,0,0,0.2);
+}
+
+/* ---- Confirm bar ---- */
+:root[data-theme='light'] .confirm-bar {
+  background: rgba(255,255,255,0.96);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-color: rgba(245,158,11,0.3);
+  box-shadow: 0 -4px 24px rgba(0,0,0,0.1), 0 0 12px rgba(245,158,11,0.06);
+}
+:root[data-theme='light'] .confirm-bar-chevron {
+  color: rgba(0,0,0,0.35);
+}
+:root[data-theme='light'] .confirm-bar-count {
+  color: rgba(0,0,0,0.35);
+}
+:root[data-theme='light'] .confirm-bar-summary {
+  color: rgba(0,0,0,0.65);
+  background: rgba(0,0,0,0.04);
+}
+:root[data-theme='light'] .confirm-bar-reasoning {
+  background: rgba(0,0,0,0.04);
+}
+:root[data-theme='light'] .confirm-bar-reasoning-title {
+  color: rgba(0,0,0,0.35);
+}
+:root[data-theme='light'] .confirm-bar-reasoning-text {
+  color: rgba(0,0,0,0.5);
+}
+
+/* ---- Agent confirm card ---- */
+:root[data-theme='light'] .agent-plan-summary {
+  color: rgba(0,0,0,0.85);
+  background: rgba(76,123,255,0.06);
+}
+:root[data-theme='light'] .agent-plan-steps {
+  color: rgba(0,0,0,0.75);
+}
+:root[data-theme='light'] .agent-plan-reasoning {
+  color: rgba(0,0,0,0.5);
+  background: rgba(0,0,0,0.04);
+}
+:root[data-theme='light'] .agent-plan-reasoning-label {
+  color: rgba(0,0,0,0.6);
+}
+
+/* ---- Thinking blocks ---- */
+:root[data-theme='light'] .step-thinking-block,
+:root[data-theme='light'] .thinking-block {
+  background: rgba(0,0,0,0.02);
+  border-color: rgba(0,0,0,0.06);
+}
+:root[data-theme='light'] .step-thinking-header:hover,
+:root[data-theme='light'] .thinking-block-header:hover {
+  background: rgba(0,0,0,0.04);
+}
+:root[data-theme='light'] .step-thinking-preview {
+  color: rgba(0,0,0,0.3);
+}
+
+/* ---- Agent loading ---- */
+:root[data-theme='light'] .agent-loading-text strong {
+  color: rgba(0,0,0,0.9);
+}
+:root[data-theme='light'] .dot-pulse,
+:root[data-theme='light'] .dot-pulse::before,
+:root[data-theme='light'] .dot-pulse::after {
+  background: rgba(0,0,0,0.45);
+}
+
+/* ---- Detail / changes panel ---- */
+:root[data-theme='light'] .detail-changes-count {
+  color: rgba(0,0,0,0.35);
+}
+:root[data-theme='light'] .file-tree-file {
+  color: rgba(0,0,0,0.65);
+}
+:root[data-theme='light'] .file-tree-file:hover {
+  background: rgba(0,0,0,0.05);
+}
+:root[data-theme='light'] .file-tree-file.selected {
+  background: rgba(76,123,255,0.12);
+  color: rgba(0,0,0,0.9);
+}
+:root[data-theme='light'] .file-tree-dir-header {
+  color: rgba(0,0,0,0.45);
+}
+:root[data-theme='light'] .file-tree-dir-header:hover {
+  background: rgba(0,0,0,0.03);
+}
+
+:root[data-theme='light'] .ws-tree-dir-header {
+  color: rgba(0,0,0,0.7);
+}
+:root[data-theme='light'] .ws-tree-dir-header:hover {
+  background: rgba(0,0,0,0.04);
+}
+:root[data-theme='light'] .ws-tree-arrow {
+  color: rgba(0,0,0,0.35);
+}
+:root[data-theme='light'] .ws-tree-file {
+  color: rgba(0,0,0,0.55);
+}
+:root[data-theme='light'] .ws-tree-file:hover {
+  background: rgba(0,0,0,0.05);
+}
+:root[data-theme='light'] .ws-tree-file.selected {
+  background: rgba(76,123,255,0.14);
+  color: rgba(0,0,0,0.9);
+}
+:root[data-theme='light'] .ws-tree-file.changed {
+  color: rgba(0,0,0,0.8);
+}
+:root[data-theme='light'] .tree-refresh-btn {
+  color: rgba(0,0,0,0.35);
+}
+:root[data-theme='light'] .tree-refresh-btn:hover {
+  background: rgba(0,0,0,0.06);
+  color: rgba(0,0,0,0.6);
+}
+
+/* ---- Change group panel ---- */
+:root[data-theme='light'] .change-group-panel {
+  background: rgba(0,0,0,0.02);
+}
+:root[data-theme='light'] .change-group-header {
+  color: rgba(0,0,0,0.8);
+  background: rgba(0,0,0,0.02);
+}
+:root[data-theme='light'] .change-group-header:hover {
+  background: rgba(0,0,0,0.05);
+}
+:root[data-theme='light'] .change-group-count {
+  background: rgba(0,0,0,0.05);
+}
+:root[data-theme='light'] .change-group-body::-webkit-scrollbar-thumb {
+  background: rgba(0,0,0,0.12);
+}
+
+/* ---- Change tabs ---- */
+:root[data-theme='light'] .change-tab {
+  border-color: rgba(0,0,0,0.1);
+  background: rgba(0,0,0,0.03);
+}
+:root[data-theme='light'] .change-tab:hover:not(:disabled) {
+  background: rgba(0,0,0,0.06);
+}
+:root[data-theme='light'] .change-tab.active {
+  color: #1a56db;
+}
+:root[data-theme='light'] .change-tab.active.pending {
+  color: #b45309;
+}
+:root[data-theme='light'] .change-tab.active.accepted {
+  color: #15803d;
+}
+
+/* ---- Change panel legend ---- */
+:root[data-theme='light'] .change-panel-legend {
+  border-bottom-color: rgba(0,0,0,0.06);
+}
+
+/* ---- Change file tree ---- */
+:root[data-theme='light'] .change-tree-dir {
+  color: rgba(0,0,0,0.65);
+}
+:root[data-theme='light'] .change-tree-dir:hover {
+  background: rgba(0,0,0,0.03);
+}
+:root[data-theme='light'] .change-file-row {
+  color: rgba(0,0,0,0.75);
+}
+:root[data-theme='light'] .change-file-row:hover {
+  background: rgba(0,0,0,0.05);
+}
+:root[data-theme='light'] .change-file-row.selected {
+  background: rgba(76,123,255,0.14);
+  color: rgba(0,0,0,0.9);
+}
+
+/* ---- Diff view ---- */
+:root[data-theme='light'] .diff-view-center-header {
+  background: rgba(0,0,0,0.02);
+  border-bottom-color: rgba(0,0,0,0.06);
+}
+:root[data-theme='light'] .diff-view-center-path {
+  color: rgba(0,0,0,0.85);
+}
+:root[data-theme='light'] .diff-view-center-close {
+  background: rgba(0,0,0,0.05);
+  border-color: rgba(0,0,0,0.08);
+}
+:root[data-theme='light'] .diff-view-center-close:hover {
+  background: rgba(0,0,0,0.08);
+}
+:root[data-theme='light'] .diff-hunk-sep {
+  color: rgba(0,0,0,0.2);
+  background: rgba(0,0,0,0.02);
+}
+:root[data-theme='light'] .diff-line-no {
+  color: rgba(0,0,0,0.15);
+}
+
+/* ---- Resize handle ---- */
+:root[data-theme='light'] .detail-resize-handle::before {
+  background: rgba(0,0,0,0.05);
+}
+:root[data-theme='light'] .detail-resize-handle::after {
+  background: rgba(0,0,0,0.06);
+}
+:root[data-theme='light'] .detail-resize-handle:hover::before {
+  background: rgba(0,0,0,0.12);
+}
+:root[data-theme='light'] .detail-resize-handle:hover::after {
+  background: rgba(0,0,0,0.18);
+}
+
+/* ---- Context menu ---- */
+:root[data-theme='light'] .tree-context-menu {
+  background: #fff;
+  border-color: rgba(0,0,0,0.1);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+:root[data-theme='light'] .context-menu-item {
+  color: #1c1c1e;
+}
+:root[data-theme='light'] .context-menu-item:hover {
+  background: rgba(0,0,0,0.06);
 }

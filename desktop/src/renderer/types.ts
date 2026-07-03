@@ -1,5 +1,5 @@
 export type ThreadMode = 'agent'
-export type ThemeMode = 'dark' | 'ocean' | 'graphite'
+export type ThemeMode = 'dark' | 'light'
 
 /** 项目内的一个会话 */
 export type Session = {

@@ -3,7 +3,12 @@
  *
  * 所有 IPC 通信的 payload 类型、事件类型、领域类型等。
  * 供 main / preload / renderer 三端共享。
+ *
+ * 部分 SDK 领域类型（PlanStepStatus、SkillInfo、ProjectNote 等）
+ * 来自 Agent SDK，此处 re-export 以保持外部兼容。
  */
+
+import type { PlanStepStatus, BrowserActionType } from '../main/sdk/agent/types'
 
 /* ------------------------------------------------------------------ */
 /*  Shared primitive types                                             */
@@ -221,7 +226,7 @@ export type AgentEventChunkData = {
 }
 
 /** 计划步骤状态 */
-export type PlanStepStatus = 'pending' | 'in_progress' | 'done' | 'failed'
+export type { PlanStepStatus } from '../main/sdk/agent/types'
 
 /** agent:confirm 用户响应体 */
 export type AgentConfirmPayload = {
@@ -307,62 +312,8 @@ export type GitFileChange = {
 /*  Skills                                                             */
 /* ------------------------------------------------------------------ */
 
-/** Skill 定义 */
-export type SkillInfo = {
-  /** 唯一 ID（如 "code-review", "git-helper"） */
-  id: string
-  /** 显示名称 */
-  name: string
-  /** 简短描述 */
-  description: string
-  /** 版本 */
-  version: string
-  /** 作者 */
-  author: string
-  /** 来源：内置 / 本地 / 远程（GitHub URL 等） */
-  source: 'builtin' | 'local' | 'remote'
-  /** 远程来源时的 URL */
-  sourceUrl?: string
-  /** 是否启用 */
-  enabled: boolean
-  /** 注入到 Agent system prompt 的指令内容 */
-  instructions: string
-  /** Skill 允许开放给本轮任务的工具名或工具分组 */
-  tools?: string[]
-  /** Skill 允许按需读取的附属资源路径模式 */
-  resources?: string[]
-  /** 分类标签（如 "git", "security", "testing"） */
-  tags?: string[]
-  /** 功能分类（如 "development", "automation", "security"） */
-  category?: string
-  /** 项目主页 URL */
-  homepage?: string
-  /** 开源许可证（如 "MIT", "Apache-2.0"） */
-  license?: string
-}
-
-/** Skill 预览信息（安装前预览用） */
-export type SkillPreview = {
-  id: string
-  name: string
-  description: string
-  version: string
-  author: string
-  category?: string
-  tags?: string[]
-  homepage?: string
-  license?: string
-  tools?: string[]
-  resources?: string[]
-  requiresBins?: string[]
-  requiresEnv?: string[]
-  sourceUrl: string
-  /** 安全审核结果 */
-  security?: {
-    riskLevel: 'low' | 'medium' | 'high' | 'critical'
-    warnings: string[]
-  }
-}
+/** Skill 定义 & 预览 — 来自 Agent SDK */
+export type { SkillInfo, SkillPreview } from '../main/sdk/agent/types'
 
 /** Skill 安装进度 */
 export type InstallProgress = {
@@ -384,93 +335,8 @@ export type SkillUpdateInfo = {
 /*  Project Notes (项目笔记/记忆)                                       */
 /* ------------------------------------------------------------------ */
 
-/** 笔记分类 */
-export type NoteCategory = 'convention' | 'credential' | 'architecture' | 'config' | 'other'
-
-/** 项目笔记 */
-export type ProjectNote = {
-  /** 唯一 ID */
-  id: string
-  /** 标题 */
-  title: string
-  /** 笔记内容 */
-  content: string
-  /** 分类 */
-  category: NoteCategory
-  /** 创建时间 (ISO) */
-  createdAt: string
-  /** 最后更新时间 (ISO) */
-  updatedAt: string
-}
-
-/** 任务执行记忆 */
-export type ProjectTaskMemory = {
-  id: string
-  /** 用户原始提问(完整原文) */
-  userQuery: string
-  /** 用户附件信息([USER_ASSETS]内部正文) */
-  userAssetsBlock?: string
-  /** AI最终回复(完整原文) */
-  assistantResult: string
-  /** 任务结果 */
-  outcome: 'success' | 'aborted' | 'error'
-  /** 工具使用统计(如 ["read_file x3", "edit_file x2"]) */
-  tools: string[]
-  /** 变更文件路径列表 */
-  changedFiles: string[]
-  /** 文件变更diff数组 */
-  fileDiffs: Array<{
-    path: string
-    oldContent: string | null
-    newContent: string | null
-  }>
-  /** 失败日志 */
-  failures: string[]
-  /** 原始会话来源:sessionId(用于从 chat_messages 追溯原文) */
-  sourceSessionId?: string
-  /** 原始会话来源:本轮用户消息 ID */
-  sourceUserMessageId?: string
-  /** 原始会话来源:本轮助手消息 ID */
-  sourceAssistantMessageId?: string
-  /** 原始会话来源:本轮关联消息 ID 列表(通常含 user+assistant) */
-  sourceMessageIds?: string[]
-  /** 原始会话来源:在 chat_messages 中的起始 seq(可选) */
-  sourceStartSeq?: number
-  /** 原始会话来源:在 chat_messages 中的结束 seq(可选) */
-  sourceEndSeq?: number
-  /** 软删除时间(存在即表示已删除) */
-  deletedAt?: string
-  /** 软删除原因(manual_delete/ai_drop/ai_merge_into:xxx) */
-  deletedReason?: string
-  /** 若由合并淘汰,指向保留的目标记忆 ID */
-  mergedIntoId?: string
-  createdAt: string
-  updatedAt: string
-}
-
-export type MemoryScopeStats = {
-  scope: string
-  dbPath: string
-  dbSizeBytes: number
-  manualNotes: number
-  activeTaskMemories: number
-  archivedTaskMemories: number
-  deletedTaskMemories: number
-  snapshots: number
-  maintainRuns: number
-  latestNoteUpdatedAt?: string
-  latestTaskMemoryUpdatedAt?: string
-  latestSnapshotUpdatedAt?: string
-}
-
-export type MemoryScopeExportResult = {
-  filePath: string
-  exportedAt: string
-  manualNotes: number
-  activeTaskMemories: number
-  archivedTaskMemories: number
-  snapshots: number
-}
+/** 项目笔记 & 记忆 — 来自 Agent SDK */
+export type { NoteCategory, ProjectNote, ProjectTaskMemory, MemoryScopeStats, MemoryScopeExportResult } from '../main/sdk/agent/types'
 
 /* ------------------------------------------------------------------ */
 /*  MCP (Model Context Protocol)                                       */
@@ -494,20 +360,7 @@ export type McpServerInfo = {
 /*  Browser Automation (浏览器自动化)                                    */
 /* ------------------------------------------------------------------ */
 
-export type BrowserActionType =
-  | 'navigate'     // 导航到 URL
-  | 'screenshot'   // 截取页面截图
-  | 'click'        // 点击元素（CSS 选择器或坐标）
-  | 'type'         // 输入文字
-  | 'scroll'       // 滚动页面
-  | 'hover'        // 鼠标悬停在元素上
-  | 'keypress'     // 按下键盘按键（Tab/Escape/Enter/方向键等）
-  | 'drag'         // 拖拽元素从一个位置到另一个位置
-  | 'select'       // 选择下拉框选项
-  | 'get_content'  // 获取页面内容
-  | 'wait'         // 等待元素出现
-  | 'evaluate'     // 执行任意 JS
-  | 'get_info'     // 获取页面信息（URL/标题/viewport等）
+export type { BrowserActionType } from '../main/sdk/agent/types'
 
 export type BrowserActionPayload = {
   action: BrowserActionType

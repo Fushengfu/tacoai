@@ -1,106 +1,18 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
-import type { ModelConfig, ThemeMode } from '../types'
-import type { SkillInfo, SkillPreview, SkillUpdateInfo, ProjectTaskMemory, McpServerInfo, MemoryScopeStats, AppUpdateCheckResult } from '../../shared/ipc'
+import { useState, useEffect, useCallback } from 'react'
 import { PROVIDER_DEFAULT_BASE_URLS } from '../constants'
-import {
-  loadUploadSettings,
-  normalizeUploadSettingsState,
-  saveUploadSettings,
-  type UploadSettingsState,
-} from '../lib/upload-config'
 import { GeneralSettingsPanel } from './settings/GeneralSettingsPanel'
-import { ModelsSettingsPanel } from './settings/ModelsSettingsPanel'
-import { UploadSettingsPanel } from './settings/UploadSettingsPanel'
-import { SkillsSettingsPanel } from './settings/SkillsSettingsPanel'
-import { NotesSettingsPanel } from './settings/NotesSettingsPanel'
-import { McpSettingsPanel } from './settings/McpSettingsPanel'
 
 type SettingsPageProps = {
-  modelConfigs: ModelConfig[]
-  activeModelConfigId: string
-  onSetActiveModelConfigId: (id: string) => void
-  onAddModelConfig: (initial?: Partial<ModelConfig>) => string
-  onUpdateModelConfig: (id: string, patch: Partial<Omit<ModelConfig, 'id'>>) => void
-  onRemoveModelConfig: (id: string) => void
-  themeMode: ThemeMode
-  onThemeModeChange: (mode: ThemeMode) => void
-  projectRules?: string
-  onProjectRulesChange?: (rules: string) => void
   onClose: () => void
   workspace?: string | null
   projectId?: string
-  memberInfo?: { username: string } | null
-  memberToken?: string
-}
-
-type SettingsTab = 'general' | 'models' | 'upload' | 'skills' | 'notes' | 'mcp'
-type ModelConfigDraft = Pick<ModelConfig, 'provider' | 'baseUrl' | 'apiKey' | 'model' | 'contextLength' | 'temperature' | 'supportsVision' | 'supportsReasoning'>
-
-function toModelDraft(model: ModelConfig): ModelConfigDraft {
-  return {
-    provider: model.provider,
-    baseUrl: model.baseUrl,
-    apiKey: model.apiKey,
-    model: model.model,
-    contextLength: model.contextLength,
-    temperature: model.temperature ?? '',
-    supportsVision: Boolean(model.supportsVision),
-    supportsReasoning: Boolean(model.supportsReasoning),
-  }
 }
 
 export function SettingsPage({
-  modelConfigs,
-  activeModelConfigId,
-  onSetActiveModelConfigId,
-  onAddModelConfig,
-  onUpdateModelConfig,
-  onRemoveModelConfig,
-  themeMode,
-  onThemeModeChange,
-  projectRules,
-  onProjectRulesChange,
   onClose,
   workspace,
   projectId,
-  memberInfo,
-  memberToken,
 }: Readonly<SettingsPageProps>) {
-  const [tab, setTab] = useState<SettingsTab>('general')
-  const [revealApiKey, setRevealApiKey] = useState<Record<string, boolean>>({})
-  const [editingModelId, setEditingModelId] = useState<string | null>(null)
-  const [modelDraftForId, setModelDraftForId] = useState('')
-  const [modelDraftDirty, setModelDraftDirty] = useState(false)
-  const [modelDraft, setModelDraft] = useState<ModelConfigDraft | null>(null)
-  // 本地待保存的模型（未点"保存"前不写入数据库）
-  const [pendingModelIds, setPendingModelIds] = useState<Set<string>>(new Set())
-  const [pendingModelDrafts, setPendingModelDrafts] = useState<Map<string, ModelConfig>>(new Map())
-  const [uploadDraft, setUploadDraft] = useState<UploadSettingsState>(() => loadUploadSettings())
-  const [uploadSaved, setUploadSaved] = useState<UploadSettingsState>(() => loadUploadSettings())
-  const [revealUploadSecrets, setRevealUploadSecrets] = useState<Record<string, boolean>>({})
-
-  // Skills 状态
-  const [skills, setSkills] = useState<SkillInfo[]>([])
-  const [skillsLoading, setSkillsLoading] = useState(false)
-  const [installInput, setInstallInput] = useState('')
-  const [installing, setInstalling] = useState(false)
-  const [installError, setInstallError] = useState('')
-  const [previewResult, setPreviewResult] = useState<SkillPreview | null>(null)
-  const [previewing, setPreviewing] = useState(false)
-  const [previewError, setPreviewError] = useState('')
-  const [checkingUpdates, setCheckingUpdates] = useState<Record<string, boolean>>({})
-  const [updateInfo, setUpdateInfo] = useState<Record<string, SkillUpdateInfo | null>>({})
-
-  // Notes 状态
-  const [taskMemories, setTaskMemories] = useState<ProjectTaskMemory[]>([])
-  const [taskMemoriesLoading, setTaskMemoriesLoading] = useState(false)
-  const [expandedTaskMemoryIds, setExpandedTaskMemoryIds] = useState<Set<string>>(new Set())
-  const [memoryStats, setMemoryStats] = useState<MemoryScopeStats | null>(null)
-  const [memoryStatsLoading, setMemoryStatsLoading] = useState(false)
-  const [memoryExporting, setMemoryExporting] = useState(false)
-  const [memoryExportPath, setMemoryExportPath] = useState('')
-
-  // 通用设置
   const [browserDebugMode, setBrowserDebugMode] = useState<boolean>(() =>
     localStorage.getItem('taco.browserDebugMode') === 'true'
   )
@@ -111,9 +23,6 @@ export function SettingsPage({
   const [recallDebugEnabled, setRecallDebugEnabled] = useState<boolean>(() =>
     localStorage.getItem('taco.recallDebugEnabled') === 'true'
   )
-  const [updateChecking, setUpdateChecking] = useState(false)
-  const [updateCheckSummary, setUpdateCheckSummary] = useState('')
-  const [cachedUpdateStatus, setCachedUpdateStatus] = useState<AppUpdateCheckResult | null>(null)
 
   // 自动授权分类
   const [autoApproveCategories, setAutoApproveCategoriesState] = useState<Set<string>>(() => {
@@ -130,13 +39,7 @@ export function SettingsPage({
     window.taco.agent.setAutoApprove(arr)
   }, [])
 
-  // MCP 状态
-  const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
-  const [mcpLoading, setMcpLoading] = useState(false)
-  const [mcpEditing, setMcpEditing] = useState<Partial<McpServerInfo> | null>(null)
-  const [mcpSaving, setMcpSaving] = useState(false)
   const [projectRulesDraft, setProjectRulesDraft] = useState('')
-  const [projectRulesFilePath, setProjectRulesFilePath] = useState('.taco/rules.md')
   const [projectRulesLoading, setProjectRulesLoading] = useState(false)
 
   const loadProjectRulesFromFile = useCallback(async (ws: string) => {
@@ -146,15 +49,39 @@ export function SettingsPage({
     }
     setProjectRulesLoading(true)
     try {
-      const result = await window.taco.file.read(`${ws}/.taco/rules.md`)
+      let result = await window.taco.file.read(`${ws}/.taco/rules/rules.md`)
+      // 新路径不存在时，尝试从旧路径读取并迁移
+      if (result?.size === 0) {
+        const oldResult = await window.taco.file.read(`${ws}/.taco/rules.md`)
+        if (oldResult && typeof oldResult.content === 'string' && oldResult.content.length > 0) {
+          await window.taco.file.write(`${ws}/.taco/rules/rules.md`, oldResult.content)
+          result = oldResult
+        }
+      }
       if (result && typeof result.content === 'string') {
         setProjectRulesDraft(result.content)
+        // 文件不存在时自动创建空的规则文件
+        if (result.size === 0) {
+          window.taco.file.write(`${ws}/.taco/rules/rules.md`, '').catch(() => {})
+        }
       } else {
         setProjectRulesDraft('')
       }
     } catch {
-      // 文件不存在，初始为空
-      setProjectRulesDraft('')
+      // 新路径不存在 → 尝试旧路径兼容
+      try {
+        const oldResult = await window.taco.file.read(`${ws}/.taco/rules.md`)
+        if (oldResult && typeof oldResult.content === 'string') {
+          setProjectRulesDraft(oldResult.content)
+          if (oldResult.content.length > 0) {
+            window.taco.file.write(`${ws}/.taco/rules/rules.md`, oldResult.content).catch(() => {})
+          }
+        } else {
+          setProjectRulesDraft('')
+        }
+      } catch {
+        setProjectRulesDraft('')
+      }
     } finally {
       setProjectRulesLoading(false)
     }
@@ -164,525 +91,15 @@ export function SettingsPage({
     const ws = (workspace ?? '').trim()
     if (!ws) return
     try {
-      await window.taco.file.write(`${ws}/.taco/rules.md`, projectRulesDraft)
+      await window.taco.file.write(`${ws}/.taco/rules/rules.md`, projectRulesDraft)
     } catch (err) {
       console.error('保存项目规则失败:', err)
     }
   }, [workspace, projectRulesDraft])
 
   useEffect(() => {
-    if (modelConfigs.length <= 0 && pendingModelDrafts.size === 0) {
-      setEditingModelId(null)
-      setModelDraft(null)
-      setModelDraftForId('')
-      setModelDraftDirty(false)
-      return
-    }
-
-    const hasEditing = editingModelId && (
-      modelConfigs.some((item) => item.id === editingModelId)
-      || pendingModelDrafts.has(editingModelId)
-    )
-    if (hasEditing) return
-
-    const active = modelConfigs.find((item) => item.id === activeModelConfigId)
-    setEditingModelId(active?.id ?? modelConfigs[0].id)
-  }, [activeModelConfigId, editingModelId, modelConfigs, pendingModelDrafts])
-
-  useEffect(() => {
-    if (!editingModelId) {
-      setModelDraft(null)
-      setModelDraftForId('')
-      setModelDraftDirty(false)
-      return
-    }
-    const selected = modelConfigs.find((item) => item.id === editingModelId)
-      ?? pendingModelDrafts.get(editingModelId)
-    if (!selected) return
-
-    if (modelDraftForId !== selected.id || !modelDraftDirty) {
-      setModelDraft(toModelDraft(selected))
-      setModelDraftForId(selected.id)
-      setModelDraftDirty(false)
-    }
-  }, [editingModelId, modelConfigs, pendingModelDrafts, modelDraftDirty, modelDraftForId])
-
-  const notesWorkspace = (workspace ?? '').trim()
-  const notesProjectId = (projectId ?? '').trim()
-  const hasNotesScope = Boolean(notesWorkspace || notesProjectId)
-
-  const loadSkills = useCallback(async () => {
-    setSkillsLoading(true)
-    try {
-      const list = await window.taco.skills.list(workspace ?? undefined)
-      setSkills(list)
-    } catch (err) {
-      console.error('加载 Skills 失败:', err)
-    } finally {
-      setSkillsLoading(false)
-    }
-  }, [workspace])
-
-  useEffect(() => {
-    loadSkills()
-  }, [loadSkills])
-
-  useEffect(() => {
-    if (tab === 'skills') loadSkills()
-  }, [tab, loadSkills])
-
-  const handleToggleSkill = async (id: string, enabled: boolean) => {
-    try {
-      await window.taco.skills.toggle(id, enabled)
-      setSkills((prev) => prev.map((s) => s.id === id ? { ...s, enabled } : s))
-    } catch (err) {
-      console.error('切换 Skill 状态失败:', err)
-    }
-  }
-
-  const handleUninstallSkill = async (id: string) => {
-    try {
-      await window.taco.skills.uninstall(id)
-      setSkills((prev) => prev.filter((s) => s.id !== id))
-    } catch (err) {
-      console.error('卸载 Skill 失败:', err)
-    }
-  }
-
-  const handleCheckUpdate = async () => {
-    setUpdateChecking(true)
-    try {
-      const result: AppUpdateCheckResult = await window.taco.updater.check(true)
-      setCachedUpdateStatus(result)
-      if (!result.success) {
-        setUpdateCheckSummary(`检查失败：${result.message || '未知错误'}`)
-        return
-      }
-      if (result.hasUpdate) {
-        const downloadText = result.downloadTriggered ? '，已开始下载' : ''
-        setUpdateCheckSummary(`发现新版本 v${result.latestVersion || ''}${downloadText}`)
-      } else {
-        setUpdateCheckSummary('当前已是最新版本')
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      setUpdateCheckSummary(`检查失败：${message}`)
-    } finally {
-      setUpdateChecking(false)
-    }
-  }
-
-  useEffect(() => {
-    if (tab !== 'general') return
-    let cancelled = false
-    let timer: ReturnType<typeof setTimeout> | null = null
-    let retries = 0
-
-    const pullStatus = async () => {
-      try {
-        const status = await window.taco.updater.getStatus()
-        if (cancelled) return
-        setCachedUpdateStatus(status)
-
-        if (!status && retries < 20) {
-          retries += 1
-          timer = setTimeout(() => { void pullStatus() }, 800)
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    void pullStatus()
-    return () => {
-      cancelled = true
-      if (timer) clearTimeout(timer)
-    }
-  }, [tab])
-
-  // 切到"通用"标签时从文件加载项目规则
-  useEffect(() => {
-    if (tab === 'general' && workspace) {
-      loadProjectRulesFromFile(workspace)
-    }
-  }, [tab, workspace, loadProjectRulesFromFile])
-
-  // ── Notes 逻辑 ──
-  const loadNotes = useCallback(async () => {
-    if (!hasNotesScope) {
-      setTaskMemories([])
-      setMemoryStats(null)
-      setMemoryExportPath('')
-      return
-    }
-    setTaskMemoriesLoading(true)
-    setMemoryStatsLoading(true)
-    try {
-      const [memories, stats] = await Promise.all([
-        window.taco.notes.listTaskMemories(notesWorkspace, notesProjectId || undefined),
-        window.taco.notes.stats(notesWorkspace, notesProjectId || undefined),
-      ])
-      setTaskMemories(memories)
-      setMemoryStats(stats)
-    } catch (err) {
-      console.error('加载笔记失败:', err)
-    } finally {
-      setTaskMemoriesLoading(false)
-      setMemoryStatsLoading(false)
-    }
-  }, [hasNotesScope, notesWorkspace, notesProjectId])
-
-  useEffect(() => {
-    if (tab === 'notes') loadNotes()
-  }, [tab, loadNotes])
-
-  const toggleTaskMemoryExpanded = (id: string) => {
-    setExpandedTaskMemoryIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-
-  const handleDeleteTaskMemory = async (id: string) => {
-    if (!hasNotesScope) return
-    try {
-      await window.taco.notes.deleteTaskMemory(notesWorkspace, id, notesProjectId || undefined)
-      setTaskMemories((prev) => prev.filter((item) => item.id !== id))
-      setExpandedTaskMemoryIds((prev) => {
-        const next = new Set(prev)
-        next.delete(id)
-        return next
-      })
-    } catch (err) {
-      console.error('删除任务记忆失败:', err)
-    }
-  }
-
-  const handleExportMemoryScope = async () => {
-    if (!hasNotesScope || memoryExporting) return
-    setMemoryExporting(true)
-    try {
-      const exported = await window.taco.notes.exportScope(notesWorkspace, notesProjectId || undefined)
-      setMemoryExportPath(exported.filePath)
-      await loadNotes()
-    } catch (err) {
-      console.error('导出记忆失败:', err)
-    } finally {
-      setMemoryExporting(false)
-    }
-  }
-
-  // ── MCP 逻辑 ──
-  const loadMcpServers = useCallback(async () => {
-    setMcpLoading(true)
-    try {
-      const list = await window.taco.mcp.list()
-      setMcpServers(list)
-    } catch (err) {
-      console.error('加载 MCP 服务器失败:', err)
-    } finally {
-      setMcpLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (tab === 'mcp') loadMcpServers()
-  }, [tab, loadMcpServers])
-
-  const handleToggleMcp = async (id: string, enabled: boolean) => {
-    try {
-      await window.taco.mcp.toggle(id, enabled)
-      setMcpServers((prev) => prev.map((s) => s.id === id ? { ...s, enabled, status: enabled ? 'starting' : 'stopped' } : s))
-      setTimeout(loadMcpServers, 3000)
-    } catch (err) {
-      console.error('切换 MCP 状态失败:', err)
-    }
-  }
-
-  const handleRemoveMcp = async (id: string) => {
-    try {
-      await window.taco.mcp.remove(id)
-      setMcpServers((prev) => prev.filter((s) => s.id !== id))
-    } catch (err) {
-      console.error('删除 MCP 服务器失败:', err)
-    }
-  }
-
-  const handleSaveMcp = async () => {
-    if (!mcpEditing) return
-    setMcpSaving(true)
-    try {
-      const server: McpServerInfo = {
-        id: mcpEditing.id || mcpEditing.name?.toLowerCase().replace(/\s+/g, '-') || `mcp-${Date.now()}`,
-        name: mcpEditing.name || '',
-        description: mcpEditing.description || '',
-        command: mcpEditing.command || '',
-        args: mcpEditing.args || [],
-        env: mcpEditing.env || {},
-        enabled: mcpEditing.enabled ?? false,
-        builtin: mcpEditing.builtin ?? false,
-        status: 'stopped',
-        toolCount: 0,
-      }
-      await window.taco.mcp.save(server)
-      setMcpEditing(null)
-      await loadMcpServers()
-    } catch (err) {
-      console.error('保存 MCP 服务器失败:', err)
-    } finally {
-      setMcpSaving(false)
-    }
-  }
-
-  const handleInstallSkill = async () => {
-    const source = installInput.trim()
-    if (!source) return
-    setInstalling(true)
-    setInstallError('')
-    try {
-      const newSkill = await window.taco.skills.install(source)
-      setSkills((prev) => {
-        const exists = prev.findIndex((s) => s.id === newSkill.id)
-        if (exists >= 0) {
-          const next = [...prev]
-          next[exists] = newSkill
-          return next
-        }
-        return [...prev, newSkill]
-      })
-      setInstallInput('')
-      setPreviewResult(null)
-    } catch (err) {
-      setInstallError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setInstalling(false)
-    }
-  }
-
-  const handlePreviewSkill = async () => {
-    const source = installInput.trim()
-    if (!source) return
-    setPreviewing(true)
-    setPreviewError('')
-    setPreviewResult(null)
-    try {
-      const result = await window.taco.skills.preview(source)
-      setPreviewResult(result)
-    } catch (err) {
-      setPreviewError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setPreviewing(false)
-    }
-  }
-
-  const handleSkillCheckUpdate = async (skillId: string) => {
-    setCheckingUpdates((prev) => ({ ...prev, [skillId]: true }))
-    try {
-      const result = await window.taco.skills.checkUpdate(skillId)
-      setUpdateInfo((prev) => ({ ...prev, [skillId]: result }))
-    } catch {
-      setUpdateInfo((prev) => ({ ...prev, [skillId]: null }))
-    } finally {
-      setCheckingUpdates((prev) => ({ ...prev, [skillId]: false }))
-    }
-  }
-
-  const selectedModel = editingModelId
-    ? (modelConfigs.find((item) => item.id === editingModelId)
-      ?? pendingModelDrafts.get(editingModelId)
-      ?? null)
-    : null
-
-  // 合并已持久化模型与本地待保存模型，用于左侧列表展示
-  const allModelConfigs = useMemo(
-    () => [...modelConfigs, ...pendingModelDrafts.values()],
-    [modelConfigs, pendingModelDrafts],
-  )
-
-  const modelHasChanges = Boolean(
-    selectedModel
-    && modelDraft
-    && (
-      selectedModel.provider !== modelDraft.provider
-      || selectedModel.baseUrl !== modelDraft.baseUrl
-      || selectedModel.apiKey !== modelDraft.apiKey
-      || selectedModel.model !== modelDraft.model
-      || selectedModel.contextLength !== modelDraft.contextLength
-      || (selectedModel.temperature ?? '') !== modelDraft.temperature
-      || Boolean(selectedModel.supportsVision) !== Boolean(modelDraft.supportsVision)
-      || Boolean(selectedModel.supportsReasoning) !== Boolean(modelDraft.supportsReasoning)
-    ),
-  )
-
-  const updateDraftField = <K extends keyof ModelConfigDraft>(key: K, value: ModelConfigDraft[K]) => {
-    setModelDraft((prev) => {
-      if (!prev) return prev
-      const next: ModelConfigDraft = {
-        ...prev,
-        [key]: value,
-      }
-      // 切换 Provider 时自动更新为对应服务商默认接口地址
-      if (key === 'provider') {
-        const newProvider = value as string
-        const defaultUrl = PROVIDER_DEFAULT_BASE_URLS[newProvider as keyof typeof PROVIDER_DEFAULT_BASE_URLS]
-        if (defaultUrl) {
-          next.baseUrl = defaultUrl
-        }
-      }
-      return next
-    })
-    setModelDraftDirty(true)
-  }
-
-  const handleSaveModelDraft = () => {
-    if (!selectedModel || !modelDraft) return
-    if (pendingModelIds.has(selectedModel.id)) {
-      // 新模型：写入数据库
-      onAddModelConfig({ ...modelDraft, id: selectedModel.id } as Partial<ModelConfig>)
-      setPendingModelIds((prev) => {
-        const next = new Set(prev)
-        next.delete(selectedModel.id)
-        return next
-      })
-      setPendingModelDrafts((prev) => {
-        const next = new Map(prev)
-        next.delete(selectedModel.id)
-        return next
-      })
-    } else {
-      onUpdateModelConfig(selectedModel.id, modelDraft)
-    }
-    setModelDraftDirty(false)
-  }
-
-  const uploadHasChanges = JSON.stringify(normalizeUploadSettingsState(uploadDraft))
-    !== JSON.stringify(normalizeUploadSettingsState(uploadSaved))
-
-  const updateUploadProvider = (provider: UploadSettingsState['provider']) => {
-    setUploadDraft((prev) => ({ ...prev, provider }))
-  }
-
-  const updateUploadField = <K extends keyof UploadSettingsState['aliyunOss']>(
-    key: K,
-    value: UploadSettingsState['aliyunOss'][K],
-  ) => {
-    setUploadDraft((prev) => ({
-      ...prev,
-      aliyunOss: {
-        ...prev.aliyunOss,
-        [key]: value,
-      },
-    }))
-  }
-
-  const updateQiniuField = <K extends keyof UploadSettingsState['qiniu']>(
-    key: K,
-    value: UploadSettingsState['qiniu'][K],
-  ) => {
-    setUploadDraft((prev) => ({
-      ...prev,
-      qiniu: {
-        ...prev.qiniu,
-        [key]: value,
-      },
-    }))
-  }
-
-  const handleSaveUploadDraft = () => {
-    const normalized = normalizeUploadSettingsState(uploadDraft)
-    saveUploadSettings(normalized)
-    setUploadDraft(normalized)
-    setUploadSaved(normalized)
-  }
-
-  const flushModelDraft = useCallback(() => {
-    if (!modelDraftDirty || !modelDraftForId || !modelDraft) return false
-    onUpdateModelConfig(modelDraftForId, modelDraft)
-    setModelDraftDirty(false)
-    return true
-  }, [modelDraftDirty, modelDraftForId, modelDraft, onUpdateModelConfig])
-
-  const handleSelectModel = useCallback((id: string) => {
-    if (!id || id === editingModelId) return
-    flushModelDraft()
-    // 如果从待保存模型切换走且未保存，清理掉
-    const prevId = editingModelId
-    if (prevId) {
-      setPendingModelIds((prev) => {
-        const next = new Set(prev)
-        next.delete(prevId)
-        return next
-      })
-      setPendingModelDrafts((prev) => {
-        const next = new Map(prev)
-        next.delete(prevId)
-        return next
-      })
-    }
-    setEditingModelId(id)
-  }, [editingModelId, flushModelDraft])
-
-  const handleAddModel = useCallback(() => {
-    flushModelDraft()
-    const ts = Date.now()
-    const id = `pending-${ts}-${Math.random().toString(36).slice(2, 8)}`
-    const defaultProvider = 'deepseek'
-    const newModel: ModelConfig = {
-      id,
-      provider: defaultProvider,
-      name: '',
-      baseUrl: PROVIDER_DEFAULT_BASE_URLS[defaultProvider],
-      apiKey: '',
-      model: '',
-      contextLength: '',
-      temperature: '',
-      supportsVision: false,
-      supportsReasoning: false,
-      createdAt: ts,
-      updatedAt: ts,
-    }
-    setPendingModelIds((prev) => new Set(prev).add(id))
-    setPendingModelDrafts((prev) => new Map(prev).set(id, newModel))
-    setModelDraft(toModelDraft(newModel))
-    setModelDraftForId(id)
-    setModelDraftDirty(false)
-    setEditingModelId(id)
-  }, [flushModelDraft])
-
-  const handleRemoveModelWithConfirm = useCallback((id: string, displayName: string) => {
-    const targetId = String(id || '').trim()
-    if (!targetId) return
-    const targetName = String(displayName || '').trim() || targetId
-    const confirmed = window.confirm(`确认删除模型「${targetName}」？此操作不可恢复。`)
-    if (!confirmed) return
-
-    // 待保存模型只从本地清理
-    if (pendingModelIds.has(targetId)) {
-      setPendingModelIds((prev) => {
-        const next = new Set(prev)
-        next.delete(targetId)
-        return next
-      })
-      setPendingModelDrafts((prev) => {
-        const next = new Map(prev)
-        next.delete(targetId)
-        return next
-      })
-      if (editingModelId === targetId) setEditingModelId(null)
-      return
-    }
-
-    if (editingModelId === targetId) setEditingModelId(null)
-    onRemoveModelConfig(targetId)
-  }, [editingModelId, onRemoveModelConfig, pendingModelIds])
-
-  useEffect(() => {
-    if (tab !== 'models') {
-      flushModelDraft()
-    }
-  }, [tab, flushModelDraft])
+    if (workspace) loadProjectRulesFromFile(workspace)
+  }, [workspace, loadProjectRulesFromFile])
 
   return (
     <main className="settings-page">
@@ -690,211 +107,49 @@ export function SettingsPage({
         <button
           className="settings-back-btn"
           type="button"
-          onClick={() => {
-            flushModelDraft()
-            onClose()
-          }}
+          onClick={onClose}
           title="返回"
         >
-          <svg
-            className="settings-back-icon"
-            viewBox="0 0 24 24"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="M14.75 6.5L9.25 12L14.75 17.5"
-              stroke="currentColor"
-              strokeWidth="1.9"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-            <path
-              d="M10 12H20"
-              stroke="currentColor"
-              strokeWidth="1.9"
-              strokeLinecap="round"
-            />
+          <svg className="settings-back-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M14.75 6.5L9.25 12L14.75 17.5" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M10 12H20" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
           </svg>
           <span>返回</span>
         </button>
         <div className="settings-title">设置</div>
       </header>
 
-        {/* 标签切换 */}
-        <div className="settings-tabs">
-          <button
-            type="button"
-            className={`settings-tab ${tab === 'general' ? 'active' : ''}`}
-            onClick={() => setTab('general')}
-          >
-            通用
-          </button>
-          <button
-            type="button"
-            className={`settings-tab ${tab === 'models' ? 'active' : ''}`}
-            onClick={() => setTab('models')}
-          >
-            模型配置
-          </button>
-          <button
-            type="button"
-            className={`settings-tab ${tab === 'upload' ? 'active' : ''}`}
-            onClick={() => setTab('upload')}
-          >
-            上传配置
-          </button>
-          <button
-            type="button"
-            className={`settings-tab ${tab === 'skills' ? 'active' : ''}`}
-            onClick={() => setTab('skills')}
-          >
-            Skills
-          </button>
-          <button
-            type="button"
-            className={`settings-tab ${tab === 'notes' ? 'active' : ''}`}
-            onClick={() => setTab('notes')}
-          >
-            记忆
-          </button>
-          <button
-            type="button"
-            className={`settings-tab ${tab === 'mcp' ? 'active' : ''}`}
-            onClick={() => setTab('mcp')}
-          >
-            MCP
-          </button>
-        </div>
-
-        <div className={`settings-body ${tab === 'models' ? 'is-models' : ''}`}>
-          {/* ── 通用设置 ── */}
-          {tab === 'general' && (
-            <GeneralSettingsPanel
-              browserDebugMode={browserDebugMode}
-              browserHiddenMode={browserHiddenMode}
-              recallDebugEnabled={recallDebugEnabled}
-              themeMode={themeMode}
-              projectRulesDraft={projectRulesDraft}
-              projectRulesFilePath={projectRulesFilePath}
-              projectRulesLoading={projectRulesLoading}
-              cachedUpdateStatus={cachedUpdateStatus}
-              updateChecking={updateChecking}
-              updateCheckSummary={updateCheckSummary}
-              autoApproveCategories={autoApproveCategories}
-              onBrowserDebugModeChange={(val) => {
-                setBrowserDebugMode(val)
-                localStorage.setItem('taco.browserDebugMode', String(val))
-                window.taco.browser.setDebugMode(val)
-              }}
-              onBrowserHiddenModeChange={(val) => {
-                setBrowserHiddenMode(val)
-                localStorage.setItem('taco.browserHiddenMode', String(val))
-                window.taco.browser.setHiddenMode(val)
-              }}
-              onRecallDebugEnabledChange={(val) => {
-                setRecallDebugEnabled(val)
-                localStorage.setItem('taco.recallDebugEnabled', String(val))
-              }}
-              onThemeModeChange={onThemeModeChange}
-              onProjectRulesDraftChange={setProjectRulesDraft}
-              onProjectRulesChange={handleSaveProjectRules}
-              onCheckUpdate={handleCheckUpdate}
-              onOpenLogDir={() => window.taco.shell.openLogDir({ projectId, workspace: workspace || undefined })}
-              onUpdateAutoApproveCategories={updateAutoApproveCategories}
-            />
-          )}
-
-          {/* ── 模型配置 ── */}
-          {tab === 'models' && (
-            <ModelsSettingsPanel
-              modelConfigs={allModelConfigs}
-              activeModelConfigId={activeModelConfigId}
-              editingModelId={editingModelId}
-              selectedModel={selectedModel}
-              modelDraft={modelDraft}
-              modelHasChanges={modelHasChanges}
-              editingIsPending={pendingModelIds.has(editingModelId || '')}
-              revealApiKey={revealApiKey}
-              onAddModel={handleAddModel}
-              onSelectModel={handleSelectModel}
-              onRemoveModelWithConfirm={handleRemoveModelWithConfirm}
-              onSetActiveModelConfigId={onSetActiveModelConfigId}
-              onModelDraftFieldChange={updateDraftField}
-              onSaveModelDraft={handleSaveModelDraft}
-              onToggleApiKeyReveal={(id) => setRevealApiKey((prev) => ({ ...prev, [id]: !(prev[id] ?? false) }))}
-            />
-          )}
-
-          {/* ── 上传配置 ── */}
-          {tab === 'upload' && (
-            <UploadSettingsPanel
-              uploadDraft={uploadDraft}
-              uploadHasChanges={uploadHasChanges}
-              onUpdateProvider={updateUploadProvider}
-              onUpdateAliyunField={updateUploadField}
-              onUpdateQiniuField={updateQiniuField}
-              onSave={handleSaveUploadDraft}
-              revealUploadSecrets={revealUploadSecrets}
-              onToggleSecret={(key) => setRevealUploadSecrets((prev) => ({ ...prev, [key]: !(prev[key] ?? false) }))}
-            />
-          )}
-
-          {/* ── Skills ── */}
-          {tab === 'skills' && (
-            <SkillsSettingsPanel
-              installInput={installInput}
-              installing={installing}
-              installError={installError}
-              onInstallInputChange={setInstallInput}
-              onInstallSkill={handleInstallSkill}
-              previewResult={previewResult}
-              previewing={previewing}
-              previewError={previewError}
-              onPreviewSkill={handlePreviewSkill}
-              skillsLoading={skillsLoading}
-              skills={skills}
-              onToggleSkill={handleToggleSkill}
-              onUninstallSkill={handleUninstallSkill}
-              checkingUpdates={checkingUpdates}
-              updateInfo={updateInfo}
-              onCheckUpdate={handleSkillCheckUpdate}
-            />
-          )}
-
-          {/* ── 记忆 ── */}
-          {tab === 'notes' && (
-            <NotesSettingsPanel
-              hasNotesScope={hasNotesScope}
-              memoryStats={memoryStats}
-              memoryStatsLoading={memoryStatsLoading}
-              memoryExporting={memoryExporting}
-              memoryExportPath={memoryExportPath}
-              taskMemories={taskMemories}
-              taskMemoriesLoading={taskMemoriesLoading}
-              expandedTaskMemoryIds={expandedTaskMemoryIds}
-              onRefreshNotes={loadNotes}
-              onExportMemoryScope={handleExportMemoryScope}
-              onDeleteTaskMemory={handleDeleteTaskMemory}
-              onToggleTaskMemoryExpanded={toggleTaskMemoryExpanded}
-            />
-          )}
-
-          {/* ── MCP ── */}
-          {tab === 'mcp' && (
-            <McpSettingsPanel
-              mcpEditing={mcpEditing}
-              mcpSaving={mcpSaving}
-              mcpLoading={mcpLoading}
-              mcpServers={mcpServers}
-              onMcpEditingChange={setMcpEditing}
-              onSaveMcp={handleSaveMcp}
-              onToggleMcp={handleToggleMcp}
-              onRemoveMcp={handleRemoveMcp}
-            />
-          )}
-        </div>
-
+      <div className="settings-body">
+        <GeneralSettingsPanel
+          browserDebugMode={browserDebugMode}
+          browserHiddenMode={browserHiddenMode}
+          recallDebugEnabled={recallDebugEnabled}
+          projectRulesDraft={projectRulesDraft}
+          projectRulesFilePath=".taco/rules/rules.md"
+          projectRulesLoading={projectRulesLoading}
+          autoApproveCategories={autoApproveCategories}
+          onBrowserDebugModeChange={(val) => {
+            setBrowserDebugMode(val)
+            localStorage.setItem('taco.browserDebugMode', String(val))
+            window.taco.browser.setDebugMode(val)
+          }}
+          onBrowserHiddenModeChange={(val) => {
+            setBrowserHiddenMode(val)
+            localStorage.setItem('taco.browserHiddenMode', String(val))
+            window.taco.browser.setHiddenMode(val)
+          }}
+          onRecallDebugEnabledChange={(val) => {
+            setRecallDebugEnabled(val)
+            localStorage.setItem('taco.recallDebugEnabled', String(val))
+          }}
+          onProjectRulesDraftChange={setProjectRulesDraft}
+          onProjectRulesChange={handleSaveProjectRules}
+          onOpenLogDir={() => window.taco.shell.openLogDir({ projectId, workspace: workspace || undefined })}
+          onUpdateAutoApproveCategories={updateAutoApproveCategories}
+        />
+      </div>
     </main>
   )
 }
+
+export { PROVIDER_DEFAULT_BASE_URLS }

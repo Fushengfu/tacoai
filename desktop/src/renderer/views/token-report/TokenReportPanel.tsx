@@ -203,7 +203,7 @@ export default function TokenReportPanel({
       {/* 控制面板 - 固定顶部 */}
       <div style={{ 
         padding: '16px 20px',
-        borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
+        borderBottom: '1px solid var(--tr-border)',
         flexShrink: 0,
       }}>
         {/* 视图切换 */}
@@ -221,7 +221,7 @@ export default function TokenReportPanel({
                 padding: '6px 14px',
                 borderRadius: '8px',
                 border: 'none',
-                background: viewMode === mode ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.05)',
+                background: viewMode === mode ? 'rgba(59, 130, 246, 0.2)' : 'var(--tr-bg-alt)',
                 color: viewMode === mode ? '#3b82f6' : 'var(--muted)',
                 cursor: 'pointer',
                 fontWeight: viewMode === mode ? 600 : 400,
@@ -248,8 +248,8 @@ export default function TokenReportPanel({
               style={{
                 padding: '4px 10px',
                 borderRadius: '6px',
-                border: '1px solid rgba(255, 255, 255, 0.1)',
-                background: 'rgba(255, 255, 255, 0.05)',
+                border: '1px solid var(--tr-border-strong)',
+                background: 'var(--tr-bg-alt)',
                 color: 'var(--text)',
                 fontSize: '13px',
                 cursor: 'pointer',
@@ -276,8 +276,8 @@ export default function TokenReportPanel({
         {/* 图表区域 */}
         {chartData.length > 0 && (
           <div style={{ 
-            background: 'rgba(255, 255, 255, 0.03)',
-            border: '1px solid rgba(255, 255, 255, 0.06)',
+            background: 'var(--tr-bg)',
+            border: '1px solid var(--tr-border)',
             borderRadius: '12px',
             padding: '16px',
             marginBottom: '20px',
@@ -297,8 +297,8 @@ export default function TokenReportPanel({
 
         {/* 详细数据表格 */}
         <div style={{ 
-          background: 'rgba(255, 255, 255, 0.03)',
-          border: '1px solid rgba(255, 255, 255, 0.06)',
+          background: 'var(--tr-bg)',
+          border: '1px solid var(--tr-border)',
           borderRadius: '12px',
           overflow: 'hidden',
           padding: viewMode === 'task' || viewMode === 'daily-model' ? '0' : '0',

@@ -12,6 +12,7 @@ interface ProviderSelectProps {
   onChange: (id: string) => void
   disabled?: boolean
   placeholder?: string
+  onAddCustomModel?: () => void
 }
 
 /** 大脑 SVG 图标（系统内置模型标识） */
@@ -29,7 +30,7 @@ function BrainIcon() {
   )
 }
 
-export function ProviderSelect({ value, options, onChange, disabled, placeholder }: ProviderSelectProps) {
+export function ProviderSelect({ value, options, onChange, disabled, placeholder, onAddCustomModel }: ProviderSelectProps) {
   const [open, setOpen] = useState(false)
   const [position, setPosition] = useState<'bottom' | 'top'>('bottom')
   const ref = useRef<HTMLDivElement>(null)
@@ -116,6 +117,24 @@ export function ProviderSelect({ value, options, onChange, disabled, placeholder
               </span>
             </div>
           ))}
+
+          {onAddCustomModel && (
+            <>
+              <div className="provider-select-divider" />
+              <button
+                type="button"
+                className="provider-select-add-btn"
+                onClick={() => { setOpen(false); onAddCustomModel() }}
+              >
+                <svg className="provider-select-add-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="16" />
+                  <line x1="8" y1="12" x2="16" y2="12" />
+                </svg>
+                <span>添加自定义模型</span>
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

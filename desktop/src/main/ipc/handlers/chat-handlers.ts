@@ -21,17 +21,25 @@ import type {
   AgentEventData,
   AgentEventChunkData,
 } from '../../../shared/ipc'
-import type { ProviderKey, ProviderOverrides } from '../../ai/llm'
-import { runAgent, resolveConfirm, resolveRetry } from '../../agent'
+import type { ProviderKey, ProviderOverrides } from '../../sdk/agent/llm/client'
+import { runAgent, resolveConfirm, resolveRetry } from '../../sdk/agent'
 import { listChatStoreSessions, loadChatStoreSessionPage, saveChatStoreSessionPatch, deleteChatStoreSession, initMemoryDb } from '../../data/memory-db'
 import {
   sanitizeUserFacingText,
 } from '../../../shared/sanitize'
-import { log, logError } from '../../system/logger'
+import { log, logError } from '../../infrastructure/logger'
+import { buildAgentServices } from '../../services/agent-services-factory'
 import { getBridgeManager } from '../../bridge/bridge-manager'
-import type { RiskCategory } from '../../tools'
-import { setAutoApproveCategories } from '../../tools'
+import type { RiskCategory } from '../../sdk/agent/tools'
+import { setAutoApproveCategories } from '../../sdk/agent/tools'
 import nodePath from 'node:path'
+
+/* ------------------------------------------------------------------ */
+/*  Agent Abort tracking                                               */
+/* ------------------------------------------------------------------ */
+
+/** 当前正在运行的 agent AbortController 集合：requestId → AbortController */
+export const agentAbortControllers = new Map<string, AbortController>()
 
 const AGENT_EVENT_CHUNK_THRESHOLD_BYTES = 180 * 1024
 const AGENT_EVENT_CHUNK_SIZE_CHARS = 48 * 1024
@@ -102,9 +110,6 @@ function sendAgentEventSafely(
 /* ------------------------------------------------------------------ */
 /*  Agent handlers                                                     */
 /* ------------------------------------------------------------------ */
-
-/** 当前正在运行的 agent AbortController 集合：requestId → AbortController */
-export const agentAbortControllers = new Map<string, AbortController>()
 
 export async function handleAgentStream(event: IpcMainEvent, payload: AgentStreamPayload): Promise<void> {
   const {
@@ -274,9 +279,11 @@ export async function handleAgentStream(event: IpcMainEvent, payload: AgentStrea
       sourceAssistantMessageId,
       logScope,
       Boolean(recallDebug),
+      buildAgentServices(),
     )
   } finally {
     agentAbortControllers.delete(requestId)
+    
     try {
       const mgr = getBridgeManager()
       mgr.updateProjectStateAndPush(String(projectId ?? ''), {
@@ -291,7 +298,6 @@ export function handleAgentAbort(_event: IpcMainEvent, requestId: string) {
   const controller = agentAbortControllers.get(requestId)
   if (controller) {
     controller.abort()
-    agentAbortControllers.delete(requestId)
   }
 }
 
@@ -407,7 +413,7 @@ export async function handleAppNotify(_event: IpcMainInvokeEvent, payload: AppNo
 /*  Config handlers (AppState)                              */
 /* ------------------------------------------------------------------ */
 
-import { getAppState, saveAppProvidersState, saveAppThreadsState } from '../../system/app-state'
+import { getAppState, saveAppProvidersState, saveAppThreadsState } from '../../infrastructure/app-state'
 
 export async function handleAppStateGet(): Promise<AppStateSnapshot> {
   return await getAppState()

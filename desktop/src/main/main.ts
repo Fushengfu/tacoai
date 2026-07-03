@@ -4,9 +4,12 @@ import { fixPath } from './infrastructure/fix-path'
 // 尽早修复 PATH，确保后续所有子进程都能找到 npm、node、git 等命令
 fixPath()
 
-import { app, BrowserWindow, Menu, MenuItem } from 'electron'
+import { app, BrowserWindow, globalShortcut, Menu, MenuItem } from 'electron'
 import path from 'node:path'
 import { registerIpcHandlers } from './ipc'
+import { buildAgentServices } from './services/agent-services-factory'
+import { bootstrapAgentMemory } from './sdk/agent'
+import { setRiskDatabase } from './sdk/agent/tools'
 import { logError, logInfo, getLogDir } from './infrastructure/logger'
 import { IpcChannel } from '../shared/ipc'
 import { shutdownAllMcp } from './infrastructure/mcp'
@@ -170,6 +173,9 @@ app.whenReady().then(async () => {
   setMainWindow(createWindow())
   createTray()
   registerIpcHandlers()
+  const agentServices = buildAgentServices()
+  setRiskDatabase(agentServices.database)
+  bootstrapAgentMemory(agentServices)
   scheduleStartupUpdateCheck(mainWindow!)
   startUsageReporter()
 
@@ -183,6 +189,8 @@ app.on('before-quit', (event) => {
   // 阻止直接退出，等待 renderer 保存完成
   event.preventDefault()
   setForceQuit(true)
+  // 注销全局快捷键
+  globalShortcut.unregisterAll()
   // 清理所有终端进程
   cleanupAllTerminals()
   // 清理所有 AI 终端进程

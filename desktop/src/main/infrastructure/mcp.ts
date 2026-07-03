@@ -695,8 +695,8 @@ export async function callMcpTool(serverId: string, toolName: string, args: Reco
   return result
 }
 
-/** 保存截图文件，返回文件路径 */
-export async function saveScreenshot(dataUrl: string, appId?: string): Promise<string> {
+/** 保存截图文件，返回文件路径。优先保存到项目空间隐藏目录，fallback 到全局 ~/.taco/screenshots/ */
+export async function saveScreenshot(dataUrl: string, appId?: string, workspacePath?: string): Promise<string> {
   await ensureDirs()
 
   // 从 data URL 中提取 base64 数据
@@ -707,7 +707,11 @@ export async function saveScreenshot(dataUrl: string, appId?: string): Promise<s
     .trim()
     .replace(/[^a-zA-Z0-9._-]/g, '_')
     .slice(0, 64) || 'shared'
-  const targetDir = path.join(SCREENSHOTS_DIR, normalizedAppId)
+  // 优先用项目空间隐藏目录
+  const baseDir = (workspacePath && workspacePath.trim())
+    ? path.join(workspacePath, '.taco', 'screenshots')
+    : SCREENSHOTS_DIR
+  const targetDir = path.join(baseDir, normalizedAppId)
   await fs.mkdir(targetDir, { recursive: true })
 
   const buffer = Buffer.from(base64Match[1], 'base64')

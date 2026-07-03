@@ -175,3 +175,46 @@
 .hljs-operator { color: #ff7b72; }
 .hljs-link { color: #a5d6ff; text-decoration: underline; }
 
+/* ==================================================================== */
+/*  highlight.js — 浅色主题 (GitHub Light 风格)                          */
+/* ==================================================================== */
+
+:root[data-theme='light'] .hljs { color: #24292e; }
+:root[data-theme='light'] .hljs-keyword { color: #d73a49; }
+:root[data-theme='light'] .hljs-title,
+:root[data-theme='light'] .hljs-title.function_,
+:root[data-theme='light'] .hljs-title.class_ { color: #6f42c1; }
+:root[data-theme='light'] .hljs-title.class_.inherited__ { color: #6f42c1; }
+:root[data-theme='light'] .hljs-title.function_.invoke__ { color: #6f42c1; }
+:root[data-theme='light'] .hljs-string,
+:root[data-theme='light'] .hljs-template-variable { color: #032f62; }
+:root[data-theme='light'] .hljs-number { color: #005cc5; }
+:root[data-theme='light'] .hljs-literal { color: #005cc5; }
+:root[data-theme='light'] .hljs-built_in { color: #6f42c1; }
+:root[data-theme='light'] .hljs-comment,
+:root[data-theme='light'] .hljs-doctag { color: #6a737d; font-style: italic; }
+:root[data-theme='light'] .hljs-type { color: #22863a; }
+:root[data-theme='light'] .hljs-params { color: #24292e; }
+:root[data-theme='light'] .hljs-meta { color: #e36209; }
+:root[data-theme='light'] .hljs-meta .hljs-keyword { color: #e36209; }
+:root[data-theme='light'] .hljs-attr { color: #005cc5; }
+:root[data-theme='light'] .hljs-variable,
+:root[data-theme='light'] .hljs-template-tag { color: #e36209; }
+:root[data-theme='light'] .hljs-tag { color: #22863a; }
+:root[data-theme='light'] .hljs-name { color: #22863a; }
+:root[data-theme='light'] .hljs-selector-class { color: #22863a; font-weight: 600; }
+:root[data-theme='light'] .hljs-selector-id { color: #e36209; font-weight: 600; }
+:root[data-theme='light'] .hljs-selector-tag { color: #22863a; }
+:root[data-theme='light'] .hljs-property { color: #005cc5; }
+:root[data-theme='light'] .hljs-attribute { color: #005cc5; }
+:root[data-theme='light'] .hljs-regexp { color: #032f62; }
+:root[data-theme='light'] .hljs-symbol { color: #005cc5; }
+:root[data-theme='light'] .hljs-addition { color: #22863a; background: #dcffe4; }
+:root[data-theme='light'] .hljs-deletion { color: #cb2431; background: #ffeef0; }
+:root[data-theme='light'] .hljs-section { color: #6f42c1; font-weight: 700; }
+:root[data-theme='light'] .hljs-subst { color: #24292e; }
+:root[data-theme='light'] .hljs-punctuation { color: #6a737d; }
+:root[data-theme='light'] .hljs-operator { color: #d73a49; }
+:root[data-theme='light'] .hljs-link { color: #032f62; text-decoration: underline; }
+
+

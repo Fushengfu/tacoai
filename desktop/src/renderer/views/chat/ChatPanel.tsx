@@ -6,6 +6,7 @@ import { MarkdownBubble } from './MarkdownBubble'
 import { DiffView } from '../DiffView'
 import { ToolResultContent } from '../ToolResultContent'
 import { useLanguage } from '../../hooks/useLanguage'
+import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { ProviderSelect } from '../ProviderSelect'
 import { FlagCN, FlagUS } from '../FlagIcons'
 
@@ -233,6 +234,8 @@ type ChatPanelProps = {
   projectId?: string
   /** 在中间区域打开文件查看/编辑 */
   onOpenFileView?: (filePath: string, forceDiff?: boolean, selection?: { line: number; column: number } | null) => void
+  /** 打开模型配置页面 */
+  onOpenModels?: () => void
 }
 
 export function ChatPanel({
@@ -283,6 +286,7 @@ export function ChatPanel({
   projectTokenStats,
   runTokenStats,
   projectId,
+  onOpenModels,
 }: Readonly<ChatPanelProps>) {
   const hasProviders = configuredProviders.length > 0
   const isNearBottomRef = useRef<boolean>(true)
@@ -295,16 +299,40 @@ export function ChatPanel({
   // ── 语言切换 ──
   const { language, toggleLanguage, t, isZhCN } = useLanguage()
 
+  // ── 语音输入 ──
+  const handleVoiceTextReady = useCallback((text: string) => {
+    const div = inputDivRef.current
+    if (div) {
+      // 在光标位置插入文本
+      const selection = window.getSelection()
+      if (selection && selection.rangeCount > 0 && div.contains(selection.anchorNode)) {
+        const range = selection.getRangeAt(0)
+        range.deleteContents()
+        range.insertNode(document.createTextNode(text))
+        range.collapse(false)
+        selection.removeAllRanges()
+        selection.addRange(range)
+      } else {
+        // 没有焦点或光标不在输入框内，追加到末尾
+        div.appendChild(document.createTextNode(text))
+      }
+      div.focus()
+      updateDraftFromDiv()
+    }
+  }, [])
+  
+  const { isRecording, elapsedSeconds } = useVoiceInput({ onTextReady: handleVoiceTextReady })
+
   // ── 授权级别（跟随项目持久化）──
-  const [authLevel, setAuthLevel] = useState<'auto' | 'standard' | 'manual'>(() => {
+  const [authLevel, setAuthLevel] = useState<'auto' | 'standard'>(() => {
     if (projectId) {
       const stored = localStorage.getItem(`taco-auth-level:${projectId}`)
-      if (stored === 'auto' || stored === 'manual') return stored
+      if (stored === 'auto') return stored
     }
     return 'standard'
   })
 
-  const handleAuthLevelChange = useCallback((level: 'auto' | 'standard' | 'manual') => {
+  const handleAuthLevelChange = useCallback((level: 'auto' | 'standard') => {
     setAuthLevel(level)
     if (projectId) {
       localStorage.setItem(`taco-auth-level:${projectId}`, level)
@@ -313,10 +341,13 @@ export function ChatPanel({
   }, [projectId])
 
   // ── 图片附件和文件附件状态（由 App.tsx 按项目隔离管理，通过 props 传入）──
+  /** 授权级别下拉框展开状态 */
+  const [authDropdownOpen, setAuthDropdownOpen] = useState(false)
+  const authDropdownRef = useRef<HTMLDivElement>(null)
   /** 语言切换下拉框展开状态 */
   const [langDropdownOpen, setLangDropdownOpen] = useState(false)
   const langDropdownRef = useRef<HTMLDivElement>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
+const fileInputRef = useRef<HTMLInputElement>(null)
   const inputDivRef = useRef<HTMLDivElement>(null)
 
   /** 在 contentEditable div 中插入附件卡片 */
@@ -828,6 +859,8 @@ export function ChatPanel({
 
   // 已响应的确认请求（防止重复点击）
   const [respondedConfirms, setRespondedConfirms] = useState<Map<string, boolean>>(new Map())
+  // 底部确认栏的展开/折叠状态
+  const [collapsedConfirms, setCollapsedConfirms] = useState<Set<string>>(new Set())
 
   // 已响应的重试请求（防止重复点击）
   const [respondedRetries, setRespondedRetries] = useState<Map<string, boolean>>(new Map())
@@ -894,6 +927,18 @@ export function ChatPanel({
     return () => document.removeEventListener('mousedown', handleClick)
   }, [langDropdownOpen])
 
+  // 点击授权下拉框外部时关闭
+  useEffect(() => {
+    if (!authDropdownOpen) return
+    const handleClick = (e: MouseEvent) => {
+      if (authDropdownRef.current && !authDropdownRef.current.contains(e.target as Node)) {
+        setAuthDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [authDropdownOpen])
+
   const totalHistoryCount = Math.max(messages.length, totalMessageCount ?? 0)
   const locallyHiddenMessageCount = Math.max(0, messages.length - visibleMessageCount)
   const hiddenMessageCount = Math.max(0, totalHistoryCount - visibleMessageCount)
@@ -904,10 +949,11 @@ export function ChatPanel({
 
   // 扫描所有可见消息中待确认的步骤（底部浮动通知条使用）
   const pendingConfirms = useMemo(() => {
+    if (!sending) return []
     const results: Array<{
       confirmId: string
       isPlan: boolean
-      planData?: { summary?: string; steps?: string[]; reasoning?: string }
+      planData?: { summary?: string; steps?: Array<{ index?: number; title?: string; content?: string; text?: string }>; reasoning?: string }
       risks?: AgentStep['risks']
     }> = []
     for (const msg of visibleMessages) {
@@ -917,7 +963,7 @@ export function ChatPanel({
         if (!step.confirmId) continue
         if (respondedConfirms.has(step.confirmId)) continue
         const isPlan = step.risks?.some((r) => r.toolName === 'propose_plan') ?? false
-        let planData: { summary?: string; steps?: string[]; reasoning?: string } | undefined
+        let planData: { summary?: string; steps?: Array<{ index?: number; title?: string; content?: string; text?: string }>; reasoning?: string } | undefined
         if (isPlan) {
           try { planData = JSON.parse(step.risks![0].detail) } catch { /* ignore */ }
         }
@@ -925,7 +971,7 @@ export function ChatPanel({
       }
     }
     return results
-  }, [visibleMessages, respondedConfirms])
+  }, [visibleMessages, respondedConfirms, sending])
 
   const loadOlderMessages = useCallback(() => {
     if (!hasHiddenHistory) return
@@ -1920,10 +1966,11 @@ export function ChatPanel({
             return (
               <div key={msg.id} className={`chat-row ${msg.role}`}>
                 {msg.role === 'assistant' ? (
-                  <div className="bubble">
-                    {taskTimingLabel && <div className="assistant-task-meta">{taskTimingLabel}</div>}
-                    {/* Agent 步骤 + PlanTracker 插入在计划确认和执行步骤之间 */}
-                    {msg.agentSteps && msg.agentSteps.length > 0 && (() => {
+                  <>
+                    <div className="bubble">
+                      {taskTimingLabel && <div className="assistant-task-meta">{taskTimingLabel}</div>}
+                      {/* Agent 步骤 + PlanTracker 插入在计划确认和执行步骤之间 */}
+                      {msg.agentSteps && msg.agentSteps.length > 0 && (() => {
                       const stepCount = msg.agentSteps.length
                       const activeCount = msg.agentSteps.filter((s) => s.status === 'running' || s.status === 'calling' || s.status === 'confirm' || s.status === 'retry_confirm').length
                       const doneCount = msg.agentSteps.filter((s) => s.status === 'done').length
@@ -1948,8 +1995,8 @@ export function ChatPanel({
                       const beforePlan = hasPlanSplit ? msg.agentSteps.slice(0, planStepIdx + 1) : []
                       const afterPlan = hasPlanSplit ? msg.agentSteps.slice(planStepIdx + 1) : msg.agentSteps
 
-                      const renderStep = (step: AgentStep) => {
-                        const stepKey = step.retryId ? `${msg.id}-retry-${step.retryId}` : `${msg.id}-${step.round}`
+                      const renderStep = (step: AgentStep, idxInList: number) => {
+                        const stepKey = step.retryId ? `${msg.id}-retry-${step.retryId}` : `${msg.id}-${step.round}-${idxInList}`
                         const isStepRunning = step.status === 'running' || step.status === 'calling'
                         const isStepConfirm = step.status === 'confirm'
                         const isStepRetryConfirm = step.status === 'retry_confirm'
@@ -2001,8 +2048,8 @@ export function ChatPanel({
                           {isStepsExpanded && (
                             <div className="agent-steps-group-body">
                               <div className="agent-steps">
-                                {beforePlan.map(renderStep)}
-                                {afterPlan.map(renderStep)}
+                                {beforePlan.map((s, i) => renderStep(s, i))}
+                                {afterPlan.map((s, i) => renderStep(s, beforePlan.length + i))}
                               </div>
                             </div>
                           )}
@@ -2045,6 +2092,7 @@ export function ChatPanel({
                       )
                     })()}
                   </div>
+                  </>
                 ) : isEditing ? (
                   <div className="bubble editing">
                     {/* 附件显示区 */}
@@ -2315,23 +2363,69 @@ export function ChatPanel({
       {/* 底部浮动确认通知条 — 出现确认时始终可见，不随内容滚动 */}
       {pendingConfirms.length > 0 && (
         <div className="confirm-bar">
-          {pendingConfirms.map((pc, i) => (
+          {pendingConfirms.map((pc, i) => {
+            const isExpanded = !collapsedConfirms.has(pc.confirmId)
+            const toggleExpand = () => {
+              setCollapsedConfirms((prev) => {
+                const next = new Set(prev)
+                if (next.has(pc.confirmId)) next.delete(pc.confirmId)
+                else next.add(pc.confirmId)
+                return next
+              })
+            }
+            return (
             <div key={pc.confirmId} className="confirm-bar-item">
-              <div className="confirm-bar-title">
+              <button type="button" className="confirm-bar-header-btn" onClick={toggleExpand}>
+                <span className="confirm-bar-chevron">{isExpanded ? '⌄' : '›'}</span>
                 <span className="confirm-bar-icon">{pc.isPlan ? '\u{1F4CB}' : '\u26A0\uFE0F'}</span>
-                <span>{pc.isPlan ? '执行计划 — 需要你的确认' : '操作授权 — 需要你的确认'}</span>
+                <span className="confirm-bar-label">{pc.isPlan ? '执行计划 — 需要你的确认' : '操作授权 — 需要你的确认'}</span>
                 {pendingConfirms.length > 1 && (
                   <span className="confirm-bar-count">({i + 1}/{pendingConfirms.length})</span>
                 )}
-              </div>
-              {pc.isPlan && pc.planData?.summary && (
-                <div className="confirm-bar-summary">{pc.planData.summary}</div>
-              )}
-              {!pc.isPlan && pc.risks && pc.risks.length > 0 && (
-                <div className="confirm-bar-summary">
-                  {pc.risks.map((r) => r.reason).join('；')}
+              </button>
+              {/* 展开时显示详细内容 */}
+              {isExpanded && (
+                <div className="confirm-bar-expanded">
+                  {pc.isPlan && pc.planData?.summary && (
+                    <div className="confirm-bar-summary">{pc.planData.summary}</div>
+                  )}
+                  {!pc.isPlan && pc.risks && pc.risks.length > 0 && (
+                    <div className="confirm-bar-summary">
+                      {pc.risks.map((r) => r.reason).join('；')}
+                    </div>
+                  )}
+                  {/* 计划步骤卡片列表 */}
+                  {pc.isPlan && pc.planData?.steps && pc.planData.steps.length > 0 && (
+                    <div className="agent-steps">
+                      {pc.planData.steps.map((s, si) => {
+                        const idx = (s && typeof s === 'object' ? s.index : undefined) ?? si + 1
+                        const title = s && typeof s === 'object' ? (s.title || s.content || s.text) : String(s ?? '')
+                        const desc = s && typeof s === 'object' ? (s.title ? s.content : undefined) : undefined
+                        return (
+                          <div key={si} className="agent-step">
+                            <div className="agent-step-header">
+                              <span className="agent-step-toggle">
+                                <span className="agent-step-label-text">{idx}</span>
+                              </span>
+                              <span className="agent-step-detail">{title}</span>
+                            </div>
+                            {desc && (
+                              <div className="agent-step-body">{desc}</div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                  {pc.isPlan && pc.planData?.reasoning && (
+                    <div className="confirm-bar-reasoning">
+                      <div className="confirm-bar-reasoning-title">选择理由</div>
+                      <div className="confirm-bar-reasoning-text">{pc.planData.reasoning}</div>
+                    </div>
+                  )}
                 </div>
               )}
+              {/* 确认/拒绝按钮放在最下面 */}
               <div className="confirm-bar-actions">
                 <button type="button" className="agent-confirm-btn approve" onClick={() => handleConfirmResponse(pc.confirmId, true)}>
                   {pc.isPlan ? '确认执行' : '允许执行'}
@@ -2341,7 +2435,7 @@ export function ChatPanel({
                 </button>
               </div>
             </div>
-          ))}
+          )})}
         </div>
       )}
 
@@ -2432,6 +2526,14 @@ export function ChatPanel({
               ))}
             </div>
           )}
+          {/* 录音指示器 */}
+          {isRecording && (
+            <div className="voice-recording-bar">
+              <span className="voice-recording-dot" />
+              <span className="voice-recording-text">录音中... {elapsedSeconds}s</span>
+              <span className="voice-recording-hint">松开 Cmd+Shift+V 结束</span>
+            </div>
+          )}
           <div
             ref={inputDivRef}
             className="composer-input"
@@ -2508,6 +2610,7 @@ export function ChatPanel({
                   onChange={onProviderChange}
                   disabled={!hasProviders}
                   placeholder={t('input.no_provider')}
+                  onAddCustomModel={onOpenModels}
                 />
                 {contextPercent > 0 && (
                   <div className="composer-context-bar" title={`上下文 ${contextPercent}%`}>
@@ -2521,16 +2624,58 @@ export function ChatPanel({
                   </div>
                 )}
                 {projectId && (
-                  <select
-                    className="composer-auth-select"
-                    value={authLevel}
-                    onChange={(e) => handleAuthLevelChange(e.target.value as 'auto' | 'standard' | 'manual')}
-                    title="授权级别"
-                  >
-                    <option value="auto">自动执行</option>
-                    <option value="standard">标准</option>
-                    <option value="manual">手动确认</option>
-                  </select>
+                  <div className="composer-auth-dropdown" ref={authDropdownRef}>
+                    <button
+                      className="composer-auth-btn"
+                      onClick={() => setAuthDropdownOpen(!authDropdownOpen)}
+                      title="授权级别"
+                      aria-expanded={authDropdownOpen}
+                    >
+                      {authLevel === 'auto' ? (
+                        <svg className="auth-mode-icon" viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M13 2L3 14h6l-2 8 10-12h-6l2-8z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      ) : (
+                        <svg className="auth-mode-icon" viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                          <path d="M9 12l2 2 4-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      )}
+                      <span className="auth-mode-label">{authLevel === 'auto' ? '全自动' : '标准'}</span>
+                      <svg className="auth-mode-arrow" viewBox="0 0 12 7" aria-hidden="true">
+                        <path d="M1 1l5 5 5-5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    </button>
+                    {authDropdownOpen && (
+                      <div className="composer-auth-menu">
+                        <div
+                          className={`composer-auth-item${authLevel === 'standard' ? ' active' : ''}`}
+                          onClick={() => { handleAuthLevelChange('standard'); setAuthDropdownOpen(false) }}
+                        >
+                          <svg className="auth-mode-icon" viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                            <path d="M9 12l2 2 4-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                          </svg>
+                          <div className="auth-item-text">
+                            <span className="auth-item-title">标准模式</span>
+                            <span className="auth-item-desc">高风险操作需确认</span>
+                          </div>
+                        </div>
+                        <div
+                          className={`composer-auth-item${authLevel === 'auto' ? ' active' : ''}`}
+                          onClick={() => { handleAuthLevelChange('auto'); setAuthDropdownOpen(false) }}
+                        >
+                          <svg className="auth-mode-icon" viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M13 2L3 14h6l-2 8 10-12h-6l2-8z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                          </svg>
+                          <div className="auth-item-text">
+                            <span className="auth-item-title">全自动模式</span>
+                            <span className="auth-item-desc">所有操作自动执行</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 )}
             </div>
             <div className="composer-right">

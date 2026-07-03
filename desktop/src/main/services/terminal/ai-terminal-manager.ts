@@ -11,7 +11,7 @@
 
 import * as pty from 'node-pty'
 import type { IPty } from 'node-pty'
-import { log } from '../../system/logger'
+import { log } from '../../infrastructure/logger'
 
 /* ------------------------------------------------------------------ */
 /*  类型定义                                                           */

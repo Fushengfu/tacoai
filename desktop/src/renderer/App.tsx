@@ -22,6 +22,11 @@ import { useBrowser } from './hooks/useBrowser'
 import { Sidebar } from './views/Sidebar'
 import { ChatPanel } from './views/chat/ChatPanel'
 import { SettingsPage } from './views/SettingsModal'
+import { ModelsSettingsOverlay } from './views/settings/ModelsSettingsOverlay'
+import { UploadSettingsOverlay } from './views/settings/UploadSettingsOverlay'
+import { SkillsSettingsOverlay } from './views/settings/SkillsSettingsOverlay'
+import { NotesSettingsOverlay } from './views/settings/NotesSettingsOverlay'
+import { McpSettingsOverlay } from './views/settings/McpSettingsOverlay'
 import { TokenReportSidebar } from './views/token-report/TokenReportSidebar'
 import { BridgePanel } from './views/bridge/BridgePanel'
 import { MobileDownloadPanel } from './views/bridge/MobileDownloadPanel'
@@ -48,30 +53,41 @@ export default function App() {
   /* ---- 抽取的 hooks ---- */
   const { updateStatus, updateChecking, handleOpenUpdateDialog } = useUpdateCheck()
   useBridgeInit()
-  const fileViewer = useFileViewer({ onSwitchToChat: () => setMiddleView('chat') })
+  const fileViewer = useFileViewer()
   
   /* ---- 本地 UI 状态 ---- */
   const [draftByProject, setDraftByProject] = useState<Record<string, string>>({})
   const [imagesByProject, setImagesByProject] = useState<Record<string, AttachedImage[]>>({})
   const [assetsByProject, setAssetsByProject] = useState<Record<string, AttachedAsset[]>>({})
-  const [showSettings, setShowSettings] = useState(false)
-  const [showTokenReport, setShowTokenReport] = useState(false)
+  // 统一管理所有顶部滑出弹窗（设置/报表/模型/上传/Skills/记忆/MCP），互斥
+  const [activeOverlay, setActiveOverlay] = useState<string | null>(null)
+  const overlayPanelRef = useRef<HTMLDivElement>(null)
+
+  // 弹窗滑入动画：mount 后下一帧添加 open class
+  useEffect(() => {
+    if (activeOverlay && overlayPanelRef.current) {
+      const raf = requestAnimationFrame(() => {
+        overlayPanelRef.current?.classList.add('settings-overlay-panel-open')
+      })
+      return () => cancelAnimationFrame(raf)
+    }
+  }, [activeOverlay])
   const [terminalOpenMap, setTerminalOpenMap] = useState<Record<string, boolean>>({})
   const [showBridgePanel, setShowBridgePanel] = useState(false)
   const [showMobileDownloadPanel, setShowMobileDownloadPanel] = useState(false)
   const [showWorkspaceTree, setShowWorkspaceTree] = useState(false)
   const workspaceTreeRef = useRef<WorkspaceTreeHandle>(null)
+  const closeOverlay = useCallback(() => setActiveOverlay(null), [])
   const [editor, setEditor] = useState<EditorId>(() =>
     (localStorage.getItem('taco.editor') as EditorId) || 'cursor'
   )
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
     const saved = String(localStorage.getItem('taco.themeMode') || '').trim()
-    if (saved === 'ocean' || saved === 'graphite' || saved === 'dark') return saved
+    if (saved === 'light' || saved === 'dark') return saved
     return 'dark'
   })
 
-  type MiddleView = 'chat' | 'settings'
-  const [middleView, setMiddleView] = useState<MiddleView>('chat')
+
 
   /* ---- 首次使用引导 ---- */
   const [onboardingStep, setOnboardingStep] = useState(0)
@@ -201,7 +217,7 @@ export default function App() {
 
   const currentWorkspace: string = activeThread?.workspace ?? ''
 
-  // 从 .taco/rules.md 文件加载项目规则
+  // 从 .taco/rules/rules.md 文件加载项目规则（兼容旧路径 .taco/rules.md）
   const [projectRulesFromFile, setProjectRulesFromFile] = useState('')
   useEffect(() => {
     const ws = currentWorkspace
@@ -212,12 +228,41 @@ export default function App() {
     let cancelled = false
     ;(async () => {
       try {
-        const result = await window.taco.file.read(`${ws}/.taco/rules.md`)
-        if (!cancelled && result && typeof result.content === 'string') {
-          setProjectRulesFromFile(result.content)
+        let result = await window.taco.file.read(`${ws}/.taco/rules/rules.md`)
+        // 新路径不存在时，尝试从旧路径读取并迁移
+        if (result?.size === 0) {
+          const oldResult = await window.taco.file.read(`${ws}/.taco/rules.md`)
+          if (oldResult && typeof oldResult.content === 'string' && oldResult.content.length > 0) {
+            // 旧路径有内容 → 迁移到新路径
+            await window.taco.file.write(`${ws}/.taco/rules/rules.md`, oldResult.content)
+            result = oldResult
+          }
+        }
+        if (!cancelled) {
+          if (result && typeof result.content === 'string') {
+            setProjectRulesFromFile(result.content)
+            // 文件不存在时自动创建空的规则文件
+            if (result.size === 0) {
+              window.taco.file.write(`${ws}/.taco/rules/rules.md`, '').catch(() => {})
+            }
+          }
         }
       } catch {
-        if (!cancelled) setProjectRulesFromFile('')
+        // 新路径不存在 → 尝试旧路径兼容
+        try {
+          const oldResult = await window.taco.file.read(`${ws}/.taco/rules.md`)
+          if (!cancelled && oldResult && typeof oldResult.content === 'string') {
+            setProjectRulesFromFile(oldResult.content)
+            // 迁移到新路径
+            if (oldResult.content.length > 0) {
+              window.taco.file.write(`${ws}/.taco/rules/rules.md`, oldResult.content).catch(() => {})
+            }
+          } else if (!cancelled) {
+            setProjectRulesFromFile('')
+          }
+        } catch {
+          if (!cancelled) setProjectRulesFromFile('')
+        }
       }
     })()
     return () => { cancelled = true }
@@ -640,13 +685,12 @@ export default function App() {
         threadId: tid || undefined,
         sessionId: sessionId || undefined,
         mode: 'agent',
-        middleView,
         sidebarVisible: layout.sidebarVisible,
       },
     }).catch(() => {
       // ignore
     })
-  }, [tid, currentWorkspace, sessionId, middleView, layout.sidebarVisible])
+  }, [tid, currentWorkspace, sessionId, layout.sidebarVisible])
 
   /* ---- Render ---- */
   const drag = useDrag()
@@ -750,8 +794,16 @@ export default function App() {
                 {updateChecking ? '检查更新中...' : `新版本 v${updateStatus.latestVersion || ''}`}
               </button>
             )}
+            <button
+              className={`pill theme-toggle ${themeMode === 'light' ? 'active' : ''}`}
+              type="button"
+              onClick={() => setThemeMode(themeMode === 'dark' ? 'light' : 'dark')}
+              title={themeMode === 'dark' ? '切换为浅色模式' : '切换为深色模式'}
+            >
+              {themeMode === 'dark' ? '☀' : '🌙'}
+            </button>
             {messages.length > 0 && (
-              <button className="pill" type="button" onClick={() => { setShowBridgePanel(false); setShowMobileDownloadPanel(false); setShowTokenReport(false); setShowWorkspaceTree(false); handleClearChat() }}>
+              <button className="pill" type="button" onClick={() => { setShowBridgePanel(false); setShowMobileDownloadPanel(false); setShowWorkspaceTree(false); setActiveOverlay(null); handleClearChat() }}>
                 清空会话记录
               </button>
             )}
@@ -766,7 +818,7 @@ export default function App() {
             <button
               className={`pill bridge-toggle ${showBridgePanel ? 'active' : ''}`}
               type="button"
-              onClick={() => { setShowMobileDownloadPanel(false); setShowTokenReport(false); setShowWorkspaceTree(false); setShowBridgePanel((v) => !v) }}
+              onClick={() => { setShowMobileDownloadPanel(false); setShowWorkspaceTree(false); setActiveOverlay(null); setShowBridgePanel((v) => !v) }}
               title="跨端桥接"
             >
               <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
@@ -781,7 +833,7 @@ export default function App() {
             <button
               className={`pill mobile-download-toggle ${showMobileDownloadPanel ? 'active' : ''}`}
               type="button"
-              onClick={() => { setShowBridgePanel(false); setShowTokenReport(false); setShowWorkspaceTree(false); setShowMobileDownloadPanel((v) => !v) }}
+              onClick={() => { setShowBridgePanel(false); setShowWorkspaceTree(false); setActiveOverlay(null); setShowMobileDownloadPanel((v) => !v) }}
               title="下载手机端"
             >
               <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
@@ -791,9 +843,9 @@ export default function App() {
               </svg>
             </button>
             <button
-              className={`pill token-report-toggle ${showTokenReport ? 'active' : ''}`}
+              className={`pill token-report-toggle ${activeOverlay === 'tokenReport' ? 'active' : ''}`}
               type="button"
-              onClick={() => { setShowBridgePanel(false); setShowMobileDownloadPanel(false); setShowWorkspaceTree(false); setShowTokenReport((v) => !v) }}
+              onClick={() => { setShowBridgePanel(false); setShowMobileDownloadPanel(false); setShowWorkspaceTree(false); setActiveOverlay(activeOverlay === 'tokenReport' ? null : 'tokenReport') }}
               title="Token使用报表"
             >
               <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
@@ -812,7 +864,7 @@ export default function App() {
                   if (open) {
                     setShowBridgePanel(false)
                     setShowMobileDownloadPanel(false)
-                    setShowTokenReport(false)
+                    setActiveOverlay(null)
                   }
                   setShowWorkspaceTree(open)
                 }}
@@ -855,12 +907,20 @@ export default function App() {
             onCancelRename={threadStore.cancelRename}
             onDeleteThread={handleDeleteThread}
             onReorderThread={threadStore.reorderThread}
-            onOpenSettings={() => { setShowSettings(true); setMiddleView('settings') }}
+            onOpenSettings={() => setActiveOverlay('settings')}
             isSending={isThreadSending}
             isCompleted={isThreadCompleted}
             memberInfo={auth.memberInfo}
             onLoginClick={auth.showLogin}
             onLogoutClick={auth.handleLogout}
+            updateStatus={updateStatus}
+            updateChecking={updateChecking}
+            onCheckUpdate={handleOpenUpdateDialog}
+            onOpenModels={() => setActiveOverlay('models')}
+            onOpenUpload={() => setActiveOverlay('upload')}
+            onOpenSkills={() => setActiveOverlay('skills')}
+            onOpenNotes={() => setActiveOverlay('notes')}
+            onOpenMcp={() => setActiveOverlay('mcp')}
           />
         </PaneErrorBoundary>
       </div>
@@ -885,13 +945,6 @@ export default function App() {
       <div className="middle-area" style={{ gridColumn: '3 / 4', gridRow: '2 / 3', width: '100%', minWidth: 0 }}>
         {browser.browserWindows.size > 0 && (
           <div className="middle-tabs">
-            <button
-              type="button"
-              className={`middle-tab ${middleView === 'chat' ? 'active' : ''}`}
-              onClick={() => { setMiddleView('chat'); setShowSettings(false); setShowTokenReport(false) }}
-            >
-              聊天
-            </button>
             {Array.from(browser.browserWindows.entries()).map(([appId, url]) => (
               <button
                 key={appId}
@@ -913,34 +966,7 @@ export default function App() {
           </div>
         )}
 
-        {middleView === 'settings' && showSettings && (
-          <div className="middle-view">
-            <PaneErrorBoundary
-              pane="settings"
-              title="设置面板"
-              resetKey={`${showSettings ? '1' : '0'}:${tid}:${currentWorkspace}`}
-              onError={reportPaneRenderError}
-            >
-              <SettingsPage
-                modelConfigs={providerSettings.modelConfigs}
-                activeModelConfigId={providerSettings.activeModelConfigId}
-                onSetActiveModelConfigId={providerSettings.setActiveModelConfigId}
-                onAddModelConfig={providerSettings.addModelConfig}
-                onUpdateModelConfig={providerSettings.updateModelConfig}
-                onRemoveModelConfig={providerSettings.removeModelConfig}
-                themeMode={themeMode}
-                onThemeModeChange={setThemeMode}
-                onClose={() => { setShowSettings(false); setMiddleView('chat') }}
-                workspace={currentWorkspace}
-                projectId={tid}
-                memberInfo={auth.memberInfo}
-                memberToken={auth.memberToken ?? undefined}
-              />
-            </PaneErrorBoundary>
-          </div>
-        )}
-
-        <div className="middle-view" style={{ display: middleView === 'chat' || (middleView === 'settings' && !showSettings) ? 'flex' : 'none' }}>
+        <div className="middle-view" style={{ display: 'flex' }}>
           <PaneErrorBoundary
             key={tid}
             pane="chat"
@@ -999,6 +1025,7 @@ export default function App() {
               runTokenStats={runTokenStats}
               activeTaskStartedAt={activeTaskStartedAt}
               projectId={tid}
+              onOpenModels={() => setActiveOverlay('models')}
             />
           </PaneErrorBoundary>
 
@@ -1019,6 +1046,97 @@ export default function App() {
           ))}
         </div>
 
+        {activeOverlay && (
+          <>
+            <div className="settings-overlay-backdrop" onClick={closeOverlay} />
+            <div className="settings-overlay-panel" ref={overlayPanelRef} key={activeOverlay}>
+              {activeOverlay === 'settings' && (
+                <PaneErrorBoundary
+                  pane="settings"
+                  title="设置面板"
+                  resetKey={`${tid}:${currentWorkspace}`}
+                  onError={reportPaneRenderError}
+                >
+                  <SettingsPage
+                    onClose={closeOverlay}
+                    workspace={currentWorkspace}
+                    projectId={tid}
+                  />
+                </PaneErrorBoundary>
+              )}
+              {activeOverlay === 'models' && (
+                <ModelsSettingsOverlay
+                  onClose={closeOverlay}
+                  modelConfigs={providerSettings.modelConfigs}
+                  activeModelConfigId={providerSettings.activeModelConfigId}
+                  onSetActiveModelConfigId={providerSettings.setActiveModelConfigId}
+                  onAddModelConfig={providerSettings.addModelConfig}
+                  onUpdateModelConfig={providerSettings.updateModelConfig}
+                  onRemoveModelConfig={providerSettings.removeModelConfig}
+                />
+              )}
+              {activeOverlay === 'upload' && (
+                <UploadSettingsOverlay onClose={closeOverlay} />
+              )}
+              {activeOverlay === 'skills' && (
+                <SkillsSettingsOverlay
+                  onClose={closeOverlay}
+                  workspace={currentWorkspace}
+                />
+              )}
+              {activeOverlay === 'notes' && (
+                <NotesSettingsOverlay
+                  onClose={closeOverlay}
+                  workspace={currentWorkspace}
+                  projectId={tid}
+                />
+              )}
+              {activeOverlay === 'mcp' && (
+                <McpSettingsOverlay onClose={closeOverlay} />
+              )}
+              {activeOverlay === 'tokenReport' && (
+                <div className="token-report-overlay" style={{ height: '100%', overflow: 'auto' }}>
+                  <TokenReportSidebar
+                    onClose={closeOverlay}
+                    projectTokenStats={threadStore.threads.reduce((acc, t) => {
+                      acc[t.id] = chat.getProjectTokenStats(t.id)
+                      return acc
+                    }, {} as Record<string, import('./hooks/useChat').ProjectTokenStats>)}
+                    threadTitles={threadStore.threads.reduce((acc, t) => {
+                      acc[t.id] = t.title || `任务 ${t.id.slice(0, 8)}`
+                      return acc
+                    }, {} as Record<string, string>)}
+                    threadModels={threadStore.threads.reduce((acc, t) => {
+                      // 优先查找本地自定义模型配置
+                      const config = providerSettings.getModelConfig(t.modelConfigId || '')
+                      if (config) {
+                        acc[t.id] = { 
+                          model: config.name || config.model || 'unknown', 
+                          provider: config.provider || 'unknown' 
+                        }
+                      } else if (t.modelConfigId) {
+                        // 回退查找系统内置网关模型
+                        const gwModel = (gatewayModels.models ?? []).find(m => m.id === t.modelConfigId)
+                        if (gwModel) {
+                          acc[t.id] = { 
+                            model: gwModel.displayName || gwModel.name || 'unknown', 
+                            provider: gwModel.provider || 'unknown' 
+                          }
+                        } else {
+                          acc[t.id] = { model: 'unknown', provider: 'unknown' }
+                        }
+                      } else {
+                        acc[t.id] = { model: 'unknown', provider: 'unknown' }
+                      }
+                      return acc
+                    }, {} as Record<string, { model: string; provider: string }>)}
+                  />
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
       </div>
 
       {showBridgePanel && (
@@ -1029,43 +1147,7 @@ export default function App() {
         <MobileDownloadPanel onClose={() => setShowMobileDownloadPanel(false)} />
       )}
 
-      {showTokenReport && (
-        <TokenReportSidebar
-          onClose={() => setShowTokenReport(false)}
-          projectTokenStats={threadStore.threads.reduce((acc, t) => {
-            acc[t.id] = chat.getProjectTokenStats(t.id)
-            return acc
-          }, {} as Record<string, import('./hooks/useChat').ProjectTokenStats>)}
-          threadTitles={threadStore.threads.reduce((acc, t) => {
-            acc[t.id] = t.title || `任务 ${t.id.slice(0, 8)}`
-            return acc
-          }, {} as Record<string, string>)}
-          threadModels={threadStore.threads.reduce((acc, t) => {
-            // 优先查找本地自定义模型配置
-            const config = providerSettings.getModelConfig(t.modelConfigId || '')
-            if (config) {
-              acc[t.id] = { 
-                model: config.name || config.model || 'unknown', 
-                provider: config.provider || 'unknown' 
-              }
-            } else if (t.modelConfigId) {
-              // 回退查找系统内置网关模型
-              const gwModel = (gatewayModels.models ?? []).find(m => m.id === t.modelConfigId)
-              if (gwModel) {
-                acc[t.id] = { 
-                  model: gwModel.displayName || gwModel.name || 'unknown', 
-                  provider: gwModel.provider || 'unknown' 
-                }
-              } else {
-                acc[t.id] = { model: 'unknown', provider: 'unknown' }
-              }
-            } else {
-              acc[t.id] = { model: 'unknown', provider: 'unknown' }
-            }
-            return acc
-          }, {} as Record<string, { model: string; provider: string }>)}
-        />
-      )}
+
 
       {auth.showLoginModal && (
         <LoginModal
