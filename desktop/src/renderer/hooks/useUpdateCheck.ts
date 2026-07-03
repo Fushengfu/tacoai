@@ -36,7 +36,7 @@ export function useUpdateCheck() {
     }
   }, [updateChecking])
 
-  // 启动时拉取 + 30 秒轮询
+  // 启动时拉取 + 30 秒轮询 + 主进程主动推送
   useEffect(() => {
     let cancelled = false
     let retryTimer: ReturnType<typeof setTimeout> | null = null
@@ -58,14 +58,23 @@ export function useUpdateCheck() {
     }
 
     void pull()
+
+    // 保留轮询作为兜底（防止 IPC 推送消息丢失）
     const interval = window.setInterval(() => {
       void refreshUpdateStatus()
     }, 30_000)
+
+    // 监听主进程主动推送的新版本通知
+    const unsub = window.taco.updater.onUpdateAvailable((result) => {
+      if (cancelled) return
+      setUpdateStatus(result)
+    })
 
     return () => {
       cancelled = true
       if (retryTimer) clearTimeout(retryTimer)
       window.clearInterval(interval)
+      unsub()
     }
   }, [refreshUpdateStatus])
 

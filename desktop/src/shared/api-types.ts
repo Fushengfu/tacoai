@@ -70,6 +70,8 @@ export type TacoApi = {
     check: (manual?: boolean) => Promise<AppUpdateCheckResult>
     /** 读取最近一次版本检查结果（可能为 null） */
     getStatus: () => Promise<AppUpdateCheckResult | null>
+    /** 监听主进程推送的新版本可用事件，返回取消订阅函数 */
+    onUpdateAvailable: (callback: (result: AppUpdateCheckResult) => void) => () => void
   }
   chat: {
     /** 监听流式数据块，返回取消订阅函数 */

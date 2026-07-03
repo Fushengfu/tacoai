@@ -98,6 +98,13 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.APP_CHECK_UPDATE, Boolean(manual)),
     getStatus: (): Promise<AppUpdateCheckResult | null> =>
       ipcRenderer.invoke(IpcChannel.APP_GET_UPDATE_STATUS),
+    onUpdateAvailable: (callback: (result: AppUpdateCheckResult) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, result: AppUpdateCheckResult) => callback(result)
+      ipcRenderer.on(IpcChannel.APP_UPDATE_AVAILABLE, handler)
+      return () => {
+        ipcRenderer.removeListener(IpcChannel.APP_UPDATE_AVAILABLE, handler)
+      }
+    },
   },
   chat: {
     onChunk: (callback: (data: ChatChunkData) => void) => {

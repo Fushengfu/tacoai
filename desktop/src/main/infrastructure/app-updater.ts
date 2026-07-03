@@ -7,6 +7,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { log, logError, logInfo } from './logger'
 import type { AppUpdateCheckResult } from '../../shared/ipc-types'
+import { IpcChannel } from '../../shared/ipc-channels'
 
 const API_BASE = 'https://aigateway.bjctykj.com'
 const VERSION_CHECK_URL = `${API_BASE}/api/v1/app/version/check`
@@ -549,6 +550,12 @@ export async function checkAndPromptForUpdate(options: CheckUpdateOptions = {}):
     lastUpdateCheckResult = output
     log('APP_UPDATE_CHECK_RESULT', output)
     console.log('[app-update] check result:', output)
+
+    // 自动检查发现新版本时主动推送给渲染进程
+    if (output.hasUpdate && options.parentWindow && !options.parentWindow.isDestroyed()) {
+      options.parentWindow.webContents.send(IpcChannel.APP_UPDATE_AVAILABLE, output)
+    }
+
     return output
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -654,7 +661,7 @@ export async function fetchMobileApkInfo(packageName: string): Promise<MobileApk
   }
 }
 
-const AUTO_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000 // 每 4 小时检查一次
+const AUTO_CHECK_INTERVAL_MS = 60 * 60 * 1000 // 每小时检查一次
 
 export function scheduleStartupUpdateCheck(parentWindow?: BrowserWindow | null): void {
   const startupDelayMs = 1_000

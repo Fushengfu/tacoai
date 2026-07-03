@@ -210,4 +210,7 @@ export const IpcChannel = {
 
   /** main → renderer, 语音输入快捷键切换 */
   VOICE_TOGGLE: 'voice:toggle',
+
+  /** main → renderer, 自动检查发现有新版本可用 */
+  APP_UPDATE_AVAILABLE: 'app:update-available',
 } as const
