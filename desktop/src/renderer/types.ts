@@ -177,7 +177,7 @@ export type ChatMsg = {
   toolResults?: ToolResultInfo[]
 }
 
-export type ProviderId = 'deepseek' | 'kimi' | 'minimax' | 'glm' | 'qwen' | 'mimo'
+export type ProviderId = 'deepseek' | 'kimi' | 'minimax' | 'glm' | 'qwen' | 'mimo' | 'anthropic' | 'openai' | (string & {})
 
 export type ModelConfig = {
   id: string

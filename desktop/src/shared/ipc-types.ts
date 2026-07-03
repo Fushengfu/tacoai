@@ -451,7 +451,7 @@ export type ChatStoreSessionPatch = {
   messages: unknown[]
 }
 
-export type AppStateProviderId = 'deepseek' | 'kimi' | 'minimax' | 'glm' | 'qwen' | 'mimo'
+export type AppStateProviderId = 'deepseek' | 'kimi' | 'minimax' | 'glm' | 'qwen' | 'mimo' | 'anthropic' | 'openai' | (string & {})
 
 export type AppStateModelConfig = {
   id: string

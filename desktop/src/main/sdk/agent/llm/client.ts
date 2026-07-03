@@ -1058,6 +1058,12 @@ async function buildRequest(
   logScope?: string,
   userId?: string,
 ) {
+  // Anthropic 协议使用独立请求构建
+  if (provider === 'anthropic' || (!isBuiltinProvider(provider) && config.baseUrl.includes('anthropic'))) {
+    const { buildAnthropicRequest } = await import('./anthropic-adapter')
+    return buildAnthropicRequest(provider, config, messages, stream, options, userId)
+  }
+
   // 步骤 1: 合并 system 消息
   const normalizedMessages = normalizeMessages(messages)
   
@@ -1217,7 +1223,10 @@ export async function requestChatCompletion(
   }
 
   const data = JSON.parse(finalRawText)
-  const content = data?.choices?.[0]?.message?.content
+  const isAnthropic = provider === 'anthropic' || (!isBuiltinProvider(provider) && config.baseUrl.includes('anthropic'))
+  const content = isAnthropic
+    ? (Array.isArray(data?.content) ? data.content.find((c: any) => c.type === 'text')?.text : undefined)
+    : data?.choices?.[0]?.message?.content
   if (!content) {
     throw new Error('Empty response from provider')
   }
@@ -1238,6 +1247,8 @@ export async function* requestChatCompletionStream(
   if (!config.apiKey || !config.model) {
     throw new Error(`Missing API key or model for ${provider}`)
   }
+
+  const isAnthropic = provider === 'anthropic' || (!isBuiltinProvider(provider) && config.baseUrl.includes('anthropic'))
 
   const { url, init } = await buildRequest(provider, config, messages, true, undefined, signal, logScope, userId)
   const startTime = Date.now()
@@ -1326,6 +1337,31 @@ export async function* requestChatCompletionStream(
           const parsed = JSON.parse(data)
           if (!firstChunk) firstChunk = parsed
           lastChunk = parsed
+
+          // ── Anthropic SSE 格式 ──
+          if (isAnthropic) {
+            if (parsed.type === 'message_start' && parsed.message?.usage) {
+              mergedUsageRaw = parsed.message.usage
+              const antUsage: TokenUsage = { promptTokens: parsed.message.usage.input_tokens }
+              if (antUsage.promptTokens) onUsage?.(antUsage)
+            }
+            if (parsed.type === 'content_block_delta' && parsed.delta?.type === 'text_delta' && parsed.delta?.text) {
+              accumulated += parsed.delta.text
+              yield parsed.delta.text
+            }
+            if (parsed.type === 'message_delta' && parsed.usage) {
+              mergedUsageRaw = parsed.usage
+              const antUsage: TokenUsage = { completionTokens: parsed.usage.output_tokens }
+              if (antUsage.completionTokens) onUsage?.(antUsage)
+            }
+            if (parsed.type === 'message_stop') {
+              logMergedStreamResponse({ url, response, durationMs: Date.now() - startTime, firstChunk, lastChunk, content: accumulated, usage: mergedUsageRaw, logScope })
+              return
+            }
+            continue
+          }
+
+          // ── OpenAI SSE 格式 ──
           if (Object.prototype.hasOwnProperty.call(parsed, 'usage')) {
             mergedUsageRaw = parsed.usage
           }
@@ -1537,6 +1573,27 @@ export async function* requestStreamWithTools(
   }
 
   const reader = response.body.getReader()
+
+  // Anthropic 协议使用独立流式解析器
+  if (provider === 'anthropic' || (!isBuiltinProvider(provider) && config.baseUrl.includes('anthropic'))) {
+    const { parseAnthropicStream } = await import('./anthropic-adapter')
+    const allowedToolNames = buildAllowedToolNameSet(options)
+    try {
+      for await (const event of parseAnthropicStream(reader, allowedToolNames)) {
+        yield event
+      }
+    } catch (err) {
+      llmLog('RESPONSE_ERROR', {
+        url,
+        status: response.status,
+        durationMs: Date.now() - startTime,
+        error: String(err),
+      }, logScope)
+      throw err
+    }
+    return
+  }
+
   const decoder = new TextDecoder()
   let buffer = ''
   let accumulated = ''

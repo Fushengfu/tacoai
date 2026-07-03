@@ -167,7 +167,7 @@ export type QiniuUploadConfig = {
 export type UploadConfig = AliyunOssUploadConfig | QiniuUploadConfig
 
 /** LLM 提供商 ID */
-export type ProviderId = 'deepseek' | 'kimi' | 'minimax' | 'glm' | 'qwen' | 'mimo'
+export type ProviderId = 'deepseek' | 'kimi' | 'minimax' | 'glm' | 'qwen' | 'mimo' | 'anthropic' | 'openai' | (string & {})
 
 /* ------------------------------------------------------------------ */
 /*  Agent Events                                                       */

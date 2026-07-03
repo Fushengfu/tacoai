@@ -5,7 +5,6 @@ import { providers, resolveModelConfigDisplayLabel, PROVIDER_DEFAULT_BASE_URLS }
 import { loadJson } from '../lib/storage'
 
 const LEGACY_PROVIDER_KEY = 'taco.providers'
-const VALID_PROVIDER_IDS: readonly ProviderId[] = ['deepseek', 'kimi', 'minimax', 'glm', 'qwen', 'mimo']
 
 function asText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
@@ -22,8 +21,9 @@ function asBoolean(value: unknown): boolean {
 }
 
 function asProviderId(value: unknown, fallback: ProviderId = 'deepseek'): ProviderId {
-  const text = asText(value) as ProviderId
-  return VALID_PROVIDER_IDS.includes(text) ? text : fallback
+  const text = asText(value)
+  if (!text) return fallback
+  return text as ProviderId
 }
 
 function nowTs(): number {

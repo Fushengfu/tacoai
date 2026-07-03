@@ -22,7 +22,7 @@ const LEGACY_APP_STATE_FILE = path.join(TACO_DIR, 'app-state.json')
 const THREADS_STATE_FILE = path.join(TACO_DIR, 'threads-state.json')
 const PROVIDERS_STATE_FILE = path.join(TACO_DIR, 'providers-state.json')
 const APP_STATE_VERSION = 2
-const PROVIDER_IDS: readonly AppStateProviderId[] = ['deepseek', 'kimi', 'minimax', 'glm', 'qwen', 'mimo']
+const PROVIDER_IDS: readonly AppStateProviderId[] = ['deepseek', 'kimi', 'minimax', 'glm', 'qwen', 'mimo', 'anthropic', 'openai']
 const PROVIDER_LABELS: Readonly<Record<AppStateProviderId, string>> = {
   deepseek: 'DeepSeek',
   kimi: 'Kimi',
@@ -30,6 +30,8 @@ const PROVIDER_LABELS: Readonly<Record<AppStateProviderId, string>> = {
   glm: 'GLM',
   qwen: 'Qwen',
   mimo: 'MiMo',
+  anthropic: 'Anthropic',
+  openai: 'OpenAI',
 }
 
 type StoredStateRecord<T> = {
@@ -84,8 +86,9 @@ function asOptionalTimestamp(value: unknown): number | undefined {
 }
 
 function sanitizeProviderId(value: unknown, fallback: AppStateProviderId = 'deepseek'): AppStateProviderId {
-  const text = asString(value).trim() as AppStateProviderId
-  return PROVIDER_IDS.includes(text) ? text : fallback
+  const text = asString(value).trim()
+  if (!text) return fallback
+  return text as AppStateProviderId
 }
 
 function normalizeModelConfig(raw: unknown, index: number): AppStateModelConfig | null {

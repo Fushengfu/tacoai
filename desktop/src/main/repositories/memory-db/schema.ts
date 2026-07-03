@@ -107,7 +107,7 @@ export type MemoryScope = {
 /*  Constants                                                          */
 /* ------------------------------------------------------------------ */
 
-export const APP_PROVIDER_IDS: readonly AppStateProviderId[] = ['deepseek', 'kimi', 'minimax', 'glm', 'qwen', 'mimo']
+export const APP_PROVIDER_IDS: readonly AppStateProviderId[] = ['deepseek', 'kimi', 'minimax', 'glm', 'qwen', 'mimo', 'anthropic', 'openai']
 export const APP_PROVIDER_LABELS: Readonly<Record<AppStateProviderId, string>> = {
   deepseek: 'DeepSeek',
   kimi: 'Kimi',
@@ -115,6 +115,8 @@ export const APP_PROVIDER_LABELS: Readonly<Record<AppStateProviderId, string>> =
   glm: 'GLM',
   qwen: 'Qwen',
   mimo: 'MiMo',
+  anthropic: 'Anthropic',
+  openai: 'OpenAI',
 }
 
 const STATE_DIR = path.join(TACO_HOME, 'state')

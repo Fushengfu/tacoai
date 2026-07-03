@@ -40,4 +40,11 @@ export const providerFormatRules: ProviderFormatRules = {
   glm: {
     transform: (msg) => providerFormatRules.deepseek.transform(msg),
   },
+  // Anthropic / OpenAI 协议使用 OpenAI 兼容数组格式（协议差异由各自 adapter 处理）
+  anthropic: {
+    transform: (msg) => ({ role: msg.role, content: msg.content }),
+  },
+  openai: {
+    transform: (msg) => ({ role: msg.role, content: msg.content }),
+  },
 }

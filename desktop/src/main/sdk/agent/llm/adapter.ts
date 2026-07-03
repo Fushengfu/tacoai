@@ -209,6 +209,9 @@ const transformers: Record<string, (msg: StandardChatMessage) => { role: string;
   kimi: transformForKimi,
   minimax: transformForMinimax,
   glm: transformForGLM,
+  // anthropic/openai 走 OpenAI 兼容格式（自身 adapter 处理协议差异）
+  anthropic: transformForQwen,
+  openai: transformForQwen,
 }
 
 /**

@@ -12,7 +12,9 @@ export const providers: readonly { id: ProviderId; label: string; contextLength:
   { id: 'minimax', label: 'MiniMax', contextLength: 1048576 },
   { id: 'glm', label: 'GLM', contextLength: 131072 },
   { id: 'qwen', label: 'Qwen', contextLength: 131072 },
-  { id: 'mimo', label: 'MiMo', contextLength: 1048576 }
+  { id: 'mimo', label: 'MiMo', contextLength: 1048576 },
+  { id: 'anthropic', label: 'Anthropic 协议', contextLength: 200000 },
+  { id: 'openai', label: 'OpenAI 协议', contextLength: 131072 },
 ]
 
 /** 各服务商默认接口地址（添加模型时自动填入，用户可修改） */
@@ -23,6 +25,8 @@ export const PROVIDER_DEFAULT_BASE_URLS: Record<ProviderId, string> = {
   glm: 'https://open.bigmodel.cn/api/coding/paas/v4',
   qwen: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
   mimo: 'https://api.xiaomimimo.com/v1',
+  anthropic: 'https://api.anthropic.com',
+  openai: 'https://api.openai.com/v1',
 }
 
 export function resolveProviderDisplayLabel(providerId: ProviderId, form?: Partial<ProviderForm>): string {
@@ -62,7 +66,9 @@ export const providerPlaceholders: Record<ProviderId, ProviderForm> = {
   minimax: { baseUrl: 'https://api.minimaxi.com/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '1048576（示例）', temperature: '0.05（可选）' },
   glm: { baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '131072（示例）', temperature: '0.05（可选）' },
   qwen: { baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '131072（示例）', temperature: '0.05（可选）' },
-  mimo: { baseUrl: 'https://api.xiaomimimo.com/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '1048576（示例）', temperature: '0.05（可选）' }
+  mimo: { baseUrl: 'https://api.xiaomimimo.com/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '1048576（示例）', temperature: '0.05（可选）' },
+  anthropic: { baseUrl: 'https://api.anthropic.com', apiKey: 'sk-ant-...', model: 'claude-sonnet-4-20250514', contextLength: '200000', temperature: '0.05（可选）' },
+  openai: { baseUrl: 'https://api.openai.com/v1', apiKey: 'sk-...', model: 'gpt-4o', contextLength: '131072', temperature: '0.05（可选）' },
 }
 
 export function defaultProviderForms(): ProviderForms {
@@ -72,7 +78,9 @@ export function defaultProviderForms(): ProviderForms {
     minimax: { baseUrl: '', apiKey: '', model: '', contextLength: '', temperature: '' },
     glm: { baseUrl: '', apiKey: '', model: '', contextLength: '', temperature: '' },
     qwen: { baseUrl: '', apiKey: '', model: '', contextLength: '', temperature: '' },
-    mimo: { baseUrl: '', apiKey: '', model: '', contextLength: '', temperature: '' }
+    mimo: { baseUrl: '', apiKey: '', model: '', contextLength: '', temperature: '' },
+    anthropic: { baseUrl: '', apiKey: '', model: '', contextLength: '', temperature: '' },
+    openai: { baseUrl: '', apiKey: '', model: '', contextLength: '', temperature: '' },
   }
 }
 

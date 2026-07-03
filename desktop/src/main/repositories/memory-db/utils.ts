@@ -111,8 +111,9 @@ export function asBooleanFlag(value: unknown): boolean {
 }
 
 export function normalizeProviderId(value: unknown, fallback: AppStateProviderId = 'deepseek'): AppStateProviderId {
-  const text = asTrimmedString(value) as AppStateProviderId
-  return APP_PROVIDER_IDS.includes(text) ? text : fallback
+  const text = asTrimmedString(value)
+  if (!text) return fallback
+  return text as AppStateProviderId
 }
 
 export function normalizeMode(value: unknown): 'agent' | undefined {
