@@ -23,6 +23,24 @@
 
 ---
 
+## What's New in v0.4.9
+
+| Feature | Description |
+|---------|-------------|
+| Custom Model Protocols | Added Anthropic & OpenAI protocol support for any compatible third-party model service |
+| Voice Input | Hold `Cmd+Shift+V` to record, release to auto-transcribe into the input box |
+| Markdown Preview | File editor now supports live preview rendering for `.md` files |
+| Token Statistics | Visual dashboard for tracking token consumption trends, input/output distribution, cache hit rates, and conversation counts by date/model/task dimensions |
+| Plan Management Enhancement | AI generates structured execution plans with interactive "Confirm" / "Adjust" approval workflow |
+| Update Check Optimization | Main process checks for updates hourly, pushes notifications proactively |
+| Multi-Terminal Isolation | Support for running multiple independent terminal sessions simultaneously |
+| Rules File Migration | Project rules unified under `.taco/rules/` directory, with automatic migration from old paths |
+| Theme Toggle Icon | Dark/light mode toggle replaced with SVG vector icons |
+| Browser Tab Fix | Fixed residual browser tabs after window close |
+| System Prompt Optimization | Streamlined redundant rules for improved AI execution efficiency |
+
+---
+
 ## Multi-Model Support
 
 Taco AI integrates with multiple LLM providers, switchable based on task requirements:
@@ -110,6 +128,24 @@ The top "+ Add Memory" button allows manual addition of project knowledge.
 
 ---
 
+### Plan Management
+
+<p align="center">
+  <img src="6.png" alt="Plan Management UI" width="800" />
+</p>
+
+The AI agent task planning interface, demonstrating structured execution plan generation with an interactive approval workflow. The AI breaks down a complex task (e.g., "Risk Operation Authorization Mechanism for AI Agent Programming System") into multiple technical steps — defining risk level enums, implementing an authorization manager, TTL-based expiration cleanup, security configuration updates, Tool interface extensions, etc. — each with detailed descriptions. **"Confirm"** and **"Adjust"** buttons at the bottom allow users to review the plan before the AI modifies any code, ensuring every step meets expectations. Token usage statistics (input/output/cache) are displayed at the top.
+
+### Statistics Dashboard
+
+<p align="center">
+  <img src="7.png" alt="Statistics Dashboard UI" width="800" />
+</p>
+
+The token usage statistics dashboard, helping users track LLM API costs and usage trends. Key metric cards display **total tokens, input/output tokens, cache hits**, and **conversation rounds**. A 7-day consumption trend bar chart visualizes usage changes over time. The detailed data table below lists daily input, output, cache, totals, and rounds, with multi-dimensional filtering by date, model, and task — ideal for cost analysis and anomaly detection.
+
+---
+
 ### Cross-device Sync Demo
 
 <p align="center">
@@ -128,15 +164,14 @@ The following links are hosted on servers in mainland China for high-speed downl
 
 | Platform | Download Link | Installation |
 |----------|---------------|--------------|
-| **macOS** (Apple Silicon) | [Taco AI-0.4.7-arm64.dmg](https://store.bjctykj.com/app-versions/macOS/1782096266_Taco_AI-0.4.7-arm64.dmg) | Double-click the `.dmg`, then drag into the `Applications` folder |
-| **Windows** (x64) | [Taco AI Setup 0.4.7-x64.exe](https://store.bjctykj.com/app-versions/Windows/1782096341_Taco_AI-0.4.7-x64.exe) | Double-click the `.exe` and follow the installation wizard |
-| **Windows** (ARM64) | [Taco AI Setup 0.4.7-arm64.exe](https://store.bjctykj.com/app-versions/Windows/1782096649_Taco_AI-0.4.7-arm64.exe) | Double-click the `.exe` and follow the installation wizard |
+| **macOS** (Apple Silicon) | [Taco AI-0.4.9-arm64.dmg](https://store.bjctykj.com/app-versions/macOS/1783060360_Taco_AI-0.4.9-arm64.dmg) | Double-click the `.dmg`, then drag into the `Applications` folder |
+| **Windows** (x64) | [Taco AI-0.4.9-x64.exe](https://store.bjctykj.com/app-versions/Windows/1783062905_Taco_AI-0.4.9.exe) | Double-click the `.exe` and follow the installation wizard |
 
 ### International Users
 
 International users should download the installer for your platform from the [GitHub Releases](https://github.com/Fushengfu/tacoai/releases) page.
 
-Current version: **v0.4.7**
+Current version: **v0.4.9**
 
 > For building from source, see [Quick Start](#quick-start) below.
 
@@ -197,18 +232,21 @@ taco/
 ├── desktop/                    # Electron desktop application
 │   ├── src/
 │   │   ├── main/               # Main process (Node.js)
-│   │   │   ├── agent/          # AI agent core
-│   │   │   ├── ai/             # LLM client
-│   │   │   ├── automation/     # Browser/desktop automation
-│   │   │   ├── bridge/         # Cross-device sync bridge
-│   │   │   ├── infrastructure/ # Infrastructure (logger, terminal, auth, etc.)
+│   │   │   ├── sdk/agent/      # AI agent core (LLM, tools, memory, prompts)
+│   │   │   │   ├── llm/        # LLM client (multi-protocol adapters)
+│   │   │   │   ├── tools/      # Tool definition, registration & execution
+│   │   │   │   ├── memory/     # Memory storage, recall & maintenance
+│   │   │   │   ├── context/    # Context building & compression
+│   │   │   │   └── prompt/     # System prompt builder
+│   │   │   ├── services/       # Business service layer
+│   │   │   ├── infrastructure/ # Infrastructure (logger, terminal, auth, updater, etc.)
+│   │   │   ├── repositories/   # Data persistence (SQLite)
 │   │   │   ├── ipc/            # IPC communication handlers
-│   │   │   ├── services/       # Business services (agent loop, memory, tools, etc.)
-│   │   │   ├── tools/          # Tool definitions and execution
+│   │   │   ├── bridge/         # Cross-device sync bridge
 │   │   │   └── window/         # Window management and tray
 │   │   ├── preload/            # Preload scripts
 │   │   └── renderer/           # Renderer process (React UI)
-│   │       ├── views/          # View components
+│   │       ├── views/          # View components (chat, editor, settings)
 │   │       ├── hooks/          # React Hooks
 │   │       ├── styles/         # Stylesheets
 │   │       └── lib/            # Utility libraries
@@ -218,7 +256,7 @@ taco/
 │   ├── backend/                # Go backend service
 │   ├── admin/                  # React admin panel
 │   └── docs/                   # API documentation
-└── 1.png 2.png 3.png 4.png 5.png 49.mp4  # Screenshots & demo video
+└── 1.png 2.png 3.png 4.png 5.png 6.png 7.png 49.mp4  # Screenshots & demo video
 ```
 
 ---
@@ -234,4 +272,4 @@ taco/
 
 ## Version
 
-Current version: **v0.4.7**
+Current version: **v0.4.9**
