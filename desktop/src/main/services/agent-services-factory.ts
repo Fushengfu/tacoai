@@ -13,6 +13,8 @@ import { app, desktopCapturer, screen } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs'
 import { log as infraLog } from '../infrastructure/logger'
+import { loadAuthFromFile } from '../infrastructure/auth-store'
+import { getBridgeManager } from '../bridge/bridge-manager'
 import { executeBrowserAction, getBrowserConsoleSnapshot, listBrowserInstances, closeExternalBrowser } from '../infrastructure/browser'
 import { getActiveMcpTools, callMcpTool, saveScreenshot } from '../infrastructure/mcp'
 import { callDesktopService } from '../infrastructure/desktop-service'
@@ -23,8 +25,6 @@ import {
   closeAITerminal,
 } from './terminal/ai-terminal-manager'
 import {
-  loadUploadConfigFromDb,
-  saveUploadConfigToDb,
   loadAppProvidersStateFromDb,
   getMemoryDbInfo,
   countMemoryMaintainRuns,
@@ -251,14 +251,6 @@ function createTerminalService(): TerminalService {
 
 function createDatabaseService(): DatabaseService {
   return {
-    getUploadConfig() {
-      const cfg = loadUploadConfigFromDb()
-      if (!cfg || cfg.provider === 'none') return null
-      return { provider: cfg.provider, config: cfg as Record<string, unknown> }
-    },
-    saveUploadConfig(provider, config) {
-      saveUploadConfigToDb(provider, config)
-    },
     getAppProviders() {
       return loadAppProvidersStateFromDb() as any
     },
@@ -389,6 +381,15 @@ export function buildAgentServices(): AgentServices {
     notes: createNotesService(),
     fsProvider: createFsProvider(),
     gatewayModelCache: createGatewayModelCache(),
+    getToken() {
+      // 优先从 BridgeManager 取（手机端登录），降级到 auth-store（桌面端登录）
+      const bridgeToken = getBridgeManager().getToken()
+      if (bridgeToken) return bridgeToken
+      // loadAuthFromFile 是异步的，但 getToken 必须同步返回
+      // auth-store 的 token 已在 bridge.connect 时同步存入 BridgeManager
+      // 所以这里只需要 BridgeManager 即可
+      return null
+    },
   }
 
   return cachedServices

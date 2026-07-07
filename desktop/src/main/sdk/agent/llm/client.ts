@@ -5,7 +5,6 @@ import { basename, extname, isAbsolute } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { Logger } from '../services'
 import type { ToolDefinition, ToolCall } from '../tools'
-import type { UploadConfig } from '../types'
 import { USER_ASSETS_BLOCK_REGEX, USER_ASSETS_BLOCK_CAPTURE_REGEX, USER_QUERY_BLOCK_CAPTURE_REGEX, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, stripUserAssetsBlock, extractUserAssetsBlock, extractUserQueryText, parseUserAssetEntries, inferAssetKind, buildUserAssetsBlock } from '../shared/user-assets'
 import type { UserAssetEntry } from '../shared/user-assets'
 
@@ -62,7 +61,6 @@ export type ProviderConfig = {
   model: string
   temperature?: number
   headers?: IncomingHttpHeaders
-  upload?: UploadConfig
   supportsVision?: boolean
   supportsReasoning?: boolean
 }
@@ -572,61 +570,8 @@ function resolveQiniuRegionUploadUrl(rawText: string, currentUploadUrl: string):
   return next
 }
 
-export function resolveUploadConfig(config: ProviderConfig): ResolvedUploadConfig | null {
-  const upload = config.upload
-  if (!upload || typeof upload !== 'object') return null
-  if (upload.provider === 'aliyun_oss') {
-    const accessKeyId = asTrimmedText(upload.accessKeyId)
-    const accessKeySecret = asTrimmedText(upload.accessKeySecret)
-    const bucket = asTrimmedText(upload.bucket)
-    const endpoint = asTrimmedText(upload.endpoint)
-    const objectPrefix = normalizeObjectPrefix(upload.objectPrefix || '')
-    if (!accessKeyId || !accessKeySecret || !bucket || !endpoint) {
-      throw new Error('Aliyun OSS upload config is incomplete: accessKeyId/accessKeySecret/bucket/endpoint are required')
-    }
-    const endpointUrl = new URL(ensureUrlWithScheme(endpoint))
-    const bucketHost = endpointUrl.host.startsWith(`${bucket}.`)
-      ? endpointUrl.host
-      : `${bucket}.${endpointUrl.host}`
-    const uploadOrigin = `${endpointUrl.protocol}//${bucketHost}`
-    const publicBaseUrl = asTrimmedText(upload.publicBaseUrl)
-      ? normalizePublicBaseUrl(upload.publicBaseUrl || '')
-      : uploadOrigin
-    return {
-      provider: 'aliyun_oss',
-      accessKeyId,
-      accessKeySecret,
-      bucket,
-      endpoint: uploadOrigin,
-      objectPrefix,
-      publicBaseUrl,
-    }
-  }
-  if (upload.provider === 'qiniu') {
-    const accessKey = asTrimmedText(upload.accessKey)
-    const secretKey = asTrimmedText(upload.secretKey)
-    const bucket = asTrimmedText(upload.bucket)
-    const uploadUrl = asTrimmedText(upload.uploadUrl) ? ensureUrlWithScheme(upload.uploadUrl || '') : 'https://up.qiniup.com'
-    const publicBaseUrl = normalizePublicBaseUrl(asTrimmedText(upload.publicBaseUrl))
-    const objectPrefix = normalizeObjectPrefix(upload.objectPrefix || '')
-    const expiresSecondsRaw = Number(upload.expiresSeconds)
-    const expiresSeconds = Number.isFinite(expiresSecondsRaw) && expiresSecondsRaw > 0
-      ? Math.floor(expiresSecondsRaw)
-      : 3600
-    if (!accessKey || !secretKey || !bucket || !publicBaseUrl) {
-      throw new Error('Qiniu upload config is incomplete: accessKey/secretKey/bucket/publicBaseUrl are required')
-    }
-    return {
-      provider: 'qiniu',
-      accessKey,
-      secretKey,
-      bucket,
-      uploadUrl,
-      objectPrefix,
-      publicBaseUrl,
-      expiresSeconds,
-    }
-  }
+export function resolveUploadConfig(_config: ProviderConfig): ResolvedUploadConfig | null {
+  // 统一走网关 API，不再使用本地配置
   return null
 }
 
@@ -739,11 +684,120 @@ function toLocalPathIfFileUrl(value: string): string | null {
   }
 }
 
-export async function uploadDataUrlToStorage(
-  config: ResolvedUploadConfig,
+const GATEWAY_UPLOAD_BASE = 'https://agent.bjctykj.com'
+
+/** 走网关后台 API 上传（无本地云存储配置时的降级方案，含 hash 去重） */
+async function uploadDataUrlViaGateway(
   dataUrl: string,
   signal?: AbortSignal,
+  token?: string | null,
 ): Promise<string> {
+  const { createHash } = await import('node:crypto')
+
+  const commaIndex = dataUrl.indexOf(',')
+  if (commaIndex === -1) throw new Error('Invalid data URL format')
+  const mimeHeader = dataUrl.slice(0, commaIndex)
+  const base64Data = dataUrl.slice(commaIndex + 1)
+  const bytes = Buffer.from(base64Data, 'base64')
+
+  const mimeMatch = mimeHeader.match(/data:([^;]+)/i)
+  const mimeType = mimeMatch?.[1] ?? 'image/png'
+
+  // 计算 SHA-256 hash（去重用）
+  const hash = createHash('sha256').update(bytes).digest('hex')
+
+  const ext = mimeType.split('/')[1] || 'png'
+  const fileName = `upload_${Date.now()}.${ext}`
+
+  // 调网关获取上传凭证
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const tokenResp = await fetch(`${GATEWAY_UPLOAD_BASE}/api/member/storage/upload-token`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ file_name: fileName, mime_type: mimeType, hash }),
+    signal,
+  })
+
+  if (!tokenResp.ok) {
+    throw new Error(`网关返回错误 (${tokenResp.status}): ${await tokenResp.text().catch(() => '')}`)
+  }
+
+  const tokenJson = await tokenResp.json() as any
+  if (tokenJson.code !== 0 || !tokenJson.data) {
+    throw new Error(`网关返回异常: ${tokenJson.message || '未知错误'}`)
+  }
+
+  const uploadData = tokenJson.data
+
+  let publicUrl: string
+
+  // hash 去重命中
+  if (uploadData.reused === true && uploadData.public_url) {
+    publicUrl = uploadData.public_url
+  } else {
+    // 直传云存储
+    const formData = new FormData()
+    formData.append('token', uploadData.token)
+    formData.append('key', uploadData.key)
+    formData.append('file', new Blob([bytes]), fileName)
+
+    let uploadUrl = uploadData.upload_url || 'https://up.qiniup.com'
+    let uploadResp = await fetch(uploadUrl, { method: 'POST', body: formData, signal })
+
+    if (!uploadResp.ok) {
+      const errText = await uploadResp.text().catch(() => '')
+      // 七牛云跨区域重试（400 或 405）
+      if (uploadResp.status === 400 || uploadResp.status === 405) {
+        const retryHost = errText.match(/up-[a-z0-9]+\.qiniup\.com/)?.[0]
+        if (retryHost) {
+          uploadUrl = `https://${retryHost}`
+          uploadResp = await fetch(uploadUrl, { method: 'POST', body: formData, signal })
+        }
+      }
+      if (!uploadResp.ok) {
+        throw new Error(`云存储上传失败 (${uploadResp.status}): ${errText}`)
+      }
+    }
+
+    const publicBaseUrl = String(uploadData.public_base_url || '').replace(/\/+$/, '')
+    publicUrl = `${publicBaseUrl}/${uploadData.key}`
+  }
+
+  // 注册文件记录到网关后台（非关键路径，失败静默吞掉）
+  try {
+    await fetch(`${GATEWAY_UPLOAD_BASE}/api/member/storage/files`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        provider: (uploadData as any).provider || 'qiniu',
+        object_key: uploadData.key,
+        public_url: publicUrl,
+        mime_type: mimeType,
+        origin_name: fileName,
+        hash,
+      }),
+    })
+  } catch (_regErr) {
+    // 静默吞掉，注册失败不影响上传结果
+  }
+
+  return publicUrl
+}
+
+export async function uploadDataUrlToStorage(
+  config: ResolvedUploadConfig | null,
+  dataUrl: string,
+  signal?: AbortSignal,
+  token?: string | null,
+): Promise<string> {
+  // 未配置本地云存储 → 走网关后台 API
+  if (!config) {
+    return uploadDataUrlViaGateway(dataUrl, signal, token)
+  }
   // 解析 dataUrl: data:image/png;base64,xxxxx
   const commaIndex = dataUrl.indexOf(',')
   if (commaIndex === -1) throw new Error('Invalid data URL format')

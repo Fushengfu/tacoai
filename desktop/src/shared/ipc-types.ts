@@ -47,32 +47,8 @@ export type IpcChatOverrides = Record<
     model?: string
     temperature?: number
     headers?: Record<string, string>
-    upload?: IpcUploadConfig
   }
 >
-
-export type IpcAliyunOssUploadConfig = {
-  provider: 'aliyun_oss'
-  accessKeyId?: string
-  accessKeySecret?: string
-  bucket?: string
-  endpoint?: string
-  objectPrefix?: string
-  publicBaseUrl?: string
-}
-
-export type IpcQiniuUploadConfig = {
-  provider: 'qiniu'
-  accessKey?: string
-  secretKey?: string
-  bucket?: string
-  uploadUrl?: string
-  publicBaseUrl?: string
-  objectPrefix?: string
-  expiresSeconds?: number
-}
-
-export type IpcUploadConfig = IpcAliyunOssUploadConfig | IpcQiniuUploadConfig
 
 /* ------------------------------------------------------------------ */
 /*  Payloads (renderer → main)                                         */
@@ -82,7 +58,6 @@ export type IpcUploadConfig = IpcAliyunOssUploadConfig | IpcQiniuUploadConfig
 export type ImageUploadPayload = {
   dataUrl: string
   fileName: string
-  uploadConfig: IpcUploadConfig
 }
 
 /** chat:send 请求体（已废弃，仅保留类型定义） */

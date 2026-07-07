@@ -236,6 +236,10 @@ type ChatPanelProps = {
   onOpenFileView?: (filePath: string, forceDiff?: boolean, selection?: { line: number; column: number } | null) => void
   /** 打开模型配置页面 */
   onOpenModels?: () => void
+  /** 当前 Agent 循环中发出的 confirmId Set（仅本轮有效，区分历史残留） */
+  activeConfirmIds: Set<string>
+  /** 当前 Agent 循环中发出的 retryId Set（仅本轮有效，区分历史残留） */
+  activeRetryIds: Set<string>
 }
 
 export function ChatPanel({
@@ -287,6 +291,8 @@ export function ChatPanel({
   runTokenStats,
   projectId,
   onOpenModels,
+  activeConfirmIds,
+  activeRetryIds,
 }: Readonly<ChatPanelProps>) {
   const hasProviders = configuredProviders.length > 0
   const isNearBottomRef = useRef<boolean>(true)
@@ -295,7 +301,10 @@ export function ChatPanel({
   const [visibleMessageCount, setVisibleMessageCount] = useState(() => Math.min(messages.length, INITIAL_VISIBLE_MESSAGE_COUNT))
   const prependAnchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
   const prevSessionIdRef = useRef<string | null>(activeSessionId ?? null)
-  
+  const attachedImagesRef = useRef<AttachedImage[]>(attachedImages)
+  // 每次渲染同步 attachedImages prop 到 ref，确保 handleSend 中能读取到最新值
+  attachedImagesRef.current = attachedImages
+
   // ── 语言切换 ──
   const { language, toggleLanguage, t, isZhCN } = useLanguage()
 
@@ -561,8 +570,7 @@ const fileInputRef = useRef<HTMLInputElement>(null)
           uploadProgress: 0 
         } : img
       ))
-      // 3秒后自动移除失败的图片
-      setTimeout(() => removeImage(id), 3000)
+      // 不自动移除，让用户看到失败原因后手动移除
     }
   }
 
@@ -708,32 +716,20 @@ const fileInputRef = useRef<HTMLInputElement>(null)
 
   /** 发送消息（构建统一 content 数组） */
   async function handleSend() {
-    // 等待所有上传中的图片完成
-    const hasPending = attachedImages.some(img => 
+    // 等待所有上传中的图片完成（从 ref 读取最新状态，避免闭包过期）
+    const hasPending = attachedImagesRef.current.some(img => 
       img.uploadStatus === 'pending' || img.uploadStatus === 'uploading'
     )
     
     if (hasPending) {
-      // 等待最多 30 秒
       const maxWait = 30000
       const startTime = Date.now()
       
       while (Date.now() - startTime < maxWait) {
-        // 使用函数式更新获取最新状态
-        let allDone = false
-        onAttachedImagesChange(prev => {
-          const stillPending = prev.filter(img => 
-            img.uploadStatus === 'pending' || img.uploadStatus === 'uploading'
-          )
-          allDone = stillPending.length === 0
-          return prev // 不修改状态
-        })
-        
-        if (allDone) {
-          break
-        }
-        
-        // 等待 100ms 后重试
+        const stillPending = attachedImagesRef.current.filter(img => 
+          img.uploadStatus === 'pending' || img.uploadStatus === 'uploading'
+        )
+        if (stillPending.length === 0) break
         await new Promise(resolve => setTimeout(resolve, 100))
       }
     }
@@ -747,18 +743,13 @@ const fileInputRef = useRef<HTMLInputElement>(null)
       parts.push({ type: 'text', text: textContent })
     }
     
-    // 2. 添加已上传的图片（使用 cloudUrl）
-    // 注意：上面的等待循环通过 onAttachedImagesChange 更新了内部状态，
-    // 但闭包中的 attachedImages 变量仍指向旧值。必须用函数式更新读取最新状态。
-    let latestImages: AttachedImage[] = []
-    onAttachedImagesChange(prev => { latestImages = prev; return prev })
-    const doneImages = latestImages.filter(img => img.uploadStatus === 'done' && img.cloudUrl)
+    // 2. 添加已上传的图片（从 ref 读取，始终是最新值）
+    const doneImages = attachedImagesRef.current.filter(img => img.uploadStatus === 'done' && img.cloudUrl)
     for (const img of doneImages) {
       parts.push({ type: 'image_url', image_url: { url: img.cloudUrl } })
     }
     
     // 3. 添加文件附件（代码、文档、视频、音频等）
-    // 后端会根据 attachedAssets 自动处理为对应格式
     for (const asset of attachedAssets) {
       const ext = asset.path.split('.').pop()?.toLowerCase() || ''
       const imageExts = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'ico'])
@@ -772,9 +763,7 @@ const fileInputRef = useRef<HTMLInputElement>(null)
       } else if (audioExts.has(ext)) {
         parts.push({ type: 'audio_url', audio_url: { url: asset.path } })
       }
-      // 非媒体文件（代码、文档等）由后端 mapMessageForApi 处理为 [FILE] 标签
     }
-    
     
     // 清空附件状态
     onAttachedImagesChange([])
@@ -947,12 +936,17 @@ const fileInputRef = useRef<HTMLInputElement>(null)
     ? messages.slice(-visibleMessageCount)
     : messages
 
-  // 扫描所有可见消息中待确认的步骤（底部浮动通知条使用）
+  // 扫描当前轮次 AI 回复消息中待确认的步骤（底部浮动通知条使用）
+  // 只取当前 Agent 循环发出的 confirm/retry（通过 activeConfirmIds / activeRetryIds 校验），排除历史残留
   const pendingConfirms = useMemo(() => {
     if (!sending) return []
     const results: Array<{
-      confirmId: string
+      confirmId?: string
+      retryId?: string
       isPlan: boolean
+      isRetry: boolean
+      retryErrorType?: string
+      retryErrorMessage?: string
       planData?: { summary?: string; steps?: Array<{ index?: number; title?: string; content?: string; text?: string }>; reasoning?: string }
       risks?: AgentStep['risks']
     }> = []
@@ -960,18 +954,30 @@ const fileInputRef = useRef<HTMLInputElement>(null)
       if (!msg.agentSteps) continue
       for (const step of msg.agentSteps) {
         if (step.status !== 'confirm' && step.status !== 'retry_confirm') continue
-        if (!step.confirmId) continue
-        if (respondedConfirms.has(step.confirmId)) continue
+        // retry_confirm：使用 retryId，必须在本轮 retryId Set 中
+        if (step.status === 'retry_confirm') {
+          if (!step.retryId || !activeRetryIds.has(step.retryId) || respondedRetries.has(step.retryId)) continue
+          results.push({
+            retryId: step.retryId,
+            isPlan: false,
+            isRetry: true,
+            retryErrorType: step.retryErrorType,
+            retryErrorMessage: step.retryErrorMessage,
+          })
+          continue
+        }
+        // confirm：使用 confirmId，必须在本轮 confirmId Set 中
+        if (!step.confirmId || !activeConfirmIds.has(step.confirmId) || respondedConfirms.has(step.confirmId)) continue
         const isPlan = step.risks?.some((r) => r.toolName === 'propose_plan') ?? false
         let planData: { summary?: string; steps?: Array<{ index?: number; title?: string; content?: string; text?: string }>; reasoning?: string } | undefined
         if (isPlan) {
           try { planData = JSON.parse(step.risks![0].detail) } catch { /* ignore */ }
         }
-        results.push({ confirmId: step.confirmId, isPlan, planData, risks: step.risks })
+        results.push({ confirmId: step.confirmId, isPlan, isRetry: false, planData, risks: step.risks })
       }
     }
     return results
-  }, [visibleMessages, respondedConfirms, sending])
+  }, [visibleMessages, respondedConfirms, respondedRetries, sending, activeConfirmIds, activeRetryIds])
 
   const loadOlderMessages = useCallback(() => {
     if (!hasHiddenHistory) return
@@ -1217,8 +1223,13 @@ const fileInputRef = useRef<HTMLInputElement>(null)
 
   /** 用户授权或拒绝风险操作（防重复点击） */
   function handleConfirmResponse(confirmId: string, approved: boolean) {
-    if (respondedConfirms.has(confirmId)) return // 已响应，忽略
-    setRespondedConfirms((prev) => new Map(prev).set(confirmId, approved))
+    // 用 updater 函数内同步判断防重，避免快速双击竞态导致重复 IPC
+    let alreadyResponded = false
+    setRespondedConfirms((prev) => {
+      if (prev.has(confirmId)) { alreadyResponded = true; return prev }
+      return new Map(prev).set(confirmId, approved)
+    })
+    if (alreadyResponded) return
     globalThis.window.taco.agent.confirmResponse(confirmId, approved)
   }
 
@@ -1612,16 +1623,26 @@ const fileInputRef = useRef<HTMLInputElement>(null)
     if (!step.risks || !step.confirmId) return null
     const isPlanConfirm = step.risks.some((r) => r.toolName === 'propose_plan')
 
-    const resolveConfirmStatus = (): 'pending' | 'approved' | 'denied' => {
+    const resolveConfirmStatus = (): 'pending' | 'approved' | 'denied' | 'expired' => {
       const responded = respondedConfirms.get(step.confirmId!)
       if (responded === true) return 'approved'
       if (responded === false) return 'denied'
       if (!isStepConfirm) return 'approved'
+      // 程序重启后 Agent 不在运行，历史遗留的 confirm 已过期
+      if (!sending) return 'expired'
       return 'pending'
     }
     const confirmStatus = resolveConfirmStatus()
 
     const renderConfirmStatusUI = () => {
+      if (confirmStatus === 'expired') {
+        return (
+          <div className="agent-confirm-responded expired">
+            <span className="agent-confirm-responded-icon">⏱</span>
+            {isPlanConfirm ? '该计划确认已过期（程序已重启，如需执行请重新发起）' : '该授权已过期（程序已重启，如需操作请重新发起）'}
+          </div>
+        )
+      }
       if (confirmStatus === 'approved') {
         return (
           <div className="agent-confirm-responded">
@@ -1666,7 +1687,7 @@ const fileInputRef = useRef<HTMLInputElement>(null)
         <div className="agent-confirm-card plan">
           <div className="agent-confirm-title">
             <span className="agent-confirm-icon">📋</span>
-            执行计划{confirmStatus === 'pending' ? ' — 需要你的确认' : ''}
+            {confirmStatus === 'expired' ? '执行计划已过期' : confirmStatus === 'pending' ? '执行计划 — 需要你的确认' : '执行计划'}
           </div>
           {plan.summary && <div className="agent-plan-summary">{plan.summary}</div>}
           {normalizedPlanSteps.length > 0 && (
@@ -1684,7 +1705,7 @@ const fileInputRef = useRef<HTMLInputElement>(null)
       <div className="agent-confirm-card">
         <div className="agent-confirm-title">
           <span className="agent-confirm-icon">⚠</span>
-          {confirmStatus === 'pending' ? '需要你的授权' : '授权信息'}
+          {confirmStatus === 'expired' ? '授权已过期' : confirmStatus === 'pending' ? '需要你的授权' : '授权信息'}
         </div>
         <div className="agent-confirm-risks">
           {step.risks.map((risk) => (
@@ -2364,21 +2385,24 @@ const fileInputRef = useRef<HTMLInputElement>(null)
       {pendingConfirms.length > 0 && (
         <div className="confirm-bar">
           {pendingConfirms.map((pc, i) => {
-            const isExpanded = !collapsedConfirms.has(pc.confirmId)
+            const itemKey = (pc.confirmId || pc.retryId)!
+            const isExpanded = !collapsedConfirms.has(itemKey)
             const toggleExpand = () => {
               setCollapsedConfirms((prev) => {
                 const next = new Set(prev)
-                if (next.has(pc.confirmId)) next.delete(pc.confirmId)
-                else next.add(pc.confirmId)
+                if (next.has(itemKey)) next.delete(itemKey)
+                else next.add(itemKey)
                 return next
               })
             }
             return (
-            <div key={pc.confirmId} className="confirm-bar-item">
+            <div key={itemKey} className="confirm-bar-item">
               <button type="button" className="confirm-bar-header-btn" onClick={toggleExpand}>
                 <span className="confirm-bar-chevron">{isExpanded ? '⌄' : '›'}</span>
-                <span className="confirm-bar-icon">{pc.isPlan ? '\u{1F4CB}' : '\u26A0\uFE0F'}</span>
-                <span className="confirm-bar-label">{pc.isPlan ? '执行计划 — 需要你的确认' : '操作授权 — 需要你的确认'}</span>
+                <span className="confirm-bar-icon">{pc.isRetry ? '\u26A0\uFE0F' : pc.isPlan ? '\u{1F4CB}' : '\u26A0\uFE0F'}</span>
+                <span className="confirm-bar-label">
+                  {pc.isRetry ? '操作异常 — 需要你的确认' : pc.isPlan ? '执行计划 — 需要你的确认' : '操作授权 — 需要你的确认'}
+                </span>
                 {pendingConfirms.length > 1 && (
                   <span className="confirm-bar-count">({i + 1}/{pendingConfirms.length})</span>
                 )}
@@ -2386,10 +2410,13 @@ const fileInputRef = useRef<HTMLInputElement>(null)
               {/* 展开时显示详细内容 */}
               {isExpanded && (
                 <div className="confirm-bar-expanded">
+                  {pc.isRetry && (
+                    <div className="confirm-bar-summary">{pc.retryErrorType || '未知错误'}{pc.retryErrorMessage ? `：${pc.retryErrorMessage.slice(0, 200)}` : ''}</div>
+                  )}
                   {pc.isPlan && pc.planData?.summary && (
                     <div className="confirm-bar-summary">{pc.planData.summary}</div>
                   )}
-                  {!pc.isPlan && pc.risks && pc.risks.length > 0 && (
+                  {!pc.isPlan && !pc.isRetry && pc.risks && pc.risks.length > 0 && (
                     <div className="confirm-bar-summary">
                       {pc.risks.map((r) => r.reason).join('；')}
                     </div>
@@ -2427,12 +2454,21 @@ const fileInputRef = useRef<HTMLInputElement>(null)
               )}
               {/* 确认/拒绝按钮放在最下面 */}
               <div className="confirm-bar-actions">
-                <button type="button" className="agent-confirm-btn approve" onClick={() => handleConfirmResponse(pc.confirmId, true)}>
-                  {pc.isPlan ? '确认执行' : '允许执行'}
-                </button>
-                <button type="button" className="agent-confirm-btn deny" onClick={() => handleConfirmResponse(pc.confirmId, false)}>
-                  {pc.isPlan ? '需要调整' : '拒绝'}
-                </button>
+                {pc.isRetry ? (
+                  <>
+                    <button type="button" className="agent-confirm-btn approve" onClick={() => handleRetryResponse(pc.retryId!, true)}>重试</button>
+                    <button type="button" className="agent-confirm-btn deny" onClick={() => handleRetryResponse(pc.retryId!, false)}>取消</button>
+                  </>
+                ) : (
+                  <>
+                    <button type="button" className="agent-confirm-btn approve" onClick={() => handleConfirmResponse(pc.confirmId!, true)}>
+                      {pc.isPlan ? '确认执行' : '允许执行'}
+                    </button>
+                    <button type="button" className="agent-confirm-btn deny" onClick={() => handleConfirmResponse(pc.confirmId!, false)}>
+                      {pc.isPlan ? '需要调整' : '拒绝'}
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           )})}
@@ -2494,6 +2530,15 @@ const fileInputRef = useRef<HTMLInputElement>(null)
                     <div className="composer-image-upload-overlay">
                       <div className="composer-image-progress-bar" style={{ width: `${img.uploadProgress || 0}%` }} />
                       <span className="composer-image-progress-text">{img.uploadProgress || 0}%</span>
+                    </div>
+                  )}
+                  {/* 上传成功标记 */}
+                  {img.uploadStatus === 'done' && (
+                    <div className="composer-image-done-overlay">
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                        <circle cx="6" cy="6" r="6" fill="#22c55e"/>
+                        <path d="M3.5 6l2 2 3-4" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
                     </div>
                   )}
                   {/* 上传失败覆盖层 */}

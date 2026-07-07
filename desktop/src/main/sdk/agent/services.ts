@@ -160,10 +160,6 @@ export interface TerminalService {
 /* ------------------------------------------------------------------ */
 
 export interface DatabaseService {
-  // 上传配置
-  getUploadConfig(): { provider: string; config: Record<string, unknown> } | null
-  saveUploadConfig(provider: string, config: Record<string, unknown>): void
-
   // 应用提供商
   getAppProviders(): { data?: { modelConfigs: Array<Record<string, unknown>> } } | null
 
@@ -247,4 +243,6 @@ export interface AgentServices {
   notes?: NotesService
   fsProvider: FsProvider
   gatewayModelCache?: GatewayModelCache
+  /** 获取 JWT token，用于网关 API 认证；null 表示未登录 */
+  getToken(): string | null
 }

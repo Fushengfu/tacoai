@@ -112,7 +112,6 @@ import {
 
 import {
   handleImageUpload,
-  handleUploadConfigSave,
 } from './handlers/upload-handlers'
 
 /* ------------------------------------------------------------------ */
@@ -281,7 +280,6 @@ export function registerIpcHandlers() {
 
   // Upload
   ipcMain.handle(IpcChannel.IMAGE_UPLOAD, handleImageUpload)
-  ipcMain.handle(IpcChannel.UPLOAD_CONFIG_SAVE, handleUploadConfigSave)
 }
 
 function buildLogScope(projectId?: string, workspace?: string): string | undefined {

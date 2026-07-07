@@ -1389,7 +1389,7 @@ export async function runAgent(
           tool_call_id: tc.id,
           name: tc.function.name,
           content: tc.function.name === 'propose_plan'
-            ? '用户没有批准此执行计划。请根据用户的反馈调整方案，或者询问用户希望如何修改。不要直接开始执行未经确认的操作。'
+            ? '你提出的执行计划被用户拒绝。你必须立即停止当前所有操作：禁止调用任何执行类工具（write_file、edit_file、delete_file、run_command、terminal_run 等），只允许只读工具。只输出询问文本，向用户确认具体需要如何调整计划，等待用户明确回复后再重新制定方案。禁止以任何理由绕过确认直接执行。'
             : '计划未获批准，此操作被取消。',
           success: false,
         }))
@@ -1513,7 +1513,7 @@ export async function runAgent(
         const deniedResults: ToolResult[] = toolCalls.map((tc) => ({
           tool_call_id: tc.id,
           name: tc.function.name,
-          content: '用户拒绝了此操作。请先重新评估方案，说明替代做法或再次请求许可；在用户明确同意前不要直接执行。',
+          content: '用户拒绝了此操作。你必须立即停止当前所有执行类工具调用（write_file、edit_file、delete_file、run_command、terminal_run 等）。只输出询问文本，向用户确认替代方案或重新请求许可。在用户明确同意前禁止直接执行。',
           success: false,
         }))
         onEvent?.({ type: 'tool_results', results: deniedResults })

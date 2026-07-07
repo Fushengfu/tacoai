@@ -89,12 +89,6 @@ export type ChatStoreMessageSeqRange = {
 export type BridgeSettingKey = 'pairingCodeMode'
 export type BridgeSettingValue = 'permanent' | 'auto-refresh'
 
-export type UploadConfigDbEntry = {
-  provider: string
-  config: Record<string, unknown>
-  updatedAt: string
-}
-
 export type MemoryTier = 'active' | 'archive'
 
 export type MemoryScope = {

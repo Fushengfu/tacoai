@@ -21,6 +21,7 @@ import {
   type BridgeHostMessage,
   type BridgeClientMessage,
   type BridgeMessage,
+  type BridgeUploadTokenRequest,
   type BridgeMessagePriority,
   type BridgeAck,
   type BridgeRetransmitRequest,
@@ -599,7 +600,8 @@ export class BridgeManager {
       case 'bridge:load-older-messages':
       case 'bridge:get-message-detail':
       case 'bridge:get-step-detail':
-      case 'bridge:poll-task-status': {
+      case 'bridge:poll-task-status':
+      case 'bridge:upload-token-request': {
         this.lastHeartbeatReceived = Date.now()
         if (this.dataHandler) {
           const respond = (data: Record<string, unknown>) => {
