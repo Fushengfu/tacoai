@@ -16,76 +16,10 @@ import { assessToolCallsRisk, type RiskInfo, type RiskCategory, type RiskLevel }
 import { getWorkspaceTree } from './workspace-tree'
 import { uploadDataUrlToStorage, requestChatCompletion, requestChatCompletionStream, isBuiltinProvider } from '../llm/client'
 import type { ChatMessage, ProviderOverrides, ProviderKey } from '../llm/client'
-import type { UploadConfig } from '../types'
 
 // ---------------------------------------------------------------------------
-// 云存储配置加载（从 DatabaseService 读取）
+// 截图/文件上传到云存储（统一走网关 API）
 // ---------------------------------------------------------------------------
-
-async function loadCloudUploadConfig(services: AgentServices): Promise<UploadConfig | null> {
-  const db = services.database
-  let dbConfig = db.getUploadConfig()
-
-  // 如果数据库没有配置，尝试从旧版 JSON 文件迁移
-  if (!dbConfig || dbConfig.provider === 'none') {
-    const configPath = path.join(services.fsProvider.getUserDataPath(), 'upload-config.json')
-    if (fsSync.existsSync(configPath)) {
-      try {
-        const raw = fsSync.readFileSync(configPath, 'utf-8')
-        const parsed = JSON.parse(raw)
-        if (parsed.provider && parsed.provider !== 'none') {
-          services.logger('UPLOAD_CONFIG_MIGRATE_FROM_FILE', { path: configPath, provider: parsed.provider })
-          db.saveUploadConfig(parsed.provider, parsed)
-          dbConfig = db.getUploadConfig()
-        }
-      } catch (migrateErr) {
-        services.logger('UPLOAD_CONFIG_MIGRATE_FAIL', { error: migrateErr instanceof Error ? migrateErr.message : String(migrateErr) })
-      }
-    }
-  }
-
-  if (!dbConfig || dbConfig.provider === 'none') return null
-
-  const config = dbConfig.config as any
-  let uploadConfig: UploadConfig | null = null
-
-  if (dbConfig.provider === 'aliyun_oss') {
-    uploadConfig = {
-      provider: 'aliyun_oss',
-      accessKeyId: config.aliyunOss?.accessKeyId || '',
-      accessKeySecret: config.aliyunOss?.accessKeySecret || '',
-      bucket: config.aliyunOss?.bucket || '',
-      endpoint: config.aliyunOss?.endpoint || '',
-      objectPrefix: config.aliyunOss?.objectPrefix || '',
-      publicBaseUrl: config.aliyunOss?.publicBaseUrl || '',
-    }
-  } else if (dbConfig.provider === 'qiniu') {
-    const expiresSecondsRaw = config.qiniu?.expiresSeconds
-    const expiresSeconds = expiresSecondsRaw ? Number(expiresSecondsRaw) : 3600
-    uploadConfig = {
-      provider: 'qiniu',
-      accessKey: config.qiniu?.accessKey || '',
-      secretKey: config.qiniu?.secretKey || '',
-      bucket: config.qiniu?.bucket || '',
-      uploadUrl: config.qiniu?.uploadUrl || '',
-      publicBaseUrl: config.qiniu?.publicBaseUrl || '',
-      objectPrefix: config.qiniu?.objectPrefix || '',
-      expiresSeconds: Number.isFinite(expiresSeconds) ? expiresSeconds : 3600,
-    }
-  }
-
-  if (!uploadConfig) return null
-
-  // 检查关键字段非空，避免无效请求
-  if (uploadConfig.provider === 'qiniu') {
-    if (!uploadConfig.accessKey || !uploadConfig.secretKey || !uploadConfig.bucket) {
-      services.logger('SCREENSHOT_UPLOAD_SKIP', { reason: 'missing_qiniu_credentials' })
-      return null
-    }
-  }
-
-  return uploadConfig
-}
 
 // 上传截图到云存储
 async function uploadScreenshotToCloud(dataUrl: string, services: AgentServices): Promise<string | null> {
@@ -94,14 +28,7 @@ async function uploadScreenshotToCloud(dataUrl: string, services: AgentServices)
       services.logger('SCREENSHOT_UPLOAD_SKIP', { reason: 'invalid_data_url' })
       return null
     }
-
-    const uploadConfig = await loadCloudUploadConfig(services)
-    if (!uploadConfig) {
-      services.logger('SCREENSHOT_UPLOAD_SKIP', { reason: 'no_upload_config' })
-      return null
-    }
-
-    const cloudUrl = await uploadDataUrlToStorage(uploadConfig as any, dataUrl)
+    const cloudUrl = await uploadDataUrlToStorage(null as any, dataUrl, undefined, services.getToken?.())
     services.logger('SCREENSHOT_UPLOADED', { cloudUrl })
     return cloudUrl
   } catch (err) {
@@ -1205,13 +1132,7 @@ async function execUploadFile(args: Record<string, unknown>, workspace: string, 
     return { content: 'Error: services not available', success: false }
   }
 
-  const uploadConfig = await loadCloudUploadConfig(services)
-  if (!uploadConfig) {
-    return { content: 'Error: 云存储未配置。请先在设置中配置七牛云或阿里云 OSS。', success: false }
-  }
-
   const customPrefix = String(args.objectPrefix ?? '').trim()
-  const finalConfig = customPrefix ? { ...uploadConfig, objectPrefix: customPrefix } : uploadConfig
 
   let dataUrl: string
   try {
@@ -1224,7 +1145,7 @@ async function execUploadFile(args: Record<string, unknown>, workspace: string, 
   }
 
   try {
-    const cloudUrl = await uploadDataUrlToStorage(finalConfig as any, dataUrl)
+    const cloudUrl = await uploadDataUrlToStorage(null as any, dataUrl, undefined, services.getToken?.())
     services.logger('UPLOAD_FILE_SUCCESS', { filePath: resolved, fileSize, fileName, cloudUrl })
 
     const formattedSize = fileSize < 1024

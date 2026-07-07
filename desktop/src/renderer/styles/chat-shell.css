@@ -996,6 +996,15 @@ body.is-dragging * {
   font-weight: 500;
 }
 
+/* 图片上传成功标记 */
+.composer-image-done-overlay {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  z-index: 10;
+  pointer-events: none;
+}
+
 .composer-assets {
   display: flex;
   gap: 8px;
@@ -1475,6 +1484,21 @@ body.is-dragging * {
 .provider-select-trigger:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* 下拉框为空但可点击跳转配置页 */
+.provider-select-trigger--empty {
+  color: var(--accent);
+  opacity: 1;
+  cursor: pointer;
+}
+
+.provider-select-trigger--empty:hover {
+  background: rgba(128, 128, 128, 0.1);
+}
+
+.provider-select-trigger--empty .provider-select-label {
+  color: var(--accent);
 }
 
 .provider-select-label {

@@ -23,7 +23,6 @@ import { Sidebar } from './views/Sidebar'
 import { ChatPanel } from './views/chat/ChatPanel'
 import { SettingsPage } from './views/SettingsModal'
 import { ModelsSettingsOverlay } from './views/settings/ModelsSettingsOverlay'
-import { UploadSettingsOverlay } from './views/settings/UploadSettingsOverlay'
 import { SkillsSettingsOverlay } from './views/settings/SkillsSettingsOverlay'
 import { NotesSettingsOverlay } from './views/settings/NotesSettingsOverlay'
 import { McpSettingsOverlay } from './views/settings/McpSettingsOverlay'
@@ -214,6 +213,8 @@ export default function App() {
   const sessionStreamingContent = hasValidActiveSession ? chat.getStreamingContent(sessionId) : ''
   const sessionQueue = hasValidActiveSession ? chat.getQueue(sessionId) : []
   const activeTaskStartedAt = hasValidActiveSession ? chat.getActiveTaskStartedAt(sessionId) : undefined
+  const activeConfirmIds = hasValidActiveSession ? chat.getActiveConfirmIds(sessionId) : new Set<string>()
+  const activeRetryIds = hasValidActiveSession ? chat.getActiveRetryIds(sessionId) : new Set<string>()
 
   const currentWorkspace: string = activeThread?.workspace ?? ''
 
@@ -396,9 +397,17 @@ export default function App() {
         case 'bridge:chat-send': {
           const content = String(msg.content || '')
           const threadId = String(msg.threadId || '')
-          if (content.trim()) {
-            // 构造消息内容
-            const contentParts = [{ type: 'text' as const, text: content }]
+          const images: string[] | undefined = (msg as any).images
+          const hasImages = images && images.length > 0
+          if (content.trim() || hasImages) {
+            const contentParts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }> = [
+              { type: 'text' as const, text: content },
+            ]
+            if (hasImages) {
+              for (const url of images!) {
+                contentParts.push({ type: 'image_url', image_url: { url } })
+              }
+            }
             const target = threadId ? { threadId } : undefined
             doSend(contentParts, target)
           }
@@ -933,7 +942,6 @@ export default function App() {
             updateChecking={updateChecking}
             onCheckUpdate={handleOpenUpdateDialog}
             onOpenModels={() => setActiveOverlay('models')}
-            onOpenUpload={() => setActiveOverlay('upload')}
             onOpenSkills={() => setActiveOverlay('skills')}
             onOpenNotes={() => setActiveOverlay('notes')}
             onOpenMcp={() => setActiveOverlay('mcp')}
@@ -1042,6 +1050,8 @@ export default function App() {
               activeTaskStartedAt={activeTaskStartedAt}
               projectId={tid}
               onOpenModels={() => setActiveOverlay('models')}
+              activeConfirmIds={activeConfirmIds}
+              activeRetryIds={activeRetryIds}
             />
           </PaneErrorBoundary>
 
@@ -1090,9 +1100,6 @@ export default function App() {
                   onUpdateModelConfig={providerSettings.updateModelConfig}
                   onRemoveModelConfig={providerSettings.removeModelConfig}
                 />
-              )}
-              {activeOverlay === 'upload' && (
-                <UploadSettingsOverlay onClose={closeOverlay} />
               )}
               {activeOverlay === 'skills' && (
                 <SkillsSettingsOverlay

@@ -50,7 +50,7 @@ export const RISK_CATEGORY_INFO: { id: RiskCategory; label: string; description:
   { id: 'privilege_cmd', label: '权限提升', description: 'sudo, su 等需要 root 权限的命令', level: 'danger' },
   { id: 'destructive_cmd', label: '删除/权限操作', description: 'rm -rf, chmod, chown 等破坏性命令', level: 'danger' },
   { id: 'system_modify', label: '系统修改', description: 'mkfs, dd 等磁盘级操作', level: 'danger' },
-  { id: 'git_force', label: 'Git 强制操作', description: 'git push --force, git reset --hard', level: 'danger' },
+  { id: 'git_force', label: 'Git 回滚/强制操作', description: 'git push --force, git reset, git checkout --, git restore, git revert, git clean', level: 'danger' },
   { id: 'network_script', label: '网络脚本', description: 'curl | sh 等下载并执行的命令', level: 'danger' },
   { id: 'git_ops', label: 'Git 操作', description: 'git push, git merge, git rebase 等', level: 'warning' },
   { id: 'docker_ops', label: 'Docker 操作', description: 'docker run, docker build 等容器操作', level: 'warning' },
@@ -83,7 +83,7 @@ const DANGER_PATTERNS: [RegExp, string, RiskCategory][] = [
   [/\bmkfs\b/i, '格式化磁盘', 'system_modify'],
   [/\bdd\s+if=/i, '磁盘级写入', 'system_modify'],
   // Git 危险操作
-  [/\bgit\s+(push\s+(-[a-zA-Z]*f|--force)|reset\s+--hard)/i, 'Git 强制操作', 'git_force'],
+  [/\bgit\s+(push\s+(-[a-zA-Z]*f|--force)|reset\b|checkout\s+--|restore\b|revert\b|clean\s+(-[a-zA-Z]*f|--force))/i, 'Git 回滚/强制操作', 'git_force'],
   // 网络相关
   [/\bcurl\b.*\|\s*(sh|bash)\b/i, '下载并执行脚本', 'network_script'],
   [/\bwget\b.*\|\s*(sh|bash)\b/i, '下载并执行脚本', 'network_script'],

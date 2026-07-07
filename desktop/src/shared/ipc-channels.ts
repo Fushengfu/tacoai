@@ -15,8 +15,6 @@ export const IpcChannel = {
   CHAT_CHUNK: 'chat:chunk',
   /** renderer → main (invoke/handle, 图片上传到云存储) */
   IMAGE_UPLOAD: 'image:upload',
-  /** renderer → main (invoke/handle, 保存上传配置到文件) */
-  UPLOAD_CONFIG_SAVE: 'upload-config:save',
 
   /** renderer → main (invoke/handle, 列出持久化会话摘要) */
   CHAT_STORE_LIST: 'chat-store:list',
@@ -141,8 +139,6 @@ export const IpcChannel = {
   OPEN_LOG_DIR: 'app:open-log-dir',
   /** renderer → main, 获取应用版本号（来自 app.getVersion()） */
   APP_GET_VERSION: 'app:get-version',
-  /** renderer → main, 保存上传配置到文件 */
-  APP_SAVE_UPLOAD_CONFIG: 'app:save-upload-config',
   /** renderer → main, 检查版本更新（内部会先登录获取 token） */
   APP_CHECK_UPDATE: 'app:check-update',
   /** renderer → main, 获取最近一次版本检查结果（启动自动检查/手动检查） */

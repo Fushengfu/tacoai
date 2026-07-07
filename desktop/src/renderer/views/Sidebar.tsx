@@ -32,7 +32,6 @@ type SidebarProps = {
   onCheckUpdate: () => void
   /** 独立配置页 */
   onOpenModels: () => void
-  onOpenUpload: () => void
   onOpenSkills: () => void
   onOpenNotes: () => void
   onOpenMcp: () => void
@@ -61,7 +60,6 @@ export function Sidebar({
   updateChecking,
   onCheckUpdate,
   onOpenModels,
-  onOpenUpload,
   onOpenSkills,
   onOpenNotes,
   onOpenMcp,
@@ -221,13 +219,6 @@ export function Sidebar({
                 onClick={onOpenModels}
               >
                 模型配置
-              </button>
-              <button
-                className="ghost-btn sidebar-update-btn"
-                type="button"
-                onClick={onOpenUpload}
-              >
-                上传配置
               </button>
               <button
                 className="ghost-btn sidebar-update-btn"

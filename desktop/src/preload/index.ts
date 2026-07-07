@@ -120,8 +120,6 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.IMAGE_UPLOAD, { dataUrl, fileName }),
   },
   app: {
-    saveUploadConfig: (config: any) =>
-      ipcRenderer.invoke(IpcChannel.UPLOAD_CONFIG_SAVE, config),
   },
   chatStore: {
     list: (): Promise<ChatStoreSessionSummary[]> =>

@@ -82,8 +82,6 @@ export type TacoApi = {
     upload: (dataUrl: string, fileName: string) => Promise<{ publicUrl: string }>
   }
   app: {
-    /** 保存上传配置到文件 */
-    saveUploadConfig: (config: unknown) => Promise<void>
   }
   chatStore: {
     /** 读取全部持久化会话摘要 */

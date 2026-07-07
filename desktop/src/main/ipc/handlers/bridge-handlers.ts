@@ -15,6 +15,7 @@ import { loadChatStoreSessionPage, loadChatStoreMessageById } from '../../data/m
 import { log, logError } from '../../infrastructure/logger'
 import { agentAbortControllers } from './chat-handlers'
 import { handleGatewayGetModels } from './gateway-handlers'
+import nodePath from 'node:path'
 
 /* ------------------------------------------------------------------ */
 /*  Workspace tree flattening to nested structure                      */
@@ -815,6 +816,99 @@ export function setupBridgeDataHandler(): void {
           break
         }
 
+        /* ---- 获取上传凭据（手机端直传云存储） ---- */
+        case 'bridge:upload-token-request': {
+          try {
+            const fileName = String(msg.fileName || 'upload.png').trim()
+            const mimeType = String(msg.mimeType || 'image/png').trim()
+            const hash = msg.hash ? String(msg.hash).trim() : ''
+
+            const mgr = getBridgeManager()
+            const token = mgr.getToken()
+            if (!token) {
+              respond({
+                type: 'bridge:upload-token-response',
+                requestId,
+                success: false,
+                error: '未登录，无法获取上传凭证',
+              })
+              break
+            }
+
+            const body: Record<string, string> = {
+              file_name: fileName,
+              mime_type: mimeType,
+            }
+            if (hash) body.hash = hash
+
+            const resp = await fetch('https://agent.bjctykj.com/api/member/storage/upload-token', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`,
+              },
+              body: JSON.stringify(body),
+            })
+
+            if (!resp.ok) {
+              const errText = await resp.text().catch(() => '')
+              respond({
+                type: 'bridge:upload-token-response',
+                requestId,
+                success: false,
+                error: `网关返回错误 (${resp.status}): ${errText}`,
+              })
+              break
+            }
+
+            const json = await resp.json() as any
+            if (json.code !== 0 || !json.data) {
+              respond({
+                type: 'bridge:upload-token-response',
+                requestId,
+                success: false,
+                error: `网关返回异常: ${json.message || '未知错误'}`,
+              })
+              break
+            }
+
+            const data = json.data
+            // hash 去重命中：直接返回已有公网链接
+            if (data.reused === true && data.public_url) {
+              respond({
+                type: 'bridge:upload-token-response',
+                requestId,
+                success: true,
+                reused: true,
+                publicUrl: data.public_url,
+              })
+              break
+            }
+
+            respond({
+              type: 'bridge:upload-token-response',
+              requestId,
+              success: true,
+              provider: data.provider || 'qiniu',
+              uploadUrl: data.upload_url || '',
+              token: data.token || '',
+              key: data.key || '',
+              publicBaseUrl: (data.public_base_url || '').replace(/\/+$/, ''),
+            })
+          } catch (err) {
+            logError('bridge', '网关获取上传凭据失败', {
+              error: err instanceof Error ? err.message : String(err),
+            })
+            respond({
+              type: 'bridge:upload-token-response',
+              requestId,
+              success: false,
+              error: err instanceof Error ? err.message : '获取上传凭据失败',
+            })
+          }
+          break
+        }
+
         default:
           respond({ type: 'error', requestId, message: `Unknown request type: ${type}` })
           break
@@ -893,7 +987,6 @@ export function setupBridgeStateSnapshotResponse(): void {
 /* ------------------------------------------------------------------ */
 
 import * as fs from 'node:fs/promises'
-import nodePath from 'node:path'
 
 function isBinaryBuffer(buf: Buffer): boolean {
   const len = Math.min(buf.length, 8192)

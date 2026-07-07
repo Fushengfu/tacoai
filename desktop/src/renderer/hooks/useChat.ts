@@ -3,7 +3,6 @@ import type { ActivePlan, AgentStep, AttachedAsset, AttachedImage, ChatMsg, Mode
 import type { ChatStoreSessionPage, ChatStoreSessionPatch, ChatStoreSessionSummary, IpcChatMessage, IpcChatOverrides } from '../../shared/ipc'
 import { buildSystemPrompt } from '../constants'
 import { loadJson, saveJson, uid } from '../lib/storage'
-import { loadUploadSettings, toIpcUploadConfig } from '../lib/upload-config'
 import { buildUserAssetsBlockFromAttachments, inferAttachmentType, stripUserAssetsBlock, isMediaFile, inferMediaSubtype } from '../../shared/user-assets'
 import { validateModelConfig, parseConfiguredTemperature } from '../../shared/validation'
 
@@ -243,10 +242,6 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function resolveUploadOverrideForProvider(provider: ProviderId) {
-  return toIpcUploadConfig(loadUploadSettings())
-}
-
 export type ProjectTokenStats = {
   inputTokens: number
   outputTokens: number
@@ -442,6 +437,10 @@ export function useChat() {
   const [activeTaskStartedAtByThread, setActiveTaskStartedAtByThread] = useState<Record<string, number | undefined>>({})
   /** 刚完成的 thread（短暂显示 ✓ 后自动清除） */
   const [completedThreads, setCompletedThreads] = useState<Record<string, boolean>>({})
+  /** 每个 thread 当前 Agent 循环中发出的 confirmId（用于 ChatPanel 区分"本轮有效"与"历史残留"） */
+  const [activeConfirmIdsByThread, setActiveConfirmIdsByThread] = useState<Record<string, Set<string>>>({})
+  /** 每个 thread 当前 Agent 循环中发出的 retryId */
+  const [activeRetryIdsByThread, setActiveRetryIdsByThread] = useState<Record<string, Set<string>>>({})
 
   // Ref：始终指向最新 threadMessages，供异步回调读取
   const threadMessagesRef = useRef(threadMessages)
@@ -1238,6 +1237,11 @@ export function useChat() {
                 level: r.level, reason: r.reason, detail: r.detail,
               }))
             }
+            // 记录本轮 Agent 发出的 confirmId（区分历史残留）
+            setActiveConfirmIdsByThread((prev) => {
+              const cur = prev[threadId] ?? new Set()
+              return { ...prev, [threadId]: new Set([...cur, event.confirmId]) }
+            })
             flushAgentMsg(undefined, runningTaskTiming)
           } else if (event.type === 'retry_confirm') {
             // 可恢复错误：创建新的步骤用于显示重试确认 UI
@@ -1250,6 +1254,11 @@ export function useChat() {
               retryId: event.retryId,
               retryErrorType: event.errorType,
               retryErrorMessage: event.errorMessage,
+            })
+            // 记录本轮 Agent 发出的 retryId（区分历史残留）
+            setActiveRetryIdsByThread((prev) => {
+              const cur = prev[threadId] ?? new Set()
+              return { ...prev, [threadId]: new Set([...cur, event.retryId]) }
             })
             flushAgentMsg(undefined, runningTaskTiming)
           } else if (event.type === 'tool_results') {
@@ -1295,6 +1304,19 @@ export function useChat() {
             for (const s of steps) {
               if (s.status === 'confirm' || s.status === 'retry_confirm') s.status = 'done'
             }
+            // 清空本轮活跃确认 ID（任务结束，不再弹窗）
+            setActiveConfirmIdsByThread((prev) => {
+              if (!prev[threadId]) return prev
+              const next = { ...prev }
+              delete next[threadId]
+              return next
+            })
+            setActiveRetryIdsByThread((prev) => {
+              if (!prev[threadId]) return prev
+              const next = { ...prev }
+              delete next[threadId]
+              return next
+            })
             flushAgentMsg(accumulated, buildTaskTiming(taskStartedAt, finishedAt))
             cleanup()
             resolve()
@@ -1305,6 +1327,19 @@ export function useChat() {
             for (const s of steps) {
               if (s.status === 'confirm' || s.status === 'retry_confirm') s.status = 'done'
             }
+            // 清空本轮活跃确认 ID（任务结束，不再弹窗）
+            setActiveConfirmIdsByThread((prev) => {
+              if (!prev[threadId]) return prev
+              const next = { ...prev }
+              delete next[threadId]
+              return next
+            })
+            setActiveRetryIdsByThread((prev) => {
+              if (!prev[threadId]) return prev
+              const next = { ...prev }
+              delete next[threadId]
+              return next
+            })
             flushAgentMsg(accumulated, buildTaskTiming(taskStartedAt, finishedAt))
             cleanup()
             reject(new Error(event.message))
@@ -1494,7 +1529,6 @@ export function useChat() {
         apiKey: modelConfig.apiKey || undefined,
         model: modelConfig.model || undefined,
         temperature: parseConfiguredTemperature(modelConfig.temperature),
-        upload: resolveUploadOverrideForProvider(provider),
         supportsVision: Boolean(modelConfig.supportsVision),
         supportsReasoning: Boolean(modelConfig.supportsReasoning),
       }
@@ -1560,7 +1594,6 @@ export function useChat() {
         apiKey: modelConfig.apiKey || undefined,
         model: modelConfig.model || undefined,
         temperature: parseConfiguredTemperature(modelConfig.temperature),
-        upload: resolveUploadOverrideForProvider(provider),
         supportsVision: Boolean(modelConfig.supportsVision),
         supportsReasoning: Boolean(modelConfig.supportsReasoning),
       }
@@ -1613,5 +1646,7 @@ export function useChat() {
     stopSending,
     addToQueue,
     removeFromQueue,
+    getActiveConfirmIds: (threadId: string) => activeConfirmIdsByThread[threadId] ?? new Set(),
+    getActiveRetryIds: (threadId: string) => activeRetryIdsByThread[threadId] ?? new Set(),
   }
 }

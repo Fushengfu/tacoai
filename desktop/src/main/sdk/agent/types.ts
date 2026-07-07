@@ -139,33 +139,6 @@ export type BrowserActionType =
   | 'evaluate'
   | 'get_info'
 
-/* ------------------------------------------------------------------ */
-/*  云存储上传配置                                                       */
-/* ------------------------------------------------------------------ */
-
-export type AliyunOssUploadConfig = {
-  provider: 'aliyun_oss'
-  accessKeyId?: string
-  accessKeySecret?: string
-  bucket?: string
-  endpoint?: string
-  objectPrefix?: string
-  publicBaseUrl?: string
-}
-
-export type QiniuUploadConfig = {
-  provider: 'qiniu'
-  accessKey?: string
-  secretKey?: string
-  bucket?: string
-  uploadUrl?: string
-  publicBaseUrl?: string
-  objectPrefix?: string
-  expiresSeconds?: number
-}
-
-export type UploadConfig = AliyunOssUploadConfig | QiniuUploadConfig
-
 /** LLM 提供商 ID */
 export type ProviderId = 'deepseek' | 'kimi' | 'minimax' | 'glm' | 'qwen' | 'mimo' | 'anthropic' | 'openai' | (string & {})
 

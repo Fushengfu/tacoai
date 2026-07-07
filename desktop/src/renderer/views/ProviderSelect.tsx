@@ -70,17 +70,26 @@ export function ProviderSelect({ value, options, onChange, disabled, placeholder
     setOpen(false)
   }, [onChange])
 
+  // 当 disabled 且提供 onAddCustomModel 时，下拉框内容为空但允许点击跳转配置页
+  const isEmpty = options.length === 0
+
   return (
     <div className="provider-select-wrapper" ref={ref}>
       <button
         type="button"
-        className="provider-select-trigger"
-        disabled={disabled}
-        onClick={() => setOpen(!open)}
+        className={`provider-select-trigger${disabled ? ' provider-select-trigger--empty' : ''}`}
+        disabled={disabled && !onAddCustomModel}
+        onClick={() => {
+          if (disabled && onAddCustomModel) {
+            onAddCustomModel()
+          } else {
+            setOpen(!open)
+          }
+        }}
         aria-expanded={open}
         ref={triggerRef}
       >
-        <span className="provider-select-label">{selected?.label || placeholder || 'Select'}</span>
+        <span className="provider-select-label">{selected?.label || (isEmpty && onAddCustomModel ? '+ 添加自定义模型' : placeholder || 'Select')}</span>
         {isSystem && (
           <span className="trigger-brain-icon">
             <BrainIcon />

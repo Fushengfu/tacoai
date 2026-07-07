@@ -23,23 +23,36 @@
 
 ---
 
-## What's New in v0.4.9
+## What's New in v0.5.0
+
+### Desktop
 
 | Feature | Description |
 |---------|-------------|
-| Custom Model Protocols | Added Anthropic & OpenAI protocol support for any compatible third-party model service |
-| Voice Input | Hold `Cmd+Shift+V` to record, release to auto-transcribe into the input box |
-| Markdown Preview | File editor now supports live preview rendering for `.md` files |
-| Token Statistics | Visual dashboard for tracking token consumption trends, input/output distribution, cache hit rates, and conversation counts by date/model/task dimensions |
-| Plan Management Enhancement | AI generates structured execution plans with interactive "Confirm" / "Adjust" approval workflow |
-| Update Check Optimization | Main process checks for updates hourly, pushes notifications proactively |
-| Multi-Terminal Isolation | Support for running multiple independent terminal sessions simultaneously |
-| Rules File Migration | Project rules unified under `.taco/rules/` directory, with automatic migration from old paths |
-| Theme Toggle Icon | Dark/light mode toggle replaced with SVG vector icons |
-| Browser Tab Fix | Fixed residual browser tabs after window close |
-| System Prompt Optimization | Streamlined redundant rules for improved AI execution efficiency |
+| Image Upload Fix | Fixed images disappearing when sending messages: `handleSend` now uses `useRef` instead of `setState` to read the latest attachment state, ensuring images are correctly included in the message body |
+| Upload Success Indicator | Green checkmark ✓ appears in the bottom-right corner of image thumbnails after successful upload; failed uploads no longer auto-disappear, allowing users to inspect errors |
+| Upload Architecture Unification | Cloud storage configuration migrated to the gateway admin panel; desktop removed local upload config UI; supports hash-based deduplication and cross-region auto-retry |
+| Plan Confirmation Fix | Fixed bug where AI continued execution after plan rejection: enforced compliance from system prompt, tool definitions, and runtime feedback layers |
+| System Prompt Enhancement | Added verification-driven execution rules, code modification authorization rules, remote debugging principle (instrumentation), user observation priority rules, consecutive error correction downgrade protocol, efficient communication rules, etc., significantly reducing AI misjudgment |
+| Bridge Protocol Enhancement | On-demand loading of mobile messages & steps, upload credential proxy channel, streamlined bridge settings |
 
----
+### Mobile
+
+| Feature | Description |
+|---------|-------------|
+| Voice Input | Added system speech recognition support — tap the microphone button for voice input |
+| Version Check | Automatic latest version check on startup with update prompts |
+| Upload Retry Fix | Upload failure retry covers both 400 and 405 status codes, consistent with desktop behavior |
+
+### AI Gateway
+
+| Feature | Description |
+|---------|-------------|
+| Qiniu Region Fix | Uses UC API to dynamically query the bucket's actual region, replacing unreliable static naming inference, eliminating cross-region 400 errors |
+| Domain Validation | Empty Domain now raises an error immediately, preventing invalid upload URLs from being constructed |
+| Storage File Management | Added `StorageFile` model and CRUD API; upload records are persisted, with hash-based deduplication to avoid redundant uploads |
+| Anthropic Protocol | Native Anthropic Messages API pass-through, allowing Claude and other models to connect directly |
+| Timeout Adjustment | HTTP client timeout extended to 10 minutes, preventing interruptions during long conversations |---
 
 ## Multi-Model Support
 
@@ -55,94 +68,74 @@ Taco AI integrates with multiple LLM providers, switchable based on task require
 
 ## Screenshots
 
-### Conversation & Analysis
+### Conversation & Task Execution
 
 <p align="center">
-  <img src="1.png" alt="Conversation & Analysis UI" width="800" />
+  <img src="1.png" alt="Conversation & Task Execution" width="800" />
 </p>
 
-The main AI conversation interface demonstrating multimodal analysis capabilities. A user uploads a blood biochemistry report photo; the AI performs OCR to extract data, organizes it into a structured Markdown table, and provides abnormal indicator interpretation with obstetric context — e.g., GGT 167.5 (≈3× upper limit) suggesting risk of intrahepatic cholestasis of pregnancy (ICP), direct bilirubin 14.8 elevated, etc. An original image thumbnail floats in the upper-right corner for convenient reference.
+The main AI conversation interface, demonstrating multi-turn task execution records. The AI is executing document update tasks — translating the v0.5.0 changelog into the English README, then removing historical version content per user request. Each task is displayed as a card with elapsed time, execution steps (viewing files, editing files, etc.), completion status (green checkmark ✓), and a summary table of results. User messages appear as bubbles on the right. Dark mode three-column layout:
 
-Dark mode three-column layout:
-
-- **Left Sidebar** — "New Project" button; historical conversation list (with timestamps like `11h`, `agent`, `测试`, `分析一下这张图`); context usage progress bar, language selector (Chinese), and settings entry at the bottom
-- **Central Main Area** — Structured AI responses: abnormal indicator summary table + in-depth pathological analysis; top toolbar (code view, table view, split comparison, clear)
-- **Bottom Input Area** — Message input box (supports pasting images / attachments); current model `qwen3.7-plus`; blue circular send button
-
-### Task Execution & Terminal
-
-<p align="center">
-  <img src="4.png" alt="Task Execution & Terminal" width="800" />
-</p>
-
-The AI workbench task execution interface, demonstrating a complete automated workflow. The AI reads the Chinese README and generates an English version `README_EN.md` in 0h0m43s, with each operation step (viewing files, creating files, etc.) recorded with its path and status. Results are presented in a table comparing key sections (Core Capabilities, Multi-Model Support, Tech Stack, etc.) between the two versions. After completing the task, the AI proactively asks whether to push to GitHub and Gitee.
-
-The embedded terminal below shows real-time Git push logs (to `gitee.com:fushengfu/tacoai.git` on the `main` branch). The bottom model selector has been switched to `deepseek-v4-pro`, and the status bar shows language selection, current workspace (`taco`), and version `v0.3.10`.
+- **Left Sidebar** — "New Project" button; historical project list with timestamps; user avatar and language selector at the bottom
+- **Central Main Area** — AI task execution records: step details + result tables + notes (red vertical bar for warnings)
+- **Bottom Input Area** — Message input box (supports pasting images / attachments); current model `deepseek-v4-pro`; send button; token usage statistics
 
 ### Model Configuration
 
 <p align="center">
-  <img src="2.png" alt="Model Configuration UI" width="800" />
+  <img src="2.png" alt="Model Configuration" width="800" />
 </p>
 
-The model configuration page in the settings panel, supporting multi-model management and custom parameters. The left model list includes `mimo-v2.5-pro` (default), `kimi-k2.6`, `MiniMax-M2.7-highspeed`, `deepseek-v4-pro`, `qwen3.6-plus` and other integrated models, with each entry showing provider name and API Key configuration status. The right detail panel allows item-by-item configuration of:
+The model configuration page in the settings panel, supporting multi-model management with custom parameters. Currently editing the **LongCat-2.0** model, with configurable options:
 
-- **Provider / Base URL / API Key** — Provider and endpoint configuration
-- **Model ID** — Model identifier
-- **Context Length** — Supports up to 200,000 tokens ultra-long context
+- **Provider** — Service provider (DeepSeek)
+- **Base URL / API Key** — Endpoint and authentication credentials (API Key supports show/hide toggle)
+- **Model** — Model identifier
+- **Context Length** — Supports up to 1,000,000 tokens ultra-long context
 - **Temperature** — Sampling temperature; set to 0 for deterministic output
-- **Advanced Toggles** — Visual understanding, reasoning_content field control
+- **Advanced Toggles** — Visual understanding (off), reasoning_content field pass-through (on)
 
-The top "Add Model" button supports integrating new models, and the upper-right toolbar provides quick access to terminal, statistics panel, and more.
-
-### Upload Configuration
-
-<p align="center">
-  <img src="3.png" alt="Upload Configuration UI" width="800" />
-</p>
-
-The upload configuration page in the settings panel, used to upload local media files to object storage and generate HTTPS URLs for AI model access. Qiniu Cloud is currently selected, with configurable options including:
-
-- **AccessKey / SecretKey** — Cloud storage authentication credentials (SecretKey supports show/hide toggle)
-- **Bucket** — Storage bucket name
-- **Upload Endpoint** — Optional custom upload endpoint
-- **Public Access Prefix** — CDN or access domain name
-- **Object Prefix / Token Expiry** — Directory organization and credential expiration time (default 3600s)
-
-A "Unsaved changes, saved locally only" notice appears at the bottom. Once saved, images can be pasted or selected for upload during conversations.
-
-### Memory Management
-
-<p align="center">
-  <img src="5.png" alt="Memory Management UI" width="800" />
-</p>
-
-The memory management page in the settings panel, managing the AI's long-term and short-term project knowledge. Storage engine is SQLite, database size 239.1 MB, with statistics overview: 3 manual memories, 134 active / 0 archived automatic memories, 251 soft-deleted, last updated June 2026.
-
-Memory entries are divided into two categories:
-
-- **Manual Memories** — Core knowledge explicitly saved by the user or AI (e.g., password encryption rules SHA-256 + bcrypt, desktop shared module architecture refactoring progress, LLM request user_id field injection design), each with category tags and expand button
-- **Automatic Memories** — Task summaries automatically extracted by the system from conversations (e.g., "Added English README" completion summary), with detail view support
-
-The top "+ Add Memory" button allows manual addition of project knowledge.
-
----
+The "Add Model" button at the top supports integrating new models, and the "Default Model" button designates the preferred model.
 
 ### Plan Management
 
 <p align="center">
-  <img src="6.png" alt="Plan Management UI" width="800" />
+  <img src="3.png" alt="Plan Management" width="800" />
 </p>
 
-The AI agent task planning interface, demonstrating structured execution plan generation with an interactive approval workflow. The AI breaks down a complex task (e.g., "Risk Operation Authorization Mechanism for AI Agent Programming System") into multiple technical steps — defining risk level enums, implementing an authorization manager, TTL-based expiration cleanup, security configuration updates, Tool interface extensions, etc. — each with detailed descriptions. **"Confirm"** and **"Adjust"** buttons at the bottom allow users to review the plan before the AI modifies any code, ensuring every step meets expectations. Token usage statistics (input/output/cache) are displayed at the top.
+The AI agent task planning interface, demonstrating structured execution plan generation with an approval workflow. The AI breaks down the complex task "Implement Risk Operation Authorization for AI Agent Programming System" into 6 technical steps — defining risk levels and operation models, implementing an authorization manager, TTL-based authorization cleanup, updating security configuration, extending Tool interface with risk levels, and writing test cases — each with detailed descriptions. **"Confirm"** and **"Adjust"** buttons at the bottom allow users to review the plan before the AI modifies any code. Token usage statistics are displayed at the top.
 
 ### Statistics Dashboard
 
 <p align="center">
-  <img src="7.png" alt="Statistics Dashboard UI" width="800" />
+  <img src="4.png" alt="Statistics Dashboard" width="800" />
 </p>
 
-The token usage statistics dashboard, helping users track LLM API costs and usage trends. Key metric cards display **total tokens, input/output tokens, cache hits**, and **conversation rounds**. A 7-day consumption trend bar chart visualizes usage changes over time. The detailed data table below lists daily input, output, cache, totals, and rounds, with multi-dimensional filtering by date, model, and task — ideal for cost analysis and anomaly detection.
+The token usage statistics dashboard, helping users track LLM API costs and usage trends. Key metric cards display **total tokens (2,266M), input/output tokens, cache hits**, and **conversation rounds (2,035)**. A 7-day consumption trend bar chart visualizes usage changes. The detailed data table below lists daily input, output, cache, totals, and rounds, with multi-dimensional filtering by date, model, and task — ideal for cost analysis and anomaly detection.
+
+### MCP Configuration
+
+<p align="center">
+  <img src="5.png" alt="MCP Configuration" width="800" />
+</p>
+
+The MCP (Model Context Protocol) configuration page in the settings panel, used to manage external tool services connected to the AI. Currently configured with a **MiniMax (intranet)** server providing image understanding and web search capabilities, status shown as "Stopped". Users can toggle services on/off with a single click, or click "Edit" to modify API Key and other parameters. The "+ Add MCP Server" button at the top supports integrating additional external tools.
+
+### Image Understanding
+
+<p align="center">
+  <img src="6.png" alt="Image Understanding" width="800" />
+</p>
+
+The AI multimodal visual analysis interface. A user uploads a desk scene photo (containing a smartphone, yellow vitamin D packaging box, keyboard, etc.). The AI automatically identifies and describes key objects in detail — the smartphone (screen on, displaying a WeChat chat interface with links like h5.bjcykj.com), the packaging box ("60 tablets", "Vitamin D", animal silhouette pattern). An original image thumbnail floats in the right panel for convenient comparison. Currently using the `qwen3.6-plus` model.
+
+### Code Editor
+
+<p align="center">
+  <img src="7.png" alt="Code Editor" width="800" />
+</p>
+
+The built-in Monaco Editor code editing interface, showing a Python project configuration file `pyproject.toml` being edited. The left panel is a directory tree file browser (including `.venv`, `ai_penetration_agent`, etc.), the center features a TOML syntax-highlighted editor (project metadata, dependencies, CLI entry points, build system), and the right panel provides a code outline for quick navigation. Top tabs support multi-file switching, and the bottom status bar displays file type (TOML), size (1.0 KB), line count (54 lines), and current workspace path.
 
 ---
 
@@ -164,14 +157,14 @@ The following links are hosted on servers in mainland China for high-speed downl
 
 | Platform | Download Link | Installation |
 |----------|---------------|--------------|
-| **macOS** (Apple Silicon) | [Taco AI-0.4.9-arm64.dmg](https://store.bjctykj.com/app-versions/macOS/1783060360_Taco_AI-0.4.9-arm64.dmg) | Double-click the `.dmg`, then drag into the `Applications` folder |
-| **Windows** (x64) | [Taco AI-0.4.9-x64.exe](https://store.bjctykj.com/app-versions/Windows/1783062905_Taco_AI-0.4.9.exe) | Double-click the `.exe` and follow the installation wizard |
+| **macOS** (Apple Silicon) | [Taco AI-0.5.0-arm64.dmg](https://store.bjctykj.com/app-versions/macOS/1783060360_Taco_AI-0.5.0-arm64.dmg) | Double-click the `.dmg`, then drag into the `Applications` folder |
+| **Windows** (x64) | [Taco AI-0.5.0-x64.exe](https://store.bjctykj.com/app-versions/Windows/1783062905_Taco_AI-0.5.0.exe) | Double-click the `.exe` and follow the installation wizard |
 
 ### International Users
 
 International users should download the installer for your platform from the [GitHub Releases](https://github.com/Fushengfu/tacoai/releases) page.
 
-Current version: **v0.4.9**
+Current version: **v0.5.0**
 
 > For building from source, see [Quick Start](#quick-start) below.
 
@@ -272,4 +265,4 @@ taco/
 
 ## Version
 
-Current version: **v0.4.9**
+Current version: **v0.5.0**

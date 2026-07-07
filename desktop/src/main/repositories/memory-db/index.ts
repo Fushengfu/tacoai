@@ -14,7 +14,6 @@ export type {
   ChatStoreMessageSeqRange,
   BridgeSettingKey,
   BridgeSettingValue,
-  UploadConfigDbEntry,
   MemoryTier,
   MemoryScope,
 } from './schema'
@@ -98,12 +97,10 @@ export {
   deleteChatStoreSession,
 } from './chat-store'
 
-// Bridge settings & upload config
+// Bridge settings
 export {
   getBridgeSetting,
   setBridgeSetting,
-  loadUploadConfigFromDb,
-  saveUploadConfigToDb,
 } from './bridge-settings'
 
 // Snapshots

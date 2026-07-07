@@ -462,6 +462,13 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
       'steps 必须按可落地顺序编排，避免抽象空话。',
       '提出计划后等待用户确认，再进入执行阶段。',
     ],
+    cautions: [
+      'steps 数组至少包含 1 个步骤，空数组会导致用户看到空白计划窗口。',
+      '每个步骤必须包含 index、title、content 三个字段，缺一不可。',
+      '被用户拒绝后必须立即停止所有执行类工具调用，只允许只读操作。',
+      '被拒绝后只输出询问文本（如"方案被拒绝，你希望怎么调整？"），等待用户明确回复后再重新制定方案。',
+      '禁止以"简化版""快速版""直接开始"为理由跳过 propose_plan 直接执行。',
+    ],
   },
   update_plan_progress: {
     usage: [

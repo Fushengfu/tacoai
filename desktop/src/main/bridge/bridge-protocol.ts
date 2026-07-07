@@ -277,6 +277,42 @@ export interface BridgeAgentAbort {
 }
 
 /* ------------------------------------------------------------------ */
+/*  手机端直传云存储（凭据请求/响应）                                     */
+/* ------------------------------------------------------------------ */
+
+/** 请求上传凭据（手机端直传云存储） */
+export interface BridgeUploadTokenRequest {
+  type: 'bridge:upload-token-request'
+  requestId: string
+  fileName: string
+  mimeType: string
+}
+
+/** 返回上传凭据 */
+export interface BridgeUploadTokenResponse {
+  type: 'bridge:upload-token-response'
+  requestId: string
+  success: boolean
+  error?: string
+  /** hash 去重命中，无需上传，直接使用 publicUrl */
+  reused?: boolean
+  /** 去重命中时返回的已有公网链接 */
+  publicUrl?: string
+  /** 云存储提供商 */
+  provider?: 'aliyun_oss' | 'qiniu'
+  /** 上传地址 */
+  uploadUrl?: string
+  /** 上传 token（Qiniu: upload token，OSS: 留空改用 extraFields） */
+  token?: string
+  /** 对象存储 key */
+  key?: string
+  /** 公开访问 base URL */
+  publicBaseUrl?: string
+  /** 额外表单字段（OSS policy 直传需要 OSSAccessKeyId / policy / Signature） */
+  extraFields?: Record<string, string>
+}
+
+/* ------------------------------------------------------------------ */
 /*  Client → Host 数据查询指令（请求/响应模式）                          */
 /* ------------------------------------------------------------------ */
 
@@ -395,6 +431,7 @@ export type BridgeHostMessage =
   | BridgeFileWritten
   | BridgeProjectSwitched
   | BridgeProjectStates
+  | BridgeUploadTokenResponse
   | BridgeAck
 
 /** Client → Host 的所有消息 */
@@ -403,6 +440,7 @@ export type BridgeClientMessage =
   | BridgeAgentConfirm
   | BridgeAgentAbort
   | BridgeRetryResponse
+  | BridgeUploadTokenRequest
   | BridgeHeartbeat
   | BridgeGetProjects
   | BridgeGetWorkspaceTree
