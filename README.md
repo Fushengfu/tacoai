@@ -23,6 +23,24 @@
 
 ---
 
+## v0.4.9 更新内容
+
+| 功能 | 说明 |
+|------|------|
+| 自定义模型协议 | 新增 Anthropic 协议与 OpenAI 协议支持，可接入任意兼容第三方模型服务 |
+| 语音输入 | 按住 `Cmd+Shift+V` 开始录音，松开自动识别并填入输入框 |
+| Markdown 预览 | 文件编辑器支持 `.md` 文件实时预览渲染效果 |
+| Token 统计分析 | 可视化管理后台，按日期/模型/任务维度查看 Token 消耗趋势、输入输出分布、缓存命中率及对话轮次统计 |
+| 计划管理增强 | AI 生成结构化执行计划，支持"确认执行"/"需要调整"交互式审批 |
+| 版本更新优化 | 主进程每小时自动检查更新，有新版主动推送通知 |
+| 多终端实例隔离 | 支持同时运行多个独立终端会话，互不干扰 |
+| 规则文件迁移 | 项目规则统一迁移至 `.taco/rules/` 目录，兼容旧版自动迁移 |
+| 主题切换图标 | 深色/浅色模式切换改为 SVG 矢量图标 |
+| 浏览器标签修复 | 修复浏览器窗口关闭后标签残留问题 |
+| 系统提示词优化 | 精简冗余规则，提升 AI 执行效率与准确性 |
+
+---
+
 ## 多模型支持
 
 Taco AI 接入多家大模型服务商，可根据任务需求灵活切换：
@@ -110,6 +128,24 @@ AI 工作台任务执行界面，展示完整的自动化工作流。AI 读取�
 
 ---
 
+### 计划管理
+
+<p align="center">
+  <img src="6.png" alt="计划管理界面" width="800" />
+</p>
+
+AI 代理任务规划界面，展示结构化执行计划的生成与审批流程。AI 将复杂任务（如"AI 代理编程系统的风险操作授权机制"）自动拆解为多个技术步骤——定义风险等级枚举、实现授权管理器、TTL 过期清理、安全配置更新、Tool 接口扩展等——每个步骤附带详细说明。底部提供 **"确认执行"** 和 **"需要调整"** 按钮，用户可在 AI 动手修改代码前审核方案，确保每一步都符合预期。顶部显示 token 用量统计（输入/输出/缓存）。
+
+### 统计分析
+
+<p align="center">
+  <img src="7.png" alt="统计分析界面" width="800" />
+</p>
+
+Token 使用统计仪表板，帮助用户掌握大模型 API 调用成本与使用趋势。核心指标卡片展示**总 Token、输入/输出 Token、缓存命中量**及**对话轮次**；近 7 日消耗趋势柱状图直观呈现用量变化；底部数据明细表按日期列出每日输入、输出、缓存、总计及轮次，支持按日期、模型、任务等多维度筛选，方便成本核算与异常排查。
+
+---
+
 ### 跨端同步演示
 
 <p align="center">
@@ -128,15 +164,14 @@ AI 工作台任务执行界面，展示完整的自动化工作流。AI 读取�
 
 | 平台 | 下载链接 | 安装说明 |
 |------|---------|---------|
-| **macOS** (Apple Silicon) | [Taco AI-0.4.7-arm64.dmg](https://store.bjctykj.com/app-versions/macOS/1782096266_Taco_AI-0.4.7-arm64.dmg) | 双击 `.dmg` 挂载后拖入 `Applications` 文件夹 |
-| **Windows** (x64) | [Taco AI Setup 0.4.7-x64.exe](https://store.bjctykj.com/app-versions/Windows/1782096341_Taco_AI-0.4.7-x64.exe) | 双击 `.exe` 按安装向导完成安装 |
-| **Windows** (ARM64) | [Taco AI Setup 0.4.7-arm64.exe](https://store.bjctykj.com/app-versions/Windows/1782096649_Taco_AI-0.4.7-arm64.exe) | 双击 `.exe` 按安装向导完成安装 |
+| **macOS** (Apple Silicon) | [Taco AI-0.4.9-arm64.dmg](https://store.bjctykj.com/app-versions/macOS/1783060360_Taco_AI-0.4.9-arm64.dmg) | 双击 `.dmg` 挂载后拖入 `Applications` 文件夹 |
+| **Windows** (x64) | [Taco AI-0.4.9-x64.exe](https://store.bjctykj.com/app-versions/Windows/1783062905_Taco_AI-0.4.9.exe) | 双击 `.exe` 按安装向导完成安装 |
 
 ### 海外用户
 
 海外用户请从 [GitHub Releases](https://github.com/Fushengfu/tacoai/releases) 页面下载对应平台的安装包。
 
-当前版本：**v0.4.7**
+当前版本：**v0.4.9**
 
 > 源码构建请参考下方 [快速开始](#快速开始)。
 
@@ -197,18 +232,21 @@ taco/
 ├── desktop/                    # Electron 桌面应用
 │   ├── src/
 │   │   ├── main/               # 主进程（Node.js）
-│   │   │   ├── agent/          # AI 代理核心
-│   │   │   ├── ai/             # LLM 客户端
-│   │   │   ├── automation/     # 浏览器/桌面自动化
-│   │   │   ├── bridge/         # 跨端同步桥接
-│   │   │   ├── infrastructure/ # 基础设施（日志、终端、认证等）
+│   │   │   ├── sdk/agent/      # AI 代理核心（LLM、工具、记忆、提示词）
+│   │   │   │   ├── llm/        # LLM 客户端（多协议适配）
+│   │   │   │   ├── tools/      # 工具定义、注册与执行
+│   │   │   │   ├── memory/     # 记忆存储、召回与维护
+│   │   │   │   ├── context/    # 上下文构建与压缩
+│   │   │   │   └── prompt/     # 系统提示词构建
+│   │   │   ├── services/       # 业务服务层
+│   │   │   ├── infrastructure/ # 基础设施（日志、终端、认证、更新等）
+│   │   │   ├── repositories/   # 数据持久化（SQLite）
 │   │   │   ├── ipc/            # IPC 通信处理
-│   │   │   ├── services/       # 业务服务（Agent 循环、记忆、工具等）
-│   │   │   ├── tools/          # 工具定义与执行
+│   │   │   ├── bridge/         # 跨端同步桥接
 │   │   │   └── window/         # 窗口管理与托盘
 │   │   ├── preload/            # 预加载脚本
 │   │   └── renderer/           # 渲染进程（React UI）
-│   │       ├── views/          # 视图组件
+│   │       ├── views/          # 视图组件（对话、编辑器、设置）
 │   │       ├── hooks/          # React Hooks
 │   │       ├── styles/         # 样式文件
 │   │       └── lib/            # 工具库
@@ -218,7 +256,7 @@ taco/
 │   ├── backend/                # Go 后端服务
 │   ├── admin/                  # React 管理后台
 │   └── docs/                   # API 文档
-└── 1.png 2.png 3.png 4.png 5.png 49.mp4  # 截图与演示视频
+└── 1.png 2.png 3.png 4.png 5.png 6.png 7.png 49.mp4  # 截图与演示视频
 ```
 
 ---
@@ -234,4 +272,4 @@ taco/
 
 ## 版本
 
-当前版本：**v0.4.7**
+当前版本：**v0.4.9**
