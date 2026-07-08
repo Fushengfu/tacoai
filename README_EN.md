@@ -137,6 +137,22 @@ The AI multimodal visual analysis interface. A user uploads a desk scene photo (
 
 The built-in Monaco Editor code editing interface, showing a Python project configuration file `pyproject.toml` being edited. The left panel is a directory tree file browser (including `.venv`, `ai_penetration_agent`, etc.), the center features a TOML syntax-highlighted editor (project metadata, dependencies, CLI entry points, build system), and the right panel provides a code outline for quick navigation. Top tabs support multi-file switching, and the bottom status bar displays file type (TOML), size (1.0 KB), line count (54 lines), and current workspace path.
 
+### Automatic Task Planning
+
+<p align="center">
+  <img src="8.png" alt="Automatic Task Planning" width="800" />
+</p>
+
+The AI automatic task planning and execution interface, demonstrating the complete closed-loop from requirements to delivery. When the user requests "encapsulate a China map component", the AI automatically: installs ECharts dependencies (echarts@4.9.0 + vue-echarts), creates a `ChinaMap.vue` component (with heatmap, hover tooltip, color legend, responsive container), and integrates it into the dashboard page. The right-side execution plan panel displays 75 steps with progress tracking (0h10m31s), and the bottom change summary table lists all 4 modified files with specific changes. Currently using the `deepseek-v4-pro` model.
+
+### Automatic Screenshot Verification
+
+<p align="center">
+  <img src="9.png" alt="Automatic Screenshot Verification" width="800" />
+</p>
+
+The AI automatic screenshot verification interface after completing web development. The top-left area lists 5 feature requirements (blue heatmap, province labels, color legend, hover tooltip, highlight interaction). The AI automatically opens the browser, takes screenshots, and verifies each feature — map position, province coloring, province labels, color legend, hover tooltip — all marked with green checkmarks ✅. The bottom area displays 8 rendered thumbnail screenshots as visual evidence. No human intervention required: the AI handles everything from writing code to launching the browser for screenshot-based verification in one seamless flow.
+
 ---
 
 ### Cross-device Sync Demo
@@ -249,7 +265,7 @@ taco/
 │   ├── backend/                # Go backend service
 │   ├── admin/                  # React admin panel
 │   └── docs/                   # API documentation
-└── 1.png 2.png 3.png 4.png 5.png 6.png 7.png 49.mp4  # Screenshots & demo video
+└── 1.png 2.png 3.png 4.png 5.png 6.png 7.png 8.png 9.png 49.mp4  # Screenshots & demo video
 ```
 
 ---
