@@ -173,8 +173,8 @@ AI 完成网页开发后自动截图验证界面。左上方列出 5 项功能�
 
 | 平台 | 下载链接 | 安装说明 |
 |------|---------|---------|
-| **macOS** (Apple Silicon) | [Taco AI-0.5.0-arm64.dmg](https://store.bjctykj.com/app-versions/macOS/1783060360_Taco_AI-0.4.9-arm64.dmg) | 双击 `.dmg` 挂载后拖入 `Applications` 文件夹 |
-| **Windows** (x64) | [Taco AI-0.5.0-x64.exe](https://store.bjctykj.com/app-versions/Windows/1783062905_Taco_AI-0.4.9.exe) | 双击 `.exe` 按安装向导完成安装 |
+| **macOS** (Apple Silicon) | [Taco AI-0.5.0-arm64.dmg](https://store.bjctykj.com/app-versions/macOS/1783501309_Taco_AI-0.5.0-arm64.dmg) | 双击 `.dmg` 挂载后拖入 `Applications` 文件夹 |
+| **Windows** (x64) | [Taco AI-0.5.0-x64.exe](https://store.bjctykj.com/app-versions/Windows/1783501147_Taco_AI-0.5.0-x64.exe) | 双击 `.exe` 按安装向导完成安装 |
 
 ### 海外用户
 
