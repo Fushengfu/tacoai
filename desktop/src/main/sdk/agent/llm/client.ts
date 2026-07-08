@@ -7,6 +7,7 @@ import type { Logger } from '../services'
 import type { ToolDefinition, ToolCall } from '../tools'
 import { USER_ASSETS_BLOCK_REGEX, USER_ASSETS_BLOCK_CAPTURE_REGEX, USER_QUERY_BLOCK_CAPTURE_REGEX, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, stripUserAssetsBlock, extractUserAssetsBlock, extractUserQueryText, parseUserAssetEntries, inferAssetKind, buildUserAssetsBlock } from '../shared/user-assets'
 import type { UserAssetEntry } from '../shared/user-assets'
+import { registerFileToGateway } from '../shared/storage-register'
 
 /** 模块级 logger，由外部通过 setLLMLogger 注入。默认静默。 */
 let _log: Logger = () => {}
@@ -765,24 +766,20 @@ async function uploadDataUrlViaGateway(
   }
 
   // 注册文件记录到网关后台（非关键路径，失败静默吞掉）
-  try {
-    await fetch(`${GATEWAY_UPLOAD_BASE}/api/member/storage/files`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({
-        provider: (uploadData as any).provider || 'qiniu',
-        object_key: uploadData.key,
-        public_url: publicUrl,
-        mime_type: mimeType,
-        origin_name: fileName,
-        hash,
-      }),
+  if (token) {
+    await registerFileToGateway({
+      gatewayBase: GATEWAY_UPLOAD_BASE,
+      token,
+      provider: (uploadData as any).provider || 'qiniu',
+      objectKey: uploadData.key,
+      publicUrl,
+      mimeType,
+      originName: fileName,
+      hash,
+      logFn: llmLog,
+      logTag: 'AGENT_UPLOAD_REGISTER_FAIL',
+      logScope: 'agent',
     })
-  } catch (_regErr) {
-    // 静默吞掉，注册失败不影响上传结果
   }
 
   return publicUrl
