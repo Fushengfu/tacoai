@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto'
 import { getBridgeManager } from '../../bridge/bridge-manager'
 import { log } from '../../infrastructure/logger'
 import { loadAuthFromFile } from '../../infrastructure/auth-store'
+import { registerFileToGateway } from '../../sdk/agent/shared/storage-register'
 
 const GATEWAY_BASE = 'https://agent.bjctykj.com'
 
@@ -67,6 +68,21 @@ export async function handleImageUpload(
 
   // 5. hash 去重命中：直接返回已有链接
   if (uploadData.reused === true && uploadData.public_url) {
+    // 注册文件记录（非关键路径，失败不影响返回）
+    await registerFileToGateway({
+      gatewayBase: GATEWAY_BASE,
+      token,
+      provider: uploadData.provider || 'qiniu',
+      objectKey: uploadData.key,
+      publicUrl: uploadData.public_url,
+      mimeType,
+      originName: fileName,
+      hash,
+      logFn: log,
+      logTag: 'IMAGE_UPLOAD_REGISTER_FAIL',
+      logScope: 'ipc',
+    })
+
     log('IMAGE_UPLOAD_REUSED', { fileName, publicUrl: uploadData.public_url }, 'ipc')
     return { publicUrl: uploadData.public_url }
   }
@@ -108,6 +124,22 @@ export async function handleImageUpload(
           )
         }
         const publicUrl = `${publicBaseUrl}/${uploadData.key}`
+
+        // 注册文件记录（非关键路径，失败不影响返回）
+        await registerFileToGateway({
+          gatewayBase: GATEWAY_BASE,
+          token,
+          provider: uploadData.provider || 'qiniu',
+          objectKey: uploadData.key,
+          publicUrl,
+          mimeType,
+          originName: fileName,
+          hash,
+          logFn: log,
+          logTag: 'IMAGE_UPLOAD_REGISTER_FAIL',
+          logScope: 'ipc',
+        })
+
         log('IMAGE_UPLOADED_VIA_GATEWAY_RETRY', { fileName, publicUrl, retryUrl }, 'ipc')
         return { publicUrl }
       }
@@ -128,25 +160,19 @@ export async function handleImageUpload(
   const publicUrl = `${publicBaseUrl}/${uploadData.key}`
 
   // 8. 注册文件记录（非关键路径，失败不影响返回）
-  try {
-    await fetch(`${GATEWAY_BASE}/api/member/storage/files`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        provider: uploadData.provider || 'qiniu',
-        object_key: uploadData.key,
-        public_url: publicUrl,
-        mime_type: mimeType,
-        origin_name: fileName,
-        hash,
-      }),
-    })
-  } catch (regErr) {
-    log('IMAGE_UPLOAD_REGISTER_FAIL', { error: regErr instanceof Error ? regErr.message : String(regErr) }, 'ipc')
-  }
+  await registerFileToGateway({
+    gatewayBase: GATEWAY_BASE,
+    token,
+    provider: uploadData.provider || 'qiniu',
+    objectKey: uploadData.key,
+    publicUrl,
+    mimeType,
+    originName: fileName,
+    hash,
+    logFn: log,
+    logTag: 'IMAGE_UPLOAD_REGISTER_FAIL',
+    logScope: 'ipc',
+  })
 
   log('IMAGE_UPLOADED_VIA_GATEWAY', { fileName, publicUrl }, 'ipc')
   return { publicUrl }
