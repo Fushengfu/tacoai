@@ -26,6 +26,10 @@ function buildImageRules(supportsVision: boolean): string {
   const lines: string[] = ['## 图片处理']
   if (supportsVision) {
     lines.push('- 当用户消息已附带图片且模型支持视觉理解时，可直接基于图片完成理解。')
+  } else {
+    lines.push('- **当前模型不支持视觉理解**。用户上传的图片会以文本标记 `[用户上传图片: url]` 的形式出现在用户消息中。')
+    lines.push('- 当你看到 `[用户上传图片: url]` 标记时，**必须**调用 `analyze_image` 工具，传入 `image="url"` 和 `goal="描述你对该图片的分析目的"` 来分析图片内容。')
+    lines.push('- 多个图片时逐个调用 `analyze_image`。未调用 `analyze_image` 直接声称"看到图片"属于编造。')
   }
   lines.push('- 浏览器/桌面自动化截图后，如需分析截图内容，请调用 analyze_image 工具（image 参数传 cloudUrl，视觉模型只支持 data: URL 和 https: 链接，不支持本地文件路径），同时传 goal（分析目的）。')
   return lines.join('\n')

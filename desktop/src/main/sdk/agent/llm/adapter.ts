@@ -108,7 +108,10 @@ function transformForMimo(msg: StandardChatMessage): { role: string; content: un
 }
 
 /**
- * 转换为 Deepseek 格式（字符串 + images 字段）
+ * 转换为 Deepseek 格式（纯文本）
+ * 
+ * DeepSeek/Kimi/GLM 不支持原生多模态，图片通过文本标记传递：
+ * [用户上传图片: url] → AI 收到后应调用 analyze_image 分析
  */
 function transformForDeepseek(msg: StandardChatMessage): { role: string; content: unknown } {
   if (msg.role !== 'user') {
@@ -119,12 +122,29 @@ function transformForDeepseek(msg: StandardChatMessage): { role: string; content
   }
 
   const text = extractTextFromParts(msg.content)
-  const images = extractImageUrls(msg.content)
+  const imageUrls = extractImageUrls(msg.content)
+  const videoUrls = extractVideoUrls(msg.content)
+  const audioUrls = extractAudioUrls(msg.content)
+
+  // 非视觉模型：将媒体文件以文本标记形式嵌入 content，不再使用 images 字段
+  const mediaLines: string[] = []
+  for (const url of imageUrls) {
+    mediaLines.push(`[用户上传图片: ${url}]`)
+  }
+  for (const url of videoUrls) {
+    mediaLines.push(`[用户上传视频: ${url}]`)
+  }
+  for (const url of audioUrls) {
+    mediaLines.push(`[用户上传音频: ${url}]`)
+  }
+
+  const fullText = mediaLines.length > 0
+    ? (text ? `${text}\n\n${mediaLines.join('\n')}` : mediaLines.join('\n'))
+    : text
 
   return {
     role: msg.role,
-    content: text,
-    ...(images.length > 0 ? { images } : {}),
+    content: fullText,
   }
 }
 
@@ -163,12 +183,44 @@ function stripHistoricalTaskResult(content: unknown): unknown {
 
 /**
  * 转换为 Minimax 格式
+ * 
+ * 非 user 消息：提取纯文本
+ * user 消息：文本 + 媒体文件以 [用户上传图片/视频/音频: url] 文本标记嵌入
  */
 function transformForMinimax(msg: StandardChatMessage): { role: string; content: unknown; tool_call_id?: string; name?: string; tool_calls?: unknown[]; reasoning_content?: string } {
-  const rawContent: unknown = msg.content.length === 0 ? '' : msg.content
+  let rawContent: unknown
+
+  if (msg.role !== 'user') {
+    // 非 user 消息：提取纯文本
+    rawContent = stripHistoricalTaskResult(extractTextFromParts(msg.content))
+  } else {
+    // user 消息：文本 + 媒体标记
+    const text = extractTextFromParts(msg.content)
+    const imageUrls = extractImageUrls(msg.content)
+    const videoUrls = extractVideoUrls(msg.content)
+    const audioUrls = extractAudioUrls(msg.content)
+
+    const mediaLines: string[] = []
+    for (const url of imageUrls) {
+      mediaLines.push(`[用户上传图片: ${url}]`)
+    }
+    for (const url of videoUrls) {
+      mediaLines.push(`[用户上传视频: ${url}]`)
+    }
+    for (const url of audioUrls) {
+      mediaLines.push(`[用户上传音频: ${url}]`)
+    }
+
+    const fullText = mediaLines.length > 0
+      ? (text ? `${text}\n\n${mediaLines.join('\n')}` : mediaLines.join('\n'))
+      : text
+
+    rawContent = stripHistoricalTaskResult(fullText)
+  }
+
   const result: { role: string; content: unknown; tool_call_id?: string; name?: string; tool_calls?: unknown[]; reasoning_content?: string } = {
     role: msg.role,
-    content: stripHistoricalTaskResult(rawContent),
+    content: rawContent || '',
   }
   
   // tool 消息需要保留 tool_call_id 和 name

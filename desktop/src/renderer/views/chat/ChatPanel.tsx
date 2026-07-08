@@ -587,10 +587,10 @@ const fileInputRef = useRef<HTMLInputElement>(null)
     return parts[parts.length - 1] || normalized
   }
 
-  /** 粘贴事件处理：提取图片 */
+  /** 粘贴事件处理：提取图片（无论模型是否支持视觉） */
   function handlePaste(e: React.ClipboardEvent) {
     // 1. 处理图片粘贴
-    if (supportsVision) {
+    {
       const items = e.clipboardData?.items
       if (items) {
         const imageFiles: File[] = []
@@ -629,8 +629,8 @@ const fileInputRef = useRef<HTMLInputElement>(null)
     const otherFiles: File[] = []
 
     for (const file of Array.from(files)) {
-      // 判断是否为图片
-      if (file.type.startsWith('image/') && supportsVision) {
+      // 判断是否为图片（无论模型是否支持视觉，都允许选图）
+      if (file.type.startsWith('image/')) {
         imageFiles.push(file)
       } else {
         otherFiles.push(file)
@@ -667,7 +667,7 @@ const fileInputRef = useRef<HTMLInputElement>(null)
       const ext = filePath.toLowerCase().split('.').pop() || ''
       const imageExts = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'ico'])
       
-      if (imageExts.has(ext) && supportsVision) {
+      if (imageExts.has(ext)) {
         imagePaths.push(filePath)
       } else {
         assetPaths.push(filePath)
