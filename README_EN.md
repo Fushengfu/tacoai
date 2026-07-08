@@ -173,8 +173,8 @@ The following links are hosted on servers in mainland China for high-speed downl
 
 | Platform | Download Link | Installation |
 |----------|---------------|--------------|
-| **macOS** (Apple Silicon) | [Taco AI-0.5.0-arm64.dmg](https://store.bjctykj.com/app-versions/macOS/1783060360_Taco_AI-0.5.0-arm64.dmg) | Double-click the `.dmg`, then drag into the `Applications` folder |
-| **Windows** (x64) | [Taco AI-0.5.0-x64.exe](https://store.bjctykj.com/app-versions/Windows/1783062905_Taco_AI-0.5.0.exe) | Double-click the `.exe` and follow the installation wizard |
+| **macOS** (Apple Silicon) | [Taco AI-0.5.0-arm64.dmg](https://store.bjctykj.com/app-versions/macOS/1783501309_Taco_AI-0.5.0-arm64.dmg) | Double-click the `.dmg`, then drag into the `Applications` folder |
+| **Windows** (x64) | [Taco AI-0.5.0-x64.exe](https://store.bjctykj.com/app-versions/Windows/1783501147_Taco_AI-0.5.0-x64.exe) | Double-click the `.exe` and follow the installation wizard |
 
 ### International Users
 
