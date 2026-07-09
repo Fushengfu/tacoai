@@ -1865,6 +1865,52 @@ body.is-dragging * {
   flex-shrink: 0;
 }
 
+/* ── 语音输入麦克风按钮 ── */
+.composer-mic-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 4px;
+}
+
+.composer-mic-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.composer-mic-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 录音中的状态 */
+.composer-mic-btn.recording {
+  color: #ff3b30;
+  background: rgba(255, 59, 48, 0.1);
+}
+
+.composer-mic-btn.recording:hover {
+  background: rgba(255, 59, 48, 0.18);
+}
+
+/* 录音中的红色脉冲点 */
+.mic-recording-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ff3b30;
+  animation: voice-pulse 1.2s ease-in-out infinite;
+}
+
 .send-btn {
   width: 36px;
   height: 36px;

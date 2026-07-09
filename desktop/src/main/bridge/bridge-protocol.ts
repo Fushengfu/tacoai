@@ -142,16 +142,6 @@ export interface BridgeChatUserMessage {
   timestamp: number
 }
 
-/** 流式文本增量 */
-export interface BridgeChatDelta {
-  type: 'bridge:chat-delta'
-  messageId: string
-  priority?: BridgeMessagePriority
-  delta: string
-  done: boolean
-  threadId?: string
-}
-
 /** Agent 执行事件 */
 export interface BridgeAgentEvent {
   type: 'bridge:agent-event'
@@ -420,7 +410,6 @@ export type BridgeControlMessage =
 export type BridgeHostMessage =
   | BridgeState
   | BridgeChatUserMessage
-  | BridgeChatDelta
   | BridgeAgentEvent
   | BridgeAgentConfirmResolved
   | BridgeFilesChanged

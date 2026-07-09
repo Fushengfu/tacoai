@@ -890,6 +890,25 @@ body.is-resizing iframe {
   font-size: 11px;
 }
 
+.voice-recording-stop-btn {
+  margin-left: 8px;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 59, 48, 0.2);
+  color: #ff3b30;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+.voice-recording-stop-btn:hover {
+  background: rgba(255, 59, 48, 0.35);
+}
+
 :root[data-theme='light'] .voice-recording-bar {
   background: rgba(255, 59, 48, 0.08);
   border-color: rgba(255, 59, 48, 0.2);

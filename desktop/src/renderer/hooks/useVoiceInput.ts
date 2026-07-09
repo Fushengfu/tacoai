@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
+import { secureStorage, SecureStorageKey } from '../lib/secure-storage'
 
 interface UseVoiceInputOptions {
-  /** 语音识别完成后的回调，传入识别结果文本 */
+  /** 语音识别文本就绪时的回调 */
   onTextReady: (text: string) => void
   /** 最大录音时长（毫秒），默认 30 秒 */
   maxDurationMs?: number
@@ -12,73 +13,42 @@ interface UseVoiceInputResult {
   isRecording: boolean
   /** 已录音秒数 */
   elapsedSeconds: number
-}
-
-/** Chromium SpeechRecognition 类型声明 */
-declare var SpeechRecognition: {
-  new(): SpeechRecognition
-}
-declare var webkitSpeechRecognition: {
-  new(): SpeechRecognition
-}
-
-interface SpeechRecognition extends EventTarget {
-  continuous: boolean
-  interimResults: boolean
-  lang: string
-  start(): void
-  stop(): void
-  abort(): void
-  onresult: ((event: SpeechRecognitionEvent) => void) | null
-  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null
-  onend: (() => void) | null
-}
-
-interface SpeechRecognitionEvent {
-  results: SpeechRecognitionResultList
-  resultIndex: number
-}
-
-type SpeechRecognitionResultList = Iterable<SpeechRecognitionResult> & {
-  length: number
-  item(index: number): SpeechRecognitionResult
-  [index: number]: SpeechRecognitionResult
-}
-
-interface SpeechRecognitionResult {
-  isFinal: boolean
-  length: number
-  item(index: number): SpeechRecognitionAlternative
-  [index: number]: SpeechRecognitionAlternative
-}
-
-interface SpeechRecognitionAlternative {
-  transcript: string
-  confidence: number
-}
-
-interface SpeechRecognitionErrorEvent {
-  error: string
-  message: string
+  /** 点击切换：开始录音 / 结束录音并识别 */
+  toggleRecording: () => void
 }
 
 /**
  * 语音输入 Hook
- * 按住 Cmd+Shift+V 开始录音，松开停止并自动填入识别结果
- * 使用 Chromium SpeechRecognition API 进行语音识别
+ *
+ * 按住录音 → 松开识别：用户按住麦克风按钮开始录音，松开后发送完整 PCM 到 StepFun ASR，
+ * 获取完整识别文本后插入输入框。
+ *
+ * 音频处理流程：AudioContext 采集 → Float32 PCM → 重采样到 16kHz → s16le → base64 → IPC → StepFun ASR
+ *
+ * 降级方案：StepFun API Key 未配置时自动使用 Chromium SpeechRecognition
+ * （国内 Google 服务不可达，会报 network 错误）。
  */
 export function useVoiceInput({ onTextReady, maxDurationMs = 30_000 }: UseVoiceInputOptions): UseVoiceInputResult {
   const [isRecording, setIsRecording] = useState(false)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
 
-  const recognitionRef = useRef<SpeechRecognition | null>(null)
   const onTextReadyRef = useRef(onTextReady)
+  onTextReadyRef.current = onTextReady
+
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const maxDurationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isRecordingRef = useRef(false)
-  const startedByShortcutRef = useRef(false) // 标记是否由快捷键触发
 
-  onTextReadyRef.current = onTextReady
+  // AudioContext 相关
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const pcmChunksRef = useRef<Float32Array[]>([])
+
+  // SpeechRecognition 降级
+  const recognitionRef = useRef<any>(null)
+  const finalTextRef = useRef('')
+  // StepFun ASR 可用性缓存：null=未探测, true=可用, false=不可用
+  const stepfunAvailableRef = useRef<boolean | null>(null)
 
   const clearTimers = useCallback(() => {
     if (timerRef.current) {
@@ -91,165 +61,277 @@ export function useVoiceInput({ onTextReady, maxDurationMs = 30_000 }: UseVoiceI
     }
   }, [])
 
+  /** 释放音频资源 */
+  const releaseAudioResources = useCallback(() => {
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {})
+      audioContextRef.current = null
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop())
+      streamRef.current = null
+    }
+    if (recognitionRef.current) {
+      try { recognitionRef.current.abort() } catch { /* ignore */ }
+      recognitionRef.current = null
+    }
+  }, [])
+
+  /**
+   * Float32Array PCM chunks → base64 字符串。
+   *
+   * 处理步骤：
+   * 1. 拼接所有 chunk
+   * 2. 重采样到 16kHz（StepFun ASR 要求）
+   * 3. Float32 [-1,1] → Int16 s16le
+   * 4. Int16 buffer → base64
+   */
+  const pcmToBase64 = useCallback((chunks: Float32Array[], inputSampleRate: number): string => {
+    if (chunks.length === 0) return ''
+
+    // 1. 拼接
+    let totalSamples = 0
+    for (const c of chunks) totalSamples += c.length
+    const allSamples = new Float32Array(totalSamples)
+    let offset = 0
+    for (const c of chunks) {
+      allSamples.set(c, offset)
+      offset += c.length
+    }
+
+    // 2. 重采样到 16kHz（线性插值）
+    const targetRate = 16_000
+    let samples: Float32Array
+    if (inputSampleRate !== targetRate) {
+      const ratio = inputSampleRate / targetRate
+      const newLength = Math.floor(totalSamples / ratio)
+      samples = new Float32Array(newLength)
+      for (let i = 0; i < newLength; i++) {
+        samples[i] = allSamples[Math.floor(i * ratio)]
+      }
+    } else {
+      samples = allSamples
+    }
+
+    // 3. Float32 → Int16 s16le
+    const int16 = new Int16Array(samples.length)
+    for (let i = 0; i < samples.length; i++) {
+      const s = Math.max(-1, Math.min(1, samples[i]))
+      int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
+    }
+
+    // 4. Int16 buffer → base64
+    const bytes = new Uint8Array(int16.buffer)
+    let binary = ''
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i])
+    }
+    return btoa(binary)
+  }, [])
+
+  /**
+   * 发送完整 PCM 到 StepFun ASR，返回识别文本。
+   */
+  const recognizeStepFun = useCallback(async (): Promise<string> => {
+    if (pcmChunksRef.current.length === 0) return ''
+    const sampleRate = audioContextRef.current?.sampleRate ?? 44_100
+    const base64 = pcmToBase64(pcmChunksRef.current, sampleRate)
+
+    try {
+      const apiKey = await secureStorage.get(SecureStorageKey.API_KEY_STEPFUN)
+      const result = await window.taco.voice.recognize(base64, apiKey ?? undefined)
+
+      if (result.error === 'NO_API_KEY') {
+        console.warn('[VoiceInput] StepFun API Key 未配置，后续将使用 SpeechRecognition 降级')
+        stepfunAvailableRef.current = false
+        return ''
+      }
+
+      stepfunAvailableRef.current = true
+      return (result.text ?? '').trim()
+    } catch (err) {
+      console.error('[VoiceInput] StepFun ASR 识别失败:', err)
+      return ''
+    }
+  }, [pcmToBase64])
+
+  /** 内部清理：停止录音、释放资源、重置状态 */
   const stopRecording = useCallback(() => {
     clearTimers()
     isRecordingRef.current = false
-    startedByShortcutRef.current = false
     setIsRecording(false)
     setElapsedSeconds(0)
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop()
-      } catch {
-        // ignore stop errors
-      }
-      recognitionRef.current = null
-    }
-  }, [clearTimers])
+    releaseAudioResources()
+    pcmChunksRef.current = []
+  }, [clearTimers, releaseAudioResources])
 
-  const startRecording = useCallback(() => {
-    if (isRecordingRef.current) return
-
-    const SpeechRecognitionCtor =
-      (typeof SpeechRecognition !== 'undefined' ? SpeechRecognition : undefined) ??
-      (typeof webkitSpeechRecognition !== 'undefined' ? webkitSpeechRecognition : undefined)
+  /**
+   * 降级方案：Chromium SpeechRecognition
+   * 当 StepFun API Key 未配置时自动使用。
+   */
+  const fallbackToSpeechRecognition = useCallback(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SpeechRecognitionCtor: any =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
 
     if (!SpeechRecognitionCtor) {
       console.warn('[VoiceInput] SpeechRecognition API 不可用')
       window.taco.shell.notify({
         title: '语音输入不可用',
-        body: '当前环境不支持语音识别功能',
+        body: '请在设置页面配置 StepFun API Key 以启用语音识别',
       })
       return
     }
 
     try {
       const recognition = new SpeechRecognitionCtor()
+      recognitionRef.current = recognition
       recognition.continuous = true
-      recognition.interimResults = false
+      recognition.interimResults = true
       recognition.lang = 'zh-CN'
+      finalTextRef.current = ''
 
-      let finalText = ''
-
-      recognition.onresult = (event: SpeechRecognitionEvent) => {
+      recognition.onresult = (event: any) => {
         for (let i = event.resultIndex; i < event.results.length; i++) {
-          const result = event.results[i] as SpeechRecognitionResult
+          const result = event.results[i]
           if (result.isFinal) {
-            finalText += result[0]!.transcript
+            finalTextRef.current += result[0].transcript
           }
         }
       }
 
-      recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-        console.warn('[VoiceInput] 识别错误:', event.error, event.message)
-        const errorMessages: Record<string, string> = {
-          'no-speech': '未检测到语音，请重试',
-          'aborted': '录音已取消',
-          'audio-capture': '无法访问麦克风，请检查系统权限',
-          'network': '网络错误，语音识别需要网络连接',
-          'not-allowed': '麦克风权限被拒绝，请在系统设置中允许',
-          'service-not-allowed': '语音识别服务不可用',
-          'bad-grammar': '语音识别配置错误',
-          'language-not-supported': '当前语言不支持语音识别',
-        }
-        const msg = errorMessages[event.error] || `语音识别错误: ${event.error}`
+      recognition.onerror = (event: any) => {
+        console.warn('[VoiceInput] SpeechRecognition 错误:', event.error)
         if (event.error !== 'no-speech' && event.error !== 'aborted') {
-          window.taco.shell.notify({ title: '语音识别', body: msg })
+          const msgs: Record<string, string> = {
+            'network': '网络错误，Google 语音服务不可达。请在设置页面配置 StepFun API Key',
+            'not-allowed': '麦克风权限被拒绝',
+            'audio-capture': '无法访问麦克风',
+          }
+          window.taco.shell.notify({
+            title: '语音识别',
+            body: msgs[event.error] || `语音识别错误: ${event.error}`,
+          })
+        }
+        if (finalTextRef.current.trim()) {
+          onTextReadyRef.current(finalTextRef.current.trim())
         }
         stopRecording()
       }
 
       recognition.onend = () => {
-        const text = finalText.trim()
-        if (text) {
-          onTextReadyRef.current(text)
+        if (finalTextRef.current.trim() && isRecordingRef.current) {
+          onTextReadyRef.current(finalTextRef.current.trim())
         }
-        stopRecording()
+        if (isRecordingRef.current) {
+          stopRecording()
+        }
       }
 
       recognition.start()
-      recognitionRef.current = recognition
       isRecordingRef.current = true
       setIsRecording(true)
       setElapsedSeconds(0)
 
-      // 计时器：每秒更新
       timerRef.current = setInterval(() => {
         setElapsedSeconds((prev) => prev + 1)
       }, 1000)
 
-      // 最大时长超时自动停止
       maxDurationTimerRef.current = setTimeout(() => {
         if (recognitionRef.current) {
-          try {
-            recognitionRef.current.stop()
-          } catch {
-            // ignore
-          }
+          try { recognitionRef.current.stop() } catch { /* ignore */ }
         }
       }, maxDurationMs)
     } catch (err) {
-      console.error('[VoiceInput] 初始化失败:', err)
-      window.taco.shell.notify({
-        title: '语音输入初始化失败',
-        body: '无法启动语音识别，请检查麦克风权限',
-      })
+      console.error('[VoiceInput] SpeechRecognition 初始化失败:', err)
     }
   }, [maxDurationMs, stopRecording])
 
-  // 按住说话：DOM 级 keydown/keyup 监听 Cmd+Shift+V
-  useEffect(() => {
-    const isInputFocused = (target: EventTarget | null): boolean => {
-      if (!target) return false
-      const el = target as HTMLElement
-      const tag = el.tagName?.toLowerCase()
-      if (tag === 'input' || tag === 'textarea' || tag === 'select') return true
-      if (el.isContentEditable) return true
-      // Monaco 编辑器内部也是 contenteditable / textarea
-      if (el.closest('.monaco-editor')) return true
-      return false
+  /**
+   * 发送完整 PCM 到 StepFun ASR 并输出结果，然后清理状态。
+   */
+  const finishRecording = useCallback(async () => {
+    if (!isRecordingRef.current) return
+
+    // 先置标志，阻止 onaudioprocess 继续写入
+    isRecordingRef.current = false
+    clearTimers()
+
+    // 发送完整 PCM → 识别
+    const text = await recognizeStepFun()
+
+    releaseAudioResources()
+    pcmChunksRef.current = []
+    setIsRecording(false)
+    setElapsedSeconds(0)
+
+    if (text) {
+      onTextReadyRef.current(text)
+    }
+  }, [clearTimers, releaseAudioResources, recognizeStepFun])
+
+  // 用 ref 让 startRecording 的 timeout 能调用 finishRecording（解决循环依赖）
+  const finishRecordingRef = useRef(finishRecording)
+  finishRecordingRef.current = finishRecording
+
+  const startRecording = useCallback(async () => {
+    if (isRecordingRef.current) return
+
+    // 如果已探测到 StepFun 不可用，直接降级
+    if (stepfunAvailableRef.current === false) {
+      fallbackToSpeechRecognition()
+      return
     }
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Cmd+Shift+V 按下，且不处于输入框聚焦状态
-      if (e.metaKey && e.shiftKey && e.key === 'V' && !e.repeat) {
-        if (isInputFocused(e.target)) return
-        e.preventDefault()
-        e.stopPropagation()
-        startedByShortcutRef.current = true
-        startRecording()
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      streamRef.current = stream
+
+      const audioContext = new AudioContext()
+      audioContextRef.current = audioContext
+
+      const source = audioContext.createMediaStreamSource(stream)
+      const processor = audioContext.createScriptProcessor(4096, 1, 1)
+      pcmChunksRef.current = []
+
+      processor.onaudioprocess = (event) => {
+        if (!isRecordingRef.current) return
+        const inputData = event.inputBuffer.getChannelData(0)
+        pcmChunksRef.current.push(new Float32Array(inputData))
       }
+
+      source.connect(processor)
+      processor.connect(audioContext.destination)
+
+      isRecordingRef.current = true
+      setIsRecording(true)
+      setElapsedSeconds(0)
+
+      // 每秒更新计时
+      timerRef.current = setInterval(() => {
+        setElapsedSeconds((prev) => prev + 1)
+      }, 1000)
+
+      // 最大录音时长 → 自动停止并识别
+      maxDurationTimerRef.current = setTimeout(() => {
+        finishRecordingRef.current()
+      }, maxDurationMs)
+    } catch (err) {
+      console.error('[VoiceInput] 麦克风初始化失败:', err)
+      // NotAllowedError → 尝试 SpeechRecognition 降级（可能已有权限）
+      // 其他错误 → 回退到 SpeechRecognition
+      fallbackToSpeechRecognition()
     }
+  }, [maxDurationMs, fallbackToSpeechRecognition])
 
-    const handleKeyUp = (e: KeyboardEvent) => {
-      // V 键松开时，如果是由快捷键触发的录音，则停止
-      if ((e.key === 'v' || e.key === 'V') && startedByShortcutRef.current && isRecordingRef.current) {
-        if (recognitionRef.current) {
-          try {
-            recognitionRef.current.stop()
-          } catch {
-            // ignore
-          }
-        }
-      }
+  /** 点击切换：未录音时开始，录音中则结束并识别 */
+  const toggleRecording = useCallback(() => {
+    if (isRecordingRef.current) {
+      finishRecording()
+    } else {
+      startRecording()
     }
+  }, [startRecording, finishRecording])
 
-    window.addEventListener('keydown', handleKeyDown, true)
-    window.addEventListener('keyup', handleKeyUp, true)
-
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown, true)
-      window.removeEventListener('keyup', handleKeyUp, true)
-      clearTimers()
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.abort()
-        } catch {
-          // ignore
-        }
-      }
-    }
-  }, [startRecording, clearTimers])
-
-  return { isRecording, elapsedSeconds }
+  return { isRecording, elapsedSeconds, toggleRecording }
 }

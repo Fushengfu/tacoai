@@ -18,6 +18,27 @@ import { handleGatewayGetModels } from './gateway-handlers'
 import nodePath from 'node:path'
 
 /* ------------------------------------------------------------------ */
+/*  StepFun ASR API Key 缓存（渲染进程启动时通过 IPC 推送）              */
+/* ------------------------------------------------------------------ */
+
+/** 渲染进程推送的 StepFun API Key，供移动端 bridge 请求获取 */
+let _cachedStepFunApiKey: string | null = null
+
+/** 缓存 StepFun API Key（供 voice:register-stepfun-api-key IPC 调用），并主动推送给已连接的移动端 */
+export function setStepFunApiKey(key: string | null): void {
+  _cachedStepFunApiKey = key
+  // 主动推送给已连接的移动端
+  if (key) {
+    try {
+      getBridgeManager().sendHostMessage({
+        type: 'bridge:stepfun-api-key',
+        apiKey: key,
+      } as any)
+    } catch { /* bridge 未初始化时忽略 */ }
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Workspace tree flattening to nested structure                      */
 /* ------------------------------------------------------------------ */
 
@@ -365,6 +386,15 @@ export function setupBridgeClientConnectedHandler(): void {
       // 立即推送项目状态给刚连接的移动端，确保移动端同步所有项目运行状态
       // （哪些在处理中、活跃任务 ID 等），避免移动端重连后显示过期状态
       mgr.pushProjectsOnDemand(orderedProjectIds)
+
+      // 主动推送 StepFun API Key 给移动端（语音识别用）
+      if (_cachedStepFunApiKey) {
+        mgr.sendHostMessage({
+          type: 'bridge:stepfun-api-key',
+          apiKey: _cachedStepFunApiKey,
+        } as any)
+        log('BRIDGE_STEPFUN_API_KEY_PUSHED', {}, 'bridge')
+      }
 
       // 不再主动推送全量快照，改为等待手机端发送 bridge:request-state 请求
       // 手机端优先从本地 SQLite 缓存加载消息，按需请求快照
@@ -906,6 +936,16 @@ export function setupBridgeDataHandler(): void {
               error: err instanceof Error ? err.message : '获取上传凭据失败',
             })
           }
+          break
+        }
+
+        /* ---- 获取 StepFun API Key（移动端语音识别用） ---- */
+        case 'bridge:get-stepfun-api-key': {
+          respond({
+            type: 'bridge:stepfun-api-key',
+            requestId,
+            apiKey: _cachedStepFunApiKey || null,
+          })
           break
         }
 

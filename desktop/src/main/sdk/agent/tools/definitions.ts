@@ -380,6 +380,22 @@ export const toolDefinitions: ToolDefinition[] = [
       },
     },
   },
+  /* ---- 记忆回想工具 ---- */
+  {
+    type: 'function',
+    function: {
+      name: 'recall_memories',
+      description: '搜索历史任务记忆。当你需要回忆之前是否处理过类似问题、查找历史修复方案、或理解项目演进上下文时使用。纯关键词匹配，返回相关记忆的标题、时间、涉及文件、工具和摘要。',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: '搜索关键词，如"bridge 通信遗漏"、"语音识别 bug"、"版本号". 支持中英文混合' },
+          limit: { type: 'number', description: '最多返回条数，默认 5，最大 20' },
+        },
+        required: ['query'],
+      },
+    },
+  },
 ]
 
 /* ------------------------------------------------------------------ */
@@ -577,6 +593,19 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
     cautions: [
       '未读取技能手册前，禁止调用此工具。',
       '仅支持已开启的技能。',
+    ],
+  },
+  recall_memories: {
+    usage: [
+      '当需要回忆之前是否处理过类似问题、查找历史修复方案时调用。',
+      'query 参数传入搜索关键词，如"bridge 遗漏"、"语音识别"、"版本号"等。',
+      'limit 参数控制返回条数，默认 5，最大 20。',
+      '结果按相关性降序排列，同分按时间降序。',
+      '纯关键词匹配，不需要额外 LLM 调用。',
+    ],
+    cautions: [
+      '此工具只搜索任务记忆（成功/失败/中止的任务记录），不包含项目规则。',
+      '不要在一次对话中连续调用多次——先用一个精准的 query 试试。',
     ],
   },
   /* ---- 文件上传到云存储 ---- */

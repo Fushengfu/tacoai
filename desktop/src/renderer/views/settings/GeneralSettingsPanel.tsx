@@ -6,6 +6,8 @@ type GeneralSettingsPanelProps = {
   projectRulesFilePath: string
   projectRulesLoading: boolean
   autoApproveCategories: Set<string>
+  stepfunApiKey: string
+  stepfunApiKeyRevealed: boolean
   onBrowserDebugModeChange: (val: boolean) => void
   onBrowserHiddenModeChange: (val: boolean) => void
   onRecallDebugEnabledChange: (val: boolean) => void
@@ -13,6 +15,8 @@ type GeneralSettingsPanelProps = {
   onProjectRulesChange?: (rules: string) => void
   onOpenLogDir: () => void
   onUpdateAutoApproveCategories: (categories: Set<string>) => void
+  onStepfunApiKeyChange: (val: string) => void
+  onToggleStepfunApiKeyReveal: () => void
 }
 
 export function GeneralSettingsPanel({
@@ -23,6 +27,8 @@ export function GeneralSettingsPanel({
   projectRulesFilePath,
   projectRulesLoading,
   autoApproveCategories,
+  stepfunApiKey,
+  stepfunApiKeyRevealed,
   onBrowserDebugModeChange,
   onBrowserHiddenModeChange,
   onRecallDebugEnabledChange,
@@ -30,6 +36,8 @@ export function GeneralSettingsPanel({
   onProjectRulesChange,
   onOpenLogDir,
   onUpdateAutoApproveCategories,
+  onStepfunApiKeyChange,
+  onToggleStepfunApiKeyReveal,
 }: GeneralSettingsPanelProps) {
   const handleAutoApproveChange = (catId: string, checked: boolean, level?: string) => {
     // danger 级别勾选时二次确认
@@ -77,6 +85,36 @@ export function GeneralSettingsPanel({
             保存项目规则
           </button>
         </div>
+      </div>
+
+      {/* 语音识别 */}
+      <div className="settings-card">
+        <div className="settings-card-title">语音识别</div>
+        <div className="settings-card-desc">
+          使用 StepFun 语音识别服务（stepaudio-2.5-asr，0.15 元/小时）。
+          在 platform.stepfun.com 获取 API Key。
+          配置后按住 Cmd+Shift+V 即可语音输入，无需依赖 Google 服务。
+        </div>
+        <label className="settings-field">
+          <span>StepFun API Key</span>
+          <div className="api-key-row">
+            <input
+              type={stepfunApiKeyRevealed ? 'text' : 'password'}
+              value={stepfunApiKey}
+              onChange={(e) => onStepfunApiKeyChange(e.target.value)}
+              placeholder="sk-..."
+              aria-label="StepFun API Key"
+            />
+            <button
+              type="button"
+              className="reveal-btn"
+              title={stepfunApiKeyRevealed ? '隐藏 API Key' : '显示 API Key'}
+              onClick={onToggleStepfunApiKeyReveal}
+            >
+              {stepfunApiKeyRevealed ? '隐藏' : '显示'}
+            </button>
+          </div>
+        </label>
       </div>
 
       {/* 调试与自动化 */}

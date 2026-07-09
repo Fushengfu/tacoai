@@ -92,10 +92,6 @@ export class BridgeSyncManager {
     maxSize: 1000,
   }
 
-  // 批量合并缓冲区（针对低优先级消息）
-  private mergeBuffer: Map<string, any> = new Map()
-  private mergeTimer: NodeJS.Timeout | null = null
-
   // 队列排空定时器（节流窗口到期后自动排空队列）
   private queueFlushTimer: NodeJS.Timeout | null = null
 
@@ -111,7 +107,6 @@ export class BridgeSyncManager {
     totalAcked: 0,
     totalRetried: 0,
     totalDropped: 0,
-    totalMerged: 0,
   }
 
   /* ------------------------------------------------------------------ */
@@ -143,11 +138,22 @@ export class BridgeSyncManager {
     const now = Date.now()
     const lastTime = this.lastSentTime.get(message.type) || 0
     
-    // done=true 的 delta 消息是流式完成信号，必须立即发送，不能节流
-    const isDoneDelta = message.type === 'bridge:chat-delta' && (message as any).done === true
-    
-    if (!isDoneDelta && config.throttle > 0 && (now - lastTime) < config.throttle) {
-      this.mergeToBuffer(message, priority)
+    if (config.throttle > 0 && (now - lastTime) < config.throttle) {
+      const pendingMsg: PendingMessage = {
+        id: messageId,
+        message,
+        priority,
+        timestamp: Date.now(),
+        retryCount: 0,
+        ackReceived: false,
+      }
+      this.queues[priority].push(pendingMsg)
+      if (!this.queueFlushTimer) {
+        this.queueFlushTimer = setTimeout(() => {
+          this.queueFlushTimer = null
+          this.processQueues()
+        }, config.throttle)
+      }
       return
     }
 
@@ -162,79 +168,6 @@ export class BridgeSyncManager {
     this.lastSentTime.set(message.type, Date.now())
     
     this.stats.totalSent++
-  }
-
-  /* ------------------------------------------------------------------ */
-  /*  批量合并                                                            */
-  /* ------------------------------------------------------------------ */
-
-  private mergeToBuffer(message: BridgeHostMessage, priority: BridgeMessagePriority): void {
-    // 对于 delta 类型消息，合并到缓冲区
-    if (message.type === 'bridge:chat-delta') {
-      const deltaMsg = message as any
-      const key = `delta-${deltaMsg.messageId}`
-      
-      if (this.mergeBuffer.has(key)) {
-        // 合并delta
-        const existing = this.mergeBuffer.get(key)!
-        existing.delta += deltaMsg.delta
-        existing.timestamp = Date.now()
-        // 关键修复: 如果新消息 done=true,必须覆盖 existing 的 done 标志
-        // 这确保流式输出完成信号不会被丢失
-        if (deltaMsg.done === true) {
-          existing.done = true
-        }
-      } else {
-        this.mergeBuffer.set(key, { ...message })
-      }
-
-      // 设置定时器，延迟发送合并后的消息
-      if (!this.mergeTimer) {
-        this.mergeTimer = setTimeout(() => {
-          this.flushMergeBuffer()
-        }, 50) // 50ms后刷新缓冲区（优化：减少关键消息延迟）
-      }
-    } else {
-      // 关键修复: 非delta消息(如bridge:project-states)被节流时，不能丢弃
-      // 必须加入队列等待发送，否则移动端会永久显示"处理中"
-      const messageId = (message as any).messageId || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
-      ;(message as any).messageId = messageId
-      
-      const pendingMsg: PendingMessage = {
-        id: messageId,
-        message,
-        priority,
-        timestamp: Date.now(),
-        retryCount: 0,
-        ackReceived: false,
-      }
-      
-      this.queues[priority].push(pendingMsg)
-      console.log(`[BridgeSync] Throttled non-delta message queued: ${message.type}`)
-      
-      // 设置定时器在节流窗口到期后排空队列
-      if (!this.queueFlushTimer) {
-        const throttleMs = PRIORITY_CONFIG[priority].throttle
-        this.queueFlushTimer = setTimeout(() => {
-          this.queueFlushTimer = null
-          this.processQueues()
-        }, throttleMs)
-      }
-    }
-  }
-
-  private flushMergeBuffer(): void {
-    this.mergeTimer = null
-    
-    for (const [, message] of this.mergeBuffer.entries()) {
-      this.sendImmediately(message)
-      this.stats.totalSent++
-    }
-    
-    this.mergeBuffer.clear()
-    
-    // merge buffer 刷新后，也尝试排空队列中的非 delta 消息
-    this.processQueues()
   }
 
   /* ------------------------------------------------------------------ */
@@ -338,10 +271,6 @@ export class BridgeSyncManager {
   /* ------------------------------------------------------------------ */
 
   dispose(): void {
-    if (this.mergeTimer) {
-      clearTimeout(this.mergeTimer)
-      this.mergeTimer = null
-    }
     if (this.queueFlushTimer) {
       clearTimeout(this.queueFlushTimer)
       this.queueFlushTimer = null
@@ -350,7 +279,6 @@ export class BridgeSyncManager {
     this.queues = { critical: [], high: [], normal: [], low: [] }
     this.pendingAcks.clear()
     this.cache.sentMessageIds.clear()
-    this.mergeBuffer.clear()
     this.lastSentTime.clear()
   }
 }

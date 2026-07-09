@@ -65,6 +65,7 @@ import {
   setupBridgeStateSnapshotResponse,
   setupBridgeDataHandler,
   setupBridgeSwitchProjectLoadedHandler,
+  setStepFunApiKey,
 } from './handlers/bridge-handlers'
 
 import {
@@ -113,6 +114,10 @@ import {
 import {
   handleImageUpload,
 } from './handlers/upload-handlers'
+
+import {
+  handleVoiceRecognize,
+} from './handlers/voice-handlers'
 
 /* ------------------------------------------------------------------ */
 /*  Registration                                                       */
@@ -280,6 +285,12 @@ export function registerIpcHandlers() {
 
   // Upload
   ipcMain.handle(IpcChannel.IMAGE_UPLOAD, handleImageUpload)
+
+  // Voice
+  ipcMain.handle(IpcChannel.VOICE_RECOGNIZE, handleVoiceRecognize)
+  ipcMain.on(IpcChannel.VOICE_REGISTER_API_KEY, (_e, key: string | null) => {
+    setStepFunApiKey(key)
+  })
 }
 
 function buildLogScope(projectId?: string, workspace?: string): string | undefined {

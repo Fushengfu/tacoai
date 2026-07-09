@@ -445,6 +445,12 @@ const tacoApi: TacoApi = {
         ipcRenderer.removeListener(IpcChannel.VOICE_TOGGLE, handler)
       }
     },
+    /** 语音识别：发送 base64 音频到主进程，调用 StepFun ASR */
+    recognize: (audioBase64: string, apiKey?: string): Promise<{ text: string; error?: string }> =>
+      ipcRenderer.invoke(IpcChannel.VOICE_RECOGNIZE, { audioBase64, apiKey }),
+    /** 推送 StepFun API Key 到主进程缓存（供 bridge 移动端语音识别使用） */
+    registerApiKey: (key: string | null): void =>
+      ipcRenderer.send(IpcChannel.VOICE_REGISTER_API_KEY, key),
   },
   bridge: {
     /** 获取手机端 APK 下载信息（从版本检查 API 获取 download_url） */
