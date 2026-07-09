@@ -261,6 +261,10 @@ export type TacoApi = {
   voice: {
     /** 监听语音输入快捷键切换事件，返回取消监听函数 */
     onToggle: (callback: () => void) => () => void
+    /** 语音识别：base64 编码的 PCM 音频 → 识别文本 */
+    recognize: (audioBase64: string, apiKey?: string) => Promise<{ text: string; error?: string }>
+    /** 推送 StepFun API Key 到主进程缓存（供 bridge 移动端语音识别使用） */
+    registerApiKey: (key: string | null) => void
   }
   bridge: {
     /** 获取手机端 APK 下载信息（从版本检查 API 获取 download_url，失败返回 null） */

@@ -14,6 +14,7 @@ export enum SecureStorageKey {
   API_KEY_ZHIPU = 'apiKey.zhipu',
   API_KEY_MOONSHOT = 'apiKey.moonshot',
   API_KEY_MINIMAX = 'apiKey.minimax',
+  API_KEY_STEPFUN = 'apiKey.stepfun',
 }
 
 /**

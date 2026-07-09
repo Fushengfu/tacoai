@@ -18,8 +18,6 @@ const ALWAYS_AVAILABLE_TOOL_NAMES = [
   'find_file',
   'read_skill',
   'read_skill_resource',
-  'save_note',
-  'delete_note',
   'mcp_list_tools',
   'mcp_call',
   'upload_file',
@@ -29,6 +27,7 @@ const ALWAYS_AVAILABLE_TOOL_NAMES = [
   'terminal_list',
   'terminal_close',
   'run_skill_script',
+  'recall_memories',
 ]
 
 function filterToolDefinitions(allowedToolNames?: Iterable<string>): ToolDefinition[] {

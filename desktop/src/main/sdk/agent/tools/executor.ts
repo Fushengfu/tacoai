@@ -16,6 +16,7 @@ import { assessToolCallsRisk, type RiskInfo, type RiskCategory, type RiskLevel }
 import { getWorkspaceTree } from './workspace-tree'
 import { uploadDataUrlToStorage, requestChatCompletion, requestChatCompletionStream, isBuiltinProvider } from '../llm/client'
 import type { ChatMessage, ProviderOverrides, ProviderKey } from '../llm/client'
+import { recallMemoriesByKeywords } from '../memory/recall-tool'
 
 // ---------------------------------------------------------------------------
 // 截图/文件上传到云存储（统一走网关 API）
@@ -602,6 +603,9 @@ async function executeTool(
         return await execTerminalClose(args, runtimeContext?.services)
       case 'run_skill_script':
         return await execRunSkillScript(args, workspace, projectId, signal, logScope, runtimeContext)
+      /* ---- 记忆回想 ---- */
+      case 'recall_memories':
+        return await execRecallMemories(args, workspace, projectId, runtimeContext)
       default:
         return { content: `Unknown tool: ${name}`, success: false }
     }
@@ -1409,6 +1413,31 @@ function scopedBrowserAppId(projectId?: string): string | undefined {
   if (!raw) return undefined
   const safe = raw.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 64)
   return safe ? `project-${safe}` : undefined
+}
+
+/* ---- 记忆回想工具 ---- */
+
+async function execRecallMemories(
+  args: Record<string, unknown>,
+  workspace: string,
+  projectId?: string,
+  runtimeContext?: ToolRuntimeContext,
+): Promise<ExecResult> {
+  const query = String(args.query ?? '').trim()
+  if (!query) return { content: 'Error: query is required', success: false }
+
+  const rawLimit = Number(args.limit)
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.floor(rawLimit) : 5
+
+  const db = runtimeContext?.services?.database
+  if (!db) return { content: 'Error: database service not available', success: false }
+
+  try {
+    const content = await recallMemoriesByKeywords(db, workspace, projectId, query, limit)
+    return { content, success: true }
+  } catch (err) {
+    return { content: `Error: ${err instanceof Error ? err.message : String(err)}`, success: false }
+  }
 }
 
 async function execBrowserAction(

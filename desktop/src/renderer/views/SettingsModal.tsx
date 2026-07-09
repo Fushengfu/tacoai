@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { PROVIDER_DEFAULT_BASE_URLS } from '../constants'
 import { GeneralSettingsPanel } from './settings/GeneralSettingsPanel'
+import { secureStorage, SecureStorageKey } from '../lib/secure-storage'
 
 type SettingsPageProps = {
   onClose: () => void
@@ -23,6 +24,8 @@ export function SettingsPage({
   const [recallDebugEnabled, setRecallDebugEnabled] = useState<boolean>(() =>
     localStorage.getItem('taco.recallDebugEnabled') === 'true'
   )
+  const [stepfunApiKey, setStepfunApiKey] = useState('')
+  const [stepfunApiKeyRevealed, setStepfunApiKeyRevealed] = useState(false)
 
   // 自动授权分类
   const [autoApproveCategories, setAutoApproveCategoriesState] = useState<Set<string>>(() => {
@@ -101,6 +104,24 @@ export function SettingsPage({
     if (workspace) loadProjectRulesFromFile(workspace)
   }, [workspace, loadProjectRulesFromFile])
 
+  // 加载 StepFun ASR API Key
+  useEffect(() => {
+    secureStorage.get(SecureStorageKey.API_KEY_STEPFUN).then((key) => {
+      if (key) setStepfunApiKey(key)
+    })
+  }, [])
+
+  const handleStepfunApiKeyChange = useCallback((val: string) => {
+    setStepfunApiKey(val)
+    if (val.trim()) {
+      secureStorage.set(SecureStorageKey.API_KEY_STEPFUN, val.trim())
+      window.taco.voice.registerApiKey(val.trim())
+    } else {
+      secureStorage.delete(SecureStorageKey.API_KEY_STEPFUN)
+      window.taco.voice.registerApiKey(null)
+    }
+  }, [])
+
   return (
     <main className="settings-page">
       <header className="settings-header">
@@ -128,6 +149,8 @@ export function SettingsPage({
           projectRulesFilePath=".taco/rules/rules.md"
           projectRulesLoading={projectRulesLoading}
           autoApproveCategories={autoApproveCategories}
+          stepfunApiKey={stepfunApiKey}
+          stepfunApiKeyRevealed={stepfunApiKeyRevealed}
           onBrowserDebugModeChange={(val) => {
             setBrowserDebugMode(val)
             localStorage.setItem('taco.browserDebugMode', String(val))
@@ -146,6 +169,8 @@ export function SettingsPage({
           onProjectRulesChange={handleSaveProjectRules}
           onOpenLogDir={() => window.taco.shell.openLogDir({ projectId, workspace: workspace || undefined })}
           onUpdateAutoApproveCategories={updateAutoApproveCategories}
+          onStepfunApiKeyChange={handleStepfunApiKeyChange}
+          onToggleStepfunApiKeyReveal={() => setStepfunApiKeyRevealed((prev) => !prev)}
         />
       </div>
     </main>

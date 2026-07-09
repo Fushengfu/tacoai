@@ -304,6 +304,9 @@ export function ChatPanel({
   const attachedImagesRef = useRef<AttachedImage[]>(attachedImages)
   // 每次渲染同步 attachedImages prop 到 ref，确保 handleSend 中能读取到最新值
   attachedImagesRef.current = attachedImages
+  // 保持 onDraftChange 引用最新，避免 handleVoiceTextReady 的 stale closure
+  const onDraftChangeRef = useRef(onDraftChange)
+  onDraftChangeRef.current = onDraftChange
 
   // ── 语言切换 ──
   const { language, toggleLanguage, t, isZhCN } = useLanguage()
@@ -311,26 +314,38 @@ export function ChatPanel({
   // ── 语音输入 ──
   const handleVoiceTextReady = useCallback((text: string) => {
     const div = inputDivRef.current
-    if (div) {
-      // 在光标位置插入文本
-      const selection = window.getSelection()
-      if (selection && selection.rangeCount > 0 && div.contains(selection.anchorNode)) {
-        const range = selection.getRangeAt(0)
-        range.deleteContents()
-        range.insertNode(document.createTextNode(text))
-        range.collapse(false)
-        selection.removeAllRanges()
-        selection.addRange(range)
-      } else {
-        // 没有焦点或光标不在输入框内，追加到末尾
-        div.appendChild(document.createTextNode(text))
-      }
-      div.focus()
-      updateDraftFromDiv()
+    if (!div) return
+
+    // 在光标位置插入文本
+    const selection = window.getSelection()
+    if (selection && selection.rangeCount > 0 && div.contains(selection.anchorNode)) {
+      const range = selection.getRangeAt(0)
+      range.deleteContents()
+      range.insertNode(document.createTextNode(text))
+      range.collapse(false)
+      selection.removeAllRanges()
+      selection.addRange(range)
+    } else {
+      // 没有焦点或光标不在输入框内，追加到末尾
+      div.appendChild(document.createTextNode(text))
     }
+    div.focus()
+
+    // 用 extractDivText 提取文本（与 updateDraftFromDiv 逻辑统一）
+    const draftText = extractDivText(div)
+    onDraftChangeRef.current(draftText)
   }, [])
   
-  const { isRecording, elapsedSeconds } = useVoiceInput({ onTextReady: handleVoiceTextReady })
+  const { isRecording, elapsedSeconds, toggleRecording } = useVoiceInput({ onTextReady: handleVoiceTextReady })
+
+  // 启动时推送 StepFun API Key 到主进程缓存（供 bridge 移动端语音识别使用）
+  useEffect(() => {
+    import('../../lib/secure-storage').then(({ secureStorage, SecureStorageKey }) => {
+      secureStorage.get(SecureStorageKey.API_KEY_STEPFUN).then((key) => {
+        window.taco.voice.registerApiKey(key ?? null)
+      }).catch(() => {})
+    }).catch(() => {})
+  }, [])
 
   // ── 授权级别（跟随项目持久化）──
   const [authLevel, setAuthLevel] = useState<'auto' | 'standard'>(() => {
@@ -358,6 +373,8 @@ export function ChatPanel({
   const langDropdownRef = useRef<HTMLDivElement>(null)
 const fileInputRef = useRef<HTMLInputElement>(null)
   const inputDivRef = useRef<HTMLDivElement>(null)
+  // 空格键长按语音输入
+
 
   /** 在 contentEditable div 中插入附件卡片 */
   function insertFileChip(path: string) {
@@ -2576,7 +2593,14 @@ const fileInputRef = useRef<HTMLInputElement>(null)
             <div className="voice-recording-bar">
               <span className="voice-recording-dot" />
               <span className="voice-recording-text">录音中... {elapsedSeconds}s</span>
-              <span className="voice-recording-hint">松开 Cmd+Shift+V 结束</span>
+              <span className="voice-recording-hint">再次点击麦克风按钮或✕结束</span>
+              <button
+                className="voice-recording-stop-btn"
+                onClick={toggleRecording}
+                title="停止录音"
+              >
+                ✕
+              </button>
             </div>
           )}
           <div
@@ -2619,11 +2643,13 @@ const fileInputRef = useRef<HTMLInputElement>(null)
             onKeyDown={(e) => {
               // 输入法组合中（如拼音选字）按 Enter 不发送
               if (e.nativeEvent.isComposing || e.keyCode === 229) return
+
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
                 handleSend()
               }
             }}
+
           />
           {/* 隐藏的文件选择 input */}
           <input
@@ -2724,6 +2750,25 @@ const fileInputRef = useRef<HTMLInputElement>(null)
                 )}
             </div>
             <div className="composer-right">
+              {/* 语音输入按钮 */}
+              <button
+                type="button"
+                className={`composer-mic-btn${isRecording ? ' recording' : ''}`}
+                onClick={toggleRecording}
+                title={isRecording ? '点击结束录音' : '点击开始录音'}
+                disabled={!hasProviders || !workspace}
+              >
+                {isRecording ? (
+                  <span className="mic-recording-dot" />
+                ) : (
+                  <svg className="composer-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                    <line x1="12" y1="19" x2="12" y2="23" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                    <line x1="8" y1="23" x2="16" y2="23" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                  </svg>
+                )}
+              </button>
               {sending ? (
                 <button
                   className="send-btn stop"
