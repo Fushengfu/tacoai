@@ -140,5 +140,3 @@ export function buildCurrentTaskCompressionStateCard(state: ContextBuildState): 
   lines.push('- 说明: 这是当前未完成任务的状态快照，供压缩续跑使用，不代表任务已完成。')
   return lines.join('\n')
 }
-
-export { validateCompletionClaim } from '../validator'

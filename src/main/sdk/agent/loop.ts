@@ -29,7 +29,7 @@ import { gitCommit, gitEnsureRepo } from './git/service'
 import { refreshSkills, buildActiveSkillsCatalogBlock, getActiveSkillEnv, applySkillEnvironment, setSkillsServiceLogger } from './skills/service'
 import { buildBackgroundContextConversationMessages, inferIntentFromBackground, maintainTaskMemoriesByAI, recordTaskLog } from './memory/'
 import type { RecallMeta } from './memory/memory-recall'
-import { buildCurrentTaskCompressionStateCard, validateCompletionClaim } from './context/builder'
+import { buildCurrentTaskCompressionStateCard } from './context/builder'
 import type { ContextBuildState } from './context/builder'
 import { applyRewardScore } from './reward'
 import {
@@ -755,10 +755,8 @@ export async function runAgent(
   let lastUsageTotalTokens: number | undefined
   let contextRetries = 0
   let lastAssistantText = ''
-  let completionRejectCount = 0
   let pseudoToolCallRejectCount = 0
   let enforceStandardToolCall = false
-  let completionValidationHint = ''
   let autoNetworkRetryCount = 0
   let autoEmptyRetryCount = 0
 
@@ -860,75 +858,12 @@ export async function runAgent(
     )
   }
 
-  function isActionGoal(goal: string): boolean {
-    const text = extractUserQueryText(goal).toLowerCase()
-    if (!text.trim()) return false
-    const patterns = [
-      '修改', '修复', '实现', '新增', '删除', '运行', '测试', '排查', '查看', '检查', '打开', '点击', '输入', '截图',
-      '部署', '优化', '编写', '重构', '更新', '创建', '启动', '停止', '同步', '拖动', '配置', '安装',
-      'fix', 'implement', 'update', 'create', 'delete', 'run', 'test', 'debug', 'check', 'open', 'click', 'type',
-      'screenshot', 'deploy', 'optimize', 'refactor',
-    ]
-    return patterns.some((keyword) => text.includes(keyword))
-  }
-
-  function hasCompletionClaimInText(text: string): boolean {
-    const content = String(text ?? '').toLowerCase()
-    if (!content.trim()) return false
-    const patterns = [
-      '任务完成', '已完成', '完成了', '已经完成', '已修复', '修复完成', '全部完成', '搞定',
-      'completed', 'done', 'fixed', 'resolved', 'all set',
-    ]
-    return patterns.some((keyword) => content.includes(keyword))
-  }
-
   function shouldTryFinalizeDirectTextReply(finalText: string): boolean {
-    const text = String(finalText ?? '').trim()
-    if (!text) return false
-    // 当用户要求干活且回复不含完成声明时，很可能是模型说了"我来分析"但没调工具
-    // 不允许直接结束，让其进入重试流程
-    if (!hasCompletionClaimInText(text) && isActionGoal(lastUserGoal)) {
-      log('AGENT_DIRECT_TEXT_BLOCKED_BY_ACTION_INTENT', {
-        round,
-        textPreview: text.slice(0, 200),
-      }, logScope)
-      return false
-    }
-    return true
+    return String(finalText ?? '').trim().length > 0
   }
 
   async function tryFinalizeReply(finalText: string): Promise<boolean> {
     finalizePendingPlanStepsIfNeeded()
-
-    const completionValidation = validateCompletionClaim(finalText, {
-      round,
-      goal: lastUserGoal,
-      toolUsageCount,
-      changedFiles,
-      touchedFiles,
-      touchedIdentifiers,
-      failures: failureLogs,
-      currentPlan,
-    })
-    if (!completionValidation.pass) {
-      completionRejectCount++
-      completionValidationHint = completionValidation.reason
-      log('AGENT_COMPLETION_REJECTED', {
-        round,
-        rejectCount: completionRejectCount,
-        reason: completionValidation.reason,
-      }, logScope)
-      pushAssistantMessageIfNew(finalText)
-      if (completionRejectCount >= 10) {
-        await persistTaskCoreLogWithOutcome(finalText || lastAssistantText, 'error', `完成校验连续未通过已达上限(${completionRejectCount})`)
-        onEvent?.({ type: 'error', message: `完成校验连续未通过已达上限(${completionRejectCount})：${completionValidation.reason}` })
-        return true
-      }
-      return false
-    }
-
-    completionRejectCount = 0
-    completionValidationHint = ''
     lastAssistantText = finalText
     await finalizeAndDone(finalText, 'success', finalText)
     return true
@@ -964,7 +899,6 @@ export async function runAgent(
           touchedFiles,
           touchedIdentifiers,
           failures: failureLogs,
-          completionValidationHint,
           currentPlan,
         },
         lastUsageTotalTokens,
@@ -1103,7 +1037,6 @@ export async function runAgent(
             touchedFiles,
             touchedIdentifiers,
             failures: failureLogs,
-            completionValidationHint,
             currentPlan,
           },
           lastUsageTotalTokens,
@@ -1296,7 +1229,6 @@ export async function runAgent(
     // ── 有 tool_calls：检查 propose_plan / 风险评估 → 可能需要确认 → 执行工具 ──
     pseudoToolCallRejectCount = 0
     enforceStandardToolCall = false
-    completionValidationHint = ''
 
     // 追加 assistant 消息（含 tool_calls）。
     // 这里不要把本轮“思考/计划/开始执行”的自然语言正文继续喂回下一轮，
