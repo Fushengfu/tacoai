@@ -368,11 +368,11 @@ export const toolDefinitions: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'run_skill_script',
-      description: '统一技能脚本执行入口。browser-automation 和 desktop-automation 为内置技能，由系统内部接口直接执行；其他技能通过子进程执行对应的脚本文件。调用前必须先通过 read_skill 读取技能手册确认可用脚本。',
+      description: '统一技能脚本执行入口。browser-use 和 computer-use 为内置技能，由系统内部接口直接执行；其他技能通过子进程执行对应的脚本文件。调用前必须先通过 read_skill 读取技能手册确认可用脚本。',
       parameters: {
         type: 'object',
         properties: {
-          skill_id: { type: 'string', description: '技能 ID（如 browser-automation、desktop-automation）' },
+          skill_id: { type: 'string', description: '技能 ID（如 browser-use、computer-use）' },
           script_name: { type: 'string', description: '脚本名称（如 navigate、click、screenshot、action）' },
           params: { type: 'object', description: '传递给脚本的参数（JSON 对象，可选）' },
         },
@@ -390,7 +390,8 @@ export const toolDefinitions: ToolDefinition[] = [
         type: 'object',
         properties: {
           query: { type: 'string', description: '搜索关键词，如"bridge 通信遗漏"、"语音识别 bug"、"版本号". 支持中英文混合' },
-          limit: { type: 'number', description: '最多返回条数，默认 5，最大 20' },
+          limit: { type: 'number', description: '最多返回条数，默认 5，最大 50' },
+          timeRange: { type: 'string', description: '时间范围，AI 自由描述，如"昨天"、"上周"、"上个月"、"最近3天"、"2025年6月"等。不传则搜索全部时间。' },
         },
         required: ['query'],
       },
@@ -585,7 +586,7 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
   },
   run_skill_script: {
     usage: [
-      '统一技能脚本执行入口。browser-automation 和 desktop-automation 为内置技能，由系统内部接口直接处理。',
+      '统一技能脚本执行入口。browser-use 和 computer-use 为内置技能，由系统内部接口直接处理。',
       '其他技能通过子进程执行 skills/{skill_id}/scripts/{script_name} 脚本文件。',
       '调用前必须先通过 read_skill 读取技能手册，了解可用脚本及其参数。',
       'params 作为命令行参数或 stdin JSON 传递给脚本。',
@@ -599,7 +600,8 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
     usage: [
       '当需要回忆之前是否处理过类似问题、查找历史修复方案时调用。',
       'query 参数传入搜索关键词，如"bridge 遗漏"、"语音识别"、"版本号"等。',
-      'limit 参数控制返回条数，默认 5，最大 20。',
+      'limit 参数控制返回条数，默认 5，最大 50。',
+      'timeRange 参数自由描述时间范围，如"昨天"、"上周"、"上个月"、"最近3天"、"去年"等。不传则搜索全部时间。',
       '结果按相关性降序排列，同分按时间降序。',
       '纯关键词匹配，不需要额外 LLM 调用。',
     ],

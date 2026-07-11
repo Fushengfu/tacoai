@@ -369,7 +369,14 @@ export default function App() {
       const activeSessionId = sessionId || thread.activeSessionId || thread.sessions[0]?.id
       if (activeSessionId) {
         void chat.ensureSessionLoaded(activeSessionId).then(() => {
-          window.taco.bridge.notifySwitchProjectLoaded({ projectId, sessionId: activeSessionId })
+          const stats = chat.getProjectTokenStats(projectId)
+          const tokenUsage = (stats.totalTokens > 0) ? {
+            promptTokens: stats.inputTokens,
+            completionTokens: stats.outputTokens,
+            totalTokens: stats.totalTokens,
+            cachedTokens: stats.hitTokens,
+          } : undefined
+          window.taco.bridge.notifySwitchProjectLoaded({ projectId, sessionId: activeSessionId, tokenUsage })
         })
       }
     })

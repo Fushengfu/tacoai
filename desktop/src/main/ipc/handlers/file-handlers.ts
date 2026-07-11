@@ -8,6 +8,7 @@ import { BrowserWindow, dialog, shell } from 'electron'
 import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron'
 import { exec } from 'node:child_process'
 import * as fs from 'node:fs/promises'
+import * as fsSync from 'node:fs'
 import * as nodePath from 'node:path'
 import { IpcChannel, editorCommands } from '../../../shared/ipc'
 import type { EditorId } from '../../../shared/ipc'
@@ -24,7 +25,7 @@ export async function handleSelectDirectory(event: IpcMainInvokeEvent): Promise<
     properties: ['openDirectory'],
   })
   if (result.canceled || result.filePaths.length === 0) return null
-  return result.filePaths[0]
+  return fsSync.realpathSync.native(result.filePaths[0])
 }
 
 /** 附件选择对话框 */

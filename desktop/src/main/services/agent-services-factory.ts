@@ -9,7 +9,7 @@
  * 创建包含所有桌面端能力的服务容器。
  */
 
-import { app, desktopCapturer, screen } from 'electron'
+import { app, desktopCapturer, screen, shell, systemPreferences } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs'
 import { log as infraLog } from '../infrastructure/logger'
@@ -31,6 +31,7 @@ import {
   getDb,
   hasAnyTaskMemories,
   listTaskMemoriesByTier,
+  searchTaskMemories,
   replaceTaskMemoriesByTier,
   importTaskMemoriesByTier,
   resolveChatStoreMessageSeqRange,
@@ -144,16 +145,33 @@ function createDesktopAutomationService(): DesktopAutomationService {
     },
     async captureScreen(options) {
       const displayId = options.displayId ? Number(options.displayId) : undefined
-      const sources = await desktopCapturer.getSources({
+
+      // 超时控制：desktopCapturer.getSources 在无权限时可能长时间卡住
+      const SOURCES_TIMEOUT_MS = 8000
+      const sourcesPromise = desktopCapturer.getSources({
         types: ['screen'],
         thumbnailSize: {
           width: options.width ?? 0,
           height: options.height ?? 0,
         },
       })
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(
+          'Screenshot timed out after ' + SOURCES_TIMEOUT_MS / 1000 + 's. ' +
+          (process.platform === 'darwin'
+            ? 'On macOS, please grant Screen Recording permission to Taco AI in System Settings > Privacy & Security > Screen Recording, then try again.'
+            : 'This may indicate a display capture issue. Please try again.')
+        )), SOURCES_TIMEOUT_MS)
+      )
+      const sources = await Promise.race([sourcesPromise, timeoutPromise])
 
       if (sources.length === 0) {
-        throw new Error('No screen sources found')
+        throw new Error(
+          'No screen sources found. ' +
+          (process.platform === 'darwin'
+            ? 'On macOS, please grant Screen Recording permission to Taco AI in System Settings > Privacy & Security > Screen Recording, then try again.'
+            : 'Please ensure your display is active and try again.')
+        )
       }
 
       _screenPermissionCache = 'granted'
@@ -165,7 +183,12 @@ function createDesktopAutomationService(): DesktopAutomationService {
 
       const img = source.thumbnail
       if (img.isEmpty()) {
-        throw new Error('Screenshot image is empty')
+        throw new Error(
+          'Screenshot image is empty. ' +
+          (process.platform === 'darwin'
+            ? 'This usually means Screen Recording permission has not been granted yet. Please allow Taco AI in System Settings > Privacy & Security > Screen Recording, then try again.'
+            : 'Please ensure your display is active and try again.')
+        )
       }
 
       const display = screen.getPrimaryDisplay()
@@ -196,18 +219,44 @@ function createDesktopAutomationService(): DesktopAutomationService {
         displayScaleFactor: display.scaleFactor,
       }
     },
-    checkScreenRecordingPermission() {
+    async checkScreenRecordingPermission() {
       // 使用缓存结果避免重复查询
       if (_screenPermissionCache !== null) return _screenPermissionCache
 
-      // macOS 需要屏幕录制权限。通过尝试调用 desktopCapturer 来检测。
-      // systemPreferences.getMediaAccessStatus 在 Electron 40+ 不支持 'screen'。
+      // macOS 需要屏幕录制权限
       if (process.platform !== 'darwin') return 'granted'
-      return 'unknown' // 首次调用时返回 unknown，让 captureScreen 实际尝试后更新
+
+      // 尝试获取真实权限状态。systemPreferences.getMediaAccessStatus('screen')
+      // 在 Electron 40+ 可能不支持，降级为 unknown 让 captureScreen 实际尝试。
+      try {
+        const raw = systemPreferences.getMediaAccessStatus('screen')
+        const status = (raw === 'granted' || raw === 'denied' || raw === 'unknown') ? raw : 'unknown'
+        _screenPermissionCache = status
+
+        // 首次使用（unknown）：弹出系统权限弹窗，让用户选择
+        if (status === 'unknown') {
+          try {
+            // askForMediaAccess('screen') 会弹出 macOS 系统权限弹窗
+            // TS 类型定义不包含 'screen'，但运行时支持
+            const allowed = await (systemPreferences as any).askForMediaAccess('screen')
+            _screenPermissionCache = allowed ? 'granted' : 'denied'
+            return _screenPermissionCache
+          } catch {
+            // Electron 40+ 可能不支持 askForMediaAccess('screen')，
+            // 保留 unknown 让 captureScreen 实际尝试（会触发系统弹窗）
+          }
+        }
+
+        return status
+      } catch {
+        return 'unknown'
+      }
     },
     openScreenRecordingSettings() {
-      // macOS 用户需要手动到系统设置开启权限
-      // Electron 40+ 的 askForMediaAccess 不支持 'screen'
+      // 直接打开 macOS 屏幕录制权限设置面板
+      if (process.platform === 'darwin') {
+        shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')
+      }
     },
   }
 }
@@ -268,6 +317,9 @@ function createDatabaseService(): DatabaseService {
     },
     listTaskMemoriesByTier(workspace, tier, projectId) {
       return listTaskMemoriesByTier({ workspace, projectId }, tier as any)
+    },
+    searchTaskMemories(workspace, keywords, timeFrom, timeTo, limit, projectId) {
+      return searchTaskMemories({ workspace, projectId }, keywords, timeFrom, timeTo, limit)
     },
     replaceTaskMemoriesByTier(workspace, tier, entries, projectId) {
       replaceTaskMemoriesByTier({ workspace, projectId }, entries as any[], tier as any)

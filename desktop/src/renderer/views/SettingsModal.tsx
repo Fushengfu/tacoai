@@ -27,6 +27,11 @@ export function SettingsPage({
   const [stepfunApiKey, setStepfunApiKey] = useState('')
   const [stepfunApiKeyRevealed, setStepfunApiKeyRevealed] = useState(false)
 
+  // ASR 提供商配置
+  const [asrProvider, setAsrProvider] = useState('stepfun')
+  const [asrApiUrl, setAsrApiUrl] = useState('')
+  const [asrModel, setAsrModel] = useState('')
+
   // 自动授权分类
   const [autoApproveCategories, setAutoApproveCategoriesState] = useState<Set<string>>(() => {
     try {
@@ -104,11 +109,42 @@ export function SettingsPage({
     if (workspace) loadProjectRulesFromFile(workspace)
   }, [workspace, loadProjectRulesFromFile])
 
-  // 加载 StepFun ASR API Key
+  // 加载 ASR 配置（API Key + 提供商 + URL + Model）
   useEffect(() => {
-    secureStorage.get(SecureStorageKey.API_KEY_STEPFUN).then((key) => {
+    const loadAsrConfig = async () => {
+      const [key, provider, url, model] = await Promise.all([
+        secureStorage.get(SecureStorageKey.API_KEY_STEPFUN),
+        secureStorage.get(SecureStorageKey.ASR_PROVIDER),
+        secureStorage.get(SecureStorageKey.ASR_API_URL),
+        secureStorage.get(SecureStorageKey.ASR_MODEL),
+      ])
       if (key) setStepfunApiKey(key)
-    })
+      if (provider) setAsrProvider(provider)
+      if (url) setAsrApiUrl(url)
+      if (model) setAsrModel(model)
+    }
+    loadAsrConfig()
+  }, [])
+
+  // 启动时推送 ASR 配置到主进程
+  useEffect(() => {
+    const pushAsrConfig = async () => {
+      const [key, provider, url, model] = await Promise.all([
+        secureStorage.get(SecureStorageKey.API_KEY_STEPFUN),
+        secureStorage.get(SecureStorageKey.ASR_PROVIDER),
+        secureStorage.get(SecureStorageKey.ASR_API_URL),
+        secureStorage.get(SecureStorageKey.ASR_MODEL),
+      ])
+      window.taco.voice.registerApiKey(key ?? null)
+      if (provider || url || model) {
+        window.taco.voice.registerConfig({
+          provider: provider || 'stepfun',
+          apiUrl: url || '',
+          model: model || '',
+        })
+      }
+    }
+    pushAsrConfig()
   }, [])
 
   const handleStepfunApiKeyChange = useCallback((val: string) => {
@@ -120,6 +156,32 @@ export function SettingsPage({
       secureStorage.delete(SecureStorageKey.API_KEY_STEPFUN)
       window.taco.voice.registerApiKey(null)
     }
+  }, [])
+
+  const handleAsrProviderChange = useCallback((val: string) => {
+    setAsrProvider(val)
+    secureStorage.set(SecureStorageKey.ASR_PROVIDER, val)
+    window.taco.voice.registerConfig({ provider: val as any })
+  }, [])
+
+  const handleAsrApiUrlChange = useCallback((val: string) => {
+    setAsrApiUrl(val)
+    if (val.trim()) {
+      secureStorage.set(SecureStorageKey.ASR_API_URL, val.trim())
+    } else {
+      secureStorage.delete(SecureStorageKey.ASR_API_URL)
+    }
+    window.taco.voice.registerConfig({ apiUrl: val || '' })
+  }, [])
+
+  const handleAsrModelChange = useCallback((val: string) => {
+    setAsrModel(val)
+    if (val.trim()) {
+      secureStorage.set(SecureStorageKey.ASR_MODEL, val.trim())
+    } else {
+      secureStorage.delete(SecureStorageKey.ASR_MODEL)
+    }
+    window.taco.voice.registerConfig({ model: val || '' })
   }, [])
 
   return (
@@ -151,6 +213,9 @@ export function SettingsPage({
           autoApproveCategories={autoApproveCategories}
           stepfunApiKey={stepfunApiKey}
           stepfunApiKeyRevealed={stepfunApiKeyRevealed}
+          asrProvider={asrProvider}
+          asrApiUrl={asrApiUrl}
+          asrModel={asrModel}
           onBrowserDebugModeChange={(val) => {
             setBrowserDebugMode(val)
             localStorage.setItem('taco.browserDebugMode', String(val))
@@ -171,6 +236,9 @@ export function SettingsPage({
           onUpdateAutoApproveCategories={updateAutoApproveCategories}
           onStepfunApiKeyChange={handleStepfunApiKeyChange}
           onToggleStepfunApiKeyReveal={() => setStepfunApiKeyRevealed((prev) => !prev)}
+          onAsrProviderChange={handleAsrProviderChange}
+          onAsrApiUrlChange={handleAsrApiUrlChange}
+          onAsrModelChange={handleAsrModelChange}
         />
       </div>
     </main>

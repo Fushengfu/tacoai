@@ -2,20 +2,21 @@
  * 回忆工具 — recallMemoriesByKeywords
  *
  * Agent 对话中途主动搜索历史任务记忆。
- * 纯关键词匹配，零 LLM 调用，与 recallBackgroundContext（对话开始时自动注入）互为补充。
+ * SQL 层 LIKE 粗筛 + 内存精排，不再全量加载。
  */
 
 import type { DatabaseService } from '../services'
 import type { TaskMemoryEntry } from './memory-normalize'
-import { normalizeTaskMemoryEntry, isSoftDeletedMemory } from './memory-normalize'
+import { normalizeTaskMemoryEntry } from './memory-normalize'
 import { shortText, compactJoin } from './memory-utils'
 
 /* ------------------------------------------------------------------ */
 /*  常量                                                               */
 /* ------------------------------------------------------------------ */
 
-const MAX_LIMIT = 20
+const MAX_LIMIT = 50
 const DEFAULT_LIMIT = 5
+const CANDIDATE_LIMIT = 200
 
 /* ------------------------------------------------------------------ */
 /*  分词                                                               */
@@ -73,28 +74,37 @@ function scoreMemory(memory: TaskMemoryEntry, tokens: string[]): number {
 /*  格式化                                                             */
 /* ------------------------------------------------------------------ */
 
-function formatMemoryOutput(memories: TaskMemoryEntry[], totalFound: number, query: string): string {
-  const header = totalFound > 0
-    ? `找到 ${totalFound} 条与"${shortText(query, 60)}"相关的记忆：`
-    : `未找到与"${shortText(query, 60)}"相关的记忆。`
+function formatMemoryOutput(
+  memories: TaskMemoryEntry[],
+  totalCandidateCount: number,
+  query: string,
+  truncated: boolean,
+  timeRangeLabel?: string,
+): string {
+  const timeHint = timeRangeLabel ? ` (时间范围: ${timeRangeLabel})` : ''
+  const header = totalCandidateCount > 0
+    ? `找到 ${totalCandidateCount} 条与"${shortText(query, 60)}"相关的记忆${timeHint}：`
+    : `未找到与"${shortText(query, 60)}"相关的记忆${timeHint}。`
 
-  const lines = [header, '']
+  const lines = [header]
+
+  if (truncated && memories.length < totalCandidateCount) {
+    lines.push(`⚠️ 仅展示最相关的 ${memories.length} 条，还有 ${totalCandidateCount - memories.length} 条未显示。`)
+  }
+
+  lines.push('')
 
   for (let i = 0; i < memories.length; i++) {
     const m = memories[i]
-    const title = shortText(m.userQuery, 120) || '(无标题)'
     const timestamp = m.updatedAt || m.createdAt || ''
     const date = timestamp ? timestamp.slice(0, 10) : '(未知时间)'
-    const files = compactJoin(m.changedFiles ?? [], 6)
-    const tools = compactJoin(m.tools ?? [], 6)
-    const summary = shortText(m.assistantResult || '', 200)
-    const outcomeLabel = m.outcome === 'success' ? '成功' : m.outcome === 'aborted' ? '中止' : '失败'
+    const problem = shortText(m.userQuery, 200) || '(无标题)'
+    const result = shortText(m.assistantResult || '', 300) || '(无总结)'
+    const outcomeLabel = m.outcome === 'success' ? '✓' : m.outcome === 'aborted' ? '⊘' : '✗'
 
-    lines.push(`${i + 1}. [${outcomeLabel}] ${title}`)
-    lines.push(`   时间: ${date}`)
-    if (files) lines.push(`   涉及: ${files}`)
-    if (tools) lines.push(`   工具: ${tools}`)
-    if (summary) lines.push(`   摘要: ${summary}`)
+    lines.push(`${i + 1}. ${outcomeLabel} ${date}`)
+    lines.push(`   问题: ${problem}`)
+    lines.push(`   结果: ${result}`)
     lines.push('')
   }
 
@@ -111,63 +121,63 @@ export async function recallMemoriesByKeywords(
   projectId: string | undefined,
   query: string,
   limit: number = DEFAULT_LIMIT,
+  timeFrom?: string,
+  timeTo?: string,
 ): Promise<string> {
   const safeLimit = Math.max(1, Math.min(Math.floor(limit) || DEFAULT_LIMIT, MAX_LIMIT))
 
-  // 1. 加载全部记忆
-  const activeRaw = database.listTaskMemoriesByTier(workspace, 'active', projectId)
-  const archiveRaw = database.listTaskMemoriesByTier(workspace, 'archive', projectId)
-
-  const active = activeRaw.map((item, idx) => normalizeTaskMemoryEntry(item as Partial<TaskMemoryEntry>, idx))
-  const archive = archiveRaw.map((item, idx) => normalizeTaskMemoryEntry(item as Partial<TaskMemoryEntry>, idx))
-
-  // 2. 合并去重 + 过滤软删除
-  const seen = new Set<string>()
-  const merged: TaskMemoryEntry[] = []
-
-  for (const items of [archive, active]) {
-    for (const item of items) {
-      if (isSoftDeletedMemory(item)) continue
-      const key = String(item.id || '').trim()
-      if (!key || seen.has(key)) continue
-      seen.add(key)
-      merged.push(item)
-    }
-  }
-
-  if (merged.length === 0) {
-    return `未找到任何任务记忆。`
-  }
-
-  // 3. 分词 + 评分
+  // 1. 分词
   const tokens = tokenize(query)
+
+  // 2. SQL 层粗筛（不再全量加载到内存）
+  const rawCandidates = database.searchTaskMemories(workspace, tokens, timeFrom, timeTo, CANDIDATE_LIMIT, projectId) as Array<Partial<TaskMemoryEntry>>
+  const candidates = rawCandidates.map((item, idx) => normalizeTaskMemoryEntry(item, idx))
+
+  if (candidates.length === 0) {
+    const timeHint = timeFrom || timeTo ? '在指定时间范围内 ' : ''
+    return `未${timeHint}找到任何任务记忆。`
+  }
+
+  // 3. 内存精排
+  let results: TaskMemoryEntry[]
+
   if (tokens.length === 0) {
-    // 无有效关键词：返回最近 N 条
-    const sorted = [...merged].sort((a, b) => {
+    // 无有效关键词：按时间排序，返回最近 N 条
+    const sorted = [...candidates].sort((a, b) => {
       const ta = Date.parse(a.updatedAt || a.createdAt || '')
       const tb = Date.parse(b.updatedAt || b.createdAt || '')
       return (Number.isFinite(tb) ? tb : 0) - (Number.isFinite(ta) ? ta : 0)
     })
-    return formatMemoryOutput(sorted.slice(0, safeLimit), merged.length, query)
+    results = sorted.slice(0, safeLimit)
+  } else {
+    // 打分排序
+    const scored = candidates.map((m) => ({
+      memory: m,
+      score: scoreMemory(m, tokens),
+    }))
+
+    scored.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score
+      const ta = Date.parse(a.memory.updatedAt || a.memory.createdAt || '')
+      const tb = Date.parse(b.memory.updatedAt || b.memory.createdAt || '')
+      return (Number.isFinite(tb) ? tb : 0) - (Number.isFinite(ta) ? ta : 0)
+    })
+
+    // 取 top N（过滤掉 0 分的除非总数不够）
+    const matched = scored.filter((s) => s.score > 0)
+    const top = matched.length > 0 ? matched : scored
+    results = top.slice(0, safeLimit).map((s) => s.memory)
   }
 
-  // 4. 排序：分数降序，同分按时间降序
-  const scored = merged.map((m) => ({
-    memory: m,
-    score: scoreMemory(m, tokens),
-  }))
+  // 构建时间范围标签
+  let timeRangeLabel: string | undefined
+  if (timeFrom || timeTo) {
+    const from = timeFrom ? timeFrom.slice(0, 10) : ''
+    const to = timeTo ? timeTo.slice(0, 10) : ''
+    if (from && to) timeRangeLabel = `${from} ~ ${to}`
+    else if (from) timeRangeLabel = `${from} 至今`
+    else timeRangeLabel = `截止 ${to}`
+  }
 
-  scored.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score
-    const ta = Date.parse(a.memory.updatedAt || a.memory.createdAt || '')
-    const tb = Date.parse(b.memory.updatedAt || b.memory.createdAt || '')
-    return (Number.isFinite(tb) ? tb : 0) - (Number.isFinite(ta) ? ta : 0)
-  })
-
-  // 5. 取 top N（过滤掉 0 分的除非总数不够）
-  const matched = scored.filter((s) => s.score > 0)
-  const top = matched.length > 0 ? matched : scored
-  const results = top.slice(0, safeLimit).map((s) => s.memory)
-
-  return formatMemoryOutput(results, merged.length, query)
+  return formatMemoryOutput(results, candidates.length, query, candidates.length > safeLimit, timeRangeLabel)
 }

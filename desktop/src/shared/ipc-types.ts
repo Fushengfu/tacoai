@@ -332,7 +332,7 @@ export type McpServerInfo = {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Browser Automation (浏览器自动化)                                    */
+/*  Browser Use (浏览器使用)                                    */
 /* ------------------------------------------------------------------ */
 
 export type { BrowserActionType } from '../main/sdk/agent/types'

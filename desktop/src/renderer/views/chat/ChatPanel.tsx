@@ -313,8 +313,12 @@ export function ChatPanel({
 
   // ── 语音输入 ──
   const handleVoiceTextReady = useCallback((text: string) => {
+    console.log('[DEBUG] handleVoiceTextReady 被调用, 文本:', text.slice(0, 100))
     const div = inputDivRef.current
-    if (!div) return
+    if (!div) {
+      console.log('[DEBUG] handleVoiceTextReady: inputDivRef.current 为 null, 退出')
+      return
+    }
 
     // 在光标位置插入文本
     const selection = window.getSelection()
@@ -338,11 +342,23 @@ export function ChatPanel({
   
   const { isRecording, elapsedSeconds, toggleRecording } = useVoiceInput({ onTextReady: handleVoiceTextReady })
 
-  // 启动时推送 StepFun API Key 到主进程缓存（供 bridge 移动端语音识别使用）
+  // 启动时推送 ASR 配置到主进程缓存（供 bridge 移动端语音识别使用）
   useEffect(() => {
     import('../../lib/secure-storage').then(({ secureStorage, SecureStorageKey }) => {
-      secureStorage.get(SecureStorageKey.API_KEY_STEPFUN).then((key) => {
+      Promise.all([
+        secureStorage.get(SecureStorageKey.API_KEY_STEPFUN),
+        secureStorage.get(SecureStorageKey.ASR_PROVIDER),
+        secureStorage.get(SecureStorageKey.ASR_API_URL),
+        secureStorage.get(SecureStorageKey.ASR_MODEL),
+      ]).then(([key, provider, apiUrl, model]) => {
         window.taco.voice.registerApiKey(key ?? null)
+        if (provider || apiUrl || model) {
+          window.taco.voice.registerConfig({
+            provider: provider || 'stepfun',
+            apiUrl: apiUrl || '',
+            model: model || '',
+          })
+        }
       }).catch(() => {})
     }).catch(() => {})
   }, [])
@@ -364,10 +380,58 @@ export function ChatPanel({
     }
   }, [projectId])
 
+  // ── 监听手机端切换授权模式，同步更新桌面端 UI ──
+  useEffect(() => {
+    if (!projectId) return
+    const unsubscribe = window.taco.bridge.onAuthLevelChanged(({ level, projectId: changedProjectId }) => {
+      if (level !== 'auto' && level !== 'standard') return
+      if (changedProjectId !== projectId) return
+      setAuthLevel(level)
+      localStorage.setItem(`taco-auth-level:${projectId}`, level)
+    })
+    return unsubscribe
+  }, [projectId])
+
+  // ── 切换项目时同步授权模式 ──
+  useEffect(() => {
+    if (!projectId) {
+      setAuthLevel('standard')
+      return
+    }
+    const stored = localStorage.getItem(`taco-auth-level:${projectId}`)
+    if (stored === 'auto') {
+      setAuthLevel('auto')
+    } else {
+      setAuthLevel('standard')
+    }
+  }, [projectId])
+
   // ── 图片附件和文件附件状态（由 App.tsx 按项目隔离管理，通过 props 传入）──
-  /** 授权级别下拉框展开状态 */
+  // ── 授权级别下拉框展开状态 ──
   const [authDropdownOpen, setAuthDropdownOpen] = useState(false)
   const authDropdownRef = useRef<HTMLDivElement>(null)
+
+  // ── 自动提交（按项目，默认开启）──
+  const [autoCommit, setAutoCommit] = useState(true)
+
+  // 初始化自动提交状态
+  useEffect(() => {
+    if (!projectId) {
+      setAutoCommit(true)
+      return
+    }
+    window.taco.agent.getAutoCommit(projectId).then((enabled) => {
+      setAutoCommit(enabled)
+    }).catch(() => setAutoCommit(true))
+  }, [projectId])
+
+  const handleAutoCommitToggle = useCallback(() => {
+    const next = !autoCommit
+    setAutoCommit(next)
+    if (projectId) {
+      window.taco.agent.setAutoCommit(next, projectId)
+    }
+  }, [autoCommit, projectId])
   /** 语言切换下拉框展开状态 */
   const [langDropdownOpen, setLangDropdownOpen] = useState(false)
   const langDropdownRef = useRef<HTMLDivElement>(null)
@@ -2695,6 +2759,18 @@ const fileInputRef = useRef<HTMLInputElement>(null)
                   </div>
                 )}
                 {projectId && (
+                  <>
+                  <button
+                    className={`composer-auto-commit-btn${autoCommit ? ' active' : ''}`}
+                    onClick={handleAutoCommitToggle}
+                    title={autoCommit ? '自动提交已开启，点击关闭' : '自动提交已关闭，点击开启'}
+                  >
+                    <svg className="auto-commit-icon" viewBox="0 0 24 24" aria-hidden="true" width="13" height="13">
+                      <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="1.8"/>
+                      <path d="M8 12l3 3 5-6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                    <span className="auto-commit-label">自动提交</span>
+                  </button>
                   <div className="composer-auth-dropdown" ref={authDropdownRef}>
                     <button
                       className="composer-auth-btn"
@@ -2747,6 +2823,7 @@ const fileInputRef = useRef<HTMLInputElement>(null)
                       </div>
                     )}
                   </div>
+                  </>
                 )}
             </div>
             <div className="composer-right">

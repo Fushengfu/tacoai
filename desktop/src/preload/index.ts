@@ -220,6 +220,12 @@ const tacoApi: TacoApi = {
 
     setAuthLevel: (level: string, projectId: string) =>
       ipcRenderer.send(IpcChannel.AGENT_SET_AUTH_LEVEL, { projectId, level }),
+
+    setAutoCommit: (enabled: boolean, projectId: string) =>
+      ipcRenderer.send(IpcChannel.AGENT_SET_AUTO_COMMIT, { projectId, enabled }),
+
+    getAutoCommit: (projectId: string): Promise<boolean> =>
+      ipcRenderer.invoke(IpcChannel.AGENT_GET_AUTO_COMMIT, { projectId }),
   },
   dialog: {
     selectDirectory: () => ipcRenderer.invoke(IpcChannel.SELECT_DIRECTORY),
@@ -451,6 +457,9 @@ const tacoApi: TacoApi = {
     /** 推送 StepFun API Key 到主进程缓存（供 bridge 移动端语音识别使用） */
     registerApiKey: (key: string | null): void =>
       ipcRenderer.send(IpcChannel.VOICE_REGISTER_API_KEY, key),
+    /** 推送 ASR 配置到主进程缓存（提供商 + URL + Model） */
+    registerConfig: (config: { provider?: string; apiUrl?: string; model?: string }): void =>
+      ipcRenderer.send(IpcChannel.VOICE_REGISTER_CONFIG, config),
   },
   bridge: {
     /** 获取手机端 APK 下载信息（从版本检查 API 获取 download_url） */
@@ -494,7 +503,7 @@ const tacoApi: TacoApi = {
     },
 
     /** 通知主进程：移动端请求的项目切换已完成，消息已加载，可以推送 bridge:state */
-    notifySwitchProjectLoaded: (data: { projectId: string; sessionId: string }) => {
+    notifySwitchProjectLoaded: (data: { projectId: string; sessionId: string; tokenUsage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; cachedTokens?: number } }) => {
       ipcRenderer.send('bridge:switch-project-loaded', data)
     },
 
@@ -550,6 +559,15 @@ const tacoApi: TacoApi = {
       ipcRenderer.on('bridge:request-state-snapshot', handler)
       return () => {
         ipcRenderer.removeListener('bridge:request-state-snapshot', handler)
+      }
+    },
+
+    /** 监听手机端切换授权模式，桌面端同步更新 UI */
+    onAuthLevelChanged: (callback: (data: { level: string; projectId: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: { level: string; projectId: string }) => callback(data)
+      ipcRenderer.on('bridge:auth-level-changed', handler)
+      return () => {
+        ipcRenderer.removeListener('bridge:auth-level-changed', handler)
       }
     },
   }

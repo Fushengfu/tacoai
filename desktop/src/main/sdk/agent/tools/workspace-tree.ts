@@ -197,7 +197,7 @@ async function collectWorkspaceEntries(
   options: CollectWorkspaceOptions = {},
 ): Promise<{ entries: WorkspaceEntry[]; truncated: boolean }> {
   const maxDepth = clampNumber(options.maxDepth, 1, 24, 12)
-  const maxEntries = clampNumber(options.maxEntries, 200, 10000, 4000)
+  const maxEntries = clampNumber(options.maxEntries, 200, 100000, 4000)
   const includeHidden = Boolean(options.includeHidden)
   const fileSet = new Set<string>()
   const dirSet = new Set<string>()
@@ -372,8 +372,8 @@ export async function getWorkspaceTree(
   const maxDepth = clampNumber(options.maxDepth, 1, 12, 4)
   const includeFiles = options.includeFiles !== false
   const includeHidden = Boolean(options.includeHidden)
-  const maxEntries = clampNumber(options.maxEntries, 200, 10000, 4000)
-  const maxLines = options.maxLines ?? 200
+  const maxEntries = clampNumber(options.maxEntries, 200, 100000, 4000)
+  const maxLines = options.maxLines ?? Infinity
 
   const { entries, truncated: entriesTruncated } = await collectWorkspaceEntries(rootDir, {
     maxDepth,

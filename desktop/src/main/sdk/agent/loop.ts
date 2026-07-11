@@ -14,7 +14,7 @@ import { createHash } from 'node:crypto'
 import type { ChatMessage, ProviderOverrides, TokenUsage } from './llm/client'
 import type { ProviderKey } from './llm/client'
 import { requestChatCompletion, requestStreamWithTools } from './llm/client'
-import { getFilteredToolDefinitions, buildAllowedToolNamesForRequest, executeToolCalls, assessToolCallsRisk, setBrowserAutoApproved, setDesktopAutoApproved, getWorkspaceTree, getToolDesignPromptBlock, getAutoApproveCategories, loadAuthLevel, getGlobalAuthLevel } from './tools'
+import { getFilteredToolDefinitions, buildAllowedToolNamesForRequest, executeToolCalls, assessToolCallsRisk, setBrowserAutoApproved, setDesktopAutoApproved, getWorkspaceTree, getToolDesignPromptBlock, isAutoCommitEnabled, loadAuthLevel, getGlobalAuthLevel } from './tools'
 import type { ToolCall, ToolResult, RiskInfo } from './tools'
 import type { AgentServices } from './services'
 import { setLLMLogger } from './llm/client'
@@ -198,7 +198,7 @@ export async function runAgent(
   services?: AgentServices,
 ): Promise<void> {
   const taskStartedAt = Date.now()
-  const isGitAutoOpsEnabled = () => getAutoApproveCategories().includes('git_ops')
+  const isAutoCommitOn = () => isAutoCommitEnabled(projectId || '', services?.database)
   // 闭包代理：使用 services.logger 替代基础设施 log，降级到控制台
   const log = services?.logger ?? (() => {})
 
@@ -227,8 +227,8 @@ export async function runAgent(
   }
   const restoreSkillEnv = applySkillEnvironment(getActiveSkillEnv())
   try {
-  // 仅在开启 git_ops 自动授权时，才允许自动初始化/自动提交
-  if (isGitAutoOpsEnabled()) {
+  // 仅在开启自动提交时，才允许自动初始化/自动提交
+  if (isAutoCommitOn()) {
     try {
       await gitEnsureRepo(workspace)
     } catch (err) {
@@ -400,9 +400,9 @@ export async function runAgent(
 
     // 工作空间目录结构注入（让 AI 从一开始就了解项目全貌，减少重复 list_dir 调用）
     try {
-      const tree = await getWorkspaceTree(workspace, { maxDepth: 10 })
+      const tree = await getWorkspaceTree(workspace, { maxDepth: 5, maxLines: Infinity, maxEntries: 50000 })
       if (tree && tree.text) {
-        extraPrompt += '\n\n# 当前工作空间目录结构\n以下是项目目录树（自动生成，无需再次调用 list_dir 查看根目录结构）：\n```\n' + tree.text + '\n```\n注意：此目录树在对话开始时生成。如果你在执行过程中创建了新文件，目录树不会实时更新，可按需调用 list_dir 查看最新状态。'
+        extraPrompt += '\n\n# 当前工作空间目录结构\n以下是项目目录树（自动生成，无需再次调用 list_dir 查看根目录结构）：\n```\n' + tree.text + '\n```\n注意：此目录树在对话开始时生成。如果你在执行过程中创建了新文件，目录树不会实时更新，可按需调用 list_dir 查看最新状态。如果目录树未能展示完整的项目结构（如深度不足或条目被截断），可使用 run_command 执行 `find . -maxdepth 6 -not -path "*/node_modules/*" -not -path "*/.git/*"` 或 `tree -L 5 -I "node_modules|.git|dist"` 等命令获取更完整的目录信息。'
       }
     } catch (err) {
       log('WORKSPACE_TREE_FAIL', { error: err instanceof Error ? err.message : String(err) }, logScope)
@@ -727,7 +727,7 @@ export async function runAgent(
 
   /** 在 agent 结束前尝试自动 git commit */
   async function autoCommit() {
-    if (!isGitAutoOpsEnabled()) return
+    if (!isAutoCommitOn()) return
     if (!hasFileChanges) return
     try {
       // 从消息历史中提取最后一条用户消息作为提交摘要
@@ -860,8 +860,41 @@ export async function runAgent(
     )
   }
 
+  function isActionGoal(goal: string): boolean {
+    const text = extractUserQueryText(goal).toLowerCase()
+    if (!text.trim()) return false
+    const patterns = [
+      '修改', '修复', '实现', '新增', '删除', '运行', '测试', '排查', '查看', '检查', '打开', '点击', '输入', '截图',
+      '部署', '优化', '编写', '重构', '更新', '创建', '启动', '停止', '同步', '拖动', '配置', '安装',
+      'fix', 'implement', 'update', 'create', 'delete', 'run', 'test', 'debug', 'check', 'open', 'click', 'type',
+      'screenshot', 'deploy', 'optimize', 'refactor',
+    ]
+    return patterns.some((keyword) => text.includes(keyword))
+  }
+
+  function hasCompletionClaimInText(text: string): boolean {
+    const content = String(text ?? '').toLowerCase()
+    if (!content.trim()) return false
+    const patterns = [
+      '任务完成', '已完成', '完成了', '已经完成', '已修复', '修复完成', '全部完成', '搞定',
+      'completed', 'done', 'fixed', 'resolved', 'all set',
+    ]
+    return patterns.some((keyword) => content.includes(keyword))
+  }
+
   function shouldTryFinalizeDirectTextReply(finalText: string): boolean {
-    return Boolean(String(finalText ?? '').trim())
+    const text = String(finalText ?? '').trim()
+    if (!text) return false
+    // 当用户要求干活且回复不含完成声明时，很可能是模型说了"我来分析"但没调工具
+    // 不允许直接结束，让其进入重试流程
+    if (!hasCompletionClaimInText(text) && isActionGoal(lastUserGoal)) {
+      log('AGENT_DIRECT_TEXT_BLOCKED_BY_ACTION_INTENT', {
+        round,
+        textPreview: text.slice(0, 200),
+      }, logScope)
+      return false
+    }
+    return true
   }
 
   async function tryFinalizeReply(finalText: string): Promise<boolean> {
@@ -1420,13 +1453,34 @@ export async function runAgent(
           }
           return { index: idx + 1, title: `步骤 ${idx + 1}`, content: String(s) }
         }).filter((s) => s.content || s.title)
+
+        // 校验：空 steps 或全是无 title/content 的无效步骤 → 拒绝流转
+        const validSteps = steps.filter((s) => s.title && s.content)
+        if (validSteps.length === 0) {
+          log('PLAN_INIT_EMPTY_STEPS', { rawCount: rawSteps.length, filteredCount: steps.length }, logScope)
+          // 返回错误给 LLM 让它重新生成，不设置 currentPlan，不发 plan_init
+          const invalidPlanError: ToolResult = {
+            tool_call_id: planCall.id,
+            name: 'propose_plan',
+            content: 'propose_plan 失败：steps 数组为空或所有步骤都缺少 title/content。每个步骤必须同时具有 index、title、content 三个字段。请重新调用 propose_plan 并提供有效步骤。',
+            success: false,
+          }
+          onEvent?.({ type: 'tool_results', results: [invalidPlanError] })
+          workingMessages.push({
+            role: 'tool',
+            content: invalidPlanError.content,
+            tool_call_id: planCall.id,
+          })
+          continue
+        }
+
         currentPlan = {
           summary: planArgs.summary || '',
           reasoning: planArgs.reasoning,
-          steps: steps.map((s) => ({ ...s, status: 'pending' as PlanStepStatus })),
+          steps: validSteps.map((s) => ({ ...s, status: 'pending' as PlanStepStatus })),
         }
-        onEvent?.({ type: 'plan_init', summary: currentPlan.summary, steps, reasoning: currentPlan.reasoning })
-        log('PLAN_INIT', { summary: currentPlan.summary, stepCount: steps.length }, logScope)
+        onEvent?.({ type: 'plan_init', summary: currentPlan.summary, steps: validSteps, reasoning: currentPlan.reasoning })
+        log('PLAN_INIT', { summary: currentPlan.summary, stepCount: validSteps.length }, logScope)
       } catch (e) {
         log('PLAN_INIT_PARSE_FAIL', { error: e instanceof Error ? e.message : String(e) }, logScope)
       }
@@ -1539,7 +1593,7 @@ export async function runAgent(
       const hasDesktopRisk = risks.some((r) => r.toolName.startsWith('desktop_'))
       if (hasDesktopRisk) {
         setDesktopAutoApproved(true)
-        log('DESKTOP_AUTO_APPROVED', { msg: '用户已确认桌面操作，后续自动放行' }, logScope)
+        log('DESKTOP_AUTO_APPROVED', { msg: '用户已确认电脑操作，后续自动放行' }, logScope)
       }
     }
 

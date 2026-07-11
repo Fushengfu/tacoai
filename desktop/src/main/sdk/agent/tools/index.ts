@@ -60,6 +60,8 @@ export {
   saveAuthLevel,
   loadAuthLevel,
   computeProjectScope,
+  isAutoCommitEnabled,
+  saveAutoCommitEnabled,
 } from './risk'
 
 // Risk types

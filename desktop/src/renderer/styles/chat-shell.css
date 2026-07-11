@@ -1298,6 +1298,60 @@ body.is-dragging * {
   line-height: 1;
 }
 
+/* ── 自动提交开关按钮 ── */
+.composer-auto-commit-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  height: 22px;
+  font-size: 11px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
+  white-space: nowrap;
+  font-family: inherit;
+  flex-shrink: 0;
+}
+.composer-auto-commit-btn:hover {
+  border-color: rgba(255, 255, 255, 0.25);
+  color: var(--fg);
+}
+.composer-auto-commit-btn.active {
+  border-color: rgba(86, 217, 197, 0.35);
+  color: var(--accent);
+  background: rgba(86, 217, 197, 0.08);
+}
+.composer-auto-commit-btn.active:hover {
+  border-color: rgba(86, 217, 197, 0.5);
+}
+.auto-commit-icon {
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+.composer-auto-commit-btn.active .auto-commit-icon {
+  opacity: 1;
+}
+.auto-commit-label {
+  line-height: 1;
+}
+
+:root[data-theme='light'] .composer-auto-commit-btn {
+  border-color: rgba(0, 0, 0, 0.12);
+}
+:root[data-theme='light'] .composer-auto-commit-btn:hover {
+  border-color: rgba(0, 0, 0, 0.25);
+}
+:root[data-theme='light'] .composer-auto-commit-btn.active {
+  border-color: rgba(44, 154, 142, 0.35);
+  color: #2c9a8e;
+  background: rgba(44, 154, 142, 0.08);
+}
+
 /* ── 授权级别自定义下拉框 ── */
 .composer-auth-dropdown {
   position: relative;
