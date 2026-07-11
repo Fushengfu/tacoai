@@ -44,7 +44,3 @@ export { applyRewardScore } from './reward'
 // ─── 上下文压缩 ────────────────────────────────────────────────────────────
 
 export { compactLine, maskSensitiveText, summarizeRunCommand, extractIdentifiers, truncateToolResultForContext } from './context/compressor'
-
-// ─── 完成校验 ──────────────────────────────────────────────────────────────
-
-export { validateCompletionClaim } from './context/builder'
