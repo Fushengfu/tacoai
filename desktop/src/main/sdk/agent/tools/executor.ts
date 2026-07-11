@@ -218,10 +218,40 @@ function isAbortError(err: unknown): boolean {
   return err.name === 'AbortError' || err.message === 'Aborted'
 }
 
+/** 将路径归一化为文件系统真实路径，用于可靠比较。
+ *  处理：symlink 解析、Windows 盘符大小写、macOS APFS 大小写、Unicode 规范化。
+ *  路径不存在时逐级向上查找已存在的父目录，剩余部分拼接回。
+ */
+function normalizePathForCompare(p: string): string {
+  try {
+    return fsSync.realpathSync.native(p)
+  } catch {
+    // 路径不存在：逐级向上查找已存在的父目录
+    const missingParts: string[] = []
+    let current = p
+    while (true) {
+      const parent = path.dirname(current)
+      if (parent === current) {
+        // 已到达文件系统根目录，全部父级都不存在，回退到小写比较（Windows）
+        const normalized = path.normalize(p)
+        return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+      }
+      try {
+        const realParent = fsSync.realpathSync.native(parent)
+        const basename = path.basename(current)
+        return path.join(realParent, basename, ...missingParts)
+      } catch {
+        missingParts.unshift(path.basename(current))
+        current = parent
+      }
+    }
+  }
+}
+
 function isPathWithinWorkspace(workspace: string, targetPath: string): boolean {
-  const normalizedWs = path.normalize(workspace)
-  const normalizedTarget = path.normalize(targetPath)
-  return normalizedTarget === normalizedWs || normalizedTarget.startsWith(`${normalizedWs}${path.sep}`)
+  const normalizedWs = normalizePathForCompare(workspace)
+  const normalizedTarget = normalizePathForCompare(targetPath)
+  return normalizedTarget === normalizedWs || normalizedTarget.startsWith(normalizedWs + path.sep)
 }
 
 /** 解析路径：相对于 workspace，并检查是否在 workspace 内 */
@@ -249,7 +279,7 @@ function resolveSafe(
   if (cleaned.startsWith(wsName + '/') || cleaned.startsWith(wsName + '\\')) {
     const without = cleaned.slice(wsName.length + 1)
     const testResolved = path.resolve(workspace, without)
-    if (testResolved.startsWith(normalizedWs)) {
+    if (isPathWithinWorkspace(workspace, testResolved)) {
       cleaned = without
     }
   }
@@ -259,7 +289,7 @@ function resolveSafe(
 
   const resolved = path.resolve(workspace, cleaned)
   const normalized = path.normalize(resolved)
-  if (!normalized.startsWith(normalizedWs)) {
+  if (!isPathWithinWorkspace(workspace, normalized)) {
     if (options?.allowOutsideWorkspaceRead) {
       return { resolved: normalized }
     }
@@ -384,7 +414,7 @@ async function resolveSmartPath(
   const best = candidates[0]
   const bestResolved = path.resolve(workspace, best)
 
-  if (!path.normalize(bestResolved).startsWith(path.normalize(workspace))) {
+  if (!isPathWithinWorkspace(workspace, bestResolved)) {
     return { error: `安全限制：纠正后路径超出工作空间` }
   }
 
@@ -1310,7 +1340,7 @@ async function execRunSkillScript(
 
   const services = runtimeContext?.services
 
-  if (skillId === 'browser-automation') {
+  if (skillId === 'browser-use') {
     if (scriptName === 'get_console_logs') {
       return await execBrowserGetConsoleLogs(params, projectId, services)
     }
@@ -1336,7 +1366,7 @@ async function execRunSkillScript(
     return await execBrowserAction(action, params, projectId, services, runtimeContext, workspace)
   }
 
-  if (skillId === 'desktop-automation') {
+  if (skillId === 'computer-use') {
     if (scriptName === 'screenshot') {
       return await execDesktopScreenshot(params, logScope, services, runtimeContext, workspace)
     }
@@ -1344,7 +1374,7 @@ async function execRunSkillScript(
       return await execDesktopAction(params, signal, logScope, services)
     }
     return {
-      content: `桌面技能不支持此脚本: ${scriptName}。可用脚本: screenshot, action`,
+      content: `电脑使用技能不支持此脚本: ${scriptName}。可用脚本: screenshot, action`,
       success: false,
     }
   }
@@ -1405,7 +1435,7 @@ async function execRunSkillScript(
 }
 
 /* ------------------------------------------------------------------ */
-/*  浏览器自动化执行器                                                    */
+/*  浏览器使用执行器                                                    */
 /* ------------------------------------------------------------------ */
 
 function scopedBrowserAppId(projectId?: string): string | undefined {
@@ -1413,6 +1443,95 @@ function scopedBrowserAppId(projectId?: string): string | undefined {
   if (!raw) return undefined
   const safe = raw.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 64)
   return safe ? `project-${safe}` : undefined
+}
+
+/* ---- 记忆回想工具 ---- *//* ---- 时间范围解析 ---- */
+
+/**
+ * 将 AI 自由描述的时间范围解析为 ISO 时间戳区间。
+ * 支持："昨天"、"上周"、"上个月"、"最近N天"、"YYYY年M月" 等。
+ * 不传或不识别则返回 undefined。
+ */
+function parseTimeRange(timeRange?: string): { timeFrom?: string; timeTo?: string } | undefined {
+  const s = String(timeRange ?? '').trim()
+  if (!s) return undefined
+
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+
+  // 昨天
+  if (/^昨/.test(s)) {
+    const d = new Date(today.getTime() - 86400000)
+    return { timeFrom: d.toISOString().slice(0, 10), timeTo: today.toISOString().slice(0, 10) }
+  }
+
+  // 最近N天
+  const recentDays = s.match(/最近(\d+)\s*天/)
+  if (recentDays) {
+    const n = parseInt(recentDays[1], 10)
+    const d = new Date(today.getTime() - n * 86400000)
+    return { timeFrom: d.toISOString().slice(0, 10) }
+  }
+
+  // 今天
+  if (/^今/.test(s)) {
+    return { timeFrom: today.toISOString().slice(0, 10) }
+  }
+
+  // 本周
+  if (/本\s*周/.test(s)) {
+    const day = today.getDay()
+    const monday = new Date(today.getTime() - (day === 0 ? 6 : day - 1) * 86400000)
+    return { timeFrom: monday.toISOString().slice(0, 10) }
+  }
+
+  // 上周
+  if (/上周/.test(s)) {
+    const day = today.getDay()
+    const thisMonday = new Date(today.getTime() - (day === 0 ? 6 : day - 1) * 86400000)
+    const lastMonday = new Date(thisMonday.getTime() - 7 * 86400000)
+    return { timeFrom: lastMonday.toISOString().slice(0, 10), timeTo: thisMonday.toISOString().slice(0, 10) }
+  }
+
+  // 本月
+  if (/本\s*月/.test(s)) {
+    return { timeFrom: new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10) }
+  }
+
+  // 上个月
+  if (/上\s*个?\s*月/.test(s)) {
+    const thisMonthFirst = new Date(now.getFullYear(), now.getMonth(), 1)
+    const lastMonthFirst = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+    return { timeFrom: lastMonthFirst.toISOString().slice(0, 10), timeTo: thisMonthFirst.toISOString().slice(0, 10) }
+  }
+
+  // 最近N个月
+  const recentMonths = s.match(/最近(\d+)\s*个?\s*月/)
+  if (recentMonths) {
+    const n = parseInt(recentMonths[1], 10)
+    const d = new Date(now.getFullYear(), now.getMonth() - n, 1)
+    return { timeFrom: d.toISOString().slice(0, 10) }
+  }
+
+  // YYYY年M月 或 YYYY年
+  const yearMonth = s.match(/(\d{4})\s*年(?:\s*(\d{1,2})\s*月)?/)
+  if (yearMonth) {
+    const y = parseInt(yearMonth[1], 10)
+    const m = yearMonth[2] ? parseInt(yearMonth[2], 10) - 1 : 0
+    const from = new Date(y, m, 1)
+    const to = yearMonth[2] ? new Date(y, m + 1, 1) : new Date(y + 1, 0, 1)
+    return { timeFrom: from.toISOString().slice(0, 10), timeTo: to.toISOString().slice(0, 10) }
+  }
+
+  // 去年
+  if (/去\s*年/.test(s)) {
+    const thisYearFirst = new Date(now.getFullYear(), 0, 1)
+    const lastYearFirst = new Date(now.getFullYear() - 1, 0, 1)
+    return { timeFrom: lastYearFirst.toISOString().slice(0, 10), timeTo: thisYearFirst.toISOString().slice(0, 10) }
+  }
+
+  // 无法识别 → 不限时间
+  return undefined
 }
 
 /* ---- 记忆回想工具 ---- */
@@ -1429,11 +1548,14 @@ async function execRecallMemories(
   const rawLimit = Number(args.limit)
   const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.floor(rawLimit) : 5
 
+  const timeRange = String(args.timeRange ?? '').trim() || undefined
+  const parsed = parseTimeRange(timeRange)
+
   const db = runtimeContext?.services?.database
   if (!db) return { content: 'Error: database service not available', success: false }
 
   try {
-    const content = await recallMemoriesByKeywords(db, workspace, projectId, query, limit)
+    const content = await recallMemoriesByKeywords(db, workspace, projectId, query, limit, parsed?.timeFrom, parsed?.timeTo)
     return { content, success: true }
   } catch (err) {
     return { content: `Error: ${err instanceof Error ? err.message : String(err)}`, success: false }
@@ -1476,6 +1598,13 @@ async function execBrowserAction(
             cloudUrl = await uploadScreenshotToCloud(screenshotDataUrl, services) || undefined
           } catch (err) {
             services.logger('BROWSER_SCREENSHOT_UPLOAD_FAIL', { error: err instanceof Error ? err.message : String(err) })
+            // 重试一次
+            try {
+              cloudUrl = await uploadScreenshotToCloud(screenshotDataUrl, services) || undefined
+              services.logger('BROWSER_SCREENSHOT_UPLOAD_RETRY_OK')
+            } catch (retryErr) {
+              services.logger('BROWSER_SCREENSHOT_UPLOAD_RETRY_FAIL', { error: retryErr instanceof Error ? retryErr.message : String(retryErr) })
+            }
           }
         }
 
@@ -1616,7 +1745,7 @@ async function execMcpListTools(services?: AgentServices): Promise<ExecResult> {
 }
 
 /* ------------------------------------------------------------------ */
-/*  桌面自动化执行器                                                     */
+/*  电脑使用执行器                                                     */
 /* ------------------------------------------------------------------ */
 
 async function execDesktopScreenshot(
@@ -1643,7 +1772,7 @@ async function execDesktopScreenshot(
   if (!services?.desktop) return { content: 'Error: desktop service not available', success: false }
 
   // macOS 屏幕录制权限检查
-  if (services.desktop.checkScreenRecordingPermission() === 'denied') {
+  if (await services.desktop.checkScreenRecordingPermission() === 'denied') {
     services.desktop.openScreenRecordingSettings()
     return {
       content: 'Error: Screen Recording permission is denied. Please allow Taco AI in System Settings > Privacy & Security > Screen Recording, then restart the app.',
@@ -1674,12 +1803,29 @@ async function execDesktopScreenshot(
       dataUrlLength: typeof result.dataUrl === 'string' ? result.dataUrl.length : 0,
     }, logScope)
 
+    // 上传截图到云存储，以便手机端可以预览
+    let cloudUrl: string | undefined
+    if (services) {
+      try {
+        cloudUrl = await uploadScreenshotToCloud(result.dataUrl, services) || undefined
+      } catch (err) {
+        services.logger('DESKTOP_SCREENSHOT_UPLOAD_FAIL', { error: err instanceof Error ? err.message : String(err) })
+        // 重试一次
+        try {
+          cloudUrl = await uploadScreenshotToCloud(result.dataUrl, services) || undefined
+          services.logger('DESKTOP_SCREENSHOT_UPLOAD_RETRY_OK')
+        } catch (retryErr) {
+          services.logger('DESKTOP_SCREENSHOT_UPLOAD_RETRY_FAIL', { error: retryErr instanceof Error ? retryErr.message : String(retryErr) })
+        }
+      }
+    }
+
     return {
       success: true,
       content: JSON.stringify({
         displayId: result.displayId,
         screenshotPath: result.screenshotPath,
-        cloudUrl: result.cloudUrl || undefined,
+        cloudUrl: cloudUrl || undefined,
         width: result.width,
         height: result.height,
         displayWidth: result.displayWidth,
@@ -1687,7 +1833,7 @@ async function execDesktopScreenshot(
         displayBoundsX: result.displayBoundsX,
         displayBoundsY: result.displayBoundsY,
         displayScaleFactor: result.displayScaleFactor,
-        hint: result.cloudUrl
+        hint: cloudUrl
           ? '截图已上传到云存储。如需分析截图内容，请调用 analyze_image 工具，image 参数传 cloudUrl。'
           : '截图已保存到本地。如需分析截图内容，请调用 analyze_image 工具，image 参数传 data URL。',
       }),

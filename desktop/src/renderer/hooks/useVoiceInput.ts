@@ -20,12 +20,15 @@ interface UseVoiceInputResult {
 /**
  * 语音输入 Hook
  *
- * 按住录音 → 松开识别：用户按住麦克风按钮开始录音，松开后发送完整 PCM 到 StepFun ASR，
+ * 按住录音 → 松开识别：用户按住麦克风按钮开始录音，松开后发送完整 PCM 到 ASR，
  * 获取完整识别文本后插入输入框。
  *
- * 音频处理流程：AudioContext 采集 → Float32 PCM → 重采样到 16kHz → s16le → base64 → IPC → StepFun ASR
+ * 音频处理流程：AudioContext 采集 → Float32 PCM → 重采样到 16kHz → s16le → base64 → IPC → ASR
  *
- * 降级方案：StepFun API Key 未配置时自动使用 Chromium SpeechRecognition
+ * 支持多平台 ASR 提供商（通过设置页面配置）。当前已支持 StepFun，
+ * 后续将扩展阿里云、腾讯云、百度、OpenAI 等平台。
+ *
+ * 降级方案：ASR API Key 未配置时自动使用 Chromium SpeechRecognition
  * （国内 Google 服务不可达，会报 network 错误）。
  */
 export function useVoiceInput({ onTextReady, maxDurationMs = 30_000 }: UseVoiceInputOptions): UseVoiceInputResult {
@@ -47,8 +50,8 @@ export function useVoiceInput({ onTextReady, maxDurationMs = 30_000 }: UseVoiceI
   // SpeechRecognition 降级
   const recognitionRef = useRef<any>(null)
   const finalTextRef = useRef('')
-  // StepFun ASR 可用性缓存：null=未探测, true=可用, false=不可用
-  const stepfunAvailableRef = useRef<boolean | null>(null)
+  // ASR 可用性缓存：null=未探测, true=可用, false=不可用
+  const asrAvailableRef = useRef<boolean | null>(null)
 
   const clearTimers = useCallback(() => {
     if (timerRef.current) {
@@ -82,7 +85,7 @@ export function useVoiceInput({ onTextReady, maxDurationMs = 30_000 }: UseVoiceI
    *
    * 处理步骤：
    * 1. 拼接所有 chunk
-   * 2. 重采样到 16kHz（StepFun ASR 要求）
+   * 2. 重采样到 16kHz
    * 3. Float32 [-1,1] → Int16 s16le
    * 4. Int16 buffer → base64
    */
@@ -130,9 +133,10 @@ export function useVoiceInput({ onTextReady, maxDurationMs = 30_000 }: UseVoiceI
   }, [])
 
   /**
-   * 发送完整 PCM 到 StepFun ASR，返回识别文本。
+   * 发送完整 PCM 到 ASR 服务，返回识别文本。
+   * 自动选择当前配置的提供商。
    */
-  const recognizeStepFun = useCallback(async (): Promise<string> => {
+  const recognizeAsr = useCallback(async (): Promise<string> => {
     if (pcmChunksRef.current.length === 0) return ''
     const sampleRate = audioContextRef.current?.sampleRate ?? 44_100
     const base64 = pcmToBase64(pcmChunksRef.current, sampleRate)
@@ -142,15 +146,15 @@ export function useVoiceInput({ onTextReady, maxDurationMs = 30_000 }: UseVoiceI
       const result = await window.taco.voice.recognize(base64, apiKey ?? undefined)
 
       if (result.error === 'NO_API_KEY') {
-        console.warn('[VoiceInput] StepFun API Key 未配置，后续将使用 SpeechRecognition 降级')
-        stepfunAvailableRef.current = false
+        console.warn('[VoiceInput] ASR API Key 未配置，后续将使用 SpeechRecognition 降级')
+        asrAvailableRef.current = false
         return ''
       }
 
-      stepfunAvailableRef.current = true
+      asrAvailableRef.current = true
       return (result.text ?? '').trim()
     } catch (err) {
-      console.error('[VoiceInput] StepFun ASR 识别失败:', err)
+      console.error('[VoiceInput] ASR 识别失败:', err)
       return ''
     }
   }, [pcmToBase64])
@@ -167,7 +171,7 @@ export function useVoiceInput({ onTextReady, maxDurationMs = 30_000 }: UseVoiceI
 
   /**
    * 降级方案：Chromium SpeechRecognition
-   * 当 StepFun API Key 未配置时自动使用。
+   * 当 ASR API Key 未配置时自动使用。
    */
   const fallbackToSpeechRecognition = useCallback(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -178,7 +182,7 @@ export function useVoiceInput({ onTextReady, maxDurationMs = 30_000 }: UseVoiceI
       console.warn('[VoiceInput] SpeechRecognition API 不可用')
       window.taco.shell.notify({
         title: '语音输入不可用',
-        body: '请在设置页面配置 StepFun API Key 以启用语音识别',
+        body: '请在设置页面配置 ASR API Key 以启用语音识别',
       })
       return
     }
@@ -204,7 +208,7 @@ export function useVoiceInput({ onTextReady, maxDurationMs = 30_000 }: UseVoiceI
         console.warn('[VoiceInput] SpeechRecognition 错误:', event.error)
         if (event.error !== 'no-speech' && event.error !== 'aborted') {
           const msgs: Record<string, string> = {
-            'network': '网络错误，Google 语音服务不可达。请在设置页面配置 StepFun API Key',
+            'network': '网络错误，Google 语音服务不可达。请在设置页面配置 ASR API Key',
             'not-allowed': '麦克风权限被拒绝',
             'audio-capture': '无法访问麦克风',
           }
@@ -248,7 +252,7 @@ export function useVoiceInput({ onTextReady, maxDurationMs = 30_000 }: UseVoiceI
   }, [maxDurationMs, stopRecording])
 
   /**
-   * 发送完整 PCM 到 StepFun ASR 并输出结果，然后清理状态。
+   * 发送完整 PCM 到 ASR 并输出结果，然后清理状态。
    */
   const finishRecording = useCallback(async () => {
     if (!isRecordingRef.current) return
@@ -258,7 +262,7 @@ export function useVoiceInput({ onTextReady, maxDurationMs = 30_000 }: UseVoiceI
     clearTimers()
 
     // 发送完整 PCM → 识别
-    const text = await recognizeStepFun()
+    const text = await recognizeAsr()
 
     releaseAudioResources()
     pcmChunksRef.current = []
@@ -268,7 +272,7 @@ export function useVoiceInput({ onTextReady, maxDurationMs = 30_000 }: UseVoiceI
     if (text) {
       onTextReadyRef.current(text)
     }
-  }, [clearTimers, releaseAudioResources, recognizeStepFun])
+  }, [clearTimers, releaseAudioResources, recognizeAsr])
 
   // 用 ref 让 startRecording 的 timeout 能调用 finishRecording（解决循环依赖）
   const finishRecordingRef = useRef(finishRecording)
@@ -277,8 +281,8 @@ export function useVoiceInput({ onTextReady, maxDurationMs = 30_000 }: UseVoiceI
   const startRecording = useCallback(async () => {
     if (isRecordingRef.current) return
 
-    // 如果已探测到 StepFun 不可用，直接降级
-    if (stepfunAvailableRef.current === false) {
+    // 如果已探测到 ASR 不可用，直接降级
+    if (asrAvailableRef.current === false) {
       fallbackToSpeechRecognition()
       return
     }

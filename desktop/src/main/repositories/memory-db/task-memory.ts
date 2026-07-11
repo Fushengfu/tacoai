@@ -1,3 +1,4 @@
+import type { SQLInputValue } from 'node:sqlite'
 import type { TaskMemoryEntry, MemoryScope, MemoryTier } from './schema'
 import { buildScopeWhere, runInTransaction, getDb } from './schema'
 import { normalizeScope } from './schema'
@@ -120,6 +121,57 @@ export function listTaskMemoriesByTier(scope: MemoryScope, tier: MemoryTier): Ta
     WHERE ${selector.sql} AND storage_tier = ?
     ORDER BY updated_at ASC, created_at ASC, id ASC
   `).all(...selector.params, tier) as Array<Record<string, unknown>>
+  return rows.map(rowToTaskMemoryEntry)
+}
+
+/** 搜索任务记忆（SQL 层 LIKE 粗筛 + 时间范围过滤），返回候选集供内存精排 */
+export function searchTaskMemories(
+  scope: MemoryScope,
+  keywords: string[],
+  timeFrom?: string,
+  timeTo?: string,
+  limit: number = 200,
+): TaskMemoryEntry[] {
+  const database = getDb()
+  const selector = buildScopeWhere(scope)
+  const conditions: string[] = [selector.sql]
+  const params: SQLInputValue[] = [...selector.params]
+
+  // 关键词 LIKE 条件（每个关键词匹配多个字段）
+  for (const kw of keywords) {
+    const like = `%${kw}%`
+    conditions.push(`(
+      user_query LIKE ? OR
+      assistant_result LIKE ? OR
+      summary LIKE ? OR
+      tools_json LIKE ? OR
+      changed_files_json LIKE ?
+    )`)
+    params.push(like, like, like, like, like)
+  }
+
+  // 时间范围过滤
+  if (timeFrom) {
+    conditions.push('created_at >= ?')
+    params.push(timeFrom)
+  }
+  if (timeTo) {
+    conditions.push('created_at < ?')
+    params.push(timeTo)
+  }
+
+  // 排除软删除
+  conditions.push('deleted_at IS NULL')
+
+  const sql = `
+    SELECT * FROM task_memories
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY updated_at DESC, created_at DESC
+    LIMIT ?
+  `
+  params.push(limit)
+
+  const rows = database.prepare(sql).all(...params) as Array<Record<string, unknown>>
   return rows.map(rowToTaskMemoryEntry)
 }
 

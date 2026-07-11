@@ -16,6 +16,7 @@ import { log, logError } from '../../infrastructure/logger'
 import { agentAbortControllers } from './chat-handlers'
 import { handleGatewayGetModels } from './gateway-handlers'
 import nodePath from 'node:path'
+import { getGlobalAuthLevel, setGlobalAuthLevel, saveAuthLevel } from '../../sdk/agent/tools'
 
 /* ------------------------------------------------------------------ */
 /*  StepFun ASR API Key 缓存（渲染进程启动时通过 IPC 推送）              */
@@ -37,6 +38,14 @@ export function setStepFunApiKey(key: string | null): void {
     } catch { /* bridge 未初始化时忽略 */ }
   }
 }
+
+/** token 消耗缓存：projectId → tokenUsage，供 bridge:request-state 读取 */
+const tokenUsageCache = new Map<string, {
+  promptTokens?: number
+  completionTokens?: number
+  totalTokens?: number
+  cachedTokens?: number
+}>()
 
 /* ------------------------------------------------------------------ */
 /*  Workspace tree flattening to nested structure                      */
@@ -104,11 +113,16 @@ function buildNestedTree(
 
 /** 注册 renderer 项目切换完成回调：renderer 加载消息后推送 bridge:state 给移动端 */
 export function setupBridgeSwitchProjectLoadedHandler(): void {
-  ipcMain.on('bridge:switch-project-loaded', async (_event, payload: { projectId: string; sessionId: string }) => {
+  ipcMain.on('bridge:switch-project-loaded', async (_event, payload: { projectId: string; sessionId: string; tokenUsage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; cachedTokens?: number } }) => {
     try {
       const projectId = String(payload.projectId || '')
       const sessionId = String(payload.sessionId || '')
       if (!projectId || !sessionId) return
+
+      // 缓存 tokenUsage
+      if (payload.tokenUsage) {
+        tokenUsageCache.set(projectId, payload.tokenUsage)
+      }
 
       const state = await getAppState()
       const activeThread = state.threadsState.threads.find((t) => t.id === projectId)
@@ -136,7 +150,9 @@ export function setupBridgeSwitchProjectLoadedHandler(): void {
         modelConfigId: activeThread.modelConfigId,
         threadTitle: activeThread.title,
         projectTitle: activeThread.title,
+        authLevel: getGlobalAuthLevel(),
         timestamp: Date.now(),
+        tokenUsage: tokenUsageCache.get(projectId),
         ...(activeAgentRequestId ? { activeAgentRequestId } : {}),
       } as any)
       log('BRIDGE_STATE_PUSHED_AFTER_SWITCH', {
@@ -438,7 +454,7 @@ export function setupBridgeDataHandler(): void {
             type: 'bridge:projects',
             requestId,
             projects,
-            activeThreadId: state.threadsState.activeThreadId,
+            activeThreadId: getBridgeManager().getActiveThreadId() || state.threadsState.activeThreadId,
           })
           // 同时触发即时推送，减少移动端下次等待
           mgr.pushProjectsOnDemand()
@@ -473,8 +489,9 @@ export function setupBridgeDataHandler(): void {
             let resolvedPath = filePath
             if (!nodePath.isAbsolute(filePath)) {
               const state = await getAppState()
+              const bridgeThreadId = getBridgeManager().getActiveThreadId() || state.threadsState.activeThreadId
               const activeThread = state.threadsState.threads.find(
-                (t) => t.id === state.threadsState.activeThreadId,
+                (t) => t.id === bridgeThreadId,
               )
               if (activeThread?.workspace) {
                 resolvedPath = nodePath.join(activeThread.workspace, filePath)
@@ -516,8 +533,9 @@ export function setupBridgeDataHandler(): void {
             let resolvedPath = filePath
             if (!nodePath.isAbsolute(filePath)) {
               const state = await getAppState()
+              const bridgeThreadId = getBridgeManager().getActiveThreadId() || state.threadsState.activeThreadId
               const activeThread = state.threadsState.threads.find(
-                (t) => t.id === state.threadsState.activeThreadId,
+                (t) => t.id === bridgeThreadId,
               )
               if (activeThread?.workspace) {
                 resolvedPath = nodePath.join(activeThread.workspace, filePath)
@@ -568,13 +586,44 @@ export function setupBridgeDataHandler(): void {
           break
         }
 
+        /* ---- 移动端设置授权级别 ---- */
+        case 'bridge:set-auth-level': {
+          const level = String(msg.level || '').trim()
+          const validLevels = ['standard', 'auto']
+          if (!validLevels.includes(level)) {
+            respond({ type: 'bridge:auth-level-set', requestId, success: false, error: `invalid level: ${level}` })
+            break
+          }
+          try {
+            const state = await getAppState()
+            const projectId = getBridgeManager().getActiveThreadId() || state.threadsState.activeThreadId
+            if (projectId) {
+              setGlobalAuthLevel(level as any)
+              saveAuthLevel(projectId, level as any)
+            }
+            respond({ type: 'bridge:auth-level-set', requestId, success: true, authLevel: level })
+            log('BRIDGE_AUTH_LEVEL_SET', { level, projectId }, 'bridge')
+            // 通知所有渲染进程同步授权模式（手机端切换时桌面端 UI 同步）
+            for (const win of BrowserWindow.getAllWindows()) {
+              if (!win.isDestroyed()) {
+                win.webContents.send('bridge:auth-level-changed', { level, projectId })
+              }
+            }
+          } catch (err) {
+            respond({ type: 'bridge:auth-level-set', requestId, success: false, error: err instanceof Error ? err.message : String(err) })
+          }
+          break
+        }
+
         /* ---- 移动端主动请求状态快照（连接/重连后使用） ---- */
         case 'bridge:request-state': {
           try {
             const state = await getAppState()
             // 关键修复：优先使用移动端指定的 threadId，避免使用渲染进程的 activeThreadId（可能滞后）
             const requestedThreadId = String(msg.threadId || '').trim()
-            const resolvedThreadId = requestedThreadId || state.threadsState.activeThreadId
+            // 关键修复：优先使用移动端指定的 threadId，其次使用 BridgeManager 记录的活跃项目（与手机端同步），
+            // 最后才回退到渲染进程的 activeThreadId（桌面端自己切换的项目）。避免手机端拿到错误项目的数据。
+            const resolvedThreadId = requestedThreadId || getBridgeManager().getActiveThreadId() || state.threadsState.activeThreadId
             const activeThread = state.threadsState.threads.find(
               (t) => t.id === resolvedThreadId,
             )
@@ -611,7 +660,9 @@ export function setupBridgeDataHandler(): void {
                 modelConfigId: activeThread.modelConfigId,
                 threadTitle: activeThread.title,
                 projectTitle: activeThread.title,
+                authLevel: getGlobalAuthLevel(),
                 timestamp: Date.now(),
+                tokenUsage: tokenUsageCache.get(activeThread.id),
                 ...(activeAgentRequestId ? { activeAgentRequestId } : {}),
               })
               log('BRIDGE_STATE_REQUEST_HANDLED', {
@@ -958,8 +1009,26 @@ export function setupBridgeDataHandler(): void {
         error: err instanceof Error ? err.message : String(err),
         requestId,
       }, undefined)
+      // 将请求类型映射为对应的响应类型（e.g. bridge:file-read → bridge:file-content）
+      const ERROR_RESPONSE_TYPE_MAP: Record<string, string> = {
+        'bridge:file-read': 'bridge:file-content',
+        'bridge:file-write': 'bridge:file-written',
+        'bridge:get-projects': 'bridge:projects',
+        'bridge:get-workspace-tree': 'bridge:workspace-tree',
+        'bridge:poll-task-status': 'bridge:task-status',
+        'bridge:get-models': 'bridge:models',
+        'bridge:switch-model': 'bridge:model-switched',
+        'bridge:switch-project': 'bridge:project-switched',
+        'bridge:get-message-detail': 'bridge:message-detail',
+        'bridge:get-step-detail': 'bridge:step-detail',
+        'bridge:load-older-messages': 'bridge:older-messages',
+        'bridge:request-state': 'bridge:state',
+        'bridge:set-auth-level': 'bridge:auth-level-set',
+        'bridge:upload-token-request': 'bridge:upload-token-response',
+        'bridge:get-stepfun-api-key': 'bridge:stepfun-api-key',
+      }
       respond({
-        type: type.replace(/^bridge:get-/, 'bridge:').replace(/^bridge:file-/, 'bridge:file-'),
+        type: ERROR_RESPONSE_TYPE_MAP[type] || type,
         requestId,
         error: err instanceof Error ? err.message : String(err),
       })
@@ -1008,6 +1077,7 @@ export function setupBridgeStateSnapshotResponse(): void {
         threadTitle: payload.threadTitle,
         projectTitle: payload.projectTitle,
         tokenUsage: payload.tokenUsage,
+        authLevel: getGlobalAuthLevel(),
         timestamp: Date.now(),
       })
       log('BRIDGE_STATE_PUSHED', {

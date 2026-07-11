@@ -60,6 +60,7 @@ export {
 export {
   hasAnyTaskMemories,
   listTaskMemoriesByTier,
+  searchTaskMemories,
   replaceTaskMemoriesByTier,
   importTaskMemoriesByTier,
   deleteTaskMemoryById,

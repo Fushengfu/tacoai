@@ -123,7 +123,7 @@ export type SkillPreview = {
   }
 }
 
-/** 浏览器自动化操作类型 */
+/** 浏览器使用操作类型 */
 export type BrowserActionType =
   | 'navigate'
   | 'screenshot'

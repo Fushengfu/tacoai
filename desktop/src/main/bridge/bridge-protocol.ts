@@ -64,6 +64,7 @@ export interface BridgePing {
 export interface BridgeState {
   type: 'bridge:state'
   messageId?: string
+  requestId?: string
   priority?: BridgeMessagePriority
   messages: BridgeChatMessage[]
   activeAgentRequestId?: string
@@ -76,6 +77,8 @@ export interface BridgeState {
   tokenUsage?: BridgeTokenUsage
   /** 快照生成时间戳，用于判断快照新旧（毫秒） */
   timestamp?: number
+  /** 授权级别：standard | auto */
+  authLevel?: string
 }
 
 /** Agent 步骤信息 */
@@ -251,6 +254,8 @@ export interface BridgeChatSend {
   type: 'bridge:chat-send'
   content: string
   images?: string[]
+  /** 可选，手机端当前活跃的项目 ID（用于桌面端路由到正确项目） */
+  threadId?: string
 }
 
 /** Agent 确认/拒绝响应 */
@@ -264,6 +269,15 @@ export interface BridgeAgentConfirm {
 export interface BridgeAgentAbort {
   type: 'bridge:agent-abort'
   requestId: string
+  /** 可选，手机端当前活跃的项目 ID */
+  projectId?: string
+}
+
+/** 设置授权级别（移动端 → 桌面端） */
+export interface BridgeSetAuthLevel {
+  type: 'bridge:set-auth-level'
+  level: string // 'standard' | 'auto'
+  projectId?: string // 可选，显式指定项目ID（手机端切换项目后的当前项目）
 }
 
 /* ------------------------------------------------------------------ */
@@ -347,6 +361,7 @@ export interface BridgeWorkspaceTree {
   type: 'bridge:workspace-tree'
   requestId: string
   tree: BridgeFileTreeEntry[]
+  error?: string
 }
 
 export interface BridgeFileTreeEntry {
@@ -374,6 +389,7 @@ export interface BridgeFileContent {
   /** 图片的 base64 dataUrl */
   dataUrl?: string
   truncated?: boolean
+  error?: string
 }
 
 /** 请求写入文件 */
@@ -390,6 +406,95 @@ export interface BridgeFileWritten {
   requestId: string
   success: boolean
   error?: string
+}
+
+/** 授权级别设置结果 */
+export interface BridgeAuthLevelSet {
+  type: 'bridge:auth-level-set'
+  requestId: string
+  success: boolean
+  authLevel?: string
+  error?: string
+}
+
+/** 模型列表 */
+export interface BridgeModels {
+  type: 'bridge:models'
+  requestId: string
+  models: Array<{
+    id: string
+    provider: string
+    name: string
+    displayName: string
+    model: string
+    supportsVision: boolean
+    supportsReasoning?: boolean
+  }>
+  activeModelConfigId?: string
+}
+
+/** 轮询任务状态结果 */
+export interface BridgeTaskStatus {
+  type: 'bridge:task-status'
+  requestId: string
+  isProcessing: boolean
+  activeTaskId?: string | null
+  error?: string
+}
+
+/** 模型切换结果 */
+export interface BridgeModelSwitched {
+  type: 'bridge:model-switched'
+  requestId: string
+  success: boolean
+  error?: string
+}
+
+/** 按需加载消息详情 */
+export interface BridgeMessageDetail {
+  type: 'bridge:message-detail'
+  requestId: string
+  messageId: string
+  message?: unknown
+  error?: string
+}
+
+/** 按需加载步骤详情 */
+export interface BridgeStepDetail {
+  type: 'bridge:step-detail'
+  requestId: string
+  messageId: string
+  stepRound: number
+  stepDetail?: {
+    thinking: string
+    toolCallsArgs: Array<{ id: string; arguments: string }>
+    toolResultsDetail: Array<{ tool_call_id: string; content: string; fileChange: unknown }>
+  }
+  error?: string
+}
+
+/** 更早消息分页 */
+export interface BridgeOlderMessages {
+  type: 'bridge:older-messages'
+  requestId: string
+  messages: unknown[]
+  totalCount?: number
+  startSeq?: number
+  endSeq?: number
+  error?: string
+}
+
+/** StepFun API Key */
+export interface BridgeStepFunApiKey {
+  type: 'bridge:stepfun-api-key'
+  requestId?: string
+  apiKey: string | null
+}
+
+/** 请求 StepFun API Key */
+export interface BridgeGetStepFunApiKey {
+  type: 'bridge:get-stepfun-api-key'
+  requestId?: string
 }
 
 /* ------------------------------------------------------------------ */
@@ -421,6 +526,14 @@ export type BridgeHostMessage =
   | BridgeProjectSwitched
   | BridgeProjectStates
   | BridgeUploadTokenResponse
+  | BridgeAuthLevelSet
+  | BridgeModels
+  | BridgeTaskStatus
+  | BridgeModelSwitched
+  | BridgeMessageDetail
+  | BridgeStepDetail
+  | BridgeOlderMessages
+  | BridgeStepFunApiKey
   | BridgeAck
 
 /** Client → Host 的所有消息 */
@@ -430,6 +543,7 @@ export type BridgeClientMessage =
   | BridgeAgentAbort
   | BridgeRetryResponse
   | BridgeUploadTokenRequest
+  | BridgeSetAuthLevel
   | BridgeHeartbeat
   | BridgeGetProjects
   | BridgeGetWorkspaceTree
@@ -445,6 +559,7 @@ export type BridgeClientMessage =
   | BridgePollTaskStatus
   | BridgeGetMessageDetail
   | BridgeGetStepDetail
+  | BridgeGetStepFunApiKey
 
 /** 移动端重试确认响应 */
 export interface BridgeRetryResponse {
@@ -458,6 +573,8 @@ export interface BridgeRequestState {
   type: 'bridge:request-state'
   /** 请求 ID，用于匹配响应 */
   requestId: string
+  /** 可选，手机端当前活跃的项目 ID（优先级高于桌面端 activeThreadId） */
+  threadId?: string
 }
 
 /** 请求切换项目 */
@@ -470,11 +587,14 @@ export interface BridgeSwitchProject {
 /** 项目切换结果通知 */
 export interface BridgeProjectSwitched {
   type: 'bridge:project-switched'
+  requestId?: string
   projectId: string
   sessionId?: string
   workspace?: string
   modelConfigId?: string
   threadTitle?: string
+  success?: boolean
+  error?: string
 }
 
 /** 项目状态推送（Host 主动推送，无需 Client 请求） */
@@ -528,11 +648,14 @@ export interface BridgePollTaskStatus {
   type: 'bridge:poll-task-status'
   sessionId?: string
   requestId?: string
+  /** 可选，手机端当前活跃的项目 ID（用于查询该项目的 Agent 状态） */
+  projectId?: string
 }
 
 /** 按需加载消息详情（手机端展开历史消息时请求完整 agentSteps） */
 export interface BridgeGetMessageDetail {
   type: 'bridge:get-message-detail'
+  /** sessionId 字段实际传递的是 threadId（项目 ID），handler 内部会解析为实际 sessionId */
   sessionId: string
   messageId: string
   requestId?: string
@@ -541,6 +664,7 @@ export interface BridgeGetMessageDetail {
 /** 按需加载步骤详情（手机端展开单个步骤时请求完整 heavy 字段） */
 export interface BridgeGetStepDetail {
   type: 'bridge:get-step-detail'
+  /** sessionId 字段实际传递的是 threadId（项目 ID），handler 内部会解析为实际 sessionId */
   sessionId: string
   messageId: string
   stepRound: number

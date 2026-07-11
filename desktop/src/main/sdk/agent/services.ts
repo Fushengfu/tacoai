@@ -20,7 +20,7 @@ export interface Logger {
 }
 
 /* ------------------------------------------------------------------ */
-/*  浏览器自动化服务                                                     */
+/*  浏览器使用服务                                                     */
 /* ------------------------------------------------------------------ */
 
 export interface BrowserActionParams {
@@ -92,7 +92,7 @@ export interface McpService {
 }
 
 /* ------------------------------------------------------------------ */
-/*  桌面自动化服务                                                      */
+/*  电脑使用服务                                                      */
 /* ------------------------------------------------------------------ */
 
 export interface DesktopActionResult {
@@ -128,7 +128,7 @@ export interface ScreenCaptureResult {
 export interface DesktopAutomationService {
   call(payload: Record<string, unknown>, signal?: AbortSignal): Promise<DesktopActionResult>
   captureScreen(options: ScreenCaptureOptions): Promise<ScreenCaptureResult>
-  checkScreenRecordingPermission(): 'granted' | 'denied' | 'unknown'
+  checkScreenRecordingPermission(): Promise<'granted' | 'denied' | 'unknown'>
   openScreenRecordingSettings(): void
 }
 
@@ -173,6 +173,7 @@ export interface DatabaseService {
   // 任务记忆 CRUD
   hasAnyTaskMemories(workspace: string, projectId?: string): boolean
   listTaskMemoriesByTier(workspace: string, tier: string, projectId?: string): any[]
+  searchTaskMemories(workspace: string, keywords: string[], timeFrom?: string, timeTo?: string, limit?: number, projectId?: string): any[]
   replaceTaskMemoriesByTier(workspace: string, tier: string, entries: any[], projectId?: string): void
   importTaskMemoriesByTier(workspace: string, tier: string, entries: any[], projectId?: string): void
   resolveChatStoreMessageSeqRange(scopeKey: string, messageIds: any[], projectId?: string): any

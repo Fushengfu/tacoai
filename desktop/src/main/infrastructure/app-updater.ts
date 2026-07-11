@@ -661,7 +661,7 @@ export async function fetchMobileApkInfo(packageName: string): Promise<MobileApk
   }
 }
 
-const AUTO_CHECK_INTERVAL_MS = 60 * 60 * 1000 // 每小时检查一次
+const AUTO_CHECK_INTERVAL_MS = 10 * 60 * 1000 // 每 10 分钟检查一次
 
 export function scheduleStartupUpdateCheck(parentWindow?: BrowserWindow | null): void {
   const startupDelayMs = 1_000

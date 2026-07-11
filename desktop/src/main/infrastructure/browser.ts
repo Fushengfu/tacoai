@@ -219,7 +219,7 @@ ipcMain.on(IpcChannel.BROWSER_HIDDEN_MODE, (_e, enabled: boolean) => {
 /* ------------------------------------------------------------------ */
 
 /**
- * 执行浏览器自动化操作。
+ * 执行浏览器使用操作。
  * 统一使用外部 BrowserWindow + CDP 实现。
  * @param payload 操作 payload
  * @param appId   浏览器实例标识（不指定则使用 'default'）
@@ -320,7 +320,7 @@ async function waitForElement(
 }
 
 /**
- * 在外部 BrowserWindow 上执行浏览器自动化操作。
+ * 在外部 BrowserWindow 上执行浏览器使用操作。
  *
  * 使用 Electron 内置的 CDP (debugger API) 和 webContents 原生接口：
  * - click: CDP Input.dispatchMouseEvent 真实鼠标事件
@@ -411,7 +411,7 @@ async function executeExternalBrowserAction(payload: BrowserActionPayload, appId
   }
 
   const extWin = getExternalBrowserWin(appId)
-  if (!extWin) return { success: false, error: `浏览器[${appId}]未打开，请先导航到目标页面（使用 run_skill_script('browser-automation', 'navigate', {url})）` }
+  if (!extWin) return { success: false, error: `浏览器[${appId}]未打开，请先导航到目标页面（使用 run_skill_script('browser-use', 'navigate', {url})）` }
 
   const wc = extWin.webContents
 
@@ -439,7 +439,7 @@ async function executeExternalBrowserAction(payload: BrowserActionPayload, appId
         try {
           dataUrl = await captureScreenshotDataUrl(wc)
         } catch (firstErr) {
-          if (process.platform !== 'win32' || !browserHiddenMode || extWin.isDestroyed()) throw firstErr
+          if ((process.platform !== 'win32' && process.platform !== 'darwin') || !browserHiddenMode || extWin.isDestroyed()) throw firstErr
           if (!extWin.isVisible()) {
             extWin.showInactive()
             temporarilyShown = true

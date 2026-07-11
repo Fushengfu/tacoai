@@ -23,7 +23,7 @@ import type {
   BridgeStatusPayload,
 } from '../../shared/ipc'
 import type { RiskCategory } from '../sdk/agent/tools'
-import { setAutoApproveCategories, setGlobalAuthLevel, saveAuthLevel } from '../sdk/agent/tools'
+import { setAutoApproveCategories, setGlobalAuthLevel, saveAuthLevel, isAutoCommitEnabled, saveAutoCommitEnabled } from '../sdk/agent/tools'
 import type { AuthLevel } from '../sdk/agent/tools'
 import { gitLog, gitCommit, gitRollback, gitCommitFiles, gitStatus, gitFileChange, gitStageFiles, gitStageAll } from '../sdk/agent/git/service'
 import { initSkills, listSkills, installSkill, uninstallSkill, toggleSkill, refreshSkills, previewSkill, checkSkillUpdate } from '../sdk/agent/skills/service'
@@ -117,7 +117,10 @@ import {
 
 import {
   handleVoiceRecognize,
+  setCachedAsrApiKey,
+  setCachedAsrConfig,
 } from './handlers/voice-handlers'
+import { AsrProviderFactory } from '../sdk/agent/asr/factory'
 
 /* ------------------------------------------------------------------ */
 /*  Registration                                                       */
@@ -157,6 +160,18 @@ export function registerIpcHandlers() {
       saveAuthLevel(projectId, level as AuthLevel)
       setGlobalAuthLevel(level as AuthLevel)
     }
+  })
+
+  ipcMain.on(IpcChannel.AGENT_SET_AUTO_COMMIT, (_e, payload: { projectId: string; enabled: boolean }) => {
+    const { projectId, enabled } = payload
+    if (!projectId || !projectId.trim()) return
+    saveAutoCommitEnabled(projectId, enabled)
+  })
+
+  ipcMain.handle(IpcChannel.AGENT_GET_AUTO_COMMIT, async (_e, payload: { projectId: string }) => {
+    const { projectId } = payload
+    if (!projectId || !projectId.trim()) return true
+    return isAutoCommitEnabled(projectId)
   })
 
   // File dialogs
@@ -289,7 +304,14 @@ export function registerIpcHandlers() {
   // Voice
   ipcMain.handle(IpcChannel.VOICE_RECOGNIZE, handleVoiceRecognize)
   ipcMain.on(IpcChannel.VOICE_REGISTER_API_KEY, (_e, key: string | null) => {
+    setCachedAsrApiKey(key)
+    // 同时保持 bridge 推送兼容（推送给移动端）
     setStepFunApiKey(key)
+  })
+
+  ipcMain.on(IpcChannel.VOICE_REGISTER_CONFIG, (_e, config: { provider?: string; apiUrl?: string; model?: string }) => {
+    setCachedAsrConfig(config as any)
+    AsrProviderFactory.clearCache()
   })
 }
 

@@ -99,6 +99,10 @@ export const IpcChannel = {
   AGENT_AUTO_APPROVE: 'agent:auto-approve',
   /** Agent 授权级别设置（auto / standard / manual） */
   AGENT_SET_AUTH_LEVEL: 'agent:set-auth-level',
+  /** Agent 自动提交开关（按项目，默认开启） */
+  AGENT_SET_AUTO_COMMIT: 'agent:set-auto-commit',
+  /** Agent 获取自动提交开关状态 */
+  AGENT_GET_AUTO_COMMIT: 'agent:get-auto-commit',
 
   /** 项目笔记/记忆 */
   NOTES_LIST: 'notes:list',
@@ -118,7 +122,7 @@ export const IpcChannel = {
   /** main → renderer, 在内嵌浏览器中打开 URL */
   OPEN_URL: 'app:open-url',
 
-  /** 浏览器自动化（已废弃：统一使用外部 BrowserWindow + CDP） */
+  /** 浏览器使用（已废弃：统一使用外部 BrowserWindow + CDP） */
   BROWSER_ACTION: 'browser:action',
   /** renderer → main, 设置浏览器调试模式（是否打开 DevTools） */
   BROWSER_DEBUG_MODE: 'browser:debug-mode',
@@ -212,6 +216,9 @@ export const IpcChannel = {
 
   /** renderer → main, 推送 StepFun API Key 到主进程缓存（供 bridge 使用） */
   VOICE_REGISTER_API_KEY: 'voice:register-api-key',
+
+  /** renderer → main, 推送 ASR 配置（提供商 + URL + Model）到主进程缓存 */
+  VOICE_REGISTER_CONFIG: 'voice:register-config',
 
   /** main → renderer, 自动检查发现有新版本可用 */
   APP_UPDATE_AVAILABLE: 'app:update-available',

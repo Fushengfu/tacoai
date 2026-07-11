@@ -116,8 +116,8 @@ const BUILTIN_SKILLS: SkillInfo[] = [
 - 在执行 git push 前提醒用户确认`,
   },
   {
-    id: 'browser-automation',
-    name: '浏览器自动化',
+    id: 'browser-use',
+    name: '浏览器使用',
     description: `操控 Taco 内置浏览器面板执行自动化操作：页面导航、元素点击、表单填写、内容提取、UI 验证。
 
 【触发场景】以下任一情况，可查看此技能手册：
@@ -132,7 +132,7 @@ const BUILTIN_SKILLS: SkillInfo[] = [
     source: 'builtin',
     enabled: true,
     tools: [],
-    instructions: `# Skill: 浏览器自动化
+    instructions: `# Skill: 浏览器使用
 
 你可以通过 run_skill_script 工具操控 Taco 内置浏览器面板，执行以下类型的任务。
 
@@ -188,7 +188,7 @@ Taco 支持同时打开多个独立浏览器窗口，每个窗口有独立的会
 - 截图后如需分析截图内容，使用 analyze_image 工具，image 参数传 cloudUrl，goal 参数描述分析目的
 
 ## 脚本速查
-所有脚本通过 run_skill_script('browser-automation', '脚本名', {参数}) 执行。
+所有脚本通过 run_skill_script('browser-use', '脚本名', {参数}) 执行。
 
 - **list**: 列出所有活跃浏览器窗口（含 appId、windowLabel、URL、标题）。参数: {}
 - **close**: 关闭指定浏览器窗口。参数: { appId: string }
@@ -208,9 +208,9 @@ Taco 支持同时打开多个独立浏览器窗口，每个窗口有独立的会
 - **select**: 操作下拉框。参数: { selector: string, appId?: string, value?: string, label?: string }`,
   },
   {
-    id: 'desktop-automation',
-    name: '桌面自动化',
-    description: `执行桌面级自动化操作：屏幕截图、界面识别、鼠标点击、键盘输入、窗口交互。
+    id: 'computer-use',
+    name: '电脑使用',
+    description: `执行电脑使用操作：屏幕截图、界面识别、鼠标点击、键盘输入、窗口交互。
 
 【核心原则】桌面操作必须先截图识别再行动，禁止不截图直接盲操作（你不知道屏幕当前状态）。
 
@@ -225,7 +225,7 @@ Taco 支持同时打开多个独立浏览器窗口，每个窗口有独立的会
     source: 'builtin',
     enabled: true,
     tools: [],
-    instructions: `# Skill: 桌面自动化
+    instructions: `# Skill: 电脑使用
 
 你可以通过 run_skill_script 工具操控系统界面。
 
@@ -260,7 +260,7 @@ Taco 支持同时打开多个独立浏览器窗口，每个窗口有独立的会
 - 操作完成后必须截图验证，禁止只说"已执行"
 
 ## 脚本速查
-所有脚本通过 run_skill_script('desktop-automation', '脚本名', {参数}) 执行。
+所有脚本通过 run_skill_script('computer-use', '脚本名', {参数}) 执行。
 
 - **screenshot**: 截取当前桌面屏幕。返回 cloudUrl 与尺寸信息；截图后立即用 analyze_image 分析
 - **action**: 执行桌面动作。参数: { action: 'click'|'doubleClick'|'type'|'key'|'scroll'|... }, 以及对应的 x/y/text/key/direction 等`,

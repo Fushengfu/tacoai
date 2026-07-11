@@ -5,6 +5,7 @@
  */
 
 import path from 'node:path'
+import * as fsSync from 'node:fs'
 import { parse as shellQuoteParse } from 'shell-quote'
 import type { ToolCall } from './definitions'
 import type { DatabaseService } from '../services'
@@ -42,7 +43,7 @@ export type RiskCategory =
   | 'git_ops'          // Git 常规操作
   | 'docker_ops'       // Docker 操作
   | 'browser_ops'      // 浏览器操作
-  | 'desktop_ops'      // 桌面操作
+  | 'desktop_ops'      // 电脑操作
 
 /** 风险分类信息（供 UI 展示用） */
 export const RISK_CATEGORY_INFO: { id: RiskCategory; label: string; description: string; level: 'danger' | 'warning' }[] = [
@@ -54,8 +55,8 @@ export const RISK_CATEGORY_INFO: { id: RiskCategory; label: string; description:
   { id: 'network_script', label: '网络脚本', description: 'curl | sh 等下载并执行的命令', level: 'danger' },
   { id: 'git_ops', label: 'Git 操作', description: 'git push, git merge, git rebase 等', level: 'warning' },
   { id: 'docker_ops', label: 'Docker 操作', description: 'docker run, docker build 等容器操作', level: 'warning' },
-  { id: 'browser_ops', label: '浏览器操作', description: 'AI 操控浏览器执行自动化', level: 'warning' },
-  { id: 'desktop_ops', label: '桌面操作', description: 'AI 操控鼠标/键盘/输入等桌面自动化', level: 'warning' },
+  { id: 'browser_ops', label: '浏览器操作', description: 'AI 操控浏览器执行操作', level: 'warning' },
+  { id: 'desktop_ops', label: '电脑操作', description: 'AI 操控鼠标/键盘/输入等电脑操作', level: 'warning' },
 ]
 
 /** 危险命令关键词匹配表：[正则, 描述, 分类] */
@@ -145,12 +146,12 @@ const WARNING_PATTERNS: [RegExp, string, RiskCategory][] = [
 
 /** 浏览器操作工具名前缀 */
 const BROWSER_TOOL_PREFIX = 'browser_'
-/** 桌面操作工具名前缀 */
+/** 电脑操作工具名前缀 */
 const DESKTOP_TOOL_PREFIX = 'desktop_'
 
 /** 是否已在本次会话中确认过浏览器接管 */
 let browserAutoApproved = false
-/** 是否已在本次会话中确认过桌面接管 */
+/** 是否已在本次会话中确认过电脑接管 */
 let desktopAutoApproved = false
 
 /** 外部可调用：设置浏览器全局接管（从设置页面调用） */
@@ -258,13 +259,79 @@ export function loadAuthLevel(projectId: string, db?: DatabaseService): AuthLeve
 }
 
 /* ------------------------------------------------------------------ */
+/*  自动提交（按项目独立控制，默认开启）                                      */
+/* ------------------------------------------------------------------ */
+
+/** 计算自动提交 scope 标识符，用于 app_state_meta 表 key */
+export function computeAutoCommitScope(projectId: string): string {
+  return `auto_commit:${projectId}`
+}
+
+/** 持久化自动提交开关到 app_state_meta 表 */
+export function saveAutoCommitEnabled(projectId: string, enabled: boolean, db?: DatabaseService) {
+  if (!projectId || !projectId.trim()) return
+  const key = computeAutoCommitScope(projectId)
+  const resolvedDb = db ?? _db
+  if (!resolvedDb) return
+  const rawDb = resolvedDb.getRawDb() as any
+  const updatedAt = new Date().toISOString()
+  rawDb.prepare(`
+    INSERT INTO app_state_meta (meta_key, meta_value, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(meta_key) DO UPDATE SET
+      meta_value = excluded.meta_value,
+      updated_at = excluded.updated_at
+  `).run(key, enabled ? '1' : '0', updatedAt)
+}
+
+/** 从 app_state_meta 表加载自动提交开关，默认开启（true） */
+export function isAutoCommitEnabled(projectId: string, db?: DatabaseService): boolean {
+  if (!projectId || !projectId.trim()) return true
+  const key = computeAutoCommitScope(projectId)
+  const resolvedDb = db ?? _db
+  if (!resolvedDb) return true // 无数据库时默认开启
+  const rawDb = resolvedDb.getRawDb() as any
+  const row = rawDb.prepare(`
+    SELECT meta_value FROM app_state_meta WHERE meta_key = ?
+  `).get(key) as Record<string, unknown> | undefined
+  if (!row) return true // 未设置过，默认开启
+  const value = String(row.meta_value ?? '').trim()
+  return value !== '0' // 只有明确存储 '0' 才关闭
+}
+
+/* ------------------------------------------------------------------ */
 /*  风险评估                                                            */
 /* ------------------------------------------------------------------ */
 
+/** 将路径归一化为文件系统真实路径，用于可靠比较。 */
+function normalizePathForCompare(p: string): string {
+  try {
+    return fsSync.realpathSync.native(p)
+  } catch {
+    const missingParts: string[] = []
+    let current = p
+    while (true) {
+      const parent = path.dirname(current)
+      if (parent === current) {
+        const normalized = path.normalize(p)
+        return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+      }
+      try {
+        const realParent = fsSync.realpathSync.native(parent)
+        const basename = path.basename(current)
+        return path.join(realParent, basename, ...missingParts)
+      } catch {
+        missingParts.unshift(path.basename(current))
+        current = parent
+      }
+    }
+  }
+}
+
 function isPathWithinWorkspace(workspace: string, targetPath: string): boolean {
-  const normalizedWs = path.normalize(workspace)
-  const normalizedTarget = path.normalize(targetPath)
-  return normalizedTarget === normalizedWs || normalizedTarget.startsWith(`${normalizedWs}${path.sep}`)
+  const normalizedWs = normalizePathForCompare(workspace)
+  const normalizedTarget = normalizePathForCompare(targetPath)
+  return normalizedTarget === normalizedWs || normalizedTarget.startsWith(normalizedWs + path.sep)
 }
 
 /** 评估一批工具调用的风险等级 */
@@ -307,7 +374,7 @@ export function assessToolCallsRisk(toolCalls: ToolCall[], workspace?: string): 
           toolCallId: tc.id,
           toolName,
           level: 'warning',
-          reason: `桌面操作: ${toolName.replace(DESKTOP_TOOL_PREFIX, '')}`,
+          reason: `电脑操作: ${toolName.replace(DESKTOP_TOOL_PREFIX, '')}`,
           detail: info || '(无参数)',
         })
         continue
