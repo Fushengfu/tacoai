@@ -214,12 +214,6 @@ export const IpcChannel = {
   /** renderer → main, 语音识别请求（base64 音频 → 文本） */
   VOICE_RECOGNIZE: 'voice:recognize',
 
-  /** renderer → main, 推送 StepFun API Key 到主进程缓存（供 bridge 使用） */
-  VOICE_REGISTER_API_KEY: 'voice:register-api-key',
-
-  /** renderer → main, 推送 ASR 配置（提供商 + URL + Model）到主进程缓存 */
-  VOICE_REGISTER_CONFIG: 'voice:register-config',
-
   /** main → renderer, 自动检查发现有新版本可用 */
   APP_UPDATE_AVAILABLE: 'app:update-available',
 } as const

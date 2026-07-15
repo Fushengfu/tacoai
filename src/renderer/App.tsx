@@ -369,14 +369,23 @@ export default function App() {
       const activeSessionId = sessionId || thread.activeSessionId || thread.sessions[0]?.id
       if (activeSessionId) {
         void chat.ensureSessionLoaded(activeSessionId).then(() => {
-          const stats = chat.getProjectTokenStats(projectId)
-          const tokenUsage = (stats.totalTokens > 0) ? {
-            promptTokens: stats.inputTokens,
-            completionTokens: stats.outputTokens,
-            totalTokens: stats.totalTokens,
-            cachedTokens: stats.hitTokens,
+          const runStats = chat.getRunTokenStats(projectId)
+          const hasRunUsage = runStats.inputTokens > 0 || runStats.hitTokens > 0 || runStats.outputTokens > 0
+          const tokenUsage = hasRunUsage ? {
+            promptTokens: runStats.inputTokens,
+            completionTokens: runStats.outputTokens,
+            totalTokens: runStats.inputTokens + runStats.outputTokens,
+            cachedTokens: runStats.hitTokens,
           } : undefined
-          window.taco.bridge.notifySwitchProjectLoaded({ projectId, sessionId: activeSessionId, tokenUsage })
+
+          const projStats = chat.getProjectTokenStats(projectId)
+          const hasProjData = projStats.totalTokens > 0 || projStats.turns > 0
+          const projectTokenStats = hasProjData ? {
+            inputTokens: projStats.inputTokens,
+            outputTokens: projStats.outputTokens,
+            turns: projStats.turns,
+          } : undefined
+          window.taco.bridge.notifySwitchProjectLoaded({ projectId, sessionId: activeSessionId, tokenUsage, projectTokenStats })
         })
       }
     })

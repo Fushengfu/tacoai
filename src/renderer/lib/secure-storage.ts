@@ -14,13 +14,6 @@ export enum SecureStorageKey {
   API_KEY_ZHIPU = 'apiKey.zhipu',
   API_KEY_MOONSHOT = 'apiKey.moonshot',
   API_KEY_MINIMAX = 'apiKey.minimax',
-  API_KEY_STEPFUN = 'apiKey.stepfun',
-  /** 语音识别当前选中的提供商 */
-  ASR_PROVIDER = 'asr.provider',
-  /** 语音识别自定义 API URL */
-  ASR_API_URL = 'asr.apiUrl',
-  /** 语音识别自定义模型 */
-  ASR_MODEL = 'asr.model',
 }
 
 /**

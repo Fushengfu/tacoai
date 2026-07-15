@@ -79,6 +79,8 @@ export interface BridgeState {
   timestamp?: number
   /** 授权级别：standard | auto */
   authLevel?: string
+  /** 自动提交开关，默认开启 */
+  autoCommit?: boolean
 }
 
 /** Agent 步骤信息 */
@@ -202,6 +204,12 @@ export interface BridgeTokenUsage {
   completionTokens?: number
   totalTokens?: number
   cachedTokens?: number
+  /** 项目累计输入 token 数 */
+  projectInputTokens?: number
+  /** 项目累计输出 token 数 */
+  projectOutputTokens?: number
+  /** 项目累计对话轮次 */
+  projectTurns?: number
 }
 
 /** 文件变更通知 */
@@ -484,19 +492,6 @@ export interface BridgeOlderMessages {
   error?: string
 }
 
-/** StepFun API Key */
-export interface BridgeStepFunApiKey {
-  type: 'bridge:stepfun-api-key'
-  requestId?: string
-  apiKey: string | null
-}
-
-/** 请求 StepFun API Key */
-export interface BridgeGetStepFunApiKey {
-  type: 'bridge:get-stepfun-api-key'
-  requestId?: string
-}
-
 /* ------------------------------------------------------------------ */
 /*  Union 类型                                                         */
 /* ------------------------------------------------------------------ */
@@ -533,7 +528,6 @@ export type BridgeHostMessage =
   | BridgeMessageDetail
   | BridgeStepDetail
   | BridgeOlderMessages
-  | BridgeStepFunApiKey
   | BridgeAck
 
 /** Client → Host 的所有消息 */
@@ -559,7 +553,7 @@ export type BridgeClientMessage =
   | BridgePollTaskStatus
   | BridgeGetMessageDetail
   | BridgeGetStepDetail
-  | BridgeGetStepFunApiKey
+  | BridgeAck
 
 /** 移动端重试确认响应 */
 export interface BridgeRetryResponse {

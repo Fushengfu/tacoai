@@ -105,8 +105,18 @@ export function getLang(filePath: string): string {
  * 根据语言标识直接高亮代码（不依赖文件路径）。
  * 用于 MarkdownBubble 中代码块的语法高亮。
  */
+/** highlight.js 不支持高亮的语言（图表、配置文件等），直接按纯文本处理 */
+const NO_HIGHLIGHT_LANGS = new Set([
+  'mermaid', 'flowchart', 'graphviz', 'dot', 'plantuml',
+  'vega', 'vega-lite', 'nomnoml', 'wavedrom', 'blockdiag',
+])
+
 export function highlightByLang(code: string, lang: string): string {
   if (!lang || lang === 'plaintext' || lang === 'text') {
+    return escapeHtml(code)
+  }
+  // 未注册的语言（mermaid 等图表 DSL）不传给 highlight.js，避免内部 console.error 刷屏
+  if (NO_HIGHLIGHT_LANGS.has(lang) || !hljs.getLanguage(lang)) {
     return escapeHtml(code)
   }
   try {

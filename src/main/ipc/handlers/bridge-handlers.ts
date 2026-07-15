@@ -16,28 +16,11 @@ import { log, logError } from '../../infrastructure/logger'
 import { agentAbortControllers } from './chat-handlers'
 import { handleGatewayGetModels } from './gateway-handlers'
 import nodePath from 'node:path'
-import { getGlobalAuthLevel, setGlobalAuthLevel, saveAuthLevel } from '../../sdk/agent/tools'
+import { setGlobalAuthLevel, saveAuthLevel, loadAuthLevel, isAutoCommitEnabled, saveAutoCommitEnabled } from '../../sdk/agent/tools'
 
 /* ------------------------------------------------------------------ */
-/*  StepFun ASR API Key 缓存（渲染进程启动时通过 IPC 推送）              */
+/*  ASR 配置缓存（网关模式，统一使用网关 API Key）                      */
 /* ------------------------------------------------------------------ */
-
-/** 渲染进程推送的 StepFun API Key，供移动端 bridge 请求获取 */
-let _cachedStepFunApiKey: string | null = null
-
-/** 缓存 StepFun API Key（供 voice:register-stepfun-api-key IPC 调用），并主动推送给已连接的移动端 */
-export function setStepFunApiKey(key: string | null): void {
-  _cachedStepFunApiKey = key
-  // 主动推送给已连接的移动端
-  if (key) {
-    try {
-      getBridgeManager().sendHostMessage({
-        type: 'bridge:stepfun-api-key',
-        apiKey: key,
-      } as any)
-    } catch { /* bridge 未初始化时忽略 */ }
-  }
-}
 
 /** token 消耗缓存：projectId → tokenUsage，供 bridge:request-state 读取 */
 const tokenUsageCache = new Map<string, {
@@ -45,6 +28,14 @@ const tokenUsageCache = new Map<string, {
   completionTokens?: number
   totalTokens?: number
   cachedTokens?: number
+}>()
+
+/** 项目累计 token 统计缓存：projectId → projectTokenStats */
+const projectTokenStatsCache = new Map<string, {
+  inputTokens?: number
+  outputTokens?: number
+  cachedTokens?: number
+  turns?: number
 }>()
 
 /* ------------------------------------------------------------------ */
@@ -113,7 +104,7 @@ function buildNestedTree(
 
 /** 注册 renderer 项目切换完成回调：renderer 加载消息后推送 bridge:state 给移动端 */
 export function setupBridgeSwitchProjectLoadedHandler(): void {
-  ipcMain.on('bridge:switch-project-loaded', async (_event, payload: { projectId: string; sessionId: string; tokenUsage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; cachedTokens?: number } }) => {
+  ipcMain.on('bridge:switch-project-loaded', async (_event, payload: { projectId: string; sessionId: string; tokenUsage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; cachedTokens?: number }; projectTokenStats?: { inputTokens?: number; outputTokens?: number; cachedTokens?: number; turns?: number } }) => {
     try {
       const projectId = String(payload.projectId || '')
       const sessionId = String(payload.sessionId || '')
@@ -122,6 +113,10 @@ export function setupBridgeSwitchProjectLoadedHandler(): void {
       // 缓存 tokenUsage
       if (payload.tokenUsage) {
         tokenUsageCache.set(projectId, payload.tokenUsage)
+      }
+      // 缓存项目累计统计
+      if (payload.projectTokenStats) {
+        projectTokenStatsCache.set(projectId, payload.projectTokenStats)
       }
 
       const state = await getAppState()
@@ -140,6 +135,17 @@ export function setupBridgeSwitchProjectLoadedHandler(): void {
         })
       const activeAgentRequestId = hasActiveTask ? `agent-${sessionId}` : undefined
 
+      // 合并当前轮 token 和项目累计 token
+      const curUsage = tokenUsageCache.get(projectId) || {}
+      const projStats = projectTokenStatsCache.get(projectId) || {}
+      const mergedTokenUsage = {
+        ...curUsage,
+        ...(projStats.inputTokens !== undefined ? { projectInputTokens: projStats.inputTokens } : {}),
+        ...(projStats.outputTokens !== undefined ? { projectOutputTokens: projStats.outputTokens } : {}),
+        ...(projStats.cachedTokens !== undefined ? { projectCachedTokens: projStats.cachedTokens } : {}),
+        ...(projStats.turns !== undefined ? { projectTurns: projStats.turns } : {}),
+      }
+
       const mgr = getBridgeManager()
       mgr.sendHostMessage({
         type: 'bridge:state',
@@ -150,9 +156,10 @@ export function setupBridgeSwitchProjectLoadedHandler(): void {
         modelConfigId: activeThread.modelConfigId,
         threadTitle: activeThread.title,
         projectTitle: activeThread.title,
-        authLevel: getGlobalAuthLevel(),
+        authLevel: loadAuthLevel(activeThread.id),
+        autoCommit: isAutoCommitEnabled(activeThread.id),
         timestamp: Date.now(),
-        tokenUsage: tokenUsageCache.get(projectId),
+        tokenUsage: mergedTokenUsage,
         ...(activeAgentRequestId ? { activeAgentRequestId } : {}),
       } as any)
       log('BRIDGE_STATE_PUSHED_AFTER_SWITCH', {
@@ -162,6 +169,55 @@ export function setupBridgeSwitchProjectLoadedHandler(): void {
       }, 'bridge')
     } catch (err) {
       logError('bridge', '切换项目后推送 bridge:state 失败', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  })
+}
+
+/** 注册 renderer 实时推送 token 使用情况：每次 API 返回 token 数据时更新缓存并推送到移动端 */
+export function setupBridgeTokenUsageUpdateHandler(): void {
+  ipcMain.on('bridge:update-token-usage', (_event, payload: { projectId: string; tokenUsage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; cachedTokens?: number }; projectTokenStats?: { inputTokens?: number; outputTokens?: number; cachedTokens?: number; turns?: number } }) => {
+    try {
+      const projectId = String(payload.projectId || '')
+      if (!projectId) return
+
+      // 更新缓存
+      // tokenUsage：直接覆盖（renderer 已发送本轮累计值）
+      // projectTokenStats：累加（renderer 发送每次调用增量，跨调用/跨 agent loop 累计）
+      if (payload.tokenUsage) {
+        tokenUsageCache.set(projectId, payload.tokenUsage)
+      }
+      if (payload.projectTokenStats) {
+        const existing = projectTokenStatsCache.get(projectId) || {}
+        projectTokenStatsCache.set(projectId, {
+          inputTokens: (existing.inputTokens || 0) + (payload.projectTokenStats.inputTokens || 0),
+          outputTokens: (existing.outputTokens || 0) + (payload.projectTokenStats.outputTokens || 0),
+          cachedTokens: (existing.cachedTokens || 0) + (payload.projectTokenStats.cachedTokens || 0),
+          turns: (existing.turns || 0) + (payload.projectTokenStats.turns || 0),
+        })
+      }
+
+      // 不推送 bridge:state——避免频繁推送整个消息列表。
+      // 改为只推送 token 数据（轻量级更新，<1KB）
+      const curUsage = tokenUsageCache.get(projectId) || {}
+      const projStats = projectTokenStatsCache.get(projectId) || {}
+      const mergedTokenUsage = {
+        ...curUsage,
+        ...(projStats.inputTokens !== undefined ? { projectInputTokens: projStats.inputTokens } : {}),
+        ...(projStats.outputTokens !== undefined ? { projectOutputTokens: projStats.outputTokens } : {}),
+        ...(projStats.turns !== undefined ? { projectTurns: projStats.turns } : {}),
+      }
+
+      const mgr = getBridgeManager()
+      mgr.sendHostMessage({
+        type: 'bridge:token-usage',
+        threadId: projectId,
+        tokenUsage: mergedTokenUsage,
+        timestamp: Date.now(),
+      } as any)
+    } catch (err) {
+      logError('bridge', '更新 token 使用情况失败', {
         error: err instanceof Error ? err.message : String(err),
       })
     }
@@ -403,15 +459,6 @@ export function setupBridgeClientConnectedHandler(): void {
       // （哪些在处理中、活跃任务 ID 等），避免移动端重连后显示过期状态
       mgr.pushProjectsOnDemand(orderedProjectIds)
 
-      // 主动推送 StepFun API Key 给移动端（语音识别用）
-      if (_cachedStepFunApiKey) {
-        mgr.sendHostMessage({
-          type: 'bridge:stepfun-api-key',
-          apiKey: _cachedStepFunApiKey,
-        } as any)
-        log('BRIDGE_STEPFUN_API_KEY_PUSHED', {}, 'bridge')
-      }
-
       // 不再主动推送全量快照，改为等待手机端发送 bridge:request-state 请求
       // 手机端优先从本地 SQLite 缓存加载消息，按需请求快照
       log('BRIDGE_CLIENT_CONNECTED_NO_SNAPSHOT', {
@@ -596,7 +643,7 @@ export function setupBridgeDataHandler(): void {
           }
           try {
             const state = await getAppState()
-            const projectId = getBridgeManager().getActiveThreadId() || state.threadsState.activeThreadId
+            const projectId = String(msg.projectId || '').trim() || getBridgeManager().getActiveThreadId() || state.threadsState.activeThreadId
             if (projectId) {
               setGlobalAuthLevel(level as any)
               saveAuthLevel(projectId, level as any)
@@ -609,8 +656,53 @@ export function setupBridgeDataHandler(): void {
                 win.webContents.send('bridge:auth-level-changed', { level, projectId })
               }
             }
+            // 主动推送 bridge:state 给手机端，同步授权级别（仅含 authLevel，messages 为空不触发合并）
+            if (projectId) {
+              const mgr = getBridgeManager()
+              mgr.sendHostMessage({
+                type: 'bridge:state',
+                messages: [],
+                threadId: projectId,
+                authLevel: level,
+                timestamp: Date.now(),
+              } as any)
+            }
           } catch (err) {
             respond({ type: 'bridge:auth-level-set', requestId, success: false, error: err instanceof Error ? err.message : String(err) })
+          }
+          break
+        }
+
+        /* ---- 移动端设置自动提交开关 ---- */
+        case 'bridge:set-auto-commit': {
+          const enabled = Boolean(msg.enabled)
+          try {
+            const state = await getAppState()
+            const projectId = getBridgeManager().getActiveThreadId() || state.threadsState.activeThreadId
+            if (projectId) {
+              saveAutoCommitEnabled(projectId, enabled)
+            }
+            respond({ type: 'bridge:auto-commit-set', requestId, success: true, enabled })
+            log('BRIDGE_AUTO_COMMIT_SET', { enabled, projectId }, 'bridge')
+            // 通知所有渲染进程同步自动提交状态（手机端切换时桌面端 UI 同步）
+            for (const win of BrowserWindow.getAllWindows()) {
+              if (!win.isDestroyed()) {
+                win.webContents.send('bridge:auto-commit-changed', { enabled, projectId })
+              }
+            }
+            // 主动推送 bridge:state 给手机端同步 autoCommit 状态
+            if (projectId) {
+              const mgr = getBridgeManager()
+              mgr.sendHostMessage({
+                type: 'bridge:state',
+                messages: [],
+                threadId: projectId,
+                autoCommit: enabled,
+                timestamp: Date.now(),
+              } as any)
+            }
+          } catch (err) {
+            respond({ type: 'bridge:auto-commit-set', requestId, success: false, error: err instanceof Error ? err.message : String(err) })
           }
           break
         }
@@ -650,6 +742,17 @@ export function setupBridgeDataHandler(): void {
               // 关键修复：只在有活跃任务时推送 activeAgentRequestId
               const activeAgentRequestId = hasActiveTask ? `agent-${resolvedSessionId}` : undefined
 
+              // 合并当前轮 token 和项目累计 token
+              const curUsage = tokenUsageCache.get(activeThread.id) || {}
+              const projStats = projectTokenStatsCache.get(activeThread.id) || {}
+              const mergedTokenUsage = {
+                ...curUsage,
+                ...(projStats.inputTokens !== undefined ? { projectInputTokens: projStats.inputTokens } : {}),
+                ...(projStats.outputTokens !== undefined ? { projectOutputTokens: projStats.outputTokens } : {}),
+                ...(projStats.cachedTokens !== undefined ? { projectCachedTokens: projStats.cachedTokens } : {}),
+                ...(projStats.turns !== undefined ? { projectTurns: projStats.turns } : {}),
+              }
+
               respond({
                 type: 'bridge:state',
                 requestId,
@@ -660,9 +763,10 @@ export function setupBridgeDataHandler(): void {
                 modelConfigId: activeThread.modelConfigId,
                 threadTitle: activeThread.title,
                 projectTitle: activeThread.title,
-                authLevel: getGlobalAuthLevel(),
+                authLevel: loadAuthLevel(activeThread.id),
+                autoCommit: isAutoCommitEnabled(activeThread.id),
                 timestamp: Date.now(),
-                tokenUsage: tokenUsageCache.get(activeThread.id),
+                tokenUsage: mergedTokenUsage,
                 ...(activeAgentRequestId ? { activeAgentRequestId } : {}),
               })
               log('BRIDGE_STATE_REQUEST_HANDLED', {
@@ -727,7 +831,7 @@ export function setupBridgeDataHandler(): void {
           // 网关内置模型：复用桌面端已有的 handleGatewayGetModels，保持逻辑完全一致
           let gatewayModels: Array<{
             id: string; provider: string; name: string; displayName: string;
-            model: string; supportsVision: boolean; supportsReasoning?: boolean; source: string;
+            model: string; apiKey: string; supportsVision: boolean; supportsReasoning?: boolean; source: string;
           }> = []
           try {
             const gwResult = await handleGatewayGetModels(null as any)
@@ -742,6 +846,7 @@ export function setupBridgeDataHandler(): void {
               name: String(m.name ?? ''),
               displayName: String(m.displayName ?? m.name ?? ''),
               model: String(m.model ?? ''),
+              apiKey: String(m.apiKey ?? ''),
               supportsVision: Boolean(m.supportsVision),
               supportsReasoning: Boolean(m.supportsReasoning),
               source: 'system' as const,
@@ -754,7 +859,7 @@ export function setupBridgeDataHandler(): void {
           }
 
           // 合并去重：本地模型优先（id 相同时保留本地）
-          type ModelItem = { id: string; provider: string; name: string; displayName: string; model: string; supportsVision: boolean; supportsReasoning?: boolean; source: string }
+          type ModelItem = { id: string; provider: string; name: string; displayName: string; model: string; apiKey?: string; supportsVision: boolean; supportsReasoning?: boolean; source: string }
           const mergedMap = new Map<string, ModelItem>()
           for (const m of localModels) {
             mergedMap.set(m.id, m)
@@ -990,16 +1095,6 @@ export function setupBridgeDataHandler(): void {
           break
         }
 
-        /* ---- 获取 StepFun API Key（移动端语音识别用） ---- */
-        case 'bridge:get-stepfun-api-key': {
-          respond({
-            type: 'bridge:stepfun-api-key',
-            requestId,
-            apiKey: _cachedStepFunApiKey || null,
-          })
-          break
-        }
-
         default:
           respond({ type: 'error', requestId, message: `Unknown request type: ${type}` })
           break
@@ -1025,7 +1120,6 @@ export function setupBridgeDataHandler(): void {
         'bridge:request-state': 'bridge:state',
         'bridge:set-auth-level': 'bridge:auth-level-set',
         'bridge:upload-token-request': 'bridge:upload-token-response',
-        'bridge:get-stepfun-api-key': 'bridge:stepfun-api-key',
       }
       respond({
         type: ERROR_RESPONSE_TYPE_MAP[type] || type,
@@ -1063,9 +1157,32 @@ export function setupBridgeStateSnapshotResponse(): void {
       totalTokens?: number
       cachedTokens?: number
     }
+    projectTokenStats?: {
+      inputTokens?: number
+      outputTokens?: number
+      cachedTokens?: number
+      turns?: number
+    }
   }) => {
     try {
       const mgr = getBridgeManager()
+
+      // 缓存项目累计统计
+      if (payload.projectTokenStats) {
+        projectTokenStatsCache.set(payload.threadId, payload.projectTokenStats)
+      }
+
+      // 合并当前轮 token 和项目累计 token
+      const curUsage = payload.tokenUsage || {}
+      const projStats = payload.projectTokenStats || {}
+      const mergedTokenUsage = {
+        ...curUsage,
+        ...(projStats.inputTokens !== undefined ? { projectInputTokens: projStats.inputTokens } : {}),
+        ...(projStats.outputTokens !== undefined ? { projectOutputTokens: projStats.outputTokens } : {}),
+        ...(projStats.cachedTokens !== undefined ? { projectCachedTokens: projStats.cachedTokens } : {}),
+        ...(projStats.turns !== undefined ? { projectTurns: projStats.turns } : {}),
+      }
+
       mgr.sendHostMessage({
         type: 'bridge:state',
         messages: stripAgentStepsForBridge(stripDataUrlFromMessages(payload.messages)) as BridgeChatMessageType[],
@@ -1076,8 +1193,9 @@ export function setupBridgeStateSnapshotResponse(): void {
         modelConfigId: payload.modelConfigId,
         threadTitle: payload.threadTitle,
         projectTitle: payload.projectTitle,
-        tokenUsage: payload.tokenUsage,
-        authLevel: getGlobalAuthLevel(),
+        tokenUsage: mergedTokenUsage,
+        authLevel: loadAuthLevel(payload.threadId),
+        autoCommit: isAutoCommitEnabled(payload.threadId),
         timestamp: Date.now(),
       })
       log('BRIDGE_STATE_PUSHED', {

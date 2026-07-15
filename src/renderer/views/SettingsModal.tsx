@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { PROVIDER_DEFAULT_BASE_URLS } from '../constants'
 import { GeneralSettingsPanel } from './settings/GeneralSettingsPanel'
-import { secureStorage, SecureStorageKey } from '../lib/secure-storage'
 
 type SettingsPageProps = {
   onClose: () => void
@@ -24,14 +23,6 @@ export function SettingsPage({
   const [recallDebugEnabled, setRecallDebugEnabled] = useState<boolean>(() =>
     localStorage.getItem('taco.recallDebugEnabled') === 'true'
   )
-  const [stepfunApiKey, setStepfunApiKey] = useState('')
-  const [stepfunApiKeyRevealed, setStepfunApiKeyRevealed] = useState(false)
-
-  // ASR 提供商配置
-  const [asrProvider, setAsrProvider] = useState('stepfun')
-  const [asrApiUrl, setAsrApiUrl] = useState('')
-  const [asrModel, setAsrModel] = useState('')
-
   // 自动授权分类
   const [autoApproveCategories, setAutoApproveCategoriesState] = useState<Set<string>>(() => {
     try {
@@ -109,81 +100,6 @@ export function SettingsPage({
     if (workspace) loadProjectRulesFromFile(workspace)
   }, [workspace, loadProjectRulesFromFile])
 
-  // 加载 ASR 配置（API Key + 提供商 + URL + Model）
-  useEffect(() => {
-    const loadAsrConfig = async () => {
-      const [key, provider, url, model] = await Promise.all([
-        secureStorage.get(SecureStorageKey.API_KEY_STEPFUN),
-        secureStorage.get(SecureStorageKey.ASR_PROVIDER),
-        secureStorage.get(SecureStorageKey.ASR_API_URL),
-        secureStorage.get(SecureStorageKey.ASR_MODEL),
-      ])
-      if (key) setStepfunApiKey(key)
-      if (provider) setAsrProvider(provider)
-      if (url) setAsrApiUrl(url)
-      if (model) setAsrModel(model)
-    }
-    loadAsrConfig()
-  }, [])
-
-  // 启动时推送 ASR 配置到主进程
-  useEffect(() => {
-    const pushAsrConfig = async () => {
-      const [key, provider, url, model] = await Promise.all([
-        secureStorage.get(SecureStorageKey.API_KEY_STEPFUN),
-        secureStorage.get(SecureStorageKey.ASR_PROVIDER),
-        secureStorage.get(SecureStorageKey.ASR_API_URL),
-        secureStorage.get(SecureStorageKey.ASR_MODEL),
-      ])
-      window.taco.voice.registerApiKey(key ?? null)
-      if (provider || url || model) {
-        window.taco.voice.registerConfig({
-          provider: provider || 'stepfun',
-          apiUrl: url || '',
-          model: model || '',
-        })
-      }
-    }
-    pushAsrConfig()
-  }, [])
-
-  const handleStepfunApiKeyChange = useCallback((val: string) => {
-    setStepfunApiKey(val)
-    if (val.trim()) {
-      secureStorage.set(SecureStorageKey.API_KEY_STEPFUN, val.trim())
-      window.taco.voice.registerApiKey(val.trim())
-    } else {
-      secureStorage.delete(SecureStorageKey.API_KEY_STEPFUN)
-      window.taco.voice.registerApiKey(null)
-    }
-  }, [])
-
-  const handleAsrProviderChange = useCallback((val: string) => {
-    setAsrProvider(val)
-    secureStorage.set(SecureStorageKey.ASR_PROVIDER, val)
-    window.taco.voice.registerConfig({ provider: val as any })
-  }, [])
-
-  const handleAsrApiUrlChange = useCallback((val: string) => {
-    setAsrApiUrl(val)
-    if (val.trim()) {
-      secureStorage.set(SecureStorageKey.ASR_API_URL, val.trim())
-    } else {
-      secureStorage.delete(SecureStorageKey.ASR_API_URL)
-    }
-    window.taco.voice.registerConfig({ apiUrl: val || '' })
-  }, [])
-
-  const handleAsrModelChange = useCallback((val: string) => {
-    setAsrModel(val)
-    if (val.trim()) {
-      secureStorage.set(SecureStorageKey.ASR_MODEL, val.trim())
-    } else {
-      secureStorage.delete(SecureStorageKey.ASR_MODEL)
-    }
-    window.taco.voice.registerConfig({ model: val || '' })
-  }, [])
-
   return (
     <main className="settings-page">
       <header className="settings-header">
@@ -211,11 +127,6 @@ export function SettingsPage({
           projectRulesFilePath=".taco/rules/rules.md"
           projectRulesLoading={projectRulesLoading}
           autoApproveCategories={autoApproveCategories}
-          stepfunApiKey={stepfunApiKey}
-          stepfunApiKeyRevealed={stepfunApiKeyRevealed}
-          asrProvider={asrProvider}
-          asrApiUrl={asrApiUrl}
-          asrModel={asrModel}
           onBrowserDebugModeChange={(val) => {
             setBrowserDebugMode(val)
             localStorage.setItem('taco.browserDebugMode', String(val))
@@ -234,11 +145,6 @@ export function SettingsPage({
           onProjectRulesChange={handleSaveProjectRules}
           onOpenLogDir={() => window.taco.shell.openLogDir({ projectId, workspace: workspace || undefined })}
           onUpdateAutoApproveCategories={updateAutoApproveCategories}
-          onStepfunApiKeyChange={handleStepfunApiKeyChange}
-          onToggleStepfunApiKeyReveal={() => setStepfunApiKeyRevealed((prev) => !prev)}
-          onAsrProviderChange={handleAsrProviderChange}
-          onAsrApiUrlChange={handleAsrApiUrlChange}
-          onAsrModelChange={handleAsrModelChange}
         />
       </div>
     </main>

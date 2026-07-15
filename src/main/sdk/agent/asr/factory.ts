@@ -2,38 +2,17 @@
  * ASR Provider 工厂
  *
  * 根据配置创建对应的 ASR 适配器实例。
- * 内置预置平台映射表（stepfun / aliyun / tencent / baidu / openai / custom）。
+ * 当前仅支持网关代理模式（gateway provider）。
  */
 
 import type { AsrProvider, AsrProviderConfig, AsrProviderId } from './types'
 import { AsrError } from './types'
-import { StepFunAsrProvider } from './stepfun-asr'
+import { GatewayAsrProvider } from './client'
 
 /* ---------- 预置提供商注册表 ---------- */
 const BUILTIN_PROVIDERS: Record<string, () => AsrProvider> = {
-  stepfun: () => new StepFunAsrProvider(),
-  // 后续 Phase 2 按需添加：
-  // aliyun:   () => new AliyunAsrProvider(),
-  // tencent:  () => new TencentAsrProvider(),
-  // baidu:    () => new BaiduAsrProvider(),
-  // openai:   () => new OpenAiAsrProvider(),
-  // custom:   () => new CustomAsrProvider(),
+  gateway: () => new GatewayAsrProvider(),
 }
-
-/* ---------- 可用提供商列表（供设置页面下拉框使用） ---------- */
-export const AVAILABLE_PROVIDERS: Array<{
-  id: AsrProviderId
-  displayName: string
-  description: string
-}> = [
-  { id: 'stepfun', displayName: 'StepFun', description: '阶跃星辰 ASR（stepaudio-2.5-asr）' },
-  // 后续 Phase 2 按需添加：
-  // { id: 'aliyun',  displayName: '阿里云',  description: '阿里云一句话识别' },
-  // { id: 'tencent', displayName: '腾讯云',  description: '腾讯云一句话识别' },
-  // { id: 'baidu',   displayName: '百度',    description: '百度短语音识别' },
-  // { id: 'openai',  displayName: 'OpenAI',  description: 'OpenAI Whisper API' },
-  // { id: 'custom',  displayName: '自定义',  description: '自定义 ASR 接口（URL + 字段映射）' },
-]
 
 /* ---------- 工厂 ---------- */
 export class AsrProviderFactory {
@@ -41,7 +20,7 @@ export class AsrProviderFactory {
 
   /**
    * 根据配置获取 ASR Provider 实例。
-   * 同一 provider id + apiUrl + model 组合会被缓存复用。
+   * 同一 provider id 组合会被缓存复用。
    */
   static getProvider(config: AsrProviderConfig): AsrProvider {
     const cacheKey = `${config.provider}\x00${config.apiUrl ?? ''}\x00${config.model ?? ''}`

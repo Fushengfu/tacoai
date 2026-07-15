@@ -24,6 +24,7 @@ import type {
 } from '../../shared/ipc'
 import type { RiskCategory } from '../sdk/agent/tools'
 import { setAutoApproveCategories, setGlobalAuthLevel, saveAuthLevel, isAutoCommitEnabled, saveAutoCommitEnabled } from '../sdk/agent/tools'
+import { getBridgeManager } from '../bridge/bridge-manager'
 import type { AuthLevel } from '../sdk/agent/tools'
 import { gitLog, gitCommit, gitRollback, gitCommitFiles, gitStatus, gitFileChange, gitStageFiles, gitStageAll } from '../sdk/agent/git/service'
 import { initSkills, listSkills, installSkill, uninstallSkill, toggleSkill, refreshSkills, previewSkill, checkSkillUpdate } from '../sdk/agent/skills/service'
@@ -65,7 +66,7 @@ import {
   setupBridgeStateSnapshotResponse,
   setupBridgeDataHandler,
   setupBridgeSwitchProjectLoadedHandler,
-  setStepFunApiKey,
+  setupBridgeTokenUsageUpdateHandler,
 } from './handlers/bridge-handlers'
 
 import {
@@ -117,10 +118,7 @@ import {
 
 import {
   handleVoiceRecognize,
-  setCachedAsrApiKey,
-  setCachedAsrConfig,
 } from './handlers/voice-handlers'
-import { AsrProviderFactory } from '../sdk/agent/asr/factory'
 
 /* ------------------------------------------------------------------ */
 /*  Registration                                                       */
@@ -159,6 +157,19 @@ export function registerIpcHandlers() {
     if (level === 'auto' || level === 'standard' || level === 'manual') {
       saveAuthLevel(projectId, level as AuthLevel)
       setGlobalAuthLevel(level as AuthLevel)
+      // 主动推送 bridge:state 给手机端，同步授权级别
+      try {
+        getBridgeManager().sendHostMessage({
+          type: 'bridge:state',
+          messages: [],
+          threadId: projectId,
+          authLevel: level,
+          timestamp: Date.now(),
+        } as any)
+        log('BRIDGE_AUTH_LEVEL_SYNCED_TO_MOBILE', { level, projectId }, 'bridge')
+      } catch {
+        // bridge 未初始化时忽略
+      }
     }
   })
 
@@ -166,6 +177,17 @@ export function registerIpcHandlers() {
     const { projectId, enabled } = payload
     if (!projectId || !projectId.trim()) return
     saveAutoCommitEnabled(projectId, enabled)
+    // 同步到手机端：当桌面端切换自动提交时，推送 bridge:state 通知手机
+    try {
+      const mgr = getBridgeManager()
+      mgr.sendHostMessage({
+        type: 'bridge:state',
+        messages: [],
+        threadId: projectId,
+        autoCommit: enabled,
+        timestamp: Date.now(),
+      } as any)
+    } catch { /* bridge 未初始化时忽略 */ }
   })
 
   ipcMain.handle(IpcChannel.AGENT_GET_AUTO_COMMIT, async (_e, payload: { projectId: string }) => {
@@ -297,22 +319,13 @@ export function registerIpcHandlers() {
   setupBridgeStateSnapshotResponse()
   setupBridgeDataHandler()
   setupBridgeSwitchProjectLoadedHandler()
+  setupBridgeTokenUsageUpdateHandler()
 
   // Upload
   ipcMain.handle(IpcChannel.IMAGE_UPLOAD, handleImageUpload)
 
   // Voice
   ipcMain.handle(IpcChannel.VOICE_RECOGNIZE, handleVoiceRecognize)
-  ipcMain.on(IpcChannel.VOICE_REGISTER_API_KEY, (_e, key: string | null) => {
-    setCachedAsrApiKey(key)
-    // 同时保持 bridge 推送兼容（推送给移动端）
-    setStepFunApiKey(key)
-  })
-
-  ipcMain.on(IpcChannel.VOICE_REGISTER_CONFIG, (_e, config: { provider?: string; apiUrl?: string; model?: string }) => {
-    setCachedAsrConfig(config as any)
-    AsrProviderFactory.clearCache()
-  })
 }
 
 function buildLogScope(projectId?: string, workspace?: string): string | undefined {

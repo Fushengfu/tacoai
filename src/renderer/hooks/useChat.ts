@@ -1095,6 +1095,10 @@ export function useChat() {
     let usageTurnCounted = false
     const projectKey = String(projectId ?? threadId ?? '').trim()
 
+    // 本地同步累加器，用于实时推送 token 到 bridge（避免 React state 异步延迟）
+    const runAccum = { inputTokens: 0, hitTokens: 0, outputTokens: 0 }
+    const projAccum = { inputTokens: 0, hitTokens: 0, outputTokens: 0, turns: 0 }
+
     // 重置本轮次任务循环 token 统计
     setRunTokenStatsByThread((prev) => {
       if (!prev[threadId]) return prev
@@ -1134,6 +1138,7 @@ export function useChat() {
     /** 追踪每次 API 调用的 token 使用 */
     const trackRequestUsage = (usage?: TokenUsageSnapshot) => {
       if (!usage) return
+      const hasNewTurn = !usageTurnCounted
       const currentTotal = resolveUsageTotalTokens(usage)
       if (typeof currentTotal === 'number' && Number.isFinite(currentTotal)) {
         setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: currentTotal }))
@@ -1152,6 +1157,37 @@ export function useChat() {
               outputTokens: base.outputTokens + currentAgg.outputTokens,
             },
           }
+        })
+      }
+      // 同步更新本地累加器并实时推送 token 到 bridge（手机端浮动卡片实时更新）
+      const hasCost = currentAgg.totalTokens > 0 || currentAgg.inputTokens > 0 || currentAgg.outputTokens > 0
+      if (hasCost && projectKey) {
+        runAccum.inputTokens += currentAgg.inputTokens
+        runAccum.hitTokens += currentAgg.hitTokens
+        runAccum.outputTokens += currentAgg.outputTokens
+        projAccum.inputTokens += currentAgg.inputTokens
+        projAccum.hitTokens += currentAgg.hitTokens
+        projAccum.outputTokens += currentAgg.outputTokens
+        if (hasNewTurn) {
+          projAccum.turns += 1
+        }
+        // 实时推送 token 使用情况到主进程，主进程转发到手机端
+        // tokenUsage 发送本轮累计（主进程直接覆盖，显示"本轮"用量）
+        // projectTokenStats 发送每次调用增量（主进程累加，显示"项目累计"用量）
+        window.taco.bridge.notifyTokenUsageUpdated({
+          projectId: projectKey,
+          tokenUsage: {
+            promptTokens: runAccum.inputTokens,
+            completionTokens: runAccum.outputTokens,
+            totalTokens: runAccum.inputTokens + runAccum.outputTokens,
+            cachedTokens: runAccum.hitTokens,
+          },
+          projectTokenStats: {
+            inputTokens: currentAgg.inputTokens,
+            outputTokens: currentAgg.outputTokens,
+            cachedTokens: currentAgg.hitTokens,
+            turns: hasNewTurn ? 1 : 0,
+          },
         })
       }
     }
