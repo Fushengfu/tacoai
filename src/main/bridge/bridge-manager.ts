@@ -602,8 +602,7 @@ export class BridgeManager {
       case 'bridge:get-step-detail':
       case 'bridge:poll-task-status':
       case 'bridge:upload-token-request':
-      case 'bridge:set-auth-level':
-      case 'bridge:get-stepfun-api-key': {
+      case 'bridge:set-auth-level': {
         this.lastHeartbeatReceived = Date.now()
         if (this.dataHandler) {
           const respond = (data: Record<string, unknown>) => {

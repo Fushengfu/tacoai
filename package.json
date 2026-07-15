@@ -1,7 +1,7 @@
 {
   "name": "Taco",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Taco AI - 智能助手",
   "author": {
     "name": "Fushengfu",
@@ -60,7 +60,9 @@
       ],
       "category": "public.app-category.developer-tools",
       "hardenedRuntime": true,
-      "gatekeeperAssess": false
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "win": {
       "icon": "build/icon.ico",

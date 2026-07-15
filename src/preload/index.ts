@@ -451,15 +451,9 @@ const tacoApi: TacoApi = {
         ipcRenderer.removeListener(IpcChannel.VOICE_TOGGLE, handler)
       }
     },
-    /** 语音识别：发送 base64 音频到主进程，调用 StepFun ASR */
+    /** 语音识别：发送 base64 音频到主进程，通过网关代理调用 ASR */
     recognize: (audioBase64: string, apiKey?: string): Promise<{ text: string; error?: string }> =>
       ipcRenderer.invoke(IpcChannel.VOICE_RECOGNIZE, { audioBase64, apiKey }),
-    /** 推送 StepFun API Key 到主进程缓存（供 bridge 移动端语音识别使用） */
-    registerApiKey: (key: string | null): void =>
-      ipcRenderer.send(IpcChannel.VOICE_REGISTER_API_KEY, key),
-    /** 推送 ASR 配置到主进程缓存（提供商 + URL + Model） */
-    registerConfig: (config: { provider?: string; apiUrl?: string; model?: string }): void =>
-      ipcRenderer.send(IpcChannel.VOICE_REGISTER_CONFIG, config),
   },
   bridge: {
     /** 获取手机端 APK 下载信息（从版本检查 API 获取 download_url） */
@@ -503,8 +497,13 @@ const tacoApi: TacoApi = {
     },
 
     /** 通知主进程：移动端请求的项目切换已完成，消息已加载，可以推送 bridge:state */
-    notifySwitchProjectLoaded: (data: { projectId: string; sessionId: string; tokenUsage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; cachedTokens?: number } }) => {
+    notifySwitchProjectLoaded: (data: { projectId: string; sessionId: string; tokenUsage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; cachedTokens?: number }; projectTokenStats?: { inputTokens?: number; outputTokens?: number; cachedTokens?: number; turns?: number } }) => {
       ipcRenderer.send('bridge:switch-project-loaded', data)
+    },
+
+    /** 通知主进程：本轮 token 使用情况已更新（每次 API 返回 usage 时调用） */
+    notifyTokenUsageUpdated: (data: { projectId: string; tokenUsage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; cachedTokens?: number }; projectTokenStats?: { inputTokens?: number; outputTokens?: number; cachedTokens?: number; turns?: number } }) => {
+      ipcRenderer.send('bridge:update-token-usage', data)
     },
 
     onClientMessage: (callback: (msg: Record<string, unknown>) => void) => {
@@ -568,6 +567,15 @@ const tacoApi: TacoApi = {
       ipcRenderer.on('bridge:auth-level-changed', handler)
       return () => {
         ipcRenderer.removeListener('bridge:auth-level-changed', handler)
+      }
+    },
+
+    /** 监听手机端切换自动提交，桌面端同步更新 UI */
+    onAutoCommitChanged: (callback: (data: { enabled: boolean; projectId: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: { enabled: boolean; projectId: string }) => callback(data)
+      ipcRenderer.on('bridge:auto-commit-changed', handler)
+      return () => {
+        ipcRenderer.removeListener('bridge:auto-commit-changed', handler)
       }
     },
   }

@@ -342,27 +342,6 @@ export function ChatPanel({
   
   const { isRecording, elapsedSeconds, toggleRecording } = useVoiceInput({ onTextReady: handleVoiceTextReady })
 
-  // 启动时推送 ASR 配置到主进程缓存（供 bridge 移动端语音识别使用）
-  useEffect(() => {
-    import('../../lib/secure-storage').then(({ secureStorage, SecureStorageKey }) => {
-      Promise.all([
-        secureStorage.get(SecureStorageKey.API_KEY_STEPFUN),
-        secureStorage.get(SecureStorageKey.ASR_PROVIDER),
-        secureStorage.get(SecureStorageKey.ASR_API_URL),
-        secureStorage.get(SecureStorageKey.ASR_MODEL),
-      ]).then(([key, provider, apiUrl, model]) => {
-        window.taco.voice.registerApiKey(key ?? null)
-        if (provider || apiUrl || model) {
-          window.taco.voice.registerConfig({
-            provider: provider || 'stepfun',
-            apiUrl: apiUrl || '',
-            model: model || '',
-          })
-        }
-      }).catch(() => {})
-    }).catch(() => {})
-  }, [])
-
   // ── 授权级别（跟随项目持久化）──
   const [authLevel, setAuthLevel] = useState<'auto' | 'standard'>(() => {
     if (projectId) {
@@ -388,6 +367,16 @@ export function ChatPanel({
       if (changedProjectId !== projectId) return
       setAuthLevel(level)
       localStorage.setItem(`taco-auth-level:${projectId}`, level)
+    })
+    return unsubscribe
+  }, [projectId])
+
+  // ── 监听手机端切换自动提交，同步更新桌面端 UI ──
+  useEffect(() => {
+    if (!projectId) return
+    const unsubscribe = window.taco.bridge.onAutoCommitChanged(({ enabled, projectId: changedProjectId }) => {
+      if (changedProjectId !== projectId) return
+      setAutoCommit(enabled)
     })
     return unsubscribe
   }, [projectId])

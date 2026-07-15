@@ -16,5 +16,10 @@ usage.md
 *.md.bak
 桌面端*.md
 *.png.bak
+dist/
+dist-preload/
+dist-main/
+release/
+.taco/screenshots/
 
 .DS_Store

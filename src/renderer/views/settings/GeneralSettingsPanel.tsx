@@ -6,14 +6,6 @@ type GeneralSettingsPanelProps = {
   projectRulesFilePath: string
   projectRulesLoading: boolean
   autoApproveCategories: Set<string>
-  stepfunApiKey: string
-  stepfunApiKeyRevealed: boolean
-  /** ASR 提供商 */
-  asrProvider: string
-  /** ASR 自定义 API URL */
-  asrApiUrl: string
-  /** ASR 自定义模型 */
-  asrModel: string
   onBrowserDebugModeChange: (val: boolean) => void
   onBrowserHiddenModeChange: (val: boolean) => void
   onRecallDebugEnabledChange: (val: boolean) => void
@@ -21,23 +13,7 @@ type GeneralSettingsPanelProps = {
   onProjectRulesChange?: (rules: string) => void
   onOpenLogDir: () => void
   onUpdateAutoApproveCategories: (categories: Set<string>) => void
-  onStepfunApiKeyChange: (val: string) => void
-  onToggleStepfunApiKeyReveal: () => void
-  onAsrProviderChange: (val: string) => void
-  onAsrApiUrlChange: (val: string) => void
-  onAsrModelChange: (val: string) => void
 }
-
-/** 可用 ASR 提供商列表 */
-const ASR_PROVIDER_OPTIONS: Array<{ id: string; label: string; desc: string }> = [
-  { id: 'stepfun', label: 'StepFun', desc: '阶跃星辰 ASR（stepaudio-2.5-asr）' },
-  // 后续 Phase 2 按需添加：
-  // { id: 'aliyun',  label: '阿里云',  desc: '阿里云一句话识别' },
-  // { id: 'tencent', label: '腾讯云',  desc: '腾讯云一句话识别' },
-  // { id: 'baidu',   label: '百度',    desc: '百度短语音识别' },
-  // { id: 'openai',  label: 'OpenAI',  desc: 'OpenAI Whisper API' },
-  // { id: 'custom',  label: '自定义',  desc: '自定义 ASR 接口（URL + 字段映射）' },
-]
 
 export function GeneralSettingsPanel({
   browserDebugMode,
@@ -47,11 +23,6 @@ export function GeneralSettingsPanel({
   projectRulesFilePath,
   projectRulesLoading,
   autoApproveCategories,
-  stepfunApiKey,
-  stepfunApiKeyRevealed,
-  asrProvider,
-  asrApiUrl,
-  asrModel,
   onBrowserDebugModeChange,
   onBrowserHiddenModeChange,
   onRecallDebugEnabledChange,
@@ -59,11 +30,6 @@ export function GeneralSettingsPanel({
   onProjectRulesChange,
   onOpenLogDir,
   onUpdateAutoApproveCategories,
-  onStepfunApiKeyChange,
-  onToggleStepfunApiKeyReveal,
-  onAsrProviderChange,
-  onAsrApiUrlChange,
-  onAsrModelChange,
 }: GeneralSettingsPanelProps) {
   const handleAutoApproveChange = (catId: string, checked: boolean, level?: string) => {
     // danger 级别勾选时二次确认
@@ -111,77 +77,6 @@ export function GeneralSettingsPanel({
             保存项目规则
           </button>
         </div>
-      </div>
-
-      {/* 语音识别 */}
-      <div className="settings-card">
-        <div className="settings-card-title">语音识别</div>
-        <div className="settings-card-desc">
-          选择语音识别服务提供商。当前仅支持 StepFun（stepaudio-2.5-asr，0.15 元/小时），
-          后续将支持阿里云、腾讯云、百度、OpenAI Whisper 等平台。
-        </div>
-
-        {/* 提供商选择 */}
-        <label className="settings-field">
-          <span>提供商</span>
-          <select
-            value={asrProvider}
-            onChange={(e) => onAsrProviderChange(e.target.value)}
-            className="settings-select"
-          >
-            {ASR_PROVIDER_OPTIONS.map((opt) => (
-              <option key={opt.id} value={opt.id}>{opt.label} — {opt.desc}</option>
-            ))}
-          </select>
-        </label>
-
-        {/* API Key */}
-        <label className="settings-field">
-          <span>API Key</span>
-          <div className="api-key-row">
-            <input
-              type={stepfunApiKeyRevealed ? 'text' : 'password'}
-              value={stepfunApiKey}
-              onChange={(e) => onStepfunApiKeyChange(e.target.value)}
-              placeholder="sk-..."
-              aria-label="ASR API Key"
-            />
-            <button
-              type="button"
-              className="reveal-btn"
-              title={stepfunApiKeyRevealed ? '隐藏 API Key' : '显示 API Key'}
-              onClick={onToggleStepfunApiKeyReveal}
-            >
-              {stepfunApiKeyRevealed ? '隐藏' : '显示'}
-            </button>
-          </div>
-        </label>
-
-        {/* 自定义 API URL */}
-        <label className="settings-field">
-          <span>API 地址（可选）</span>
-          <input
-            type="text"
-            value={asrApiUrl}
-            onChange={(e) => onAsrApiUrlChange(e.target.value)}
-            placeholder="留空使用默认地址"
-            aria-label="ASR API 地址"
-          />
-          <small className="settings-field-hint">自定义 ASR 接口地址，留空则使用所选提供商的默认地址。</small>
-        </label>
-
-        {/* 自定义模型 */}
-        <label className="settings-field">
-          <span>模型（可选）</span>
-          <input
-            type="text"
-            value={asrModel}
-            onChange={(e) => onAsrModelChange(e.target.value)}
-            placeholder="留空使用默认模型"
-            aria-label="ASR 模型名称"
-          />
-          <small className="settings-field-hint">自定义模型名称，留空则使用所选提供商的默认模型。</small>
-        </label>
       </div>
 
       {/* 调试与自动化 */}

@@ -267,10 +267,6 @@ export type TacoApi = {
     onToggle: (callback: () => void) => () => void
     /** 语音识别：base64 编码的 PCM 音频 → 识别文本 */
     recognize: (audioBase64: string, apiKey?: string) => Promise<{ text: string; error?: string }>
-    /** 推送 StepFun API Key 到主进程缓存（供 bridge 移动端语音识别使用） */
-    registerApiKey: (key: string | null) => void
-    /** 推送 ASR 配置到主进程缓存（提供商 + URL + Model） */
-    registerConfig: (config: { provider?: string; apiUrl?: string; model?: string }) => void
   }
   bridge: {
     /** 获取手机端 APK 下载信息（从版本检查 API 获取 download_url，失败返回 null） */
@@ -290,7 +286,9 @@ export type TacoApi = {
     /** 监听移动端请求切换模型 */
     onSwitchModel: (callback: (data: { modelConfigId: string }) => void) => () => void
     /** 通知主进程：移动端请求的项目切换已完成，消息已加载 */
-    notifySwitchProjectLoaded: (data: { projectId: string; sessionId: string; tokenUsage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; cachedTokens?: number } }) => void
+    notifySwitchProjectLoaded: (data: { projectId: string; sessionId: string; tokenUsage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; cachedTokens?: number }; projectTokenStats?: { inputTokens?: number; outputTokens?: number; cachedTokens?: number; turns?: number } }) => void
+    /** 通知主进程：本轮 token 使用情况已更新 */
+    notifyTokenUsageUpdated: (data: { projectId: string; tokenUsage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; cachedTokens?: number }; projectTokenStats?: { inputTokens?: number; outputTokens?: number; cachedTokens?: number; turns?: number } }) => void
     /** 监听移动端发来的消息（chat-send / agent-confirm / agent-abort 等） */
     onClientMessage: (callback: (msg: Record<string, unknown>) => void) => () => void
     /** 发送状态快照响应给主进程 */
@@ -320,5 +318,7 @@ export type TacoApi = {
     }) => void) => () => void
     /** 监听手机端切换授权模式，桌面端同步更新 UI */
     onAuthLevelChanged: (callback: (data: { level: string; projectId: string }) => void) => () => void
+    /** 监听手机端切换自动提交，桌面端同步更新 UI */
+    onAutoCommitChanged: (callback: (data: { enabled: boolean; projectId: string }) => void) => () => void
   }
 }

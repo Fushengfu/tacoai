@@ -1,5 +1,4 @@
 import { useCallback, useRef, useState } from 'react'
-import { secureStorage, SecureStorageKey } from '../lib/secure-storage'
 
 interface UseVoiceInputOptions {
   /** 语音识别文本就绪时的回调 */
@@ -23,12 +22,11 @@ interface UseVoiceInputResult {
  * 按住录音 → 松开识别：用户按住麦克风按钮开始录音，松开后发送完整 PCM 到 ASR，
  * 获取完整识别文本后插入输入框。
  *
- * 音频处理流程：AudioContext 采集 → Float32 PCM → 重采样到 16kHz → s16le → base64 → IPC → ASR
+ * 音频处理流程：AudioContext 采集 → Float32 PCM → 重采样到 16kHz → s16le → base64 → IPC → 网关 ASR
  *
- * 支持多平台 ASR 提供商（通过设置页面配置）。当前已支持 StepFun，
- * 后续将扩展阿里云、腾讯云、百度、OpenAI 等平台。
+ * 语音识别统一走网关代理，供应商由后台管理页面配置，客户端无需关心具体使用哪个服务。
  *
- * 降级方案：ASR API Key 未配置时自动使用 Chromium SpeechRecognition
+ * 降级方案：网关 Token 未配置时自动使用 Chromium SpeechRecognition
  * （国内 Google 服务不可达，会报 network 错误）。
  */
 export function useVoiceInput({ onTextReady, maxDurationMs = 30_000 }: UseVoiceInputOptions): UseVoiceInputResult {
@@ -134,7 +132,7 @@ export function useVoiceInput({ onTextReady, maxDurationMs = 30_000 }: UseVoiceI
 
   /**
    * 发送完整 PCM 到 ASR 服务，返回识别文本。
-   * 自动选择当前配置的提供商。
+   * 统一走网关代理，API Key 由主进程自动注入。
    */
   const recognizeAsr = useCallback(async (): Promise<string> => {
     if (pcmChunksRef.current.length === 0) return ''
@@ -142,11 +140,11 @@ export function useVoiceInput({ onTextReady, maxDurationMs = 30_000 }: UseVoiceI
     const base64 = pcmToBase64(pcmChunksRef.current, sampleRate)
 
     try {
-      const apiKey = await secureStorage.get(SecureStorageKey.API_KEY_STEPFUN)
-      const result = await window.taco.voice.recognize(base64, apiKey ?? undefined)
+      // 不传 apiKey，主进程会自动使用网关 API Key
+      const result = await window.taco.voice.recognize(base64)
 
-      if (result.error === 'NO_API_KEY') {
-        console.warn('[VoiceInput] ASR API Key 未配置，后续将使用 SpeechRecognition 降级')
+      if (result.error === 'NO_TOKEN' || result.error === 'NO_API_KEY') {
+        console.warn('[VoiceInput] 网关 Token 未配置，后续将使用 SpeechRecognition 降级')
         asrAvailableRef.current = false
         return ''
       }
@@ -182,7 +180,7 @@ export function useVoiceInput({ onTextReady, maxDurationMs = 30_000 }: UseVoiceI
       console.warn('[VoiceInput] SpeechRecognition API 不可用')
       window.taco.shell.notify({
         title: '语音输入不可用',
-        body: '请在设置页面配置 ASR API Key 以启用语音识别',
+        body: '语音识别服务不可用，请确认网关连接正常',
       })
       return
     }
@@ -208,7 +206,7 @@ export function useVoiceInput({ onTextReady, maxDurationMs = 30_000 }: UseVoiceI
         console.warn('[VoiceInput] SpeechRecognition 错误:', event.error)
         if (event.error !== 'no-speech' && event.error !== 'aborted') {
           const msgs: Record<string, string> = {
-            'network': '网络错误，Google 语音服务不可达。请在设置页面配置 ASR API Key',
+            'network': '语音识别服务不可用，请确认网关连接正常',
             'not-allowed': '麦克风权限被拒绝',
             'audio-capture': '无法访问麦克风',
           }
