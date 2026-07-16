@@ -61,6 +61,7 @@ export type ProviderConfig = {
   apiKey: string
   model: string
   temperature?: number
+  maxTokens?: number
   headers?: IncomingHttpHeaders
   supportsVision?: boolean
   supportsReasoning?: boolean
@@ -218,7 +219,7 @@ function getProviderConfig(
   const builtinKey = provider as BuiltinProviderKey
   const base = builtinProviderConfigs[builtinKey] ?? { baseUrl: '', apiKey: '', model: '' }
   const patch = overrides?.[provider]
-  return {
+  const cfg: ProviderConfig = {
     ...base,
     ...(patch ?? {}),
     headers: {
@@ -226,6 +227,7 @@ function getProviderConfig(
       ...(patch?.headers ?? {})
     }
   }
+  return cfg
 }
 
 export type RequestOptions = {
@@ -1142,6 +1144,7 @@ async function buildRequest(
     temperature: resolveRequestTemperature(config),
     stream,
     ...(userId ? { user_id: userId } : {}),
+    ...(Number.isFinite(config.maxTokens) && (config.maxTokens as number) > 0 ? { max_tokens: config.maxTokens } : {}),
   }
   if (options?.tools && options.tools.length > 0) {
     body.tools = options.tools

@@ -188,6 +188,8 @@ export type ModelConfig = {
   model: string
   /** 上下文窗口大小（token 数） */
   contextLength: string
+  /** 最大输出 token 数（模型配置的 max_tokens） */
+  maxTokens?: string
   temperature: string
   supportsVision?: boolean
   supportsReasoning?: boolean
