@@ -36,6 +36,7 @@ import type {
   SkillPreview,
   SkillUpdateInfo,
   SystemInfo,
+  ClawHubSearchResult,
 } from './ipc-types'
 
 export type { SystemInfo } from './ipc-types'
@@ -182,6 +183,10 @@ export type TacoApi = {
   skills: {
     /** 列出所有已安装的 skills */
     list: (workspace?: string) => Promise<SkillInfo[]>
+    /** 搜索 ClawHub 技能市场 */
+    search: (query: string) => Promise<ClawHubSearchResult[]>
+    /** 获取 ClawHub 技能 SKILL.md 原文内容 */
+    getDetail: (slug: string) => Promise<string>
     /** 预览 skill（从 URL 或本地路径，不安装） */
     preview: (source: string) => Promise<SkillPreview>
     /** 安装 skill（从 URL 或本地路径，支持进度回调） */

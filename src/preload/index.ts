@@ -29,6 +29,7 @@ import type {
   SkillPreview,
   SkillUpdateInfo,
   InstallProgress,
+  ClawHubSearchResult,
 } from '../shared/ipc'
 
 // 沙盒化 preload 无法使用 os 模块，用 process 和环境变量替代
@@ -329,6 +330,10 @@ const tacoApi: TacoApi = {
   skills: {
     list: (workspace?: string) =>
       ipcRenderer.invoke(IpcChannel.SKILLS_LIST, workspace),
+    search: (query: string): Promise<ClawHubSearchResult[]> =>
+      ipcRenderer.invoke(IpcChannel.SKILLS_SEARCH, query),
+    getDetail: (slug: string): Promise<string> =>
+      ipcRenderer.invoke(IpcChannel.SKILLS_GET_DETAIL, slug),
     preview: (source: string): Promise<SkillPreview> =>
       ipcRenderer.invoke(IpcChannel.SKILLS_PREVIEW, source),
     install: (source: string, onProgress?: (progress: InstallProgress) => void): Promise<SkillInfo> => {

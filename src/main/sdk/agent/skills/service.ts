@@ -14,7 +14,7 @@ import * as path from 'node:path'
 import { homedir } from 'node:os'
 import { execFile as execFileCb } from 'node:child_process'
 import { promisify } from 'node:util'
-import type { SkillInfo, SkillPreview } from '../types'
+import type { SkillInfo, SkillPreview, ClawHubSearchResult } from '../types'
 import type { Logger } from '../services'
 
 /** 模块级 Logger */
@@ -265,6 +265,152 @@ Taco 支持同时打开多个独立浏览器窗口，每个窗口有独立的会
 - **screenshot**: 截取当前桌面屏幕。返回 cloudUrl 与尺寸信息；截图后立即用 analyze_image 分析
 - **action**: 执行桌面动作。参数: { action: 'click'|'doubleClick'|'type'|'key'|'scroll'|... }, 以及对应的 x/y/text/key/direction 等`,
   },
+  {
+    id: 'skill-creator',
+    name: '技能创建器',
+    description: '引导用户通过对话创建新的 Taco 技能。触发场景：用户想要创建、制作、新增一个技能（Skill），或提到"技能创建"、"创建一个技能"、"写个skill"、"制作技能"等。',
+    version: '1.0.0',
+    author: 'Taco',
+    source: 'builtin',
+    enabled: true,
+    tools: ['write_file', 'read_file', 'install_skill'],
+    instructions: `# Skill: 技能创建器
+
+你可以帮助用户通过对话创建新的 Taco 技能。技能是扩展 AI 能力的指令集，创建后会自动注入到每次对话的 system prompt 中。
+
+## 技能文件结构
+
+每个技能是一个 SKILL.md 文件，存放在系统主目录下的 \`.taco/skills/{技能ID}/SKILL.md\`（即 \`{主目录}/.taco/skills/{技能ID}/SKILL.md\`，注意不要用 \`~\`，Node.js 不认识 \`~\`，必须用系统上下文中的实际主目录路径拼出绝对路径），包含 YAML frontmatter 和 Markdown 指令正文。
+
+### Frontmatter 字段说明
+
+\`\`\`yaml
+---
+name: 技能名称（必填，中文简短，如"API 文档生成器"）
+description: 一句话描述技能用途和触发场景（必填）
+version: 1.0.0
+author: 作者名
+enabled: true
+tools:
+  - read_file
+  - write_file
+  - run_command
+  # 可用的工具名: read_file, write_file, edit_file, delete_file, list_dir, find_file,
+  #              run_command, propose_plan, update_plan_progress, read_skill,
+  #              read_skill_resource, analyze_image, mcp_call, mcp_list_tools,
+  #              upload_file, terminal_create, terminal_run, terminal_list, terminal_close,
+  #              run_skill_script, recall_memories, search_skills, install_skill
+  # 也可用分组名: files（所有文件操作）, command（run_command）, planning（计划管理）
+requires:
+  bins:
+    - node        # 依赖的命令行工具
+  env:
+    - API_KEY     # 依赖的环境变量
+  config:
+    - some.key    # 依赖的配置项
+env:
+  CUSTOM_VAR: "value"  # 注入的环境变量
+resources:
+  - scripts/     # 附属资源目录（脚本、模板等）
+---
+\`\`\`
+
+## 创建流程
+
+按以下步骤引导用户创建技能：
+
+### 步骤 1：了解需求
+
+向用户提问，收集以下信息：
+- **技能名称**：简短中文名，如"API 文档生成器"、"Docker 部署助手"
+- **用途描述**：一句话说清楚这个技能做什么、什么时候触发
+- **需要的工具**：列出这个技能需要用到哪些 agent 工具
+
+如果用户已经明确说了需求（如"我要一个自动生成 commit message 的技能"），直接从描述中提取信息，不必逐项提问。
+
+### 步骤 2：设计 skills 指令
+
+根据用户需求，编写详细的技能指令。指令应该包含：
+1. **标题**：\`# Skill: 名称\`
+2. **触发场景**：明确什么时候 AI 应该使用这个技能
+3. **执行流程**：AI 应该按什么步骤操作
+4. **输出格式**：最终产出的格式要求
+5. **注意事项**：关键限制和边界条件
+
+指令要具体、可操作，不要写泛泛而谈的建议。
+
+### 步骤 3：生成并安装
+
+1. 将上述内容组装成完整的 SKILL.md 文件
+2. 用 \`write_file\` 写入 \`{主目录}/.taco/skills/{技能ID}/SKILL.md\`（从系统上下文找到实际主目录路径拼出绝对路径，不要用 \`~\`）
+3. 用 \`install_skill\` 安装（source 参数传 \`{主目录}/.taco/skills/{技能ID}\`，同样是绝对路径）
+4. 告知用户安装完成，下次对话即可生效
+
+技能 ID 从名称自动生成：中文转拼音首字母或英文翻译 → 小写 → 空格替换为连字符。如"API 文档生成器" → "api-doc-generator"。
+
+## 示例
+
+以下是几个典型场景的技能指令模板：
+
+### 示例 1：Git 提交助手
+
+\`\`\`markdown
+# Skill: Git 提交助手
+
+## 触发场景
+用户说"提交"、"commit"、"推送"时自动触发。
+
+## 执行流程
+1. 先执行 \`git status\` 查看变更文件
+2. 执行 \`git diff --staged\` 查看暂存区差异（如无暂存则用 \`git diff\`）
+3. 分析变更内容，生成 Conventional Commits 格式的 commit message
+4. 展示给用户确认
+5. 确认后执行 \`git commit -m "message"\`
+
+## 输出格式
+\`\`\`
+type(scope): 简短描述
+
+详细说明（如有必要）
+\`\`\`
+
+## 注意事项
+- 每次只提交关联的变更（原子提交）
+- 不要自动 git push，需要用户确认
+- 不提交包含密钥/密码的文件
+\`\`\`
+
+### 示例 2：API 文档生成器
+
+\`\`\`markdown
+# Skill: API 文档生成器
+
+## 触发场景
+用户提到"生成 API 文档"、"接口文档"、"导出文档"时触发。
+
+## 执行流程
+1. 扫描项目中的路由/控制器文件
+2. 提取每个接口的：路径、方法、参数、返回值、错误码
+3. 生成 Markdown 格式的 API 文档
+4. 写入项目根目录的 API_DOC.md
+
+## 输出格式
+每个接口按以下结构输出：
+- 接口名称
+- 请求方法与路径
+- 请求参数（Query/Body/Path）
+- 响应格式（含示例）
+- 错误码说明
+\`\`\`
+
+## 关键原则
+
+- **一次只创建一个技能**。不要在用户没要求的情况下连续创建多个
+- **技能指令要具体**。不要写"要仔细检查代码"这种空话，要写"检查每个函数是否处理了 null 入参"
+- **先确认再写入**。生成 SKILL.md 内容后，向用户展示关键部分（名称、描述、工具列表），确认后再写入文件
+- **技能 ID 唯一性**。如果 ID 已存在（同名技能已安装），提示用户换个名字或覆盖
+- **不要帮用户做决策**。工具列表、环境变量等需要用户确认，不要擅自猜测`,
+  },
 ]
 
 /* ------------------------------------------------------------------ */
@@ -322,6 +468,14 @@ let refreshSeq = 0
 const binCheckCache = new Map<string, boolean>()
 
 const EMPTY_REQUIRES: SkillRequires = { bins: [], env: [], config: [] }
+
+/** 将路径中的 ~ 展开为实际主目录路径（Node.js 不会自动展开 ~） */
+function expandTilde(filePath: string): string {
+  if (filePath.startsWith('~/') || filePath === '~') {
+    return path.join(HOME_DIR, filePath.slice(filePath.startsWith('~/') ? 2 : 1))
+  }
+  return filePath
+}
 
 /* ------------------------------------------------------------------ */
 /*  对外 API                                                            */
@@ -617,11 +771,12 @@ export async function previewSkill(source: string): Promise<SkillPreview> {
     }
   } else {
     const filePath = source.endsWith('SKILL.md') ? source : path.join(source, 'SKILL.md')
+    const resolvedPath = expandTilde(filePath)
     try {
-      instructions = await fs.readFile(filePath, 'utf-8')
+      instructions = await fs.readFile(resolvedPath, 'utf-8')
       meta = parseSkillMeta(instructions)
     } catch {
-      throw new Error(`Cannot read skill file: ${filePath}`)
+      throw new Error(`Cannot read skill file: ${resolvedPath}`)
     }
   }
 
@@ -648,7 +803,64 @@ export async function previewSkill(source: string): Promise<SkillPreview> {
   }
 }
 
-export async function installSkill(source: string): Promise<SkillInfo> {
+/**
+ * 获取 ClawHub 技能的 SKILL.md 原文内容
+ *
+ * 调用 ClawHub 公共 API，返回技能的 SKILL.md 全文。
+ * 用于设置页展示技能详情。无需认证。
+ */
+export async function getClawHubSkillDetail(slug: string): Promise<string> {
+  const normalizedSlug = String(slug ?? '').trim()
+  if (!normalizedSlug) return ''
+
+  try {
+    const apiUrl = `https://clawhub.ai/api/v1/skills/${encodeURIComponent(normalizedSlug)}/file?path=SKILL.md`
+    const resp = await fetch(apiUrl, {
+      headers: { Accept: 'text/plain', 'User-Agent': 'taco-ai-agent' },
+    })
+    if (!resp.ok) {
+      _log('SKILLS_GET_DETAIL_FAILED', { slug: normalizedSlug, status: resp.status }, 'skills')
+      return ''
+    }
+    const text = await resp.text()
+    _log('SKILLS_GET_DETAIL_SUCCESS', { slug: normalizedSlug, length: text.length }, 'skills')
+    return text
+  } catch (err) {
+    _log('SKILLS_GET_DETAIL_ERROR', { slug: normalizedSlug, error: String(err) }, 'skills')
+    return ''
+  }
+}
+
+/**
+ * 搜索 ClawHub 技能市场
+ * 
+ * 调用 ClawHub 公共 API，返回匹配的技能列表。
+ * 无需认证，限流 3000 次/分钟。
+ */
+export async function searchSkills(query: string): Promise<ClawHubSearchResult[]> {
+  const q = String(query ?? '').trim()
+  if (!q) return []
+
+  try {
+    const apiUrl = `https://clawhub.ai/api/v1/search?q=${encodeURIComponent(q)}`
+    const resp = await fetch(apiUrl, {
+      headers: { Accept: 'application/json', 'User-Agent': 'taco-ai-agent' },
+    })
+    if (!resp.ok) {
+      _log('SKILLS_SEARCH_FAILED', { status: resp.status, statusText: resp.statusText }, 'skills')
+      return []
+    }
+    const data = await resp.json() as { results?: ClawHubSearchResult[] }
+    const results = Array.isArray(data?.results) ? data.results : []
+    _log('SKILLS_SEARCH_SUCCESS', { query: q, count: results.length }, 'skills')
+    return results
+  } catch (err) {
+    _log('SKILLS_SEARCH_ERROR', { error: String(err) }, 'skills')
+    return []
+  }
+}
+
+export async function installSkill(source: string, skipAudit?: boolean): Promise<SkillInfo> {
   let instructions: string
   let meta: ParsedSkillMeta = {
     requires: { ...EMPTY_REQUIRES },
@@ -665,18 +877,20 @@ export async function installSkill(source: string): Promise<SkillInfo> {
       instructions = await downloadGitHubTextFile(remoteGitHubSource, remoteGitHubSource.skillMdPath)
       meta = parseSkillMeta(instructions)
       
-      // 安全审核: 检查远程 Skill 是否包含危险操作
-      const securityCheck = auditSkillSecurity(instructions, meta)
-      if (securityCheck.riskLevel === 'critical') {
-        throw new Error(`拒绝安装高风险 Skill: ${securityCheck.warnings.join('; ')}`)
-      }
-      if (securityCheck.riskLevel === 'high') {
-        _log('SKILL_SECURITY_WARNING', {
-          source,
-          riskLevel: securityCheck.riskLevel,
-          warnings: securityCheck.warnings,
-        }, 'skills')
-        // 高风险 Skill 需要用户确认,此处仅记录警告
+      if (!skipAudit) {
+        // 安全审核: 检查远程 Skill 是否包含危险操作
+        const securityCheck = auditSkillSecurity(instructions, meta)
+        if (securityCheck.riskLevel === 'critical') {
+          throw new Error(`拒绝安装高风险 Skill: ${securityCheck.warnings.join('; ')}`)
+        }
+        if (securityCheck.riskLevel === 'high') {
+          _log('SKILL_SECURITY_WARNING', {
+            source,
+            riskLevel: securityCheck.riskLevel,
+            warnings: securityCheck.warnings,
+          }, 'skills')
+          // 高风险 Skill 需要用户确认,此处仅记录警告
+        }
       }
     } else {
       const rawUrl = toRawGitHubUrl(source)
@@ -685,40 +899,45 @@ export async function installSkill(source: string): Promise<SkillInfo> {
       instructions = await resp.text()
       meta = parseSkillMeta(instructions)
       
-      // 安全审核
-      const securityCheck = auditSkillSecurity(instructions, meta)
-      if (securityCheck.riskLevel === 'critical') {
-        throw new Error(`拒绝安装高风险 Skill: ${securityCheck.warnings.join('; ')}`)
-      }
-      if (securityCheck.riskLevel === 'high') {
-        _log('SKILL_SECURITY_WARNING', {
-          source: rawUrl,
-          riskLevel: securityCheck.riskLevel,
-          warnings: securityCheck.warnings,
-        }, 'skills')
+      if (!skipAudit) {
+        // 安全审核
+        const securityCheck = auditSkillSecurity(instructions, meta)
+        if (securityCheck.riskLevel === 'critical') {
+          throw new Error(`拒绝安装高风险 Skill: ${securityCheck.warnings.join('; ')}`)
+        }
+        if (securityCheck.riskLevel === 'high') {
+          _log('SKILL_SECURITY_WARNING', {
+            source: rawUrl,
+            riskLevel: securityCheck.riskLevel,
+            warnings: securityCheck.warnings,
+          }, 'skills')
+        }
       }
     }
   } else {
     const filePath = source.endsWith('SKILL.md') ? source : path.join(source, 'SKILL.md')
+    const resolvedPath = expandTilde(filePath)
     try {
-      instructions = await fs.readFile(filePath, 'utf-8')
+      instructions = await fs.readFile(resolvedPath, 'utf-8')
       meta = parseSkillMeta(instructions)
-      localSkillRoot = path.dirname(filePath)
+      localSkillRoot = path.dirname(resolvedPath)
       
-      // 本地 Skill 也进行安全审核
-      const securityCheck = auditSkillSecurity(instructions, meta)
-      if (securityCheck.riskLevel === 'critical') {
-        throw new Error(`拒绝安装高风险 Skill: ${securityCheck.warnings.join('; ')}`)
-      }
-      if (securityCheck.riskLevel === 'high') {
-        _log('SKILL_SECURITY_WARNING', {
-          source: filePath,
-          riskLevel: securityCheck.riskLevel,
-          warnings: securityCheck.warnings,
-        }, 'skills')
+      if (!skipAudit) {
+        // 本地 Skill 也进行安全审核
+        const securityCheck = auditSkillSecurity(instructions, meta)
+        if (securityCheck.riskLevel === 'critical') {
+          throw new Error(`拒绝安装高风险 Skill: ${securityCheck.warnings.join('; ')}`)
+        }
+        if (securityCheck.riskLevel === 'high') {
+          _log('SKILL_SECURITY_WARNING', {
+            source: filePath,
+            riskLevel: securityCheck.riskLevel,
+            warnings: securityCheck.warnings,
+          }, 'skills')
+        }
       }
     } catch {
-      throw new Error(`Cannot read skill file: ${filePath}`)
+      throw new Error(`Cannot read skill file: ${resolvedPath}`)
     }
   }
 
@@ -1231,6 +1450,16 @@ function parseFrontmatterBlock(block: string, out: ParsedSkillMeta) {
     const key = kv[1].toLowerCase()
     const value = kv[2].trim()
 
+    if (key === 'metadata') {
+      if (value) {
+        extractClawHubRequires(value, out)
+      } else {
+        const consumed = consumeIndentedBlock(lines, i + 1, indent)
+        extractClawHubRequiresFromBlock(consumed.block, out)
+        i = consumed.nextIndex - 1
+      }
+      continue
+    }
     if (key === 'env' && !value) {
       const consumed = consumeIndentedBlock(lines, i + 1, indent)
       mergeEnvMap(out.env, parseKeyValueBlock(consumed.block))
@@ -1392,6 +1621,48 @@ function mergeRequires(base: SkillRequires, next: SkillRequires) {
   base.bins = dedupeList([...base.bins, ...next.bins])
   base.env = dedupeList([...base.env, ...next.env])
   base.config = dedupeList([...base.config, ...next.config])
+}
+
+/** 从 ClawHub metadata JSON 字符串中提取 requires */
+function extractClawHubRequires(raw: string, out: ParsedSkillMeta) {
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const ocl = (parsed as Record<string, unknown>).openclaw
+      if (ocl && typeof ocl === 'object' && !Array.isArray(ocl)) {
+        const req = (ocl as Record<string, unknown>).requires
+        if (req && typeof req === 'object' && !Array.isArray(req)) {
+          const r = req as Record<string, unknown>
+          if (Array.isArray(r.bins)) {
+            out.requires.bins = dedupeList([...out.requires.bins, ...r.bins.map((v) => String(v ?? '').trim()).filter(Boolean)])
+          }
+          if (Array.isArray(r.env)) {
+            out.requires.env = dedupeList([...out.requires.env, ...r.env.map((v) => String(v ?? '').trim()).filter(Boolean)])
+          }
+          if (Array.isArray(r.config)) {
+            out.requires.config = dedupeList([...out.requires.config, ...r.config.map((v) => String(v ?? '').trim()).filter(Boolean)])
+          }
+        }
+      }
+    }
+  } catch {
+    // not valid JSON, silently ignore
+  }
+}
+
+/** 从 ClawHub metadata 多行 YAML 块中提取 requires */
+function extractClawHubRequiresFromBlock(block: string[], out: ParsedSkillMeta) {
+  for (const raw of block) {
+    const trimmed = raw.trim()
+    if (!trimmed) continue
+    const kv = trimmed.match(/^([A-Za-z0-9_.-]+)\s*:\s*(.*)$/)
+    if (!kv) continue
+    const key = kv[1].toLowerCase()
+    const value = kv[2].trim()
+    if (key === 'openclaw' && value) {
+      extractClawHubRequires(value, out)
+    }
+  }
 }
 
 function mergeEnvMap(base: Record<string, string>, next: Record<string, string>) {

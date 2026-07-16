@@ -1,49 +1,74 @@
-import type { SkillInfo, SkillPreview, SkillUpdateInfo } from '../../../shared/ipc'
+import type { SkillInfo, SkillPreview, SkillUpdateInfo, ClawHubSearchResult } from '../../../shared/ipc'
 
 type SkillsSettingsPanelProps = {
-  // URL 安装
-  installInput: string
-  installing: boolean
-  installError: string
-  onInstallInputChange: (value: string) => void
-  onInstallSkill: () => void
-  // 预览
+  // 搜索
+  searchQuery: string
+  onSearchQueryChange: (value: string) => void
+  onSearch: () => void
+  searching: boolean
+  searchResults: ClawHubSearchResult[]
+  searchError: string
+  // 选中 & 预览
+  selectedResult: ClawHubSearchResult | null
+  onSelectResult: (result: ClawHubSearchResult) => void
   previewResult: SkillPreview | null
   previewing: boolean
   previewError: string
-  onPreviewSkill: () => void
-  // 已安装 Skills
+  // SKILL.md 详细内容
+  detailContent: string
+  detailLoading: boolean
+  // 安装（搜索结果）
+  installing: boolean
+  installError: string
+  installingSlug: string | null
+  onInstallFromSearch: () => void
+  isInstalled: (slug: string) => boolean
+  // 已安装
   skillsLoading: boolean
   skills: SkillInfo[]
   onToggleSkill: (id: string, enabled: boolean) => void
   onUninstallSkill: (id: string) => void
-  // 更新检测
   checkingUpdates: Record<string, boolean>
   updateInfo: Record<string, SkillUpdateInfo | null>
   onCheckUpdate: (id: string) => void
 }
 
-const CATEGORY_LABELS: Record<string, string> = {
-  development: '开发',
-  security: '安全',
-  testing: '测试',
-  documentation: '文档',
-  devops: '运维',
-  database: '数据库',
-  api: 'API',
-  automation: '自动化',
+function formatDownloads(n: number): string {
+  if (n >= 10000) return `${(n / 1000).toFixed(1)}k`
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+  return String(n)
+}
+
+/** 从搜索结果中提取作者展示名 */
+function ownerDisplay(result: ClawHubSearchResult): string {
+  return result.owner?.displayName || result.ownerHandle || '未知'
+}
+
+const SOURCE_LABEL: Record<string, string> = {
+  builtin: '内置',
+  remote: '远程',
+  local: '本地',
 }
 
 export function SkillsSettingsPanel({
-  installInput,
-  installing,
-  installError,
-  onInstallInputChange,
-  onInstallSkill,
+  searchQuery,
+  onSearchQueryChange,
+  onSearch,
+  searching,
+  searchResults,
+  searchError,
+  selectedResult,
+  onSelectResult,
   previewResult,
   previewing,
   previewError,
-  onPreviewSkill,
+  detailContent,
+  detailLoading,
+  installing,
+  installError,
+  installingSlug,
+  onInstallFromSearch,
+  isInstalled,
   skillsLoading,
   skills,
   onToggleSkill,
@@ -54,119 +79,203 @@ export function SkillsSettingsPanel({
 }: SkillsSettingsPanelProps) {
   return (
     <div className="skills-panel">
-      {/* ── 从 URL 安装 ── */}
+      {/* ── 搜索 ── */}
       <div className="skills-install-section">
-        <div className="skills-section-title">从 URL 安装</div>
+        <div className="skills-section-title">发现 Skills</div>
         <div className="skills-section-desc">
-          输入 GitHub Skill URL（支持 skill 目录、<code>tree/.../skill-dir</code>、<code>blob/.../SKILL.md</code>）或本地路径
+          从 ClawHub 技能市场搜索并安装技能（{new Intl.NumberFormat().format(69500)}+ 技能）
         </div>
         <div className="skills-install-row">
           <input
             className="skills-install-input"
-            value={installInput}
-            onChange={(e) => onInstallInputChange(e.target.value)}
-            placeholder="https://github.com/user/repo/tree/main/path/to/skill"
+            value={searchQuery}
+            onChange={(e) => onSearchQueryChange(e.target.value)}
+            placeholder="搜索技能，如：web search、git、api doc..."
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-                if (installInput.trim()) onPreviewSkill()
+                if (searchQuery.trim()) onSearch()
               }
             }}
-            disabled={installing}
+            disabled={searching}
           />
           <button
             type="button"
-            className="skills-install-preview-btn"
-            onClick={onPreviewSkill}
-            disabled={previewing || !installInput.trim()}
-          >
-            {previewing ? '解析中...' : '预览'}
-          </button>
-          <button
-            type="button"
             className="skills-install-btn"
-            onClick={onInstallSkill}
-            disabled={installing || !installInput.trim()}
+            onClick={onSearch}
+            disabled={searching || !searchQuery.trim()}
           >
-            {installing ? '安装中...' : '安装'}
+            {searching ? '搜索中...' : '搜索'}
           </button>
         </div>
-        {installError && (
-          <div className="skills-install-error">{installError}</div>
-        )}
-        {previewError && (
-          <div className="skills-install-error">{previewError}</div>
+        {searchError && (
+          <div className="skills-install-error">{searchError}</div>
         )}
 
-        {/* 预览卡片 */}
-        {previewResult && (
-          <div className="skill-preview-card">
-            <div className="skill-preview-header">
-              <span className="skill-preview-name">{previewResult.name}</span>
-              <span className="skill-preview-version">v{previewResult.version}</span>
+        {/* 搜索结果网格 */}
+        {searchResults.length > 0 && (
+          <div className="skills-search-results">
+            <div className="skills-search-count">{searchResults.length} 个结果</div>
+            <div className="skills-preset-grid">
+              {searchResults.map((result) => {
+                const installed = isInstalled(result.slug)
+                const selected = selectedResult?.slug === result.slug
+                return (
+                  <div
+                    key={result.slug}
+                    className={`skill-preset-card ${selected ? 'selected' : ''} ${installed ? 'installed' : ''}`}
+                    onClick={() => !installed && onSelectResult(result)}
+                  >
+                    <div className="skill-preset-header">
+                      <span className="skill-preset-name">{result.displayName}</span>
+                      <span className="skill-preset-version">{result.version ? `v${result.version}` : ''}</span>
+                    </div>
+                    <div className="skill-preset-desc">{result.summary}</div>
+                    <div className="skill-preset-footer">
+                      <span className="skill-preset-author">
+                        {ownerDisplay(result)} · ↓{formatDownloads(result.downloads)}
+                      </span>
+                      {installed ? (
+                        <span className="skill-preset-install-btn installed">已安装</span>
+                      ) : installingSlug === result.slug ? (
+                        <span className="skill-preset-install-btn" style={{ opacity: 0.6, cursor: 'wait' }}>安装中...</span>
+                      ) : (
+                        <span className="skill-preset-install-btn">
+                          {selected ? '已选中' : '查看'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
             </div>
-            <div className="skill-preview-desc">{previewResult.description}</div>
-            <div className="skill-preview-meta">
-              <span>作者: {previewResult.author}</span>
-              {previewResult.category && (
-                <span className={`skill-preset-category ${previewResult.category}`}>
-                  {CATEGORY_LABELS[previewResult.category] || previewResult.category}
-                </span>
-              )}
-              {previewResult.tags && previewResult.tags.length > 0 && (
-                <span className="skill-preset-tags">
-                  {previewResult.tags.map((tag) => (
-                    <span key={tag} className="skill-tag">{tag}</span>
-                  ))}
-                </span>
-              )}
+          </div>
+        )}
+
+        {/* 选中结果的预览 + SKILL.md 详情 */}
+        {selectedResult && (
+          <div className="skills-selected-section">
+            <div className="skills-section-title" style={{ fontSize: 13, marginBottom: 8 }}>
+              预览: {selectedResult.displayName}
             </div>
-            {(previewResult.tools && previewResult.tools.length > 0) && (
-              <div className="skill-preview-tools">
-                <span className="skill-preview-label">工具:</span>
-                {previewResult.tools.map((tool) => (
-                  <code key={tool} className="skill-tool-chip">{tool}</code>
-                ))}
-              </div>
-            )}
-            {previewResult.security && previewResult.security.warnings.length > 0 && (
-              <div className={`skill-preview-security ${previewResult.security.riskLevel}`}>
-                <span className="skill-preview-label">
-                  安全审核 ({previewResult.security.riskLevel === 'critical' ? '拒绝' : previewResult.security.riskLevel === 'high' ? '高风险' : previewResult.security.riskLevel === 'medium' ? '中风险' : '低风险'}):
-                </span>
-                <ul className="skill-security-warnings">
-                  {previewResult.security.warnings.map((w, i) => (
-                    <li key={i}>{w}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
+            {previewing ? (
+              <div className="skills-selected-loading">加载预览中...</div>
+            ) : previewError ? (
+              <div className="skills-install-error">{previewError}</div>
+            ) : previewResult ? (
+              <>
+                <div className="skill-preview-card">
+                  <div className="skill-preview-header">
+                    <span className="skill-preview-name">{previewResult.name}</span>
+                    <span className="skill-preview-version">{previewResult.version !== '—' ? `v${previewResult.version}` : ''}</span>
+                  </div>
+                  <div className="skill-preview-desc">{previewResult.description}</div>
+                  <div className="skill-preview-meta">
+                    <span>作者: {previewResult.author}</span>
+                  </div>
+                  {(previewResult.tools && previewResult.tools.length > 0) && (
+                    <div className="skill-preview-tools">
+                      <span className="skill-preview-label">工具:</span>
+                      {previewResult.tools.map((tool) => (
+                        <code key={tool} className="skill-tool-chip">{tool}</code>
+                      ))}
+                    </div>
+                  )}
+                  {previewResult.security && previewResult.security.warnings.length > 0 && (
+                    <div className={`skill-preview-security ${previewResult.security.riskLevel}`}>
+                      <span className="skill-preview-label">
+                        安全审核 ({previewResult.security.riskLevel === 'critical' ? '致命' : previewResult.security.riskLevel === 'high' ? '高风险' : previewResult.security.riskLevel === 'medium' ? '中风险' : '低风险'}):
+                      </span>
+                      <ul className="skill-security-warnings">
+                        {previewResult.security.warnings.map((w, i) => (
+                          <li key={i}>{w}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+                <div className="skills-selected-actions">
+                  <button
+                    type="button"
+                    className="skills-install-btn"
+                    onClick={onInstallFromSearch}
+                    disabled={installing || previewResult.security?.riskLevel === 'critical'}
+                  >
+                    {installing && installingSlug === selectedResult.slug ? '安装中...' : previewResult.security?.riskLevel === 'critical' ? '安全风险过高，禁止安装' : '安装'}
+                  </button>
+                </div>
+                {installError && (
+                  <div className="skills-install-error">{installError}</div>
+                )}
+
+                {/* SKILL.md 原文内容 */}
+                <div className="skill-detail-section">
+                  <div className="skill-detail-header">
+                    <span className="skills-section-title" style={{ fontSize: 13 }}>SKILL.md 原文</span>
+                    {detailLoading && <span className="skill-detail-loading">加载中...</span>}
+                  </div>
+                  {detailContent ? (
+                    <pre className="skill-detail-content">
+                      <code>{detailContent}</code>
+                    </pre>
+                  ) : !detailLoading ? (
+                    <div className="skill-detail-empty">无法加载 SKILL.md 内容</div>
+                  ) : null}
+                </div>
+              </>
+            ) : null}
           </div>
         )}
       </div>
 
-      {/* ── 已安装 Skills ── */}
-      <div className="skills-list-section">
+      {/* ── 已安装 Skills（卡片网格） ── */}
+      <div className="skills-install-section">
         <div className="skills-section-title">已安装 Skills ({skills.length})</div>
         {skillsLoading ? (
           <div className="skills-loading">加载中...</div>
         ) : skills.length === 0 ? (
-          <div className="skills-empty">暂无已安装的 Skills，从上方 "发现 Skills" 选择一个安装吧</div>
+          <div className="skills-empty">暂无已安装的 Skills，从上方搜索一个安装吧</div>
         ) : (
-          <div className="skills-list">
+          <div className="skills-installed-grid">
             {skills.map((skill) => {
               const update = updateInfo[skill.id]
               const checking = checkingUpdates[skill.id]
               return (
-                <div key={skill.id} className={`skill-card ${skill.enabled ? '' : 'disabled'}`}>
-                  <div className="skill-card-header">
-                    <div className="skill-card-info">
-                      <span className="skill-card-name">{skill.name}</span>
-                      <span className="skill-card-version">v{skill.version}</span>
-                      <span className={`skill-card-source ${skill.source}`}>
-                        {skill.source === 'builtin' ? '内置' : skill.source === 'remote' ? '远程' : '本地'}
+                <div key={skill.id} className={`skill-installed-card ${skill.enabled ? '' : 'disabled'}`}>
+                  <div className="skill-installed-header">
+                    <span className="skill-installed-name">{skill.name}</span>
+                    <div className="skill-installed-badges">
+                      <span className="skill-installed-version">v{skill.version}</span>
+                      <span className={`skill-installed-source ${skill.source}`}>
+                        {SOURCE_LABEL[skill.source] || skill.source}
                       </span>
                     </div>
-                    <div className="skill-card-actions">
+                  </div>
+                  <div className="skill-installed-desc">{skill.description}</div>
+                  <div className="skill-installed-footer">
+                    <div className="skill-installed-author">作者: {skill.author}</div>
+                    <div className="skill-installed-actions">
+                      {/* 更新检测（远程技能） */}
+                      {skill.source === 'remote' && skill.sourceUrl && (
+                        <div className="skill-installed-update">
+                          {checking ? (
+                            <span className="skill-update-checking">检查中...</span>
+                          ) : update ? (
+                            update.hasUpdate ? (
+                              <span className="skill-update-available">v{update.currentVersion} → v{update.latestVersion}</span>
+                            ) : (
+                              <span className="skill-update-uptodate">已是最新</span>
+                            )
+                          ) : (
+                            <button
+                              type="button"
+                              className="skill-update-check-btn"
+                              onClick={(e) => { e.stopPropagation(); onCheckUpdate(skill.id) }}
+                            >
+                              检查更新
+                            </button>
+                          )}
+                        </div>
+                      )}
                       <label className="skill-toggle" title={skill.enabled ? '点击禁用' : '点击启用'}>
                         <input
                           type="checkbox"
@@ -179,7 +288,7 @@ export function SkillsSettingsPanel({
                         <button
                           type="button"
                           className="skill-uninstall-btn"
-                          onClick={() => onUninstallSkill(skill.id)}
+                          onClick={(e) => { e.stopPropagation(); onUninstallSkill(skill.id) }}
                           title="卸载"
                         >
                           x
@@ -187,41 +296,6 @@ export function SkillsSettingsPanel({
                       )}
                     </div>
                   </div>
-                  <div className="skill-card-desc">{skill.description}</div>
-                  <div className="skill-card-meta">
-                    <span>作者: {skill.author}</span>
-                    {skill.tags && skill.tags.length > 0 && (
-                      <span className="skill-card-tags">
-                        {skill.tags.map((tag) => (
-                          <span key={tag} className="skill-tag">{tag}</span>
-                        ))}
-                      </span>
-                    )}
-                  </div>
-                  {/* 更新提示 */}
-                  {skill.source === 'remote' && skill.sourceUrl && (
-                    <div className="skill-card-update">
-                      {checking ? (
-                        <span className="skill-update-checking">检查更新中...</span>
-                      ) : update ? (
-                        update.hasUpdate ? (
-                          <span className="skill-update-available">
-                            有更新: v{update.currentVersion} → v{update.latestVersion}
-                          </span>
-                        ) : (
-                          <span className="skill-update-uptodate">已是最新</span>
-                        )
-                      ) : (
-                        <button
-                          type="button"
-                          className="skill-update-check-btn"
-                          onClick={() => onCheckUpdate(skill.id)}
-                        >
-                          检查更新
-                        </button>
-                      )}
-                    </div>
-                  )}
                 </div>
               )
             })}
