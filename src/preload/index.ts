@@ -86,6 +86,8 @@ const tacoApi: TacoApi = {
   shell: {
     openInEditor: (filePath: string, editor: EditorId) =>
       ipcRenderer.invoke(IpcChannel.OPEN_IN_EDITOR, filePath, editor),
+    openPath: (path: string) =>
+      ipcRenderer.invoke(IpcChannel.SHELL_OPEN_PATH, path),
     openLogDir: (scope?: { projectId?: string; workspace?: string }) =>
       ipcRenderer.invoke(IpcChannel.OPEN_LOG_DIR, scope),
     notify: (payload: AppNotifyPayload) =>
@@ -228,7 +230,7 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.AGENT_GET_AUTO_COMMIT, { projectId }),
   },
   dialog: {
-    selectDirectory: () => ipcRenderer.invoke(IpcChannel.SELECT_DIRECTORY),
+    selectDirectory: (defaultPath?: string) => ipcRenderer.invoke(IpcChannel.SELECT_DIRECTORY, defaultPath),
     selectAttachments: () => ipcRenderer.invoke(IpcChannel.SELECT_ATTACHMENTS),
   },
   workspace: {

@@ -524,8 +524,8 @@ export default function App() {
     providerSettings.setActiveModelConfigId(id)
   }
 
-  async function handleSelectWorkspace() {
-    const dir = await globalThis.window.taco.dialog.selectDirectory()
+  async function handleSelectWorkspace(defaultPath?: string) {
+    const dir = await globalThis.window.taco.dialog.selectDirectory(defaultPath)
     if (!dir) return
     if (!tid) {
       // 没有活跃项目 → 自动创建项目并绑定工作空间

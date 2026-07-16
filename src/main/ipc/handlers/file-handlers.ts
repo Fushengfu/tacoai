@@ -18,10 +18,11 @@ import type { EditorId } from '../../../shared/ipc'
 /* ------------------------------------------------------------------ */
 
 /** 目录选择对话框 */
-export async function handleSelectDirectory(event: IpcMainInvokeEvent): Promise<string | null> {
+export async function handleSelectDirectory(event: IpcMainInvokeEvent, defaultPath?: string): Promise<string | null> {
   const win = BrowserWindow.fromWebContents(event.sender)
   const result = await dialog.showOpenDialog(win!, {
     title: '选择工作空间目录',
+    defaultPath: defaultPath || undefined,
     properties: ['openDirectory'],
   })
   if (result.canceled || result.filePaths.length === 0) return null

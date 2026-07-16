@@ -10,6 +10,7 @@
  */
 
 import { app, desktopCapturer, screen, shell, systemPreferences } from 'electron'
+import { execSync } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
 import { log as infraLog } from '../infrastructure/logger'
@@ -144,58 +145,6 @@ function createDesktopAutomationService(): DesktopAutomationService {
       }
     },
     async captureScreen(options) {
-      const displayId = options.displayId ? Number(options.displayId) : undefined
-
-      // 超时控制：desktopCapturer.getSources 在无权限时可能长时间卡住
-      const SOURCES_TIMEOUT_MS = 8000
-      const sourcesPromise = desktopCapturer.getSources({
-        types: ['screen'],
-        thumbnailSize: {
-          width: options.width ?? 0,
-          height: options.height ?? 0,
-        },
-      })
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(
-          'Screenshot timed out after ' + SOURCES_TIMEOUT_MS / 1000 + 's. ' +
-          (process.platform === 'darwin'
-            ? 'On macOS, please grant Screen Recording permission to Taco AI in System Settings > Privacy & Security > Screen Recording, then try again.'
-            : 'This may indicate a display capture issue. Please try again.')
-        )), SOURCES_TIMEOUT_MS)
-      )
-      const sources = await Promise.race([sourcesPromise, timeoutPromise])
-
-      if (sources.length === 0) {
-        throw new Error(
-          'No screen sources found. ' +
-          (process.platform === 'darwin'
-            ? 'On macOS, please grant Screen Recording permission to Taco AI in System Settings > Privacy & Security > Screen Recording, then try again.'
-            : 'Please ensure your display is active and try again.')
-        )
-      }
-
-      _screenPermissionCache = 'granted'
-
-      // 按 displayId 或默认取第一个
-      const source = displayId !== undefined
-        ? sources.find(s => s.display_id === String(displayId)) ?? sources[0]
-        : sources[0]
-
-      const img = source.thumbnail
-      if (img.isEmpty()) {
-        throw new Error(
-          'Screenshot image is empty. ' +
-          (process.platform === 'darwin'
-            ? 'This usually means Screen Recording permission has not been granted yet. Please allow Taco AI in System Settings > Privacy & Security > Screen Recording, then try again.'
-            : 'Please ensure your display is active and try again.')
-        )
-      }
-
-      const display = screen.getPrimaryDisplay()
-      const bounds = display.bounds
-      const dataUrl = img.toDataURL()
-
-      // 保存截图到项目空间隐藏目录
       const ssDir = options.workspacePath
         ? path.join(options.workspacePath, '.taco', 'screenshots', 'desktop')
         : path.join(app.getPath('temp'), 'taco-screenshots')
@@ -203,15 +152,71 @@ function createDesktopAutomationService(): DesktopAutomationService {
         fs.mkdirSync(ssDir, { recursive: true })
       }
       const screenshotPath = path.join(ssDir, `desktop-${Date.now()}.png`)
-      fs.writeFileSync(screenshotPath, img.toPNG())
+
+      let dataUrl: string
+
+      if (process.platform === 'darwin') {
+        // macOS: 使用 screencapture 命令行，绕过 Electron 40 + macOS 26 的 desktopCapturer 兼容问题
+        execSync(`screencapture -x "${screenshotPath}"`, { timeout: 10000 })
+        const buf = fs.readFileSync(screenshotPath)
+        dataUrl = 'data:image/png;base64,' + buf.toString('base64')
+      } else {
+        // Windows / Linux: 首选 desktopCapturer，失败后降级到系统命令行
+        const displaySize = screen.getPrimaryDisplay().size
+        try {
+          const sources = await desktopCapturer.getSources({
+            types: ['screen'],
+            thumbnailSize: displaySize,
+          })
+          const screenSource = sources.find(s => s.name === 'Entire Screen' || s.name === 'Screen 1')
+          const img = screenSource?.thumbnail ?? sources[0]?.thumbnail
+          if (!img || img.isEmpty()) {
+            throw new Error('desktopCapturer 返回空截图')
+          }
+          const buf = img.toPNG()
+          dataUrl = 'data:image/png;base64,' + buf.toString('base64')
+        } catch (e1) {
+          // desktopCapturer 失败 → 降级到系统命令行截屏
+          try {
+            if (process.platform === 'win32') {
+              // PowerShell 全屏截图（System.Drawing 是 .NET 内置组件，无需安装）
+              const safePath = screenshotPath.replace(/\\/g, '/')
+              const psCmd = `Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $s=[System.Windows.Forms.Screen]::PrimaryScreen; $b=New-Object System.Drawing.Bitmap($s.Bounds.Width,$s.Bounds.Height); $g=[System.Drawing.Graphics]::FromImage($b); $g.CopyFromScreen($s.Bounds.X,$s.Bounds.Y,0,0,$b.Size); $b.Save('${safePath}',[System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $b.Dispose()`
+              execSync(`powershell -NoProfile -Command "${psCmd}"`, { timeout: 15000 })
+            } else {
+              // Linux: 依次尝试 ImageMagick → gnome-screenshot → scrot
+              try {
+                execSync(`import -window root "${screenshotPath}"`, { timeout: 10000 })
+              } catch {
+                try {
+                  execSync(`gnome-screenshot -f "${screenshotPath}"`, { timeout: 10000 })
+                } catch {
+                  execSync(`scrot "${screenshotPath}"`, { timeout: 10000 })
+                }
+              }
+            }
+            const buf = fs.readFileSync(screenshotPath)
+            if (buf.length === 0) throw new Error('命令行截屏返回空文件')
+            dataUrl = 'data:image/png;base64,' + buf.toString('base64')
+          } catch (e2) {
+            const err1 = e1 instanceof Error ? e1.message : String(e1)
+            const err2 = e2 instanceof Error ? e2.message : String(e2)
+            throw new Error(`截图失败：desktopCapturer(${err1})，命令行(${err2})`)
+          }
+        }
+      }
+
+      const display = screen.getPrimaryDisplay()
+      const bounds = display.bounds
+      const { width, height } = display.size
 
       return {
         dataUrl,
         screenshotPath,
         cloudUrl: undefined,
-        displayId: source.display_id,
-        width: img.getSize().width,
-        height: img.getSize().height,
+        displayId: String(display.id),
+        width,
+        height,
         displayWidth: bounds.width,
         displayHeight: bounds.height,
         displayBoundsX: bounds.x,

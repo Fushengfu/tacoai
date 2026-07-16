@@ -192,7 +192,7 @@ type ChatPanelProps = {
   onResend: (msgId: string) => void
   onEditResend: (msgId: string, newContent: string) => void
   workspace: string
-  onSelectWorkspace: () => void
+  onSelectWorkspace: (defaultPath?: string) => void
   provider: string
   onProviderChange: (id: string) => void
   configuredProviders: readonly { id: string; label: string; source?: 'custom' | 'system' }[]
@@ -2012,7 +2012,7 @@ const fileInputRef = useRef<HTMLInputElement>(null)
               <button
                 type="button"
                 className="workspace-select-btn"
-                onClick={onSelectWorkspace}
+                onClick={() => onSelectWorkspace()}
               >
                 <svg className="workspace-select-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M3.5 8.5A2.5 2.5 0 0 1 6 6h4l2 2h6A2.5 2.5 0 0 1 20.5 10.5v7A2.5 2.5 0 0 1 18 20H6a2.5 2.5 0 0 1-2.5-2.5z" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
@@ -2905,7 +2905,7 @@ const fileInputRef = useRef<HTMLInputElement>(null)
           </div>
           
           {/* 项目目录 - 可点击 */}
-          <div className="bottom-bar-item workspace-item" onClick={onSelectWorkspace} title={workspace ? `工作空间: ${workspace}` : '选择工作空间'}>
+          <div className="bottom-bar-item workspace-item" onClick={() => onSelectWorkspace(workspace || undefined)} title={workspace ? `点击更换工作空间: ${workspace}` : '选择工作空间'}>
             <svg className="workspace-icon" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M3.5 8.5A2.5 2.5 0 0 1 6 6h4l2 2h6A2.5 2.5 0 0 1 20.5 10.5v7A2.5 2.5 0 0 1 18 20H6a2.5 2.5 0 0 1-2.5-2.5z" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
             </svg>
