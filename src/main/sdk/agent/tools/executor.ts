@@ -7,10 +7,11 @@
 import fs from 'node:fs/promises'
 import * as fsSync from 'node:fs'
 import path from 'node:path'
-import { exec, execFile } from 'node:child_process'
+import os from 'node:os'
+import { exec, execFile, execSync } from 'node:child_process'
 import type { AgentServices } from '../services'
 import type { BrowserActionType } from '../types'
-import { readActiveSkillDetail, readActiveSkillResource } from '../skills/service'
+import { readActiveSkillDetail, readActiveSkillResource, installSkill, previewSkill, uninstallSkill, searchSkills } from '../skills/service'
 import { normalizeToolName, toolDefinitions, type ToolCall, type ToolResult, type FileChange } from './definitions'
 import { assessToolCallsRisk, type RiskInfo, type RiskCategory, type RiskLevel } from './risk'
 import { getWorkspaceTree } from './workspace-tree'
@@ -636,6 +637,12 @@ async function executeTool(
       /* ---- 记忆回想 ---- */
       case 'recall_memories':
         return await execRecallMemories(args, workspace, projectId, runtimeContext)
+      case 'search_skills':
+        return await execSearchSkills(args, runtimeContext)
+      case 'install_skill':
+        return await execInstallSkill(args, workspace, runtimeContext)
+      case 'uninstall_skill':
+        return await execUninstallSkill(args, runtimeContext)
       default:
         return { content: `Unknown tool: ${name}`, success: false }
     }
@@ -1559,6 +1566,301 @@ async function execRecallMemories(
     return { content, success: true }
   } catch (err) {
     return { content: `Error: ${err instanceof Error ? err.message : String(err)}`, success: false }
+  }
+}
+
+/* ---- 技能搜索工具 ---- */
+
+async function execSearchSkills(
+  args: Record<string, unknown>,
+  runtimeContext?: ToolRuntimeContext,
+): Promise<ExecResult> {
+  const query = String(args.query ?? '').trim()
+  if (!query) return { content: 'Error: query is required', success: false }
+
+  const services = runtimeContext?.services
+
+  try {
+    const results = await searchSkills(query)
+
+    if (results.length === 0) {
+      return { content: `在 ClawHub 技能市场中未找到与"${query}"相关的技能。请尝试换一些关键词。`, success: true }
+    }
+
+    const items = results.map((item) => ({
+      name: item.displayName,
+      slug: item.slug,
+      description: item.summary || '无描述',
+      author: item.owner?.displayName || item.ownerHandle || '未知',
+      downloads: item.downloads ?? 0,
+      version: item.version || '—',
+      installSlug: item.slug,
+    }))
+
+    return {
+      content: JSON.stringify({
+        source: 'ClawHub 技能市场（clawhub.ai）',
+        total: results.length,
+        results: items,
+        hint: '使用 install_skill 工具安装你感兴趣的技能。传入 source 参数为 installSlug（搜索结果中的 slug 字段）。',
+      }, null, 2),
+      success: true,
+    }
+  } catch (err) {
+    services?.logger('SEARCH_SKILLS_FAIL', { error: err instanceof Error ? err.message : String(err) })
+    return { content: `Error: 搜索技能失败: ${err instanceof Error ? err.message : String(err)}`, success: false }
+  }
+}
+
+/* ---- 技能安装工具 ---- */
+
+function isClawHubSlug(source: string): boolean {
+  // 不是 URL、不是本地路径
+  if (source.startsWith('http://') || source.startsWith('https://')) return false
+  if (source.startsWith('/') || source.startsWith('.') || source.startsWith('~')) return false
+  // 匹配 @author/name 或 author/name 格式
+  if (/^@?[\w-]+\/[\w-]+$/.test(source)) return true
+  // 匹配纯 slug 格式（如 skill-creator、my-tool 等），不含 / 且不包含路径特征
+  if (/^[\w-]+$/.test(source)) return true
+  return false
+}
+
+function buildClawHubDownloadUrl(slug: string): string {
+  // ClawHub 下载 API 只需要纯技能名，不含 @author/ 前缀
+  // 从 @chindden/skill-creator 或 chindden/skill-creator 提取 skill-creator
+  // 从 skill-creator 直接使用
+  const pureSlug = slug.replace(/^@/, '').split('/').pop() ?? slug
+  return `https://clawhub.ai/api/v1/download?slug=${encodeURIComponent(pureSlug)}`
+}
+
+async function downloadAndExtractZip(
+  url: string,
+  destDir: string,
+  logger?: AgentServices['logger'],
+): Promise<void> {
+  const zipPath = path.join(destDir, 'skill.zip')
+  
+  // 下载 ZIP
+  logger?.('CLAWHUB_DOWNLOAD_START', { url })
+  const resp = await fetch(url, { headers: { 'User-Agent': 'Taco-AI' } })
+  if (!resp.ok) {
+    throw new Error(`ClawHub 下载失败: ${resp.status} ${resp.statusText}`)
+  }
+  
+  const buffer = Buffer.from(await resp.arrayBuffer())
+  await fs.writeFile(zipPath, buffer)
+  logger?.('CLAWHUB_DOWNLOAD_DONE', { size: buffer.length })
+
+  // 解压 ZIP
+  try {
+    const platform = os.platform()
+    if (platform === 'win32') {
+      execSync(`powershell -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${destDir}' -Force"`, { stdio: 'pipe' })
+    } else {
+      execSync(`unzip -o "${zipPath}" -d "${destDir}"`, { stdio: 'pipe' })
+    }
+  } catch (unzipErr) {
+    throw new Error(`解压 ZIP 失败: ${unzipErr instanceof Error ? unzipErr.message : String(unzipErr)}`)
+  }
+
+  // 清理 ZIP 文件
+  try { await fs.unlink(zipPath) } catch { /* ignore */ }
+  
+  // 如果解压后内容都是一个子目录，上移一层
+  const entries = await fs.readdir(destDir)
+  const nonZipEntries = entries.filter(e => e !== 'skill.zip')
+  if (nonZipEntries.length === 1) {
+    const innerDir = path.join(destDir, nonZipEntries[0])
+    const stat = await fs.stat(innerDir)
+    if (stat.isDirectory()) {
+      const innerEntries = await fs.readdir(innerDir)
+      for (const entry of innerEntries) {
+        await fs.rename(path.join(innerDir, entry), path.join(destDir, entry))
+      }
+      await fs.rmdir(innerDir)
+    }
+  }
+}
+
+/**
+ * 构建安全预览报告文本，供 AI 展示给用户
+ */
+function buildSecurityPreview(preview: { name: string; description: string; author: string; security?: { riskLevel: string; warnings: string[] } }): string {
+  const sec = preview.security
+  if (!sec || sec.warnings.length === 0) {
+    return `✅ 技能"${preview.name}"安全检查通过，无风险。`
+  }
+
+  const levelLabel: Record<string, string> = {
+    low: '低',
+    medium: '中',
+    high: '高',
+    critical: '致命',
+  }
+  const label = levelLabel[sec.riskLevel] ?? sec.riskLevel
+
+  let report = `🔍 技能"${preview.name}"安全检查报告：\n`
+  report += `- 作者: ${preview.author}\n`
+  report += `- 描述: ${preview.description}\n`
+  report += `- 风险等级: ${label}\n`
+  report += `- 风险项:\n`
+  for (const w of sec.warnings) {
+    report += `  ⚠ ${w}\n`
+  }
+  return report
+}
+
+async function execInstallSkill(
+  args: Record<string, unknown>,
+  workspace: string,
+  runtimeContext?: ToolRuntimeContext,
+): Promise<ExecResult> {
+  const source = String(args.source ?? '').trim()
+  if (!source) return { content: 'Error: source is required', success: false }
+
+  const force = args.force === true || args.force === 'true'
+  const services = runtimeContext?.services
+
+  try {
+    // ClawHub slug → 下载 ZIP → 解压 → 安全预览 → 安装
+    if (isClawHubSlug(source)) {
+      services?.logger('INSTALL_SKILL_CLAWHUB_START', { slug: source, force })
+      
+      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'taco-skill-'))
+      const downloadUrl = buildClawHubDownloadUrl(source)
+      
+      await downloadAndExtractZip(downloadUrl, tmpDir, services?.logger)
+      
+      // 找到解压后的 SKILL.md 所在目录
+      const findSkillMdDir = async (dir: string): Promise<string> => {
+        try {
+          await fs.access(path.join(dir, 'SKILL.md'))
+          return dir
+        } catch {
+          const entries = await fs.readdir(dir)
+          for (const entry of entries) {
+            const subDir = path.join(dir, entry)
+            try {
+              const stat = await fs.stat(subDir)
+              if (stat.isDirectory()) {
+                const result = await findSkillMdDir(subDir)
+                if (result) return result
+              }
+            } catch { /* ignore */ }
+          }
+        }
+        return ''
+      }
+      
+      const skillDir = await findSkillMdDir(tmpDir)
+      if (!skillDir) {
+        await fs.rm(tmpDir, { recursive: true, force: true })
+        return { content: 'Error: 下载的技能包中未找到 SKILL.md 文件', success: false }
+      }
+      
+      services?.logger('INSTALL_SKILL_CLAWHUB_EXTRACTED', { skillDir })
+
+      if (!force) {
+        // 安全预览
+        const preview = await previewSkill(skillDir)
+        const securityPreview = buildSecurityPreview(preview)
+        
+        if (preview.security?.riskLevel === 'critical') {
+          await fs.rm(tmpDir, { recursive: true, force: true })
+          return { content: securityPreview, success: false }
+        }
+        
+        if (preview.security?.riskLevel === 'high') {
+          await fs.rm(tmpDir, { recursive: true, force: true })
+          return {
+            content: securityPreview + `\n\n⚠️ 该技能风险等级为"高"，不会自动安装。如果你确认信任此技能并希望安装，请回复"安装"或"继续"，我将使用 force=true 强制安装。`,
+            success: false,
+          }
+        }
+      }
+      
+      // 安装
+      const skill = await installSkill(skillDir, true)
+      await fs.rm(tmpDir, { recursive: true, force: true })
+      services?.logger('INSTALL_SKILL_DONE', { id: skill.id, name: skill.name, source: 'clawhub' })
+
+      return {
+        content: JSON.stringify({
+          message: `技能"${skill.name}"（${skill.id}）从 ClawHub 安装成功，已立即可用。`,
+          skill: { id: skill.id, name: skill.name, description: skill.description, version: skill.version, author: skill.author },
+        }),
+        success: true,
+      }
+    }
+
+    // GitHub URL / Raw URL / 本地路径
+    services?.logger('INSTALL_SKILL_START', { source, force })
+
+    if (!force) {
+      const preview = await previewSkill(source)
+      const securityPreview = buildSecurityPreview(preview)
+      
+      if (preview.security?.riskLevel === 'critical') {
+        return { content: securityPreview, success: false }
+      }
+      
+      if (preview.security?.riskLevel === 'high') {
+        return {
+          content: securityPreview + `\n\n⚠️ 该技能风险等级为"高"，不会自动安装。如果你确认信任此技能并希望安装，请回复"安装"或"继续"，我将使用 force=true 强制安装。`,
+          success: false,
+        }
+      }
+    }
+
+    const skill = await installSkill(source, true)
+    services?.logger('INSTALL_SKILL_DONE', { id: skill.id, name: skill.name })
+
+    return {
+      content: JSON.stringify({
+        message: `技能"${skill.name}"（${skill.id}）安装成功，已立即可用。`,
+        skill: { id: skill.id, name: skill.name, description: skill.description, version: skill.version, author: skill.author },
+      }),
+      success: true,
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    services?.logger('INSTALL_SKILL_FAIL', { error: msg, source })
+    return { content: `Error: 安装技能失败: ${msg}`, success: false }
+  }
+}
+
+/* ---- 技能卸载工具 ---- */
+
+async function execUninstallSkill(
+  args: Record<string, unknown>,
+  runtimeContext?: ToolRuntimeContext,
+): Promise<ExecResult> {
+  const id = String(args.skill_id ?? '').trim()
+  if (!id) return { content: 'Error: skill_id is required（要卸载的技能 ID）', success: false }
+
+  const services = runtimeContext?.services
+
+  try {
+    await uninstallSkill(id)
+    services?.logger('UNINSTALL_SKILL_DONE', { id })
+
+    return {
+      content: `<uninstall_skill_result>技能"${id}"已成功卸载并移除。</uninstall_skill_result>`,
+      success: true,
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    services?.logger('UNINSTALL_SKILL_FAIL', { error: msg, id })
+
+    // 友好的错误提示
+    if (msg.includes('not found')) {
+      return { content: `Error: 未找到技能"${id}"，请确认技能 ID 是否正确。`, success: false }
+    }
+    if (msg.includes('builtin')) {
+      return { content: `Error: 不能卸载内置技能"${id}"，只能卸载从 ClawHub 或外部安装的技能。`, success: false }
+    }
+
+    return { content: `Error: 卸载技能失败: ${msg}`, success: false }
   }
 }
 

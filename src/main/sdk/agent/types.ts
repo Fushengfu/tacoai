@@ -123,6 +123,25 @@ export type SkillPreview = {
   }
 }
 
+/** ClawHub 搜索结果（匹配 clawhub.ai API 实际返回字段） */
+export type ClawHubSearchResult = {
+  slug: string
+  displayName: string
+  summary: string
+  downloads: number
+  version: string | null
+  /** 作者用户名（扁平字段，来自 API 的 ownerHandle） */
+  ownerHandle: string
+  /** 作者详情（嵌套对象，来自 API 的 owner） */
+  owner: {
+    handle: string
+    displayName: string
+    image: string
+  }
+  /** 更新时间戳（毫秒） */
+  updatedAt?: number
+}
+
 /** 浏览器使用操作类型 */
 export type BrowserActionType =
   | 'navigate'

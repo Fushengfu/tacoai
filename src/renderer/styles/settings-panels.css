@@ -1215,6 +1215,51 @@
   margin-bottom: 2px;
 }
 
+/* ── Skills Search Results ── */
+.skills-search-results {
+  margin-top: 12px;
+}
+.skills-search-count {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.skill-preset-card.selected {
+  border-color: var(--accent-2);
+  background: rgba(76, 123, 255, 0.08);
+}
+.skill-preset-card {
+  cursor: pointer;
+}
+
+/* ── Skills Selected Preview Section ── */
+.skills-selected-section {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.skills-selected-loading {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 12px 0;
+  text-align: center;
+}
+.skills-selected-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
+
+/* ── Skills Collapse Header ── */
+.skills-collapse-header {
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 0;
+}
+.skills-collapse-header:hover {
+  opacity: 0.8;
+}
+
 /* ── Skills Card Enhancements ── */
 .skill-card-tags {
   display: flex;
@@ -1261,6 +1306,140 @@
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 16px;
+}
+
+/* ── Installed Skills Card Grid ── */
+.skills-installed-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.skill-installed-card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: all 0.15s ease;
+}
+.skill-installed-card:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.skill-installed-card.disabled {
+  opacity: 0.5;
+}
+.skill-installed-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.skill-installed-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+.skill-installed-badges {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.skill-installed-version {
+  font-size: 10px;
+  color: var(--muted);
+}
+.skill-installed-source {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+.skill-installed-source.builtin {
+  background: rgba(76, 123, 255, 0.15);
+  color: #60a5fa;
+}
+.skill-installed-source.remote {
+  background: rgba(76, 200, 120, 0.15);
+  color: #4cc878;
+}
+.skill-installed-source.local {
+  background: rgba(255, 180, 50, 0.15);
+  color: #f6ad55;
+}
+.skill-installed-desc {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.skill-installed-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.skill-installed-author {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.2);
+}
+.skill-installed-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.skill-installed-update {
+  font-size: 10px;
+}
+
+/* ── SKILL.md Detail Content ── */
+.skill-detail-section {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.skill-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.skill-detail-loading {
+  font-size: 11px;
+  color: var(--muted);
+}
+.skill-detail-content {
+  max-height: 460px;
+  overflow: auto;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 14px;
+  font-family: 'SF Mono', 'Consolas', 'Menlo', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.7);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+.skill-detail-content code {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  background: none;
+  padding: 0;
+}
+.skill-detail-empty {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 8px 0;
 }
 
 /* ── Notes Panel ── */
@@ -1735,6 +1914,39 @@
 
   .skills-preset-section .skill-preset-author {
     color: rgba(0, 0, 0, 0.25);
+  }
+
+  .skill-preset-card.selected {
+    border-color: var(--accent-2);
+    background: rgba(59, 110, 255, 0.08);
+  }
+
+  .skills-selected-section {
+    border-top-color: rgba(0, 0, 0, 0.08);
+  }
+
+  /* ── Installed cards light theme ── */
+  .skill-installed-card {
+    background: rgba(0, 0, 0, 0.03);
+  }
+  .skill-installed-card:hover {
+    border-color: rgba(0, 0, 0, 0.16);
+  }
+  .skill-installed-footer {
+    border-top-color: rgba(0, 0, 0, 0.06);
+  }
+  .skill-installed-author {
+    color: rgba(0, 0, 0, 0.25);
+  }
+
+  /* ── SKILL.md detail light theme ── */
+  .skill-detail-content {
+    background: rgba(0, 0, 0, 0.04);
+    border-color: rgba(0, 0, 0, 0.08);
+    color: rgba(0, 0, 0, 0.6);
+  }
+  .skill-detail-section {
+    border-top-color: rgba(0, 0, 0, 0.08);
   }
 
   /* ── Notes ── */

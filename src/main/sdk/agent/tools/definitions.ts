@@ -397,6 +397,50 @@ export const toolDefinitions: ToolDefinition[] = [
       },
     },
   },
+  /* ---- 技能搜索与安装工具 ---- */
+  {
+    type: 'function',
+    function: {
+      name: 'search_skills',
+      description: '从 ClawHub 技能市场（clawhub.ai）搜索可安装的 Taco 技能。根据关键词搜索 69.5K+ 公共技能，返回技能名称、描述、slug、作者、下载量、标签等信息。搜索结果包含 installSlug 字段，可直接用于 install_skill 安装。',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: '搜索关键词，如"api documentation"、"pdf 处理"、"图片编辑"、"git commit"等' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'install_skill',
+      description: '安装一个 Taco 技能到本地。支持三种来源格式：1) ClawHub slug（如"skill-creator"或"@chindden/skill-creator"，搜索结果的 slug 字段）；2) GitHub 仓库 URL（如"https://github.com/xxx/yyy"）；3) 本地路径。从 ClawHub 安装时会自动下载 ZIP 并解压到 ~/.taco/skills/。安装前会自动进行安全审核：低/中风险直接安装，高风险暂停并展示风险报告（需用户确认后 force=true 强制安装），致命风险直接拒绝。安装完成后技能立即生效，下次任务自动加载。',
+      parameters: {
+        type: 'object',
+        properties: {
+          source: { type: 'string', description: '技能来源。可以是 ClawHub slug（如"skill-creator"或"@chindden/skill-creator"，即搜索结果的 slug 字段）、GitHub 仓库 URL（如"https://github.com/xxx/yyy"）、SKILL.md 的 Raw URL、或本地路径' },
+          force: { type: 'boolean', description: '是否跳过安全预览强制安装。仅当用户明确看到风险报告并确认"安装"/"继续"后才设为 true。默认为 false' },
+        },
+        required: ['source'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'uninstall_skill',
+      description: '卸载一个已安装的非内置 Taco 技能。只能卸载从 ClawHub 或外部安装的技能，内置技能不可卸载。卸载后会删除技能目录并刷新技能列表。',
+      parameters: {
+        type: 'object',
+        properties: {
+          skill_id: { type: 'string', description: '要卸载的技能 ID（如"code-review"、"skill-creator"）。可通过已安装技能列表确认 ID。' },
+        },
+        required: ['skill_id'],
+      },
+    },
+  },
 ]
 
 /* ------------------------------------------------------------------ */
@@ -608,6 +652,46 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
     cautions: [
       '此工具只搜索任务记忆（成功/失败/中止的任务记录），不包含项目规则。',
       '不要在一次对话中连续调用多次——先用一个精准的 query 试试。',
+    ],
+  },
+  search_skills: {
+    usage: [
+      '当用户需要寻找、发现新的技能时调用。从 ClawHub 技能市场（clawhub.ai）搜索 69.5K+ 公共技能。',
+      'query 参数传入功能描述关键词，如"api 文档生成"、"pdf 处理"、"图片压缩"等。',
+      '搜索结果返回技能名称、描述、slug、作者、下载量、标签，用户可选择感兴趣的安装。',
+      '优先建议用户安装下载量高、描述清晰、更新活跃的技能。',
+    ],
+    cautions: [
+      'ClawHub API 免费无需认证，限流 3000 次/分钟，正常使用绰绰有余。',
+      '仅搜索公共技能市场，不包含私有技能。',
+    ],
+  },
+  install_skill: {
+    usage: [
+      '安装用户指定的技能到本地 ~/.taco/skills/ 目录，安装后自动刷新技能列表立即生效。',
+      'source 参数支持三种格式：ClawHub slug（如"skill-creator"或"@chindden/skill-creator"，直接使用搜索结果的 slug 字段）、GitHub 仓库 URL、本地文件路径。',
+      '从 ClawHub 安装时，自动下载 ZIP 包并解压，包含 SKILL.md 及附属资源（scripts/references/templates 等）。',
+      '安装前自动进行安全审核：low/medium 直接安装；high 暂停并展示风险报告等用户确认（用户确认后 force=true 重新调用）；critical 直接拒绝。',
+      '当首次调用返回高风险警告时，必须向用户展示具体的风险项，等用户说"安装"或"继续"后再用 force=true 调用。',
+      '安装完成后告知用户技能已可用，下次任务自动加载。',
+    ],
+    cautions: [
+      '仅安装用户明确选择或同意的技能，不要自作主张安装。',
+      '高风险技能必须等用户看了风险报告并确认后才能 force=true 安装，禁止自动 force。',
+      '如果安装失败，向用户说明失败原因并建议重试或换 source。',
+    ],
+  },
+  uninstall_skill: {
+    usage: [
+      '卸载用户指定的非内置技能。只能卸载从 ClawHub 或外部通过 GitHub/本地路径安装的技能。',
+      'skill_id 参数传入技能 ID（如"skill-creator"），通过已安装技能列表获取。',
+      '内置技能（source 为 builtin）不可卸载，调用会返回错误。',
+      '卸载成功后技能立即从列表中移除，无需重启。',
+    ],
+    cautions: [
+      '卸载前应先告知用户并等待确认，不要擅自卸载。',
+      '内置技能不可卸载，如果用户要求卸载内置技能，直接告知不可卸载。',
+      '卸载后相关技能目录会被删除，不可恢复。',
     ],
   },
   /* ---- 文件上传到云存储 ---- */

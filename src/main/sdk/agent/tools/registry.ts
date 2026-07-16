@@ -28,6 +28,9 @@ const ALWAYS_AVAILABLE_TOOL_NAMES = [
   'terminal_close',
   'run_skill_script',
   'recall_memories',
+  'search_skills',
+  'install_skill',
+  'uninstall_skill',
 ]
 
 function filterToolDefinitions(allowedToolNames?: Iterable<string>): ToolDefinition[] {

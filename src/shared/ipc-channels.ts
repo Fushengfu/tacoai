@@ -91,6 +91,8 @@ export const IpcChannel = {
 
   /** Skills 管理 */
   SKILLS_LIST: 'skills:list',
+  SKILLS_SEARCH: 'skills:search',
+  SKILLS_GET_DETAIL: 'skills:get-detail',
   SKILLS_INSTALL: 'skills:install',
   SKILLS_UNINSTALL: 'skills:uninstall',
   SKILLS_TOGGLE: 'skills:toggle',
