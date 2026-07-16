@@ -669,6 +669,7 @@ export default function App() {
       updated[idx] = { ...updated[idx], content: newContent }
     }
     chat.setMessages(sessionId, updated)
+    const targetContextLength = resolveModelConfigContextLength(modelConfig)
     chat.resendFromExisting({
       threadId: sessionId,
       projectId: tid,
@@ -676,6 +677,7 @@ export default function App() {
       provider: provider as ProviderId,
       modelConfig,
       workspace: currentWorkspace,
+      contextLength: targetContextLength,
       onComplete: () => {
         threadStore.updateThread(tid, { updatedAt: Date.now() })
         notifyTaskCompleted(threadStore.activeThread?.title)
