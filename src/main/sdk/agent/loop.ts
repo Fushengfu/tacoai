@@ -750,7 +750,7 @@ export async function runAgent(
     }
   }
 
-  const tokenBudget = contextLength ?? 131072
+  const tokenBudget = contextLength ?? 1048576
   let latestGitCommitHash: string | undefined
   let lastUsageTotalTokens: number | undefined
   let contextRetries = 0

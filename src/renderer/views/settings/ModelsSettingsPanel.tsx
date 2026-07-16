@@ -1,5 +1,5 @@
 import type { ModelConfig } from '../../types'
-import { providers } from '../../constants'
+import { providers, providerPlaceholders } from '../../constants'
 
 type ModelsSettingsPanelProps = {
   modelConfigs: ModelConfig[]
@@ -187,7 +187,14 @@ export function ModelsSettingsPanel({
                       step={1}
                       value={modelDraft.contextLength}
                       onChange={(e) => onModelDraftFieldChange('contextLength', e.target.value)}
-                      placeholder="131072（示例）"
+                      placeholder={(() => {
+                        const provider = modelDraft?.provider
+                        if (provider) {
+                          const ph = providerPlaceholders[provider]?.contextLength
+                          if (ph) return ph
+                        }
+                        return '1048576（示例）'
+                      })()}
                     />
                   </label>
                   <label className="settings-field">

@@ -7,7 +7,7 @@ import type { SystemEnv } from '../shared/prompt-builder'
 /* ------------------------------------------------------------------ */
 
 export const providers: readonly { id: ProviderId; label: string; contextLength: number }[] = [
-  { id: 'deepseek', label: 'DeepSeek', contextLength: 131072 },
+  { id: 'deepseek', label: 'DeepSeek', contextLength: 1048576 },
   { id: 'kimi', label: 'Kimi', contextLength: 131072 },
   { id: 'minimax', label: 'MiniMax', contextLength: 1048576 },
   { id: 'glm', label: 'GLM', contextLength: 131072 },
@@ -61,7 +61,7 @@ export function estimateTokens(text: string): number {
 }
 
 export const providerPlaceholders: Record<ProviderId, ProviderForm> = {
-  deepseek: { baseUrl: 'https://api.deepseek.com/beta', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '131072（示例）', temperature: '0.05（可选）' },
+  deepseek: { baseUrl: 'https://api.deepseek.com/beta', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '1048576（示例）', temperature: '0.05（可选）' },
   kimi: { baseUrl: 'https://api.moonshot.cn/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '131072（示例）', temperature: '0.05（可选）' },
   minimax: { baseUrl: 'https://api.minimaxi.com/v1', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '1048576（示例）', temperature: '0.05（可选）' },
   glm: { baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKey: 'sk-...', model: '填写官方模型 ID（以控制台为准）', contextLength: '131072（示例）', temperature: '0.05（可选）' },
