@@ -578,6 +578,7 @@ export default function App() {
           apiKey: gm.apiKey,
           model: gm.model,
           contextLength: String(gm.contextLength),
+          maxTokens: gm.maxTokens,
           temperature: gm.temperature,
           supportsVision: Boolean(gm.supportsVision),
           supportsReasoning: Boolean(gm.supportsReasoning),

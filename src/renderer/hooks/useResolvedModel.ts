@@ -58,6 +58,7 @@ export function useResolvedModel(params: {
         apiKey: gatewayModelMatch.apiKey,
         model: gatewayModelMatch.model,
         contextLength: String(gatewayModelMatch.contextLength ?? ''),
+        maxTokens: gatewayModelMatch.maxTokens,
         temperature: gatewayModelMatch.temperature,
         supportsVision: Boolean(gatewayModelMatch.supportsVision),
         supportsReasoning: Boolean(gatewayModelMatch.supportsReasoning),

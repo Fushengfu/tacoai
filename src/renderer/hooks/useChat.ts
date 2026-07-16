@@ -1565,6 +1565,7 @@ export function useChat() {
         apiKey: modelConfig.apiKey || undefined,
         model: modelConfig.model || undefined,
         temperature: parseConfiguredTemperature(modelConfig.temperature),
+        maxTokens: modelConfig.maxTokens ? Number(modelConfig.maxTokens) || undefined : undefined,
         supportsVision: Boolean(modelConfig.supportsVision),
         supportsReasoning: Boolean(modelConfig.supportsReasoning),
       }
@@ -1630,6 +1631,7 @@ export function useChat() {
         apiKey: modelConfig.apiKey || undefined,
         model: modelConfig.model || undefined,
         temperature: parseConfiguredTemperature(modelConfig.temperature),
+        maxTokens: modelConfig.maxTokens ? Number(modelConfig.maxTokens) || undefined : undefined,
         supportsVision: Boolean(modelConfig.supportsVision),
         supportsReasoning: Boolean(modelConfig.supportsReasoning),
       }

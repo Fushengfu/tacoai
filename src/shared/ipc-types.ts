@@ -46,6 +46,7 @@ export type IpcChatOverrides = Record<
     apiKey?: string
     model?: string
     temperature?: number
+    maxTokens?: number
     headers?: Record<string, string>
   }
 >
