@@ -224,6 +224,9 @@ export function registerIpcHandlers() {
   ipcMain.on(IpcChannel.WINDOW_CLOSE, handleWindowClose)
 
   // App
+  ipcMain.handle(IpcChannel.SHELL_OPEN_PATH, (_e, targetPath: string) => {
+    return shell.openPath(targetPath)
+  })
   ipcMain.handle(IpcChannel.OPEN_LOG_DIR, (_e, scope?: { projectId?: string; workspace?: string }) => {
     return shell.openPath(getLogDir(buildLogScope(scope?.projectId, scope?.workspace)))
   })

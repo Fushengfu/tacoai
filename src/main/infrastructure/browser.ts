@@ -7,7 +7,8 @@
  */
 
 import { BrowserWindow, app, ipcMain, session } from 'electron'
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs'
+import { execSync } from 'node:child_process'
 import * as nodePath from 'node:path'
 import { IpcChannel } from '../../shared/ipc-channels'
 import { mainWindow } from '../window/window-manager'
@@ -357,14 +358,17 @@ async function executeExternalBrowserAction(payload: BrowserActionPayload, appId
     }
     const tryCapturePage = async (): Promise<string> => {
       const image = await withTimeout(wc.capturePage(), 4000, 'webContents.capturePage')
+      // 隐藏窗口下 capturePage() 可能返回 0×0 空图片，toDataURL() 返回 "data:image/png;base64," 是 truthy
+      if (image.isEmpty()) throw new Error('capturePage returned empty image (0×0)')
       const dataUrl = image.toDataURL()
-      if (!dataUrl) throw new Error('empty capturePage data')
+      if (!dataUrl || dataUrl === 'data:image/png;base64,') throw new Error('empty capturePage data')
       return dataUrl
     }
+    // webContents.capturePage() 优先 —— Electron 原生 API，不依赖 CDP，paintWhenInitiallyHidden 保证始终有 buffer
     const strategies: Array<() => Promise<string>> = [
+      () => tryCapturePage(),
       () => tryCdp(true),
       () => tryCdp(false),
-      () => tryCapturePage(),
     ]
     for (const strategy of strategies) {
       try {
@@ -433,21 +437,19 @@ async function executeExternalBrowserAction(payload: BrowserActionPayload, appId
         await ensureCdpAttached(wc, appId)
         await wc.debugger.sendCommand('Page.bringToFront').catch(() => {})
 
-        // Windows 隐藏窗口下截图经常卡住：失败时临时显示窗口后重试，再恢复隐藏
-        let dataUrl = ''
-        let temporarilyShown = false
+        // Windows/macOS 隐藏窗口下截图经常卡住：失败时临时显示窗口后重试，再恢复隐藏
+        let dataUrl: string
         try {
           dataUrl = await captureScreenshotDataUrl(wc)
         } catch (firstErr) {
           if ((process.platform !== 'win32' && process.platform !== 'darwin') || !browserHiddenMode || extWin.isDestroyed()) throw firstErr
-          if (!extWin.isVisible()) {
-            extWin.showInactive()
-            temporarilyShown = true
-            await sleep(300)
+          extWin.showInactive()
+          await sleep(800)
+          try {
+            dataUrl = await captureScreenshotDataUrl(wc)
+          } finally {
+            if (!extWin.isDestroyed()) extWin.hide()
           }
-          dataUrl = await captureScreenshotDataUrl(wc)
-        } finally {
-          if (temporarilyShown && !extWin.isDestroyed()) extWin.hide()
         }
 
         // 采集页面结构信息，保持与内嵌浏览器返回结构一致

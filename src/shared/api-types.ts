@@ -58,6 +58,8 @@ export type TacoApi = {
   shell: {
     /** 用指定编辑器打开文件 */
     openInEditor: (filePath: string, editor: EditorId) => Promise<void>
+    /** 在系统文件管理器中打开指定路径 */
+    openPath: (path: string) => Promise<string>
     /** 在系统文件管理器中打开日志目录 */
     openLogDir: (scope?: { projectId?: string; workspace?: string }) => Promise<void>
     /** 触发操作系统通知 */
@@ -115,7 +117,7 @@ export type TacoApi = {
   }
   dialog: {
     /** 打开目录选择对话框，返回选中的路径或 null */
-    selectDirectory: () => Promise<string | null>
+    selectDirectory: (defaultPath?: string) => Promise<string | null>
     /** 打开附件选择对话框，返回选中的文件绝对路径列表 */
     selectAttachments: () => Promise<string[]>
   }

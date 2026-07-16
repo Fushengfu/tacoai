@@ -1540,7 +1540,6 @@ export function useChat() {
     setMessages(threadId, updatedMsgs)
     setSendingThreads((prev) => ({ ...prev, [threadId]: true }))
     setStreamingContents((prev) => ({ ...prev, [threadId]: '' }))
-    setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: undefined }))
     setActiveTaskStartedAtByThread((prev) => ({ ...prev, [threadId]: taskStartedAt }))
 
     // 首条消息 → 自动命名
@@ -1610,7 +1609,6 @@ export function useChat() {
     sendParamsRefs.current.set(threadId, { threadId, projectId, projectRules, provider, modelConfig, workspace, onFirstMessage, onComplete })
     setSendingThreads((prev) => ({ ...prev, [threadId]: true }))
     setStreamingContents((prev) => ({ ...prev, [threadId]: '' }))
-    setUsageTotalTokensByThread((prev) => ({ ...prev, [threadId]: undefined }))
     setActiveTaskStartedAtByThread((prev) => ({ ...prev, [threadId]: taskStartedAt }))
 
     // 构造 API 消息

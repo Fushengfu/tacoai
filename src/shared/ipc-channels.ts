@@ -44,6 +44,8 @@ export const IpcChannel = {
   SELECT_ATTACHMENTS: 'dialog:select-attachments',
   /** renderer → main (invoke/handle, 用编辑器打开文件) */
   OPEN_IN_EDITOR: 'shell:open-in-editor',
+  /** renderer → main (invoke/handle, 在系统文件管理器中打开路径) */
+  SHELL_OPEN_PATH: 'shell:open-path',
 
   /** renderer → main (invoke/handle, 文件撤销/恢复) */
   FILE_REVERT: 'file:revert',
