@@ -11,7 +11,7 @@ import os from 'node:os'
 import { exec, execFile, execSync } from 'node:child_process'
 import type { AgentServices } from '../services'
 import type { BrowserActionType } from '../types'
-import { readActiveSkillDetail, readActiveSkillResource, installSkill, previewSkill, uninstallSkill, searchSkills } from '../skills/service'
+import { readActiveSkillDetail, readActiveSkillResource, installSkill, previewSkill, uninstallSkill, searchSkills, isClawHubSlug, buildClawHubDownloadUrl, downloadAndExtractZip } from '../skills/service'
 import { normalizeToolName, toolDefinitions, type ToolCall, type ToolResult, type FileChange } from './definitions'
 import { assessToolCallsRisk, type RiskInfo, type RiskCategory, type RiskLevel } from './risk'
 import { getWorkspaceTree } from './workspace-tree'
@@ -271,6 +271,9 @@ function resolveSafe(
     if (options?.allowOutsideWorkspaceRead) {
       return { resolved: normalizedFp }
     }
+    // 绝对路径不在工作空间内且未授权外部读取，直接拒绝
+    // 不再降级为"去掉前导 / 后拼到 workspace"，否则会产生可笑的路径并触发误导读者的 fallback 搜索
+    return { error: `路径不在当前工作空间内: "${filePath}"（工作空间: "${normalizedWs}"）` }
   }
 
   let cleaned = filePath
@@ -334,12 +337,12 @@ async function resolveSmartPath(
   try {
     const stat = await fs.stat(check.resolved)
     if (kind === 'directory' && !stat.isDirectory()) {
-      // 期望目录但拿到了文件，继续搜索
-    } else if (kind === 'file' && !stat.isFile()) {
-      // 期望文件但拿到了目录，继续搜索
-    } else {
-      return { resolved: check.resolved }
+      return { error: `"${check.resolved}" 不是目录` }
     }
+    if (kind === 'file' && !stat.isFile()) {
+      return { error: `"${check.resolved}" 是一个目录，不是文件` }
+    }
+    return { resolved: check.resolved }
   } catch {
     // 路径不存在，进入搜索
   }
@@ -536,6 +539,63 @@ function execAsync(
 
     let settled = false
     const child = exec(command, {
+      cwd: options.cwd,
+      timeout: options.timeout,
+      maxBuffer: options.maxBuffer ?? 1024 * 1024,
+      encoding: 'utf-8',
+      env: options.env,
+    }, (err, stdout, stderr) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      if (err) {
+        const error = err as Error & { stdout?: string; stderr?: string }
+        error.stdout = stdout ?? ''
+        error.stderr = stderr ?? ''
+        reject(error)
+      } else {
+        resolve({ stdout: stdout ?? '', stderr: stderr ?? '' })
+      }
+    })
+
+    const killTimer = setTimeout(() => {
+      try { child.kill('SIGKILL') } catch { /* ignore */ }
+    }, options.timeout + 5000)
+
+    const onAbort = () => {
+      if (settled) return
+      settled = true
+      try { child.kill('SIGTERM') } catch { /* ignore */ }
+      cleanup()
+      reject(makeAbortError())
+    }
+
+    const cleanup = () => {
+      clearTimeout(killTimer)
+      if (options.signal) options.signal.removeEventListener('abort', onAbort)
+    }
+
+    if (options.signal) options.signal.addEventListener('abort', onAbort, { once: true })
+
+    child.on('exit', cleanup)
+    child.on('error', cleanup)
+  })
+}
+
+/** 异步执行可执行文件（不启动 shell），带超时和输出限制。execFile 直接执行文件，参数不会被 shell 解释，防止命令注入 */
+function execFileAsync(
+  file: string,
+  args: string[],
+  options: { cwd: string; timeout: number; maxBuffer?: number; signal?: AbortSignal; env?: NodeJS.ProcessEnv }
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    if (options.signal?.aborted) {
+      reject(makeAbortError())
+      return
+    }
+
+    let settled = false
+    const child = execFile(file, args, {
       cwd: options.cwd,
       timeout: options.timeout,
       maxBuffer: options.maxBuffer ?? 1024 * 1024,
@@ -1393,13 +1453,19 @@ async function execRunSkillScript(
     return { content: `技能 "${skillId}" 未找到或未激活`, success: false }
   }
 
+  // 白名单校验：scriptName 只允许安全字符（字母数字、点、下划线、连字符），防止命令注入
+  if (!/^[a-zA-Z0-9._-]+$/.test(scriptName)) {
+    return { content: `Error: 非法的 script_name，只允许字母、数字、点、下划线和连字符`, success: false }
+  }
+
   const scriptPath = path.join(rootDir, 'scripts', scriptName)
   const MAX_OUTPUT_CHARS = 12000
   const TIMEOUT_MS = 120_000
 
   try {
     const env = await getRunCommandEnv()
-    const { stdout, stderr } = await execAsync(scriptPath, {
+    // 使用 execFile 而非 exec，避免 shell 注入：execFile 不启动 shell，路径中的元字符不会被解释
+    const { stdout, stderr } = await execFileAsync(scriptPath, [], {
       cwd: path.dirname(scriptPath),
       timeout: TIMEOUT_MS,
       maxBuffer: 4 * 1024 * 1024,
@@ -1578,107 +1644,42 @@ async function execSearchSkills(
   const query = String(args.query ?? '').trim()
   if (!query) return { content: 'Error: query is required', success: false }
 
+  const source = (String(args.source ?? 'all').trim() || 'all') as 'clawhub' | 'skillhub' | 'all'
   const services = runtimeContext?.services
 
   try {
-    const results = await searchSkills(query)
+    const results = await searchSkills(query, source)
 
     if (results.length === 0) {
-      return { content: `在 ClawHub 技能市场中未找到与"${query}"相关的技能。请尝试换一些关键词。`, success: true }
+      const sourceLabel = source === 'clawhub' ? 'ClawHub' : source === 'skillhub' ? '腾讯 SkillHub' : 'ClawHub 和腾讯 SkillHub'
+      return { content: `在${sourceLabel}技能市场中未找到与"${query}"相关的技能。请尝试换一些关键词。`, success: true }
     }
 
     const items = results.map((item) => ({
       name: item.displayName,
       slug: item.slug,
       description: item.summary || '无描述',
-      author: item.owner?.displayName || item.ownerHandle || '未知',
+      author: item.authorName || '未知',
       downloads: item.downloads ?? 0,
       version: item.version || '—',
+      source: item.source,
       installSlug: item.slug,
     }))
 
+    const sourceLabel = source === 'clawhub' ? 'ClawHub 技能市场（clawhub.ai）' : source === 'skillhub' ? '腾讯 SkillHub（skillhub.cloud.tencent.com）' : 'ClawHub + 腾讯 SkillHub（双源合并）'
+
     return {
       content: JSON.stringify({
-        source: 'ClawHub 技能市场（clawhub.ai）',
+        source: sourceLabel,
         total: results.length,
         results: items,
-        hint: '使用 install_skill 工具安装你感兴趣的技能。传入 source 参数为 installSlug（搜索结果中的 slug 字段）。',
+        hint: '使用 install_skill 工具安装你感兴趣的技能。传入 source 参数为搜索结果中的 slug 字段。',
       }, null, 2),
       success: true,
     }
   } catch (err) {
     services?.logger('SEARCH_SKILLS_FAIL', { error: err instanceof Error ? err.message : String(err) })
     return { content: `Error: 搜索技能失败: ${err instanceof Error ? err.message : String(err)}`, success: false }
-  }
-}
-
-/* ---- 技能安装工具 ---- */
-
-function isClawHubSlug(source: string): boolean {
-  // 不是 URL、不是本地路径
-  if (source.startsWith('http://') || source.startsWith('https://')) return false
-  if (source.startsWith('/') || source.startsWith('.') || source.startsWith('~')) return false
-  // 匹配 @author/name 或 author/name 格式
-  if (/^@?[\w-]+\/[\w-]+$/.test(source)) return true
-  // 匹配纯 slug 格式（如 skill-creator、my-tool 等），不含 / 且不包含路径特征
-  if (/^[\w-]+$/.test(source)) return true
-  return false
-}
-
-function buildClawHubDownloadUrl(slug: string): string {
-  // ClawHub 下载 API 只需要纯技能名，不含 @author/ 前缀
-  // 从 @chindden/skill-creator 或 chindden/skill-creator 提取 skill-creator
-  // 从 skill-creator 直接使用
-  const pureSlug = slug.replace(/^@/, '').split('/').pop() ?? slug
-  return `https://clawhub.ai/api/v1/download?slug=${encodeURIComponent(pureSlug)}`
-}
-
-async function downloadAndExtractZip(
-  url: string,
-  destDir: string,
-  logger?: AgentServices['logger'],
-): Promise<void> {
-  const zipPath = path.join(destDir, 'skill.zip')
-  
-  // 下载 ZIP
-  logger?.('CLAWHUB_DOWNLOAD_START', { url })
-  const resp = await fetch(url, { headers: { 'User-Agent': 'Taco-AI' } })
-  if (!resp.ok) {
-    throw new Error(`ClawHub 下载失败: ${resp.status} ${resp.statusText}`)
-  }
-  
-  const buffer = Buffer.from(await resp.arrayBuffer())
-  await fs.writeFile(zipPath, buffer)
-  logger?.('CLAWHUB_DOWNLOAD_DONE', { size: buffer.length })
-
-  // 解压 ZIP
-  try {
-    const platform = os.platform()
-    if (platform === 'win32') {
-      execSync(`powershell -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${destDir}' -Force"`, { stdio: 'pipe' })
-    } else {
-      execSync(`unzip -o "${zipPath}" -d "${destDir}"`, { stdio: 'pipe' })
-    }
-  } catch (unzipErr) {
-    throw new Error(`解压 ZIP 失败: ${unzipErr instanceof Error ? unzipErr.message : String(unzipErr)}`)
-  }
-
-  // 清理 ZIP 文件
-  try { await fs.unlink(zipPath) } catch { /* ignore */ }
-  
-  // 如果解压后内容都是一个子目录，上移一层
-  const entries = await fs.readdir(destDir)
-  const nonZipEntries = entries.filter(e => e !== 'skill.zip')
-  if (nonZipEntries.length === 1) {
-    const innerDir = path.join(destDir, nonZipEntries[0])
-    const stat = await fs.stat(innerDir)
-    if (stat.isDirectory()) {
-      const innerEntries = await fs.readdir(innerDir)
-      for (const entry of innerEntries) {
-        await fs.rename(path.join(innerDir, entry), path.join(destDir, entry))
-      }
-      await fs.rmdir(innerDir)
-    }
   }
 }
 
@@ -1722,15 +1723,34 @@ async function execInstallSkill(
   const services = runtimeContext?.services
 
   try {
-    // ClawHub slug → 下载 ZIP → 解压 → 安全预览 → 安装
+    // slug 安装（ClawHub / SkillHub 自动回退）→ 下载 ZIP → 解压 → 安全预览 → 安装
     if (isClawHubSlug(source)) {
-      services?.logger('INSTALL_SKILL_CLAWHUB_START', { slug: source, force })
-      
-      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'taco-skill-'))
-      const downloadUrl = buildClawHubDownloadUrl(source)
-      
-      await downloadAndExtractZip(downloadUrl, tmpDir, services?.logger)
-      
+      services?.logger('INSTALL_SKILL_SLUG_START', { slug: source, force })
+
+      let slugTmpDir = ''
+      let slugSourceLabel = 'ClawHub'
+
+      // 尝试 ClawHub
+      try {
+        slugTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'taco-skill-'))
+        await downloadAndExtractZip(buildClawHubDownloadUrl(source), slugTmpDir, services?.logger)
+        services?.logger('INSTALL_SKILL_SOURCE', { slug: source, sourceType: 'clawhub' })
+      } catch (clawhubErr) {
+        services?.logger('INSTALL_SKILL_CLAWHUB_FAILED', { slug: source, error: String(clawhubErr) })
+        // 清理后重试 SkillHub
+        try { await fs.rm(slugTmpDir, { recursive: true, force: true }) } catch { /* ignore */ }
+        try {
+          slugTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'taco-skill-'))
+          const skillHubDownloadUrl = `https://api.skillhub.cn/api/v1/download?slug=${encodeURIComponent(source.replace(/^@/, '').split('/').pop() ?? source)}`
+          await downloadAndExtractZip(skillHubDownloadUrl, slugTmpDir, services?.logger)
+          slugSourceLabel = '腾讯 SkillHub'
+          services?.logger('INSTALL_SKILL_SOURCE', { slug: source, sourceType: 'skillhub' })
+        } catch (skillhubErr) {
+          await fs.rm(slugTmpDir, { recursive: true, force: true }).catch(() => {})
+          return { content: `Error: 安装失败，ClawHub 和 SkillHub 均未找到技能"${source}"。`, success: false }
+        }
+      }
+
       // 找到解压后的 SKILL.md 所在目录
       const findSkillMdDir = async (dir: string): Promise<string> => {
         try {
@@ -1751,42 +1771,40 @@ async function execInstallSkill(
         }
         return ''
       }
-      
-      const skillDir = await findSkillMdDir(tmpDir)
+
+      const skillDir = await findSkillMdDir(slugTmpDir)
       if (!skillDir) {
-        await fs.rm(tmpDir, { recursive: true, force: true })
+        await fs.rm(slugTmpDir, { recursive: true, force: true })
         return { content: 'Error: 下载的技能包中未找到 SKILL.md 文件', success: false }
       }
-      
-      services?.logger('INSTALL_SKILL_CLAWHUB_EXTRACTED', { skillDir })
+
+      services?.logger('INSTALL_SKILL_EXTRACTED', { skillDir, sourceType: slugSourceLabel })
 
       if (!force) {
-        // 安全预览
         const preview = await previewSkill(skillDir)
         const securityPreview = buildSecurityPreview(preview)
-        
+
         if (preview.security?.riskLevel === 'critical') {
-          await fs.rm(tmpDir, { recursive: true, force: true })
+          await fs.rm(slugTmpDir, { recursive: true, force: true })
           return { content: securityPreview, success: false }
         }
-        
+
         if (preview.security?.riskLevel === 'high') {
-          await fs.rm(tmpDir, { recursive: true, force: true })
+          await fs.rm(slugTmpDir, { recursive: true, force: true })
           return {
             content: securityPreview + `\n\n⚠️ 该技能风险等级为"高"，不会自动安装。如果你确认信任此技能并希望安装，请回复"安装"或"继续"，我将使用 force=true 强制安装。`,
             success: false,
           }
         }
       }
-      
-      // 安装
-      const skill = await installSkill(skillDir, true)
-      await fs.rm(tmpDir, { recursive: true, force: true })
-      services?.logger('INSTALL_SKILL_DONE', { id: skill.id, name: skill.name, source: 'clawhub' })
+
+      const skill = await installSkill(skillDir, true, source)
+      await fs.rm(slugTmpDir, { recursive: true, force: true })
+      services?.logger('INSTALL_SKILL_DONE', { id: skill.id, name: skill.name, source: slugSourceLabel })
 
       return {
         content: JSON.stringify({
-          message: `技能"${skill.name}"（${skill.id}）从 ClawHub 安装成功，已立即可用。`,
+          message: `技能"${skill.name}"（${skill.id}）从 ${slugSourceLabel} 安装成功，已立即可用。`,
           skill: { id: skill.id, name: skill.name, description: skill.description, version: skill.version, author: skill.author },
         }),
         success: true,

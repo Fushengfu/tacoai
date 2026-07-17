@@ -484,6 +484,7 @@ ${buildWindowsEncodingRules(env.platform)}
 - 需要使用某个技能时，先确认技能 ID，再 read_skill 读取完整内容
 - 若技能有附属资源，按需 read_skill_resource
 - 未读取技能详情前，不得按该技能协议执行
+- **严禁用 read_file / list_dir 直接访问技能目录下的文件。技能内容只能通过 read_skill / read_skill_resource 获取。** 技能目录路径（~/.taco/skills/）仅供 write_file 创建新技能或 install_skill 安装时使用
 
 ## 3.5 MCP 工具
 - 调用 mcp_list_tools 确认可用工具与 inputSchema，不猜字段名

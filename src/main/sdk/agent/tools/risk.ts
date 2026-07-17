@@ -259,7 +259,7 @@ export function loadAuthLevel(projectId: string, db?: DatabaseService): AuthLeve
 }
 
 /* ------------------------------------------------------------------ */
-/*  自动提交（按项目独立控制，默认开启）                                      */
+/*  自动提交（按项目独立控制，默认关闭）                                      */
 /* ------------------------------------------------------------------ */
 
 /** 计算自动提交 scope 标识符，用于 app_state_meta 表 key */
@@ -284,17 +284,17 @@ export function saveAutoCommitEnabled(projectId: string, enabled: boolean, db?: 
   `).run(key, enabled ? '1' : '0', updatedAt)
 }
 
-/** 从 app_state_meta 表加载自动提交开关，默认开启（true） */
+/** 从 app_state_meta 表加载自动提交开关，默认关闭（false） */
 export function isAutoCommitEnabled(projectId: string, db?: DatabaseService): boolean {
-  if (!projectId || !projectId.trim()) return true
+  if (!projectId || !projectId.trim()) return false
   const key = computeAutoCommitScope(projectId)
   const resolvedDb = db ?? _db
-  if (!resolvedDb) return true // 无数据库时默认开启
+  if (!resolvedDb) return false // 无数据库时默认关闭
   const rawDb = resolvedDb.getRawDb() as any
   const row = rawDb.prepare(`
     SELECT meta_value FROM app_state_meta WHERE meta_key = ?
   `).get(key) as Record<string, unknown> | undefined
-  if (!row) return true // 未设置过，默认开启
+  if (!row) return false // 未设置过，默认关闭
   const value = String(row.meta_value ?? '').trim()
   return value !== '0' // 只有明确存储 '0' 才关闭
 }

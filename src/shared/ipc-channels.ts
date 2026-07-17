@@ -98,6 +98,7 @@ export const IpcChannel = {
   SKILLS_TOGGLE: 'skills:toggle',
   SKILLS_PREVIEW: 'skills:preview',
   SKILLS_CHECK_UPDATE: 'skills:check-update',
+  SKILLS_GET_LOCAL_DETAIL: 'skills:get-local-detail',
 
   /** Agent 自动授权分类设置 */
   AGENT_AUTO_APPROVE: 'agent:auto-approve',

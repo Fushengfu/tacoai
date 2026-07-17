@@ -219,7 +219,7 @@ export const toolDefinitions: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'read_skill',
-      description: '读取当前已开启技能目录中的某个技能的完整内容。应先根据系统注入的 SKILLS_CATALOG 判断需要哪个技能，再调用此工具查看完整技能说明。',
+      description: '读取指定技能的完整 SKILL.md 内容。**这是读取技能内容的唯一正确方式，严禁用 read_file / list_dir 替代。** 应先根据系统注入的 SKILLS_CATALOG 判断需要哪个技能，再调用此工具查看完整技能说明。',
       parameters: {
         type: 'object',
         properties: {
@@ -402,11 +402,12 @@ export const toolDefinitions: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'search_skills',
-      description: '从 ClawHub 技能市场（clawhub.ai）搜索可安装的 Taco 技能。根据关键词搜索 69.5K+ 公共技能，返回技能名称、描述、slug、作者、下载量、标签等信息。搜索结果包含 installSlug 字段，可直接用于 install_skill 安装。',
+      description: '从 ClawHub 技能市场（clawhub.ai）和腾讯 SkillHub（skillhub.cloud.tencent.com）搜索可安装的 Taco 技能。两个技能库共 148K+ 公共技能，返回技能名称、描述、slug、作者、下载量等信息。搜索结果包含 slug 字段，可直接用于 install_skill 安装。默认同时搜索两个源，也可通过 source 参数指定单一源。',
       parameters: {
         type: 'object',
         properties: {
           query: { type: 'string', description: '搜索关键词，如"api documentation"、"pdf 处理"、"图片编辑"、"git commit"等' },
+          source: { type: 'string', description: '数据源：clawhub（仅 ClawHub）、skillhub（仅腾讯 SkillHub）、all（两个源合并，默认）。SkillHub 中文优化更好，ClawHub 国际技能更多。', enum: ['clawhub', 'skillhub', 'all'] },
         },
         required: ['query'],
       },
@@ -416,7 +417,7 @@ export const toolDefinitions: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'install_skill',
-      description: '安装一个 Taco 技能到本地。支持三种来源格式：1) ClawHub slug（如"skill-creator"或"@chindden/skill-creator"，搜索结果的 slug 字段）；2) GitHub 仓库 URL（如"https://github.com/xxx/yyy"）；3) 本地路径。从 ClawHub 安装时会自动下载 ZIP 并解压到 ~/.taco/skills/。安装前会自动进行安全审核：低/中风险直接安装，高风险暂停并展示风险报告（需用户确认后 force=true 强制安装），致命风险直接拒绝。安装完成后技能立即生效，下次任务自动加载。',
+      description: '安装一个 Taco 技能到本地。支持三种来源格式：1) ClawHub/SkillHub slug（如"skill-creator"，搜索结果的 slug 字段）；2) GitHub 仓库 URL（如"https://github.com/xxx/yyy"）；3) 本地路径。安装时会自动下载 ZIP 并解压到本地技能库。安装前自动进行安全审核：低/中风险直接安装，高风险暂停并展示风险报告（需用户确认后 force=true 强制安装），致命风险直接拒绝。安装完成后技能立即生效，下次任务自动加载。',
       parameters: {
         type: 'object',
         properties: {
@@ -474,6 +475,7 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
       '小文件禁止分块读取，直接全文读取更高效。',
       '大文件读取时，单次范围过小会导致多次往返调用，显著降低效率。',
       '工作空间外文件读取属于高风险动作，必须等待用户授权确认后才能继续。',
+      '禁止用 read_file 读取技能目录下的文件（如 ~/.taco/skills/*/SKILL.md），技能内容必须通过 read_skill 工具获取。',
     ],
   },
   write_file: {
@@ -497,6 +499,9 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
       '用于快速理解目录结构，优先以较小 maxDepth 查看骨架。',
       '当只需目录骨架时将 includeFiles 设为 false，减少无关噪声。',
       '定位目标后再配合 find_file/read_file 深入；内容搜索统一优先 run_command + grep。',
+    ],
+    cautions: [
+      '禁止用 list_dir 浏览技能目录（~/.taco/skills/），已安装的技能信息通过 技能目录 获取。',
     ],
   },
   run_command: {
@@ -555,6 +560,7 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
     cautions: [
       '禁止凭经验假设技能全文，必须先读取。',
       '若技能不在当前目录清单中，不允许调用。',
+      '这是读取技能内容的唯一方式。严禁用 read_file 或 list_dir 替代 read_skill 访问技能目录。',
     ],
   },
   read_skill_resource: {
@@ -656,21 +662,22 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
   },
   search_skills: {
     usage: [
-      '当用户需要寻找、发现新的技能时调用。从 ClawHub 技能市场（clawhub.ai）搜索 69.5K+ 公共技能。',
+      '当用户需要寻找、发现新的技能时调用。同时搜索 ClawHub 技能市场（69.5K+ 技能）和腾讯 SkillHub（78.5K+ 技能，中文优化）。',
       'query 参数传入功能描述关键词，如"api 文档生成"、"pdf 处理"、"图片压缩"等。',
-      '搜索结果返回技能名称、描述、slug、作者、下载量、标签，用户可选择感兴趣的安装。',
-      '优先建议用户安装下载量高、描述清晰、更新活跃的技能。',
+      'source 参数可选：clawhub（仅 ClawHub）、skillhub（仅腾讯 SkillHub）、all（默认，两个源合并去重）。',
+      '搜索结果返回技能名称、描述、slug、作者、下载量、来源，用户可选择感兴趣的安装。',
+      '优先建议用户安装下载量高、描述清晰、更新活跃的技能。SkillHub 的中文技能更多、描述更详细。',
     ],
     cautions: [
-      'ClawHub API 免费无需认证，限流 3000 次/分钟，正常使用绰绰有余。',
+      '两个 API 均免费无需认证，ClawHub 限流 3000 次/分钟，SkillHub 无限制。',
       '仅搜索公共技能市场，不包含私有技能。',
     ],
   },
   install_skill: {
     usage: [
-      '安装用户指定的技能到本地 ~/.taco/skills/ 目录，安装后自动刷新技能列表立即生效。',
-      'source 参数支持三种格式：ClawHub slug（如"skill-creator"或"@chindden/skill-creator"，直接使用搜索结果的 slug 字段）、GitHub 仓库 URL、本地文件路径。',
-      '从 ClawHub 安装时，自动下载 ZIP 包并解压，包含 SKILL.md 及附属资源（scripts/references/templates 等）。',
+      '安装用户指定的技能到本地技能库，安装后自动刷新技能列表立即生效。',
+      'source 参数支持三种格式：ClawHub/SkillHub slug（如"skill-creator"或"@chindden/skill-creator"，直接使用搜索结果的 slug 字段）、GitHub 仓库 URL、本地文件路径。',
+      '从技能市场安装时，自动下载 ZIP 包并解压，包含 SKILL.md 及附属资源（scripts/references/templates 等）。会先尝试 ClawHub，失败后自动回退到 SkillHub。',
       '安装前自动进行安全审核：low/medium 直接安装；high 暂停并展示风险报告等用户确认（用户确认后 force=true 重新调用）；critical 直接拒绝。',
       '当首次调用返回高风险警告时，必须向用户展示具体的风险项，等用户说"安装"或"继续"后再用 force=true 调用。',
       '安装完成后告知用户技能已可用，下次任务自动加载。',

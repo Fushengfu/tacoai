@@ -27,7 +27,7 @@ import { setAutoApproveCategories, setGlobalAuthLevel, saveAuthLevel, isAutoComm
 import { getBridgeManager } from '../bridge/bridge-manager'
 import type { AuthLevel } from '../sdk/agent/tools'
 import { gitLog, gitCommit, gitRollback, gitCommitFiles, gitStatus, gitFileChange, gitStageFiles, gitStageAll } from '../sdk/agent/git/service'
-import { initSkills, listSkills, searchSkills, getClawHubSkillDetail, installSkill, uninstallSkill, toggleSkill, refreshSkills, previewSkill, checkSkillUpdate } from '../sdk/agent/skills/service'
+import { initSkills, listSkills, searchSkills, getClawHubSkillDetail, getSkillDetail, getLocalSkillDetail, installSkill, uninstallSkill, toggleSkill, refreshSkills, previewSkill, checkSkillUpdate } from '../sdk/agent/skills/service'
 import { listNotes, listTaskMemories, saveNote, deleteNote, deleteTaskMemory, getMemoryScopeStats, exportMemoryScope } from '../data/notes/index'
 import { initMcp, listMcpServers, saveMcpServer, removeMcpServer, toggleMcpServer } from '../infrastructure/mcp'
 import { getLogDir } from '../infrastructure/logger'
@@ -192,7 +192,7 @@ export function registerIpcHandlers() {
 
   ipcMain.handle(IpcChannel.AGENT_GET_AUTO_COMMIT, async (_e, payload: { projectId: string }) => {
     const { projectId } = payload
-    if (!projectId || !projectId.trim()) return true
+    if (!projectId || !projectId.trim()) return false
     return isAutoCommitEnabled(projectId)
   })
 
@@ -268,13 +268,23 @@ export function registerIpcHandlers() {
   // Skills
   initSkills().catch((err) => console.error('Skills 初始化失败:', err))
   ipcMain.handle(IpcChannel.SKILLS_LIST, (_e, workspace?: string) => listSkills(workspace))
-  ipcMain.handle(IpcChannel.SKILLS_SEARCH, (_e, query: string) => searchSkills(query))
-  ipcMain.handle(IpcChannel.SKILLS_GET_DETAIL, (_e, slug: string) => getClawHubSkillDetail(slug))
+  ipcMain.handle(IpcChannel.SKILLS_SEARCH, (_e, params: string | { query: string; source?: string; category?: string }) => {
+    if (typeof params === 'string') return searchSkills(params)
+    return searchSkills(params.query, (params.source as 'clawhub' | 'skillhub' | 'all') || 'all', params.category)
+  })
+  ipcMain.handle(IpcChannel.SKILLS_GET_DETAIL, (_e, params: string | { slug: string; source?: string }) => {
+    if (typeof params === 'string') return getClawHubSkillDetail(params)
+    return getSkillDetail(params.source || 'clawhub', params.slug)
+  })
   ipcMain.handle(IpcChannel.SKILLS_PREVIEW, (_e, source: string) => previewSkill(source))
-  ipcMain.handle(IpcChannel.SKILLS_INSTALL, (_e, source: string) => installSkill(source))
+  ipcMain.handle(IpcChannel.SKILLS_INSTALL, (_e, params: string | { source: string; author?: string }) => {
+    if (typeof params === 'string') return installSkill(params)
+    return installSkill(params.source, undefined, undefined, params.author)
+  })
   ipcMain.handle(IpcChannel.SKILLS_UNINSTALL, (_e, id: string) => uninstallSkill(id))
   ipcMain.handle(IpcChannel.SKILLS_TOGGLE, (_e, id: string, enabled: boolean) => toggleSkill(id, enabled))
   ipcMain.handle(IpcChannel.SKILLS_CHECK_UPDATE, (_e, id: string) => checkSkillUpdate(id))
+  ipcMain.handle(IpcChannel.SKILLS_GET_LOCAL_DETAIL, (_e, id: string) => getLocalSkillDetail(id))
 
   // Notes / Memory
   ipcMain.handle(IpcChannel.NOTES_LIST, (_e, workspace: string, projectId?: string) => listNotes(workspace, projectId))

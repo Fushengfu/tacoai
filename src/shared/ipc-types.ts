@@ -289,7 +289,7 @@ export type GitFileChange = {
 /* ------------------------------------------------------------------ */
 
 /** Skill 定义 & 预览 — 来自 Agent SDK */
-export type { SkillInfo, SkillPreview, ClawHubSearchResult } from '../main/sdk/agent/types'
+export type { SkillInfo, SkillPreview, ClawHubSearchResult, SkillHubSearchResult, SkillSearchResult, SkillSearchSource } from '../main/sdk/agent/types'
 
 /** Skill 安装进度 */
 export type InstallProgress = {

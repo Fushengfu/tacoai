@@ -36,7 +36,7 @@ import type {
   SkillPreview,
   SkillUpdateInfo,
   SystemInfo,
-  ClawHubSearchResult,
+  SkillSearchResult,
 } from './ipc-types'
 
 export type { SystemInfo } from './ipc-types'
@@ -183,20 +183,22 @@ export type TacoApi = {
   skills: {
     /** 列出所有已安装的 skills */
     list: (workspace?: string) => Promise<SkillInfo[]>
-    /** 搜索 ClawHub 技能市场 */
-    search: (query: string) => Promise<ClawHubSearchResult[]>
-    /** 获取 ClawHub 技能 SKILL.md 原文内容 */
-    getDetail: (slug: string) => Promise<string>
+    /** 搜索技能市场（支持多源 + 分类过滤） */
+    search: (query: string, source?: string, category?: string) => Promise<SkillSearchResult[]>
+    /** 获取技能 SKILL.md 原文内容 */
+    getDetail: (slug: string, source?: string) => Promise<string>
     /** 预览 skill（从 URL 或本地路径，不安装） */
     preview: (source: string) => Promise<SkillPreview>
     /** 安装 skill（从 URL 或本地路径，支持进度回调） */
-    install: (source: string, onProgress?: (progress: InstallProgress) => void) => Promise<SkillInfo>
+    install: (source: string, author?: string, onProgress?: (progress: InstallProgress) => void) => Promise<SkillInfo>
     /** 卸载 skill */
     uninstall: (id: string) => Promise<void>
     /** 启用/禁用 skill */
     toggle: (id: string, enabled: boolean) => Promise<void>
     /** 检查 skill 更新 */
     checkUpdate: (id: string) => Promise<SkillUpdateInfo | null>
+    /** 获取本地已安装技能的 SKILL.md 内容 */
+    getLocalDetail: (id: string) => Promise<string>
   }
   notes: {
     /** 列出指定工作空间的所有笔记 */
