@@ -23,36 +23,45 @@
 
 ---
 
-## What's New in v0.5.0
+## What's New in v0.5.1
 
-### Desktop
-
-| Feature | Description |
-|---------|-------------|
-| Image Upload Fix | Fixed images disappearing when sending messages: `handleSend` now uses `useRef` instead of `setState` to read the latest attachment state, ensuring images are correctly included in the message body |
-| Upload Success Indicator | Green checkmark ✓ appears in the bottom-right corner of image thumbnails after successful upload; failed uploads no longer auto-disappear, allowing users to inspect errors |
-| Upload Architecture Unification | Cloud storage configuration migrated to the gateway admin panel; desktop removed local upload config UI; supports hash-based deduplication and cross-region auto-retry |
-| Plan Confirmation Fix | Fixed bug where AI continued execution after plan rejection: enforced compliance from system prompt, tool definitions, and runtime feedback layers |
-| System Prompt Enhancement | Added verification-driven execution rules, code modification authorization rules, remote debugging principle (instrumentation), user observation priority rules, consecutive error correction downgrade protocol, efficient communication rules, etc., significantly reducing AI misjudgment |
-| Bridge Protocol Enhancement | On-demand loading of mobile messages & steps, upload credential proxy channel, streamlined bridge settings |
-
-### Mobile
+### Skill System Overhaul
 
 | Feature | Description |
 |---------|-------------|
-| Voice Input | Added system speech recognition support — tap the microphone button for voice input |
-| Version Check | Automatic latest version check on startup with update prompts |
-| Upload Retry Fix | Upload failure retry covers both 400 and 405 status codes, consistent with desktop behavior |
+| Skill Marketplace | Integrated Tencent SkillHub (78.5K+ skills) and ClawHub (69.5K+ skills), supporting category-based search, preview, and installation of third-party skills |
+| Enhanced Categories | Category system expanded from 6 to 12 categories (Office, Development, Data Analysis, AI Agent, Content Creation, etc.), aligned with SkillHub standards |
+| Card Preview & Details | Both search results and installed lists now support click-to-preview with a side panel showing full SKILL.md content |
+| Search / Installed Tabs | Separate tabs for discovering new skills and viewing installed ones — search results no longer push installed list to the bottom |
+| Search Improvements | Added clear button for search input; category filtering now uses server-side API for precision, replacing client-side keyword matching |
+| Author Preservation | Installing a skill now retains the author name from search results, eliminating the "Unknown" fallback |
+| Simplified Source Labels | Skill sources consolidated to "Built-in" and "Third-party", removing the redundant "Local" category |
+| Pre-install Security Audit | New skill security review: detects dangerous commands (rm -rf / chmod / sudo / curl\|sh, etc.) with tiered handling (Low/Medium = auto-install, High = requires confirmation, Critical = blocked) |
+
+### Skill Security Hardening
+
+| Feature | Description |
+|---------|-------------|
+| Command Injection Fix | `execRunSkillScript` no longer spawns a shell; switched to `execFile` + whitelist validation of script names, preventing `&&` / `;` / `\|` injection attacks |
+| Pre-extraction ZIP Validation | Skill ZIP archives are validated before extraction: file count ≤ 200, single file ≤ 10MB, total size ≤ 50MB; dangerous file types and path traversal entries rejected |
+| ZIP Slip Protection | Added `validateExtractionPaths` for recursive extraction path validation; symlinks and out-of-bounds paths rejected |
+| Deduplication | Merged 3 duplicate implementations of `isClawHubSlug` / `buildClawHubDownloadUrl` / `downloadAndExtractZip` |
+| Path Read Restrictions | AI is now prohibited from using `read_file` / `list_dir` on skill directories; must use the `read_skill` dedicated tool |
+| Built-in Skill Protection | Built-in skills cannot be uninstalled or overwritten by third-party installs; three-layer hard protection |
+
+### Path Resolution Fixes
+
+| Feature | Description |
+|---------|-------------|
+| External Path Misdirection | Fixed bug where `resolveSafe` incorrectly prepended workspace root to external absolute paths (e.g., `~/.taco/skills/`); now returns a clear error message |
+| Type Mismatch Fix | Fixed `resolveSmartPath` where reading a directory as a file incorrectly triggered a full workspace search |
 
 ### AI Gateway
 
 | Feature | Description |
 |---------|-------------|
-| Qiniu Region Fix | Uses UC API to dynamically query the bucket's actual region, replacing unreliable static naming inference, eliminating cross-region 400 errors |
-| Domain Validation | Empty Domain now raises an error immediately, preventing invalid upload URLs from being constructed |
-| Storage File Management | Added `StorageFile` model and CRUD API; upload records are persisted, with hash-based deduplication to avoid redundant uploads |
-| Anthropic Protocol | Native Anthropic Messages API pass-through, allowing Claude and other models to connect directly |
-| Timeout Adjustment | HTTP client timeout extended to 10 minutes, preventing interruptions during long conversations |---
+| Comprehensive Pagination Fix | Fixed pagination bugs across 12 of 19 admin panel pages: `pageSize` parameter passing, state synchronization, unified defaults (10/page) |
+| Pages Covered | Members / Accounts / Agents / Roles / Messages / AppVersions / Plans / Models / TokenStats / Sessions / Orders / Logs — full-chain verification |---
 
 ## Multi-Model Support
 
@@ -173,14 +182,14 @@ The following links are hosted on servers in mainland China for high-speed downl
 
 | Platform | Download Link | Installation |
 |----------|---------------|--------------|
-| **macOS** (Apple Silicon) | [Taco AI-0.5.0-arm64.dmg](https://store.bjctykj.com/app-versions/macOS/1783501309_Taco_AI-0.5.0-arm64.dmg) | Double-click the `.dmg`, then drag into the `Applications` folder |
-| **Windows** (x64) | [Taco AI-0.5.0-x64.exe](https://store.bjctykj.com/app-versions/Windows/1783501147_Taco_AI-0.5.0-x64.exe) | Double-click the `.exe` and follow the installation wizard |
+| **macOS** (Apple Silicon) | [Taco AI-0.5.1-arm64.dmg](https://store.bjctykj.com/app-versions/macOS/1784263710_Taco_AI-0.5.1-arm64.dmg) | Double-click the `.dmg`, then drag into the `Applications` folder |
+| **Windows** (x64) | [Taco AI-0.5.1-x64.exe](https://store.bjctykj.com/app-versions/Windows/1784264609_Taco_AI-0.5.1-x64.exe) | Double-click the `.exe` and follow the installation wizard |
 
 ### International Users
 
 International users should download the installer for your platform from the [GitHub Releases](https://github.com/Fushengfu/tacoai/releases) page.
 
-Current version: **v0.5.0**
+Current version: **v0.5.1**
 
 > For building from source, see [Quick Start](#quick-start) below.
 
@@ -281,4 +290,4 @@ taco/
 
 ## Version
 
-Current version: **v0.5.0**
+Current version: **v0.5.1**
