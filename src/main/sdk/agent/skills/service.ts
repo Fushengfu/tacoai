@@ -11,10 +11,11 @@ import * as fs from 'node:fs/promises'
 import { constants as fsConstants } from 'node:fs'
 import type { Dirent } from 'node:fs'
 import * as path from 'node:path'
+import * as os from 'node:os'
 import { homedir } from 'node:os'
-import { execFile as execFileCb } from 'node:child_process'
+import { execFile as execFileCb, execSync } from 'node:child_process'
 import { promisify } from 'node:util'
-import type { SkillInfo, SkillPreview, ClawHubSearchResult } from '../types'
+import type { SkillInfo, SkillPreview, ClawHubSearchResult, SkillHubSearchResult, SkillSearchResult } from '../types'
 import type { Logger } from '../services'
 
 /** 模块级 Logger */
@@ -282,6 +283,8 @@ Taco 支持同时打开多个独立浏览器窗口，每个窗口有独立的会
 
 每个技能是一个 SKILL.md 文件，存放在系统主目录下的 \`.taco/skills/{技能ID}/SKILL.md\`（即 \`{主目录}/.taco/skills/{技能ID}/SKILL.md\`，注意不要用 \`~\`，Node.js 不认识 \`~\`，必须用系统上下文中的实际主目录路径拼出绝对路径），包含 YAML frontmatter 和 Markdown 指令正文。
 
+> ⚠️ 上述路径仅用于创建新技能时的 \`write_file\` 操作。**读取已有技能内容必须用 \`read_skill\` 工具，严禁用 \`read_file\` 直接读取技能目录下的 SKILL.md。**
+
 ### Frontmatter 字段说明
 
 \`\`\`yaml
@@ -409,7 +412,8 @@ type(scope): 简短描述
 - **技能指令要具体**。不要写"要仔细检查代码"这种空话，要写"检查每个函数是否处理了 null 入参"
 - **先确认再写入**。生成 SKILL.md 内容后，向用户展示关键部分（名称、描述、工具列表），确认后再写入文件
 - **技能 ID 唯一性**。如果 ID 已存在（同名技能已安装），提示用户换个名字或覆盖
-- **不要帮用户做决策**。工具列表、环境变量等需要用户确认，不要擅自猜测`,
+- **不要帮用户做决策**。工具列表、环境变量等需要用户确认，不要擅自猜测
+- **读取已有技能必须用 \`read_skill\`**，禁止用 \`read_file\` 直接访问 \`.taco/skills/\` 下的文件。你只能通过 \`write_file\` 写入新 SKILL.md（创建时）和 \`install_skill\`（安装时）操作技能目录`,
   },
 ]
 
@@ -525,6 +529,14 @@ export async function refreshSkills(workspace?: string): Promise<void> {
   for (const p of persisted) {
     if (p.source === 'builtin') continue
     if (merged.has(p.id)) continue
+    // 通过 instructionsFile 路径匹配：避免目录名/SKILL.md name 变更导致同一技能重复加载
+    if (p.instructionsFile) {
+      const resolvedPath = path.resolve(SKILLS_DIR, p.instructionsFile)
+      const alreadyLoaded = Array.from(merged.values()).some(
+        (entry) => entry.rootDir && resolvedPath.startsWith(path.resolve(entry.rootDir))
+      )
+      if (alreadyLoaded) continue
+    }
     const instructions = await loadSkillInstructionsFromPersisted(p)
     if (!instructions.trim()) continue
     merged.set(p.id, {
@@ -780,7 +792,7 @@ export async function previewSkill(source: string): Promise<SkillPreview> {
     }
   }
 
-  const id = toSkillId(meta.name || `skill-${Date.now()}`)
+  const id = isClawHubSlug(source) ? source : toSkillId(meta.name || `skill-${Date.now()}`)
   const securityCheck = auditSkillSecurity(instructions, meta)
 
   return {
@@ -804,10 +816,15 @@ export async function previewSkill(source: string): Promise<SkillPreview> {
 }
 
 /**
+ * 获取技能的 SKILL.md 原文内容（按来源路由）
+ */
+export async function getSkillDetail(source: string, slug: string): Promise<string> {
+  if (source === 'skillhub') return getSkillHubDetail(slug)
+  return getClawHubSkillDetail(slug)
+}
+
+/**
  * 获取 ClawHub 技能的 SKILL.md 原文内容
- *
- * 调用 ClawHub 公共 API，返回技能的 SKILL.md 全文。
- * 用于设置页展示技能详情。无需认证。
  */
 export async function getClawHubSkillDetail(slug: string): Promise<string> {
   const normalizedSlug = String(slug ?? '').trim()
@@ -826,18 +843,109 @@ export async function getClawHubSkillDetail(slug: string): Promise<string> {
     _log('SKILLS_GET_DETAIL_SUCCESS', { slug: normalizedSlug, length: text.length }, 'skills')
     return text
   } catch (err) {
-    _log('SKILLS_GET_DETAIL_ERROR', { slug: normalizedSlug, error: String(err) }, 'skills')
+    _log('SKILLS_GET_DETAIL_ERROR', { slug: normalizedSlug, error: String(err), source: 'clawhub' }, 'skills')
     return ''
   }
 }
 
 /**
- * 搜索 ClawHub 技能市场
- * 
- * 调用 ClawHub 公共 API，返回匹配的技能列表。
- * 无需认证，限流 3000 次/分钟。
+ * 获取腾讯 SkillHub 技能的 SKILL.md 原文内容
  */
-export async function searchSkills(query: string): Promise<ClawHubSearchResult[]> {
+export async function getSkillHubDetail(slug: string): Promise<string> {
+  const normalizedSlug = String(slug ?? '').trim()
+  if (!normalizedSlug) return ''
+
+  try {
+    const apiUrl = `https://api.skillhub.cn/api/v1/skills/${encodeURIComponent(normalizedSlug)}/file?path=SKILL.md`
+    const resp = await fetch(apiUrl, {
+      headers: { Accept: 'text/plain', 'User-Agent': 'taco-ai-agent' },
+    })
+    if (!resp.ok) {
+      _log('SKILLS_GET_DETAIL_FAILED', { slug: normalizedSlug, status: resp.status, source: 'skillhub' }, 'skills')
+      return ''
+    }
+    const text = await resp.text()
+    _log('SKILLS_GET_DETAIL_SUCCESS', { slug: normalizedSlug, length: text.length, source: 'skillhub' }, 'skills')
+    return text
+  } catch (err) {
+    _log('SKILLS_GET_DETAIL_ERROR', { slug: normalizedSlug, error: String(err), source: 'skillhub' }, 'skills')
+    return ''
+  }
+}
+
+/**
+ * 获取本地已安装技能的 SKILL.md 原文内容
+ */
+export async function getLocalSkillDetail(id: string): Promise<string> {
+  const normalizedId = String(id ?? '').trim()
+  if (!normalizedId) return ''
+
+  try {
+    const filePath = path.join(SKILLS_DIR, normalizedId, 'SKILL.md')
+    const content = await fs.readFile(filePath, 'utf-8')
+    return content
+  } catch (err) {
+    _log('SKILLS_GET_LOCAL_DETAIL_ERROR', { id: normalizedId, error: String(err) }, 'skills')
+    return ''
+  }
+}
+
+/**
+ * 将 ClawHub 结果转换为统一格式
+ */
+function normalizeClawHubResult(item: ClawHubSearchResult): SkillSearchResult {
+  return {
+    slug: item.slug,
+    displayName: item.displayName,
+    summary: item.summary,
+    downloads: item.downloads,
+    version: item.version,
+    authorName: item.owner?.displayName || item.ownerHandle || '未知',
+    authorAvatar: item.owner?.image,
+    source: 'clawhub',
+  }
+}
+
+/**
+ * 将 SkillHub 结果转换为统一格式
+ */
+function normalizeSkillHubResult(item: SkillHubSearchResult): SkillSearchResult {
+  return {
+    slug: item.slug,
+    displayName: item.name,
+    summary: item.description_zh || item.description,
+    downloads: item.downloads,
+    version: item.version,
+    authorName: item.ownerName || '未知',
+    authorAvatar: item.ownerAvatar,
+    source: 'skillhub',
+    stars: item.stars,
+    installs: item.installs,
+    category: item.category,
+    subCategories: item.subCategories?.map((c) => c.name),
+  }
+}
+
+/** 本地分类 ID → SkillHub API category key 映射 */
+const CATEGORY_TO_SKILLHUB_KEY: Record<string, string> = {
+  'office':    'office-efficiency',
+  'content':   'content-creation',
+  'dev':       'dev-programming',
+  'data':      'data-analysis',
+  'design':    'design-media',
+  'ai-agent':  'ai-agent',
+  'knowledge': 'knowledge-management',
+  'business':  'business-ops',
+  'edu':       'education',
+  'pro':       'professional',
+  'itops':     'it-ops-security',
+  'life':      'life-service',
+}
+
+/**
+ * 搜索 ClawHub 技能市场（内部函数）
+ */
+async function searchClawHub(query: string): Promise<ClawHubSearchResult[]> {
   const q = String(query ?? '').trim()
   if (!q) return []
 
@@ -847,20 +955,213 @@ export async function searchSkills(query: string): Promise<ClawHubSearchResult[]
       headers: { Accept: 'application/json', 'User-Agent': 'taco-ai-agent' },
     })
     if (!resp.ok) {
-      _log('SKILLS_SEARCH_FAILED', { status: resp.status, statusText: resp.statusText }, 'skills')
+      _log('SKILLS_SEARCH_FAILED', { status: resp.status, statusText: resp.statusText, source: 'clawhub' }, 'skills')
       return []
     }
     const data = await resp.json() as { results?: ClawHubSearchResult[] }
     const results = Array.isArray(data?.results) ? data.results : []
-    _log('SKILLS_SEARCH_SUCCESS', { query: q, count: results.length }, 'skills')
+    _log('SKILLS_SEARCH_SUCCESS', { query: q, count: results.length, source: 'clawhub' }, 'skills')
     return results
   } catch (err) {
-    _log('SKILLS_SEARCH_ERROR', { error: String(err) }, 'skills')
+    _log('SKILLS_SEARCH_ERROR', { error: String(err), source: 'clawhub' }, 'skills')
     return []
   }
 }
 
-export async function installSkill(source: string, skipAudit?: boolean): Promise<SkillInfo> {
+/**
+ * 搜索腾讯 SkillHub 技能市场（内部函数）
+ */
+async function searchSkillHubApi(query: string, pageSize = 20, category?: string): Promise<SkillHubSearchResult[]> {
+  const q = String(query ?? '').trim()
+  if (!q && !category) return []
+
+  try {
+    let apiUrl = `https://api.skillhub.cn/api/skills?keyword=${encodeURIComponent(q)}&sortBy=score&pageSize=${pageSize}`
+    if (category) {
+      const skillHubKey = CATEGORY_TO_SKILLHUB_KEY[category] || category
+      apiUrl += `&category=${encodeURIComponent(skillHubKey)}`
+    }
+    const resp = await fetch(apiUrl, {
+      headers: { Accept: 'application/json', 'User-Agent': 'taco-ai-agent' },
+    })
+    if (!resp.ok) {
+      _log('SKILLS_SEARCH_FAILED', { status: resp.status, statusText: resp.statusText, source: 'skillhub' }, 'skills')
+      return []
+    }
+    const data = await resp.json() as { code?: number; data?: { skills?: SkillHubSearchResult[]; total?: number } }
+    const results = Array.isArray(data?.data?.skills) ? data.data.skills : []
+    _log('SKILLS_SEARCH_SUCCESS', { query: q, count: results.length, total: data?.data?.total, source: 'skillhub', category }, 'skills')
+    return results
+  } catch (err) {
+    _log('SKILLS_SEARCH_ERROR', { error: String(err), source: 'skillhub' }, 'skills')
+    return []
+  }
+}
+
+/**
+ * 搜索技能市场（支持多源）
+ *
+ * @param query   搜索关键词
+ * @param source  数据源：clawhub / skillhub / all（默认 all）
+ * @param category 分类 ID（仅 SkillHub 支持服务端过滤，ClawHub 做客户端过滤）
+ * @returns 统一格式的搜索结果
+ */
+export async function searchSkills(
+  query: string,
+  source: 'clawhub' | 'skillhub' | 'all' = 'all',
+  category?: string,
+): Promise<SkillSearchResult[]> {
+  const q = String(query ?? '').trim()
+  if (!q && !category) return []
+
+  let unified: SkillSearchResult[] = []
+
+  if (source === 'clawhub') {
+    const clawhubResults = await searchClawHub(q)
+    unified = clawhubResults.map(normalizeClawHubResult)
+  } else if (source === 'skillhub') {
+    const skillHubResults = await searchSkillHubApi(q, 20, category)
+    unified = skillHubResults.map(normalizeSkillHubResult)
+  } else {
+    // all: 并行搜索两个源
+    const [clawhubResults, skillHubResults] = await Promise.all([
+      searchClawHub(q).catch(() => [] as ClawHubSearchResult[]),
+      searchSkillHubApi(q, 20, category).catch(() => [] as SkillHubSearchResult[]),
+    ])
+
+    const seen = new Set<string>()
+    const merged: SkillSearchResult[] = []
+
+    for (const item of clawhubResults) {
+      const r = normalizeClawHubResult(item)
+      if (!seen.has(r.slug)) {
+        seen.add(r.slug)
+        merged.push(r)
+      }
+    }
+    for (const item of skillHubResults) {
+      const r = normalizeSkillHubResult(item)
+      if (!seen.has(r.slug)) {
+        seen.add(r.slug)
+        merged.push(r)
+      }
+    }
+
+    merged.sort((a, b) => b.downloads - a.downloads)
+    unified = merged
+  }
+
+  _log('SKILLS_SEARCH_UNIFIED', { query: q, source, category, count: unified.length }, 'skills')
+  return unified
+}
+
+/* ------------------------------------------------------------------ */
+/*  ClawHub slug 安装辅助函数                                          */
+/* ------------------------------------------------------------------ */
+
+/** 判断一个 source 是否是 ClawHub slug（非 URL、非本地路径） */
+export function isClawHubSlug(source: string): boolean {
+  if (source.startsWith('http://') || source.startsWith('https://')) return false
+  if (source.startsWith('/') || source.startsWith('.') || source.startsWith('~')) return false
+  if (/^@?[\w-]+\/[\w-]+$/.test(source)) return true
+  if (/^[\w-]+$/.test(source)) return true
+  return false
+}
+
+/** 构建 ClawHub 下载 URL */
+export function buildClawHubDownloadUrl(slug: string): string {
+  const pureSlug = slug.replace(/^@/, '').split('/').pop() ?? slug
+  return `https://clawhub.ai/api/v1/download?slug=${encodeURIComponent(pureSlug)}`
+}
+
+/** 判断一个 source 是否是 SkillHub slug */
+function isSkillHubSlug(source: string): boolean {
+  // 与 ClawHub 相同的 slug 判断逻辑，但 SkillHub 也支持
+  if (source.startsWith('http://') || source.startsWith('https://')) return false
+  if (source.startsWith('/') || source.startsWith('.') || source.startsWith('~')) return false
+  if (/^@?[\w-]+\/[\w-]+$/.test(source)) return true
+  if (/^[\w-]+$/.test(source)) return true
+  return false
+}
+
+/** 构建 SkillHub 下载 URL */
+function buildSkillHubDownloadUrl(slug: string): string {
+  const pureSlug = slug.replace(/^@/, '').split('/').pop() ?? slug
+  return `https://api.skillhub.cn/api/v1/download?slug=${encodeURIComponent(pureSlug)}`
+}
+
+/** 下载 ZIP 并解压到目标目录（平台自适应） */
+export async function downloadAndExtractZip(
+  url: string,
+  destDir: string,
+  logger?: Logger,
+): Promise<void> {
+  const log = logger ?? _log
+  const zipPath = path.join(destDir, 'skill.zip')
+
+  log('CLAWHUB_DOWNLOAD_START', { url }, 'skills')
+  const resp = await fetch(url, { headers: { 'User-Agent': 'Taco-AI' } })
+  if (!resp.ok) {
+    throw new Error(`ClawHub 下载失败: ${resp.status} ${resp.statusText}`)
+  }
+
+  const buffer = Buffer.from(await resp.arrayBuffer())
+  await fs.writeFile(zipPath, buffer)
+  log('CLAWHUB_DOWNLOAD_DONE', { size: buffer.length }, 'skills')
+
+  try {
+    const platform = os.platform()
+    if (platform === 'win32') {
+      execSync(`powershell -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${destDir}' -Force"`, { stdio: 'pipe' })
+    } else {
+      execSync(`unzip -o "${zipPath}" -d "${destDir}"`, { stdio: 'pipe' })
+    }
+  } catch (err) {
+    throw new Error(`解压 ZIP 失败: ${err instanceof Error ? err.message : String(err)}`)
+  }
+
+  try { await fs.unlink(zipPath) } catch { /* ignore */ }
+
+  // 解压后内容都在一个子目录 → 上移一层
+  const entries = await fs.readdir(destDir)
+  const nonZipEntries = entries.filter(e => e !== 'skill.zip')
+  if (nonZipEntries.length === 1) {
+    const innerDir = path.join(destDir, nonZipEntries[0])
+    const stat = await fs.stat(innerDir)
+    if (stat.isDirectory()) {
+      const innerEntries = await fs.readdir(innerDir)
+      for (const entry of innerEntries) {
+        await fs.rename(path.join(innerDir, entry), path.join(destDir, entry))
+      }
+      await fs.rmdir(innerDir)
+    }
+  }
+
+  // ZIP slip 防护：递归检查所有解压文件是否越界
+  const resolvedDest = path.resolve(destDir)
+  await validateExtractionPaths(resolvedDest)
+}
+
+/** 递归检查解压目录中所有文件路径，确保没有路径穿越攻击（ZIP slip） */
+async function validateExtractionPaths(dir: string): Promise<void> {
+  const entries = await fs.readdir(dir, { withFileTypes: true })
+  for (const entry of entries) {
+    const fullPath = path.resolve(dir, entry.name)
+    const resolvedDest = path.resolve(dir)
+    // symbolic links 仍需 path.resolve 处理（会解析到实际路径），直接拒绝符号链接
+    if (entry.isSymbolicLink()) {
+      throw new Error(`安全风险：ZIP 包含符号链接 "${entry.name}"，已拒绝`)
+    }
+    if (!fullPath.startsWith(resolvedDest + path.sep) && fullPath !== resolvedDest) {
+      throw new Error(`安全风险：ZIP 包含越界路径 "${fullPath}"（目录: "${resolvedDest}"），已拒绝`)
+    }
+    if (entry.isDirectory()) {
+      await validateExtractionPaths(fullPath)
+    }
+  }
+}
+
+export async function installSkill(source: string, skipAudit?: boolean, preferredId?: string, authorOverride?: string): Promise<SkillInfo> {
   let instructions: string
   let meta: ParsedSkillMeta = {
     requires: { ...EMPTY_REQUIRES },
@@ -869,6 +1170,7 @@ export async function installSkill(source: string, skipAudit?: boolean): Promise
     resources: [],
   }
   let localSkillRoot = ''
+  let clawHubTempDir = ''
   let remoteGitHubSource: GitHubSkillSource | null = null
 
   if (source.startsWith('http://') || source.startsWith('https://')) {
@@ -914,7 +1216,77 @@ export async function installSkill(source: string, skipAudit?: boolean): Promise
         }
       }
     }
+  } else if (isClawHubSlug(source)) {
+    // slug 安装：先尝试 ClawHub，失败后尝试 SkillHub
+    clawHubTempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'taco-skill-'))
+    let installed = false
+
+    // 尝试 ClawHub
+    try {
+      const downloadUrl = buildClawHubDownloadUrl(source)
+      await downloadAndExtractZip(downloadUrl, clawHubTempDir)
+      installed = true
+      _log('SKILL_INSTALL_SOURCE', { source, sourceType: 'clawhub' }, 'skills')
+    } catch (clawhubErr) {
+      _log('SKILL_INSTALL_CLAWHUB_FAILED', { source, error: String(clawhubErr) }, 'skills')
+      // 清理后重试 SkillHub
+      try { await fs.rm(clawHubTempDir, { recursive: true, force: true }) } catch { /* ignore */ }
+      clawHubTempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'taco-skill-'))
+      try {
+        const downloadUrl = buildSkillHubDownloadUrl(source)
+        await downloadAndExtractZip(downloadUrl, clawHubTempDir)
+        installed = true
+        _log('SKILL_INSTALL_SOURCE', { source, sourceType: 'skillhub' }, 'skills')
+      } catch (skillhubErr) {
+        throw new Error(`安装失败：ClawHub 和 SkillHub 均未找到技能"${source}"。ClawHub: ${String(clawhubErr)}；SkillHub: ${String(skillhubErr)}`)
+      }
+    }
+
+    // 找到解压后 SKILL.md 所在目录
+    const findSkillMdDir = async (dir: string): Promise<string> => {
+      try {
+        await fs.access(path.join(dir, 'SKILL.md'))
+        return dir
+      } catch {
+        const entries = await fs.readdir(dir)
+        for (const entry of entries) {
+          const subDir = path.join(dir, entry)
+          try {
+            const stat = await fs.stat(subDir)
+            if (stat.isDirectory()) {
+              const result = await findSkillMdDir(subDir)
+              if (result) return result
+            }
+          } catch { /* ignore */ }
+        }
+      }
+      return ''
+    }
+
+    const skillDir = await findSkillMdDir(clawHubTempDir)
+    if (!skillDir) {
+      throw new Error('下载的技能包中未找到 SKILL.md 文件')
+    }
+
+    instructions = await fs.readFile(path.join(skillDir, 'SKILL.md'), 'utf-8')
+    meta = parseSkillMeta(instructions)
+    localSkillRoot = skillDir
+
+    if (!skipAudit) {
+      const securityCheck = auditSkillSecurity(instructions, meta)
+      if (securityCheck.riskLevel === 'critical') {
+        throw new Error(`拒绝安装高风险 Skill: ${securityCheck.warnings.join('; ')}`)
+      }
+      if (securityCheck.riskLevel === 'high') {
+        _log('SKILL_SECURITY_WARNING', {
+          source,
+          riskLevel: securityCheck.riskLevel,
+          warnings: securityCheck.warnings,
+        }, 'skills')
+      }
+    }
   } else {
+    // 本地文件路径
     const filePath = source.endsWith('SKILL.md') ? source : path.join(source, 'SKILL.md')
     const resolvedPath = expandTilde(filePath)
     try {
@@ -941,7 +1313,7 @@ export async function installSkill(source: string, skipAudit?: boolean): Promise
     }
   }
 
-  const id = toSkillId(meta.name || `skill-${Date.now()}`)
+  const id = preferredId ?? (isClawHubSlug(source) ? source : toSkillId(meta.name || `skill-${Date.now()}`))
   const persisted = await loadPersistedSkills()
 
   if (localSkillRoot) {
@@ -952,14 +1324,19 @@ export async function installSkill(source: string, skipAudit?: boolean): Promise
     await saveSkillInstructions(id, instructions)
   }
 
+  // ClawHub slug 安装后清理临时目录
+  if (clawHubTempDir) {
+    try { await fs.rm(clawHubTempDir, { recursive: true, force: true }) } catch { /* ignore */ }
+  }
+
   const existing = persisted.find((s) => s.id === id)
   const nextItem: PersistedSkill = {
     id,
     name: meta.name || existing?.name || id,
     description: meta.description || existing?.description || '',
     version: meta.version || existing?.version || '1.0.0',
-    author: meta.author || existing?.author || 'Unknown',
-    source: source.startsWith('http') ? 'remote' : 'local',
+    author: authorOverride || meta.author || existing?.author || 'Unknown',
+    source: 'remote',
     sourceUrl: source.startsWith('http') ? source : undefined,
     enabled: true,
     instructionsFile: `${id}/SKILL.md`,
@@ -1146,8 +1523,9 @@ async function loadSkillsFromDirs(
       if (!content.trim()) continue
 
       const parsed = parseSkillMeta(content)
-      const fallbackName = path.basename(path.dirname(filePath))
-      const id = toSkillId(parsed.name || fallbackName || `skill-${Date.now()}`)
+      const dirName = path.basename(path.dirname(filePath))
+      // 目录名作为主 ID（唯一可靠标识，不受 SKILL.md name 变化影响）；仅当无目录名时才回退到 parsed.name
+      const id = dirName && dirName !== 'skills' ? toSkillId(dirName) : toSkillId(parsed.name || `skill-${Date.now()}`)
       const persisted = persistedById.get(id)
 
       const source = resolveSkillSource(scope, filePath, persisted)
@@ -1185,13 +1563,13 @@ async function loadSkillsFromDirs(
 }
 
 function resolveSkillSource(scope: SkillScope, filePath: string, persisted?: PersistedSkill): SkillInfo['source'] {
-  if (scope === 'workspace') return 'local'
+  if (scope === 'workspace') return 'remote'
   const normalizedFile = path.resolve(filePath)
   const normalizedBase = path.resolve(SKILLS_DIR)
   if (normalizedFile.startsWith(normalizedBase) && persisted && persisted.source !== 'builtin') {
     return persisted.source
   }
-  return 'local'
+  return 'remote'
 }
 
 async function findSkillFiles(dir: string): Promise<string[]> {

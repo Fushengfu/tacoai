@@ -89,7 +89,7 @@ export type SkillInfo = {
   description: string
   version: string
   author: string
-  source: 'builtin' | 'local' | 'remote'
+  source: 'builtin' | 'remote'
   sourceUrl?: string
   enabled: boolean
   instructions: string
@@ -123,6 +123,9 @@ export type SkillPreview = {
   }
 }
 
+/** 技能搜索数据源 */
+export type SkillSearchSource = 'clawhub' | 'skillhub' | 'all'
+
 /** ClawHub 搜索结果（匹配 clawhub.ai API 实际返回字段） */
 export type ClawHubSearchResult = {
   slug: string
@@ -140,6 +143,42 @@ export type ClawHubSearchResult = {
   }
   /** 更新时间戳（毫秒） */
   updatedAt?: number
+}
+
+/** 腾讯 SkillHub 搜索结果（匹配 api.skillhub.cn API 返回字段） */
+export type SkillHubSearchResult = {
+  slug: string
+  name: string
+  description: string
+  description_zh?: string
+  downloads: number
+  installs: number
+  stars: number
+  version: string | null
+  ownerName: string
+  ownerAvatar?: string
+  /** API 返回的是分类 key 字符串，如 "office-efficiency"、"dev-programming" */
+  category?: string
+  subCategories?: Array<{ key: string; name: string }>
+  updatedAt?: string
+  createdAt?: string
+}
+
+/** 统一的技能搜索结果（多源合并后的标准格式） */
+export type SkillSearchResult = {
+  slug: string
+  displayName: string
+  summary: string
+  downloads: number
+  version: string | null
+  authorName: string
+  authorAvatar?: string
+  source: 'clawhub' | 'skillhub'
+  /** SkillHub 专有字段 */
+  stars?: number
+  installs?: number
+  category?: string
+  subCategories?: string[]
 }
 
 /** 浏览器使用操作类型 */

@@ -29,7 +29,7 @@ import type {
   SkillPreview,
   SkillUpdateInfo,
   InstallProgress,
-  ClawHubSearchResult,
+  SkillSearchResult,
 } from '../shared/ipc'
 
 // 沙盒化 preload 无法使用 os 模块，用 process 和环境变量替代
@@ -330,23 +330,24 @@ const tacoApi: TacoApi = {
   skills: {
     list: (workspace?: string) =>
       ipcRenderer.invoke(IpcChannel.SKILLS_LIST, workspace),
-    search: (query: string): Promise<ClawHubSearchResult[]> =>
-      ipcRenderer.invoke(IpcChannel.SKILLS_SEARCH, query),
-    getDetail: (slug: string): Promise<string> =>
-      ipcRenderer.invoke(IpcChannel.SKILLS_GET_DETAIL, slug),
+    search: (query: string, source?: string, category?: string): Promise<SkillSearchResult[]> =>
+      ipcRenderer.invoke(IpcChannel.SKILLS_SEARCH, { query, source: source || 'all', category }),
+    getDetail: (slug: string, source?: string): Promise<string> =>
+      ipcRenderer.invoke(IpcChannel.SKILLS_GET_DETAIL, { slug, source: source || 'clawhub' }),
     preview: (source: string): Promise<SkillPreview> =>
       ipcRenderer.invoke(IpcChannel.SKILLS_PREVIEW, source),
-    install: (source: string, onProgress?: (progress: InstallProgress) => void): Promise<SkillInfo> => {
+    install: (source: string, author?: string, onProgress?: (progress: InstallProgress) => void): Promise<SkillInfo> => {
+      const params = author ? { source, author } : source
       if (onProgress) {
         const handler = (_event: Electron.IpcRendererEvent, progress: InstallProgress) => onProgress(progress)
         ipcRenderer.on('skills:install-progress', handler)
-        const promise = ipcRenderer.invoke(IpcChannel.SKILLS_INSTALL, source)
+        const promise = ipcRenderer.invoke(IpcChannel.SKILLS_INSTALL, params)
         promise.finally(() => {
           ipcRenderer.removeListener('skills:install-progress', handler)
         })
         return promise
       }
-      return ipcRenderer.invoke(IpcChannel.SKILLS_INSTALL, source)
+      return ipcRenderer.invoke(IpcChannel.SKILLS_INSTALL, params)
     },
     uninstall: (id: string) =>
       ipcRenderer.invoke(IpcChannel.SKILLS_UNINSTALL, id),
@@ -354,6 +355,8 @@ const tacoApi: TacoApi = {
       ipcRenderer.invoke(IpcChannel.SKILLS_TOGGLE, id, enabled),
     checkUpdate: (id: string): Promise<SkillUpdateInfo | null> =>
       ipcRenderer.invoke(IpcChannel.SKILLS_CHECK_UPDATE, id),
+    getLocalDetail: (id: string): Promise<string> =>
+      ipcRenderer.invoke(IpcChannel.SKILLS_GET_LOCAL_DETAIL, id),
   },
   notes: {
     list: (workspace: string, projectId?: string) =>

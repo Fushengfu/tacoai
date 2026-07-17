@@ -400,18 +400,18 @@ export function ChatPanel({
   const [authDropdownOpen, setAuthDropdownOpen] = useState(false)
   const authDropdownRef = useRef<HTMLDivElement>(null)
 
-  // ── 自动提交（按项目，默认开启）──
-  const [autoCommit, setAutoCommit] = useState(true)
+  // ── 自动提交（按项目，默认关闭）──
+  const [autoCommit, setAutoCommit] = useState(false)
 
   // 初始化自动提交状态
   useEffect(() => {
     if (!projectId) {
-      setAutoCommit(true)
+      setAutoCommit(false)
       return
     }
     window.taco.agent.getAutoCommit(projectId).then((enabled) => {
       setAutoCommit(enabled)
-    }).catch(() => setAutoCommit(true))
+    }).catch(() => setAutoCommit(false))
   }, [projectId])
 
   const handleAutoCommitToggle = useCallback(() => {
