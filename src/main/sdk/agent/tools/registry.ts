@@ -31,9 +31,6 @@ const ALWAYS_AVAILABLE_TOOL_NAMES = [
   'search_skills',
   'install_skill',
   'uninstall_skill',
-  'find_definition',
-  'find_references',
-  'list_symbols',
 ]
 
 function filterToolDefinitions(allowedToolNames?: Iterable<string>): ToolDefinition[] {

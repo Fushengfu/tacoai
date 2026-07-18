@@ -45,11 +45,6 @@ import {
   execInstallSkill,
   execUninstallSkill,
 } from './exec-skills'
-import {
-  execFindDefinition,
-  execFindReferences,
-  execListSymbols,
-} from './exec-code-intel'
 
 /* ------------------------------------------------------------------ */
 /*  Tool dispatch                                                       */
@@ -112,12 +107,6 @@ async function executeTool(
         return await execInstallSkill(args, workspace, runtimeContext)
       case 'uninstall_skill':
         return await execUninstallSkill(args, runtimeContext)
-      case 'find_definition':
-        return await execFindDefinition(args, workspace)
-      case 'find_references':
-        return await execFindReferences(args, workspace)
-      case 'list_symbols':
-        return await execListSymbols(args, workspace)
       default:
         return { content: `Unknown tool: ${name}`, success: false }
     }

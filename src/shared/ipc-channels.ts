@@ -221,10 +221,4 @@ export const IpcChannel = {
 
   /** main → renderer, 自动检查发现有新版本可用 */
   APP_UPDATE_AVAILABLE: 'app:update-available',
-
-  /** 代码智能理解 */
-  /** renderer → main, 查找符号定义 */
-  CODE_INTEL_FIND_DEFINITION: 'code-intel:find-definition',
-  /** renderer → main, 查找符号引用 */
-  CODE_INTEL_FIND_REFERENCES: 'code-intel:find-references',
 } as const
