@@ -265,6 +265,12 @@ const tacoApi: TacoApi = {
     write: (filePath: string, content: string) =>
       ipcRenderer.invoke(IpcChannel.FILE_WRITE, filePath, content),
   },
+  codeIntel: {
+    findDefinition: (workspace: string, filePath: string, symbol: string) =>
+      ipcRenderer.invoke(IpcChannel.CODE_INTEL_FIND_DEFINITION, workspace, filePath, symbol),
+    findReferences: (workspace: string, filePath: string, symbol: string) =>
+      ipcRenderer.invoke(IpcChannel.CODE_INTEL_FIND_REFERENCES, workspace, filePath, symbol),
+  },
   terminal: {
     spawn: (terminalId: string, cwd?: string) =>
       ipcRenderer.send(IpcChannel.TERMINAL_SPAWN, { terminalId, cwd }),

@@ -98,8 +98,11 @@ body {
   gap: 12px;
   padding: 8px 12px;
   min-height: 48px;
-  border-bottom: 1px solid var(--border);
-  background: linear-gradient(180deg, rgba(12, 16, 24, 0.9), rgba(8, 10, 14, 0.86));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  /* 毛玻璃效果：高透明度背景 + 大模糊半径 */
+  background: rgba(12, 16, 24, 0.55);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
   z-index: 90;
 }
 
@@ -122,6 +125,17 @@ body {
   text-overflow: ellipsis;
   min-width: 0;
   flex: 1;
+  /* 标题卡片毛玻璃 */
+  padding: 5px 14px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: background 0.2s ease;
+}
+.app-topbar-title:hover {
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .app-topbar-right {
@@ -284,8 +298,10 @@ body.is-resizing iframe {
 /* ------------------------------------------------------------------ */
 
 .sidebar {
-  background: linear-gradient(180deg, var(--sidebar-bg-start) 0%, var(--sidebar-bg-end) 100%);
-  border-right: 1px solid var(--border);
+  background: rgba(18, 19, 22, 0.65);
+  backdrop-filter: blur(20px) saturate(150%);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
@@ -758,8 +774,26 @@ body.is-resizing iframe {
 /*  Light theme overrides                                              */
 /* ================================================================== */
 
+:root[data-theme='light'] .sidebar {
+  background: rgba(238, 238, 239, 0.55);
+  backdrop-filter: blur(20px) saturate(150%);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  border-right-color: rgba(0, 0, 0, 0.06);
+}
+
 :root[data-theme='light'] .app-topbar {
-  background: linear-gradient(180deg, rgba(245,245,247,0.95), rgba(235,235,240,0.92));
+  background: rgba(242, 242, 247, 0.52);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  border-bottom-color: rgba(0, 0, 0, 0.06);
+}
+
+:root[data-theme='light'] .app-topbar-title {
+  background: rgba(0, 0, 0, 0.04);
+  border-color: rgba(0, 0, 0, 0.06);
+}
+:root[data-theme='light'] .app-topbar-title:hover {
+  background: rgba(0, 0, 0, 0.08);
 }
 
 :root[data-theme='light'] .sidebar-fixed-toggle {

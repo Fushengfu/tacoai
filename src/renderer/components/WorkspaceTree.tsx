@@ -7,6 +7,7 @@
  */
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { FileTreeEntry } from '../../shared/ipc'
 import { FileEditor } from '../views/editor/FileEditor'
 import { DiffEditor } from '@monaco-editor/react'
@@ -663,6 +664,7 @@ const WorkspaceTree = forwardRef<WorkspaceTreeHandle, WorkspaceTreeProps>(functi
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
+    e.stopPropagation()
     dragRef.current = { startX: e.clientX, startW: treeWidth }
   }, [treeWidth])
 
@@ -963,11 +965,14 @@ const WorkspaceTree = forwardRef<WorkspaceTreeHandle, WorkspaceTreeProps>(functi
         <span className="wst-trigger-label">目录</span>
       </button>
 
-      {/* 遮罩层（纯视觉，不响应点击 — 避免误触关闭） */}
-      {isOpen && <div className="wst-backdrop" />}
+      {/* 遮罩层 + 全屏面板 + 对话框 → Portal 到 body，绕过 app-topbar 的 backdrop-filter 包含块 */}
+      {createPortal(
+        <>
+          {/* 遮罩层（纯视觉，不响应点击 — 避免误触关闭） */}
+          {isOpen && <div className="wst-backdrop" />}
 
-      {/* 全屏面板：顶部栏下方占满 */}
-      <div className={`wst-panel ${isOpen ? 'wst-panel-open' : ''}`}>
+          {/* 全屏面板：顶部栏下方占满 */}
+          <div className={`wst-panel no-drag ${isOpen ? 'wst-panel-open' : ''}`} onMouseDown={(e) => e.stopPropagation()}>
         {/* 面板头部 */}
         <div className="wst-panel-header">
           <div className="wst-panel-title">
@@ -1119,6 +1124,9 @@ const WorkspaceTree = forwardRef<WorkspaceTreeHandle, WorkspaceTreeProps>(functi
           onConfirm={handleDeleteConfirm}
           onCancel={() => setConfirmDelete(null)}
         />
+      )}
+        </>,
+        document.body
       )}
     </>
   )
