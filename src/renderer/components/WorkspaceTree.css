@@ -63,6 +63,7 @@
   flex-direction: column;
   transform: translateX(100%);
   transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  -webkit-app-region: no-drag;
 }
 
 .wst-panel-open {
@@ -300,7 +301,7 @@
 
 /* ── 拖拽手柄 ── */
 .wst-resize-handle {
-  width: 4px;
+  width: 8px;
   cursor: col-resize;
   background: transparent;
   transition: background 0.15s;

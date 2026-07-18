@@ -28,20 +28,36 @@ export function setCompressorLogger(logger: Logger) { _log = logger }
 /* ------------------------------------------------------------------ */
 
 export function compactLine(text: string, max = 260): string {
-  const line = String(text ?? '')
+  const lines = String(text ?? '')
     .replace(/\r/g, '')
     .split('\n')
     .map((s) => s.trim())
-    .find((s) => s.length > 0) ?? ''
-  if (!line) return '(无输出)'
-  return line.length <= max ? line : `${line.slice(0, max)}...`
+    .filter((s) => s.length > 0)
+  if (lines.length === 0) return '(无输出)'
+
+  const first = lines[0]
+  if (lines.length === 1) {
+    return first.length <= max ? first : `${first.slice(0, max)}...`
+  }
+
+  // 多行输出：保留首行 + 最多 5 个关键行（错误/警告/失败标记），避免丢失定位信息
+  const keyPattern = /(error|Error|ERROR|warn|WARN|fail|FAIL|exception|Exception|panic|fatal|timeout|abort|✗|✘|❌|×)/
+  const keyLines = lines.slice(1).filter((l) => keyPattern.test(l)).slice(0, 5)
+
+  if (keyLines.length === 0) {
+    return first.length <= max ? first : `${first.slice(0, max)}...`
+  }
+
+  const joined = [first, ...keyLines].join('\n')
+  const cap = Math.max(max, 160)
+  return joined.length <= cap ? joined : `${joined.slice(0, cap)}...`
 }
 
 export function maskSensitiveText(text: string): string {
   let masked = String(text ?? '')
   const keyValuePattern = /((?:token|access_token|api[_-]?key|authorization|bearer|password|passwd|pwd|secret)\s*[:=]\s*)([^\s'"]+)/ig
   masked = masked.replace(keyValuePattern, (_m, prefix: string) => `${prefix}***`)
-  const bearerPattern = /(bearer\s+)([a-z0-9._\-]+)/ig
+  const bearerPattern = /(bearer\s+)([a-zA-Z0-9._\-]+)/ig
   masked = masked.replace(bearerPattern, (_m, prefix: string) => `${prefix}***`)
   return masked
 }
@@ -120,16 +136,25 @@ export async function summarizeMessages(
   const summaryPrompt: ChatMessage[] = [
     {
       role: 'system',
-      content: `你是一个对话压缩助手。你需要将一段 AI Agent 的对话历史压缩成可续跑的完整上下文。
+      content: `你是对话压缩助手。将 AI Agent 的对话历史压缩为可直接续跑的上下文摘要。
 
-要求：
-1. 不得遗漏信息，必须覆盖原始对话中的全部事实、步骤、结果、失败与重试记录
-2. 完整保留技术细节：文件路径、函数名、配置项、命令、参数、错误信息
-3. 完整保留当前进展、未完成项、用户约束和待确认事项
-4. 使用结构化格式，条理清晰
-5. 这不是"任务完成总结"，必须显式标注"哪些尚未完成、下一步要执行什么"
-6. 严禁输出"已完成/已修复/全部正常"等终态结论语
-7. 使用中文输出`,
+保留（续跑必需信息）：
+- 当前任务目标、执行阶段（正在做什么）
+- 所有文件变更（路径 + 改动内容）
+- 关键命令结果（成功的核心输出、失败的完整错误信息）
+- 当前计划状态：已完成步骤 / 待继续步骤
+- 用户约束、偏好、显式拒绝的方案
+- 未解决的疑问、待确认事项
+
+丢弃（对续跑无用）：
+- 中间步骤的详细过程（只保留结论）
+- 工具调用参数细节（只保留结果）
+- 重复的编译/构建成功信息（只记一次）
+- 思考/推理过程（只保留最终决策）
+- 问候语、闲聊、确认性对话
+
+禁止：写成"任务完成"总结。必须明确标注"哪些尚未完成、下一步做什么"。
+使用中文，条理清晰。`,
     },
     {
       role: 'user',
@@ -182,17 +207,22 @@ export async function summarizeCurrentTaskProgress(
   const prompt: ChatMessage[] = [
     {
       role: 'system',
-      content: `你是当前任务续跑压缩助手。你需要把"当前未完成任务"的消息序列压缩成一段可直接续跑的任务进度总结。
+      content: `你是当前任务续跑压缩助手。将"当前未完成任务"的消息序列压缩为可直接续跑的进度总结。
 
-要求：
-1. 必须完整保留当前目标、已完成动作、关键工具证据、文件变更、失败与重试、当前计划状态。
-2. 必须明确写出：哪些步骤已完成、哪些步骤待继续、下一步该做什么。
-3. 这是"未完成任务的续跑摘要"，严禁写成任务已完成。
-4. 不要丢失文件路径、函数名、命令、报错、关键结论。
-5. 用户原始问题会在上下文里单独保留，摘要不要重复改写用户问题本身，重点总结该问题之后的执行进度。
-6. 如果当前存在执行计划，必须明确保留计划已完成步骤、待继续步骤，以及后续继续执行时仍需更新计划状态。
-7. 若用户提交了媒体文件（图片/视频等），必须在总结中原样保留这些媒体文件的路径或链接。
-8. 使用中文结构化输出。`,
+保留：
+- 当前任务目标
+- 已完成的步骤与关键证据（文件变更、命令结果、失败信息）
+- 当前计划状态：已完成步骤 / 待继续步骤 / 下一步行动
+- 用户约束与偏好、待确认事项
+- 若有执行计划，必须明确保留各步骤的完成状态
+- 若用户提交了媒体文件，原样保留其路径或链接
+
+丢弃：
+- 中间推理过程、工具调用参数细节
+- 重复性信息（如多次编译成功只记一次）
+
+这是"未完成任务续跑摘要"，严禁写成任务已完成。
+使用中文，结构化输出。`,
     },
     {
       role: 'user',
@@ -266,7 +296,7 @@ export async function compressAgentContext(
 
   const summaryMsg: ChatMessage = {
     role: 'assistant',
-    content: `[CURRENT_TASK_SUMMARY]\n以下是"当前用户问题之后"的本轮任务进度总结，不代表任务已完成。\n当前用户问题仍以上一条 user 消息为准；请基于该问题与以下进度继续执行当前任务。\n若存在执行计划，继续执行时仍需按步骤调用 update_plan_progress 更新状态。\n\n${summary}\n[/CURRENT_TASK_SUMMARY]`,
+    content: `[CURRENT_TASK_SUMMARY]\n任务未完成，基于上一条 user 消息续跑。有执行计划时继续调用 update_plan_progress。\n\n${summary}\n[/CURRENT_TASK_SUMMARY]`,
   }
 
   msgs.splice(taskTrailStartIndex, compressCount, summaryMsg)

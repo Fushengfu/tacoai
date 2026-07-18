@@ -330,4 +330,19 @@ export type TacoApi = {
     /** 监听手机端切换自动提交，桌面端同步更新 UI */
     onAutoCommitChanged: (callback: (data: { enabled: boolean; projectId: string }) => void) => () => void
   }
+  /** 代码智能理解（tree-sitter AST 分析） */
+  codeIntel: {
+    /** 查找符号的定义位置 */
+    findDefinition: (workspace: string, filePath: string, symbol: string) => Promise<{
+      success: boolean
+      data?: { name: string; kind: string; file: string; line: number; column: number }
+      error?: string
+    }>
+    /** 查找符号的所有引用位置（跨文件） */
+    findReferences: (workspace: string, filePath: string, symbol: string) => Promise<{
+      success: boolean
+      data?: { total: number; refs: Array<{ file: string; line: number; column: number; context: string }> }
+      error?: string
+    }>
+  }
 }

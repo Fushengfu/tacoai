@@ -3,413 +3,42 @@ import type { ActivePlan, AgentStep, AttachedAsset, AttachedImage, ChatMsg, Mode
 import type { ChatStoreSessionPage, ChatStoreSessionPatch, ChatStoreSessionSummary, IpcChatMessage, IpcChatOverrides } from '../../shared/ipc'
 import { buildSystemPrompt } from '../constants'
 import { loadJson, saveJson, uid } from '../lib/storage'
-import { buildUserAssetsBlockFromAttachments, inferAttachmentType, stripUserAssetsBlock, isMediaFile, inferMediaSubtype } from '../../shared/user-assets'
 import { validateModelConfig, parseConfiguredTemperature } from '../../shared/validation'
 
-type SessionStoreMeta = {
-  projectId?: string
-  workspace?: string
-}
+import {
+  type ProjectTokenStats,
+  type RunTokenStats,
+  normalizeProjectTokenStatsMap,
+  usageToAggregate,
+  resolveUsageTotalTokens,
+} from './token-utils'
 
-const CHAT_STORE_FLUSH_DEBOUNCE_MS = 280
-const CHAT_STORE_INITIAL_PAGE_SIZE = 120
-const CHAT_STORE_OLDER_PAGE_SIZE = 120
+import {
+  type SendMessageParams,
+  type MessageContentPart,
+  mapMessageForApi,
+  buildMessagesForApi,
+  isRecallDebugEnabled,
+  isRetryableError,
+  delay,
+  MAX_RETRY_ATTEMPTS,
+  RETRY_DELAY_MS,
+} from './message-utils'
 
-// 重试配置
-const MAX_RETRY_ATTEMPTS = 2
-const RETRY_DELAY_MS = 1000
-const RETRYABLE_ERRORS = [
-  'network',
-  'timeout',
-  'ECONNREFUSED',
-  'ETIMEDOUT',
-  'EAI_AGAIN',
-  'fetch failed',
-  'request failed',
-]
+import {
+  type SessionStoreMeta,
+  type SessionLoadMeta,
+  normalizeChatStoreMessages,
+  findFirstChangedMessageIndex,
+  normalizePlanStatus,
+  buildTaskTiming,
+  CHAT_STORE_FLUSH_DEBOUNCE_MS,
+  CHAT_STORE_INITIAL_PAGE_SIZE,
+  CHAT_STORE_OLDER_PAGE_SIZE,
+} from './chat-utils'
 
-type SessionLoadMeta = {
-  totalCount: number
-  loadedStartSeq: number
-  loadedEndSeq: number
-  isLoaded: boolean
-  isLoading: boolean
-  isLoadingOlder: boolean
-}
-
-function normalizeChatStoreMessages(messages: unknown[]): ChatMsg[] {
-  return Array.isArray(messages) ? (messages as ChatMsg[]) : []
-}
-
-function serializeChatStoreMessage(message: ChatMsg): string {
-  try {
-    return JSON.stringify(message)
-  } catch {
-    return ''
-  }
-}
-
-function areChatStoreMessagesEqual(prev: ChatMsg | undefined, next: ChatMsg | undefined): boolean {
-  if (prev === next) return true
-  if (!prev || !next) return false
-  if (prev.id !== next.id) return false
-  if (prev.role !== next.role) return false
-  if (prev.content !== next.content) return false
-  if ((prev.gitCommitHash || '') !== (next.gitCommitHash || '')) return false
-  return serializeChatStoreMessage(prev) === serializeChatStoreMessage(next)
-}
-
-function findFirstChangedMessageIndex(prevMessages: ChatMsg[], nextMessages: ChatMsg[]): number {
-  const sharedLength = Math.min(prevMessages.length, nextMessages.length)
-  for (let index = 0; index < sharedLength; index++) {
-    if (!areChatStoreMessagesEqual(prevMessages[index], nextMessages[index])) {
-      return index
-    }
-  }
-  return sharedLength
-}
-
-function normalizePlanStatus(status: string): 'pending' | 'in_progress' | 'done' | 'failed' {
-  const s = String(status ?? '').trim().toLowerCase()
-  if (s === 'in-progress' || s === 'inprogress' || s === 'running') return 'in_progress'
-  if (s === 'complete' || s === 'completed' || s === 'success' || s === 'succeeded') return 'done'
-  if (s === 'error') return 'failed'
-  if (s === 'pending' || s === 'in_progress' || s === 'done' || s === 'failed') return s
-  return 'pending'
-}
-
-function buildTaskTiming(startedAt: number, endedAt = Date.now()): TaskTiming {
-  const safeStart = Number.isFinite(startedAt) ? startedAt : Date.now()
-  const safeEnd = Number.isFinite(endedAt) ? endedAt : Date.now()
-  const normalizedEnd = safeEnd >= safeStart ? safeEnd : safeStart
-  return {
-    startedAt: safeStart,
-    endedAt: normalizedEnd,
-    durationMs: normalizedEnd - safeStart,
-  }
-}
-
-/**
- * API 消息类型 - 统一使用标准 content 数组格式
- * 
- * 前端始终使用统一格式，后端根据 provider 转换
- * 
- * content 数组支持的类型：
- * - text: 文本内容
- * - image_url: 图片 URL
- * - video_url: 视频 URL
- * - audio_url: 音频 URL
- * 
- * 非媒体文件（代码、文档等）使用标签包裹插入文本：[FILE]path[/FILE]
- */
-type ApiChatMessage = {
-  role: ChatMsg['role']
-  content: Array<
-    | { type: 'text'; text: string }
-    | { type: 'image_url'; image_url: { url: string } }
-    | { type: 'video_url'; video_url: { url: string } }
-    | { type: 'audio_url'; audio_url: { url: string } }
-  >
-}
-
-/**
- * 将 ChatMsg 转换为统一的标准 API 消息格式
- */
-function mapMessageForApi(msg: ChatMsg, isLastUserMessage = false): ApiChatMessage {
-  // system 和 assistant 消息也使用数组格式
-  if (msg.role !== 'user') {
-    return {
-      role: msg.role,
-      content: [{ type: 'text', text: `[HISTORICAL_TASK_RESULT]\n${msg.content}\n[/HISTORICAL_TASK_RESULT]` }]
-    }
-  }
-
-  // 构建用户消息的 content 数组
-  const parts: ApiChatMessage['content'] = []
-
-  // 1. 构建文本内容
-  const raw = stripUserAssetsBlock(String(msg.content ?? ''))
-  const wrapped = raw.match(/\[USER_QUERY\]([\s\S]*?)\[\/USER_QUERY\]/i)
-  let textContent: string
-  if (wrapped && wrapped[1] !== undefined) {
-    textContent = raw.trim()
-  } else if (isLastUserMessage) {
-    // 最后一条最新用户消息：不包裹 USER_QUERY 标签
-    textContent = raw.trim()
-  } else {
-    // 历史用户消息：使用 USER_QUERY 标签包裹
-    textContent = `[USER_QUERY]\n${raw.trim()}\n[/USER_QUERY]`
-  }
-
-  // 2. 处理附件：媒体文件加入数组，非媒体文件用标签包裹插入文本
-  const mediaFiles: Array<{ type: string; url: string }> = []
-  const nonMediaFiles: string[] = []
-
-  if (msg.attachments && msg.attachments.length > 0) {
-    for (const asset of msg.attachments) {
-      const subtype = inferMediaSubtype(asset.path)
-      if (subtype) {
-        // 媒体文件：加入数组
-        mediaFiles.push({ type: subtype, url: asset.path })
-      } else {
-        // 非媒体文件：用标签包裹
-        nonMediaFiles.push(asset.path)
-      }
-    }
-  }
-
-  // 将非媒体文件路径添加到文本中
-  if (nonMediaFiles.length > 0) {
-    textContent += '\n\n' + nonMediaFiles.map(p => `[FILE]${p}[/FILE]`).join('\n')
-  }
-
-  // 添加文本部分
-  parts.push({ type: 'text', text: textContent })
-
-  // 3. 添加图片部分（使用 cloudUrl）
-  const imageUrls = (msg.images ?? [])
-    .map((img) => {
-      const cloudUrl = String(img?.cloudUrl ?? '').trim()
-      return cloudUrl
-    })
-    .filter(Boolean)
-
-  for (const url of imageUrls) {
-    parts.push({ type: 'image_url', image_url: { url } })
-  }
-
-  // 4. 添加其他媒体文件
-  for (const media of mediaFiles) {
-    if (media.type === 'image_url') {
-      parts.push({ type: 'image_url', image_url: { url: media.url } })
-    } else if (media.type === 'video_url') {
-      parts.push({ type: 'video_url', video_url: { url: media.url } })
-    } else if (media.type === 'audio_url') {
-      parts.push({ type: 'audio_url', audio_url: { url: media.url } })
-    }
-  }
-
-  return { role: msg.role, content: parts }
-}
-
-/**
- * 构建 API 消息数组
- */
-function buildMessagesForApi(messages: ChatMsg[]): ApiChatMessage[] {
-  const MAX_RECENT_MESSAGES = 8
-  const MAX_RECENT_USER_TURNS = 3
-  const recent: ChatMsg[] = []
-  let userTurns = 0
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i]
-    if (msg.role === 'system') continue
-    recent.push(msg)
-    if (msg.role === 'user') userTurns++
-    if (recent.length >= MAX_RECENT_MESSAGES || userTurns >= MAX_RECENT_USER_TURNS) break
-  }
-  if (recent.length > 0) {
-    const reversed = recent.reverse()
-    // 找到最后一条用户消息的索引
-    let lastUserIndex = -1
-    for (let i = reversed.length - 1; i >= 0; i--) {
-      if (reversed[i].role === 'user') {
-        lastUserIndex = i
-        break
-      }
-    }
-    return reversed.map((msg, idx) => mapMessageForApi(msg, idx === lastUserIndex))
-  }
-  const last = messages[messages.length - 1]
-  return last ? [mapMessageForApi(last, last.role === 'user')] : []
-}
-
-function isRecallDebugEnabled(): boolean {
-  return localStorage.getItem('taco.recallDebugEnabled') === 'true'
-}
-
-/**
- * 判断错误是否可重试
- */
-function isRetryableError(error: Error): boolean {
-  const message = error.message.toLowerCase()
-  return RETRYABLE_ERRORS.some((keyword) => message.includes(keyword))
-}
-
-/**
- * 延迟函数
- */
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-export type ProjectTokenStats = {
-  inputTokens: number
-  outputTokens: number
-  hitTokens: number
-  missTokens: number
-  totalTokens: number
-  turns: number
-  updatedAt: number
-}
-
-/** 本轮次任务循环累计 token 统计 */
-export type RunTokenStats = {
-  inputTokens: number
-  hitTokens: number
-  outputTokens: number
-}
-
-type TokenUsageSnapshot = {
-  promptTokens?: number
-  completionTokens?: number
-  totalTokens?: number
-  cachedTokens?: number
-}
-
-type UsageAggregate = {
-  inputTokens: number
-  outputTokens: number
-  hitTokens: number
-  missTokens: number
-  totalTokens: number
-}
-
-function toFiniteTokenCount(value: unknown): number | undefined {
-  const n = Number(value)
-  if (!Number.isFinite(n) || n < 0) return undefined
-  return Math.floor(n)
-}
-
-function normalizeProjectTokenStatsMap(raw: Record<string, unknown>): Record<string, ProjectTokenStats> {
-  const out: Record<string, ProjectTokenStats> = {}
-  for (const [threadId, value] of Object.entries(raw ?? {})) {
-    if (!threadId.trim() || !value || typeof value !== 'object') continue
-    const obj = value as Record<string, unknown>
-    const inputTokens = toFiniteTokenCount(obj.inputTokens) ?? 0
-    const outputTokens = toFiniteTokenCount(obj.outputTokens) ?? 0
-    const hitTokens = toFiniteTokenCount(obj.hitTokens) ?? 0
-    const missTokens = toFiniteTokenCount(obj.missTokens) ?? 0
-    const totalTokens = toFiniteTokenCount(obj.totalTokens) ?? 0
-    const turns = toFiniteTokenCount(obj.turns) ?? 0
-    const updatedAt = toFiniteTokenCount(obj.updatedAt) ?? Date.now()
-    out[threadId] = { inputTokens, outputTokens, hitTokens, missTokens, totalTokens, turns, updatedAt }
-  }
-  return out
-}
-
-function mergeUsageSnapshot(
-  prev: TokenUsageSnapshot | null,
-  next: TokenUsageSnapshot | undefined,
-): TokenUsageSnapshot | null {
-  if (!next || typeof next !== 'object') return prev
-  const promptTokens = toFiniteTokenCount(next.promptTokens)
-  const completionTokens = toFiniteTokenCount(next.completionTokens)
-  const totalTokens = toFiniteTokenCount(next.totalTokens)
-  const cachedTokens = toFiniteTokenCount(next.cachedTokens)
-
-  const merged: TokenUsageSnapshot = { ...(prev ?? {}) }
-  if (promptTokens !== undefined) merged.promptTokens = promptTokens
-  if (completionTokens !== undefined) merged.completionTokens = completionTokens
-  if (totalTokens !== undefined) merged.totalTokens = totalTokens
-  if (cachedTokens !== undefined) merged.cachedTokens = cachedTokens
-
-  const hasAny =
-    merged.promptTokens !== undefined
-    || merged.completionTokens !== undefined
-    || merged.totalTokens !== undefined
-    || merged.cachedTokens !== undefined
-  return hasAny ? merged : prev
-}
-
-function resolveUsageTotalTokens(usage: TokenUsageSnapshot | null): number | undefined {
-  if (!usage) return undefined
-  if (usage.totalTokens !== undefined) return usage.totalTokens
-  const prompt = usage.promptTokens ?? 0
-  const completion = usage.completionTokens ?? 0
-  const fallback = prompt + completion
-  return fallback > 0 ? fallback : undefined
-}
-
-function usageToAggregate(usage: TokenUsageSnapshot | null): UsageAggregate {
-  if (!usage) {
-    return {
-      inputTokens: 0,
-      outputTokens: 0,
-      hitTokens: 0,
-      missTokens: 0,
-      totalTokens: 0,
-    }
-  }
-  const prompt = usage.promptTokens ?? 0
-  const completion = usage.completionTokens ?? 0
-  const cached = Math.min(prompt, usage.cachedTokens ?? 0)
-  const miss = Math.max(0, prompt - cached)
-  const total = resolveUsageTotalTokens(usage) ?? (prompt + completion)
-  return {
-    inputTokens: Math.max(0, prompt),
-    outputTokens: Math.max(0, completion),
-    hitTokens: Math.max(0, cached),
-    missTokens: Math.max(0, miss),
-    totalTokens: Math.max(0, total),
-  }
-}
-
-function diffUsageAggregate(next: UsageAggregate, prev: UsageAggregate): UsageAggregate {
-  return {
-    inputTokens: Math.max(0, next.inputTokens - prev.inputTokens),
-    outputTokens: Math.max(0, next.outputTokens - prev.outputTokens),
-    hitTokens: Math.max(0, next.hitTokens - prev.hitTokens),
-    missTokens: Math.max(0, next.missTokens - prev.missTokens),
-    totalTokens: Math.max(0, next.totalTokens - prev.totalTokens),
-  }
-}
-
-function hasUsageDelta(delta: UsageAggregate): boolean {
-  return delta.inputTokens > 0
-    || delta.outputTokens > 0
-    || delta.hitTokens > 0
-    || delta.missTokens > 0
-    || delta.totalTokens > 0
-}
-
-function applyUsageDeltaToProjectStats(base: ProjectTokenStats, delta: UsageAggregate, incrementTurn: boolean): ProjectTokenStats {
-  return {
-    inputTokens: base.inputTokens + delta.inputTokens,
-    outputTokens: base.outputTokens + delta.outputTokens,
-    hitTokens: base.hitTokens + delta.hitTokens,
-    missTokens: base.missTokens + delta.missTokens,
-    totalTokens: base.totalTokens + delta.totalTokens,
-    turns: base.turns + (incrementTurn ? 1 : 0),
-    updatedAt: Date.now(),
-  }
-}
-
-/** API 消息 content 数组元素类型 */
-type MessageContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } } | { type: 'video_url'; video_url: { url: string } } | { type: 'audio_url'; audio_url: { url: string } }
-
-export type SendMessageParams = {
-  threadId: string
-  /** 项目标识（用于项目级日志与笔记隔离） */
-  projectId?: string
-  /** 当前项目的自定义规则（自动注入 system prompt） */
-  projectRules?: string
-  /** 统一的 content 数组格式 */
-  content: string | MessageContentPart[]
-  /** 用户附带的图片（兼容旧格式，优先使用 content 数组） */
-  images?: AttachedImage[]
-  /** 用户附带的文件附件（绝对路径，兼容旧格式，优先使用 content 数组） */
-  attachments?: AttachedAsset[]
-  provider: ProviderId
-  modelConfig: ModelConfig
-  /** Agent 模式的工作空间目录 */
-  workspace?: string
-  /** 上下文窗口大小（token 数），用于自动压缩 */
-  contextLength?: number
-  /** 首条消息时回调，用于自动命名线程 */
-  onFirstMessage?: (autoTitle: string) => void
-  /** 完成后回调，用于更新线程时间戳 */
-  onComplete?: () => void
-}
+// 重新导出外部依赖的类型，保持 API 兼容
+export type { ProjectTokenStats, RunTokenStats, SendMessageParams }
 
 /**
  * 每个 thread 独立管理：sending / streamingContent / queue
@@ -1108,7 +737,7 @@ export function useChat() {
     })
 
     /** 累加单轮 API 调用的 token 成本到项目统计 */
-    const applyProjectUsage = (usage: TokenUsageSnapshot | null) => {
+    const applyProjectUsage = (usage: import('./token-utils').TokenUsageSnapshot | null) => {
       if (!usage || !projectKey) return
       const currentAgg = usageToAggregate(usage)
       const hasCost = currentAgg.totalTokens > 0 || currentAgg.inputTokens > 0 || currentAgg.outputTokens > 0
@@ -1136,7 +765,7 @@ export function useChat() {
     }
 
     /** 追踪每次 API 调用的 token 使用 */
-    const trackRequestUsage = (usage?: TokenUsageSnapshot) => {
+    const trackRequestUsage = (usage?: import('./token-utils').TokenUsageSnapshot) => {
       if (!usage) return
       const hasNewTurn = !usageTurnCounted
       const currentTotal = resolveUsageTotalTokens(usage)
@@ -1172,8 +801,6 @@ export function useChat() {
           projAccum.turns += 1
         }
         // 实时推送 token 使用情况到主进程，主进程转发到手机端
-        // tokenUsage 发送本轮累计（主进程直接覆盖，显示"本轮"用量）
-        // projectTokenStats 发送每次调用增量（主进程累加，显示"项目累计"用量）
         window.taco.bridge.notifyTokenUsageUpdated({
           projectId: projectKey,
           tokenUsage: {

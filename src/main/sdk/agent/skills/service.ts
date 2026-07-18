@@ -1,465 +1,57 @@
 /**
- * Skills 管理器
+ * Skills 管理器（主入口）
  *
- * 目标：
- * 1) 分层加载：workspace > global > builtin
- * 2) 门控加载：supports requires.bins / requires.env / requires.config
- * 3) 运行时注入：每轮任务可临时注入 skill env，结束后恢复
+ * 模块状态 + 公共 API 组装。具体实现拆分到：
+ *   builtin.ts   — 内置技能常量
+ *   utils.ts     — 类型 / 路径 / 纯函数 / 日志器
+ *   frontmatter.ts — YAML frontmatter 解析
+ *   github.ts    — GitHub API
+ *   security.ts  — 安全审核 + 需求门控
+ *   search.ts    — 市场搜索 + 技能详情
+ *   install.ts   — 安装/卸载/持久化/ZIP 解压
+ *   loader.ts    — 技能文件加载
+ *   runtime.ts   — 运行时输出（目录块 / 详情 / 资源 / 环境）
  */
 
 import * as fs from 'node:fs/promises'
-import { constants as fsConstants } from 'node:fs'
-import type { Dirent } from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
-import { homedir } from 'node:os'
-import { execFile as execFileCb, execSync } from 'node:child_process'
-import { promisify } from 'node:util'
-import type { SkillInfo, SkillPreview, ClawHubSearchResult, SkillHubSearchResult, SkillSearchResult } from '../types'
-import type { Logger } from '../services'
-
-/** 模块级 Logger */
-let _log: Logger = () => {}
-export function setSkillsServiceLogger(logger: Logger) { _log = logger }
-
-const execFile = promisify(execFileCb)
-
-/* ------------------------------------------------------------------ */
-/*  路径常量                                                            */
-/* ------------------------------------------------------------------ */
-
-const HOME_DIR = homedir()
-const TACO_DIR = path.join(HOME_DIR, '.taco')
-const SKILLS_DIR = path.join(TACO_DIR, 'skills')
-const SKILLS_JSON = path.join(TACO_DIR, 'skills.json')
-const SKILLS_CONFIG_JSON = path.join(TACO_DIR, 'skills-config.json')
-const OPENCLAW_SKILLS_DIR = path.join(HOME_DIR, '.openclaw', 'skills')
-
-const DEFAULT_SKILL_RESOURCE_DIRS = ['references', 'scripts', 'assets', 'templates']
-const SKILL_TOOL_GROUPS: Record<string, string[]> = {
-  files: ['read_file', 'write_file', 'edit_file', 'delete_file', 'list_dir', 'find_file'],
-  command: ['run_command'],
-  planning: ['propose_plan', 'update_plan_progress'],
-  notes: ['save_note', 'delete_note'],
-}
+import type { SkillInfo } from '../types'
+import type { SkillEntry, PersistedSkill } from './utils'
+import { EMPTY_REQUIRES, resolveSkillToolNames, dedupeList, interpolateEnv, sortSkillsForDisplay, getLogger, isClawHubSlug, SKILLS_DIR } from './utils'
+import { setSkillsServiceLogger } from './utils'
+import { BUILTIN_SKILLS } from './builtin'
+import { parseSkillMeta } from './frontmatter'
+import { parseGitHubSkillSource, downloadGitHubTextFile, downloadGitHubPathToLocal } from './github'
+import { loadRuntimeConfig, resolveUnavailableReason, auditSkillSecurity } from './security'
+import { searchSkills, previewSkill, getSkillDetail, getClawHubSkillDetail, getSkillHubDetail, getLocalSkillDetail } from './search'
+import {
+  buildClawHubDownloadUrl, buildSkillHubDownloadUrl,
+  downloadAndExtractZip,
+  loadPersistedSkills, savePersistedSkills, upsertPersistedSkill,
+  loadSkillInstructionsFromPersisted, saveSkillInstructions,
+  installSkillPackageFromLocalRoot, installSkillPackageFromGitHub,
+  resolveWorkspaceSkillDirs, ensureDirs,
+} from './install'
+import { loadSkillsFromDirs } from './loader'
+import {
+  buildActiveSkillsCatalogBlock as buildCatalog,
+  readActiveSkillDetail as readDetail,
+  readActiveSkillResource as readResource,
+  applySkillEnvironment as applyEnv,
+  getSkillAllowedTools as getAllowedTools,
+  getSkillRootDir as getRootDir,
+} from './runtime'
 
 /* ------------------------------------------------------------------ */
-/*  内置 Skills                                                        */
+/*  日志器代理                                                          */
 /* ------------------------------------------------------------------ */
 
-const BUILTIN_SKILLS: SkillInfo[] = [
-  {
-    id: 'code-review',
-    name: '代码审查',
-    description: '代码修改后自动检查潜在问题，提供代码审查建议。触发场景：修改代码文件后自动执行检查（无需用户主动要求）',
-    version: '1.0.0',
-    author: 'Taco',
-    source: 'builtin',
-    enabled: true,
-    tools: ['read_file', 'find_file'],
-    instructions: `# Skill: 代码审查
-当你修改了代码文件后，主动对改动进行简要的代码审查：
-- 检查是否有明显的 bug 或逻辑错误
-- 检查是否有未处理的边界情况
-- 检查是否有安全隐患（如 SQL 注入、XSS 等）
-- 检查代码风格是否与项目一致
-如果发现问题，在最终回复中简要说明。不需要对每次修改都长篇大论，只在发现明显问题时提醒。`,
-  },
-  {
-    id: 'auto-test',
-    name: '自动测试',
-    description: `修改代码后自动运行相关测试并报告结果。
-
-【触发场景】以下任一情况，自动触发此技能：
-- 修改了代码文件（.ts/.tsx/.js/.py/.go/.rs 等）后，自动查找并运行相关测试
-- 用户要求"跑测试"、"运行测试"、"test"时，使用 run_command 执行测试命令`,
-    version: '1.0.0',
-    author: 'Taco',
-    source: 'builtin',
-    enabled: false,
-    tools: ['run_command'],
-    instructions: `# Skill: 自动测试
-当你修改了代码文件后，检查项目中是否有对应的测试文件：
-- 如果有，在修改完成后用 run_command 执行相关测试
-- 如果测试失败，分析失败原因并尝试修复
-- 在最终回复中报告测试执行结果
-常见测试框架检测：
-- Node.js: 检查 package.json 中的 test script，使用 npm test / jest / vitest
-- Python: 检查 pytest / unittest
-- Go: go test
-- Rust: cargo test`,
-  },
-  {
-    id: 'git-best-practice',
-    name: 'Git 最佳实践',
-    description: `遵循 Git 最佳实践，自动生成规范的 commit message。
-
-【触发场景】以下任一情况，自动触发此技能：
-- 执行 git commit 时，自动使用 Conventional Commits 格式生成 commit message
-- 执行 git push 前提醒用户确认
-- 用户提到"提交"、"commit"、"推送"、"push"时，遵循原子性提交原则`,
-    version: '1.0.0',
-    author: 'Taco',
-    source: 'builtin',
-    enabled: false,
-    tools: ['run_command'],
-    instructions: `# Skill: Git 最佳实践
-在执行 Git 操作时遵循以下规范：
-- Commit message 使用 Conventional Commits 格式：type(scope): description
-  - feat: 新功能
-  - fix: Bug 修复
-  - refactor: 重构
-  - docs: 文档
-  - style: 代码格式
-  - test: 测试
-  - chore: 构建/工具
-- 每次修改尽量保持原子性，一个 commit 只做一件事
-- 在执行 git push 前提醒用户确认`,
-  },
-  {
-    id: 'browser-use',
-    name: '浏览器使用',
-    description: `操控 Taco 内置浏览器面板执行自动化操作：页面导航、元素点击、表单填写、内容提取、UI 验证。
-
-【触发场景】以下任一情况，可查看此技能手册：
-- 用户要求打开/访问/查看某个网页、URL 或网站
-- 用户要求查看本地前端页面（localhost、127.0.0.1 等）
-- 用户要求截取网页、验证网页显示效果
-- 用户要求在网页上执行操作（点击、填表、登录、搜索）
-- 用户提到"前端页面"、"网页"、"网站"、"URL"、"浏览器"
-- 用户要求从网页提取数据或内容`,
-    version: '1.0.0',
-    author: 'Taco',
-    source: 'builtin',
-    enabled: true,
-    tools: [],
-    instructions: `# Skill: 浏览器使用
-
-你可以通过 run_skill_script 工具操控 Taco 内置浏览器面板，执行以下类型的任务。
-
-## 多浏览器窗口管理
-Taco 支持同时打开多个独立浏览器窗口，每个窗口有独立的会话（cookie / localStorage / sessionStorage 隔离）。
-
-- **appId**（必需）：系统标识，所有操作通过 appId 定位窗口。不传则使用项目默认窗口（\`default\`）。
-- **windowLabel**（可选）：备注标签，仅在 list 时用于辨认窗口用途。不参与窗口定位。
-
-使用场景：多端后台管理（平台端 + 客户端）、多账号登录、多环境对比测试。
-
-## 适用场景
-- **前端开发验证**: 打开本地开发服务器（如 http://localhost:3000），验证 UI 显示效果
-- **自动化测试**: 模拟用户操作流程（登录、填写表单、点击按钮），验证功能正确性
-- **多端管理**: 同时打开多个独立会话的浏览器窗口，各自维护登录态
-- **网页数据提取**: 打开网页，提取页面内容和数据
-- **UI 问题排查**: 截图分析页面布局、样式问题
-- **网站逆向/复刻**: 分析目标网站的 HTML/CSS/JS 结构、网络请求、组件实现，用于复刻或还原网站
-
-## 分析方式选择
-根据任务目标选择合适的分析方式，不要默认只用截图：
-
-| 目标 | 推荐方式 | 说明 |
-|------|------|------|
-| 验证 UI 显示效果 | 截图 + analyze_image | 视觉确认布局、样式是否正确 |
-| 复刻/还原网站结构 | 代码读取分析 | 用 evaluate 提取 DOM 树、CSS 规则、组件结构，效率远高于截图 |
-| 分析网络请求/接口 | evaluate + network requests | 拦截 XHR/fetch，分析 API 参数和响应 |
-| 提取文本/数据内容 | get_content / evaluate | 直接读取 DOM 内容，无需截图 |
-| 排查 JS 错误 | get_console_logs | 查看控制台报错和警告 |
-
-**原则**: 截图适合"看一眼"验证，代码分析适合"逆向理解"。复刻网站时优先用 evaluate 提取 HTML 结构、CSS 样式、JS 逻辑，再配合 network requests 分析接口，最后才用截图确认视觉效果。
-
-## 操作流程模式
-典型的浏览器操作应遵循"目标-操作-验证"的循环：
-
-1. 执行 list 查看当前已打开的浏览器窗口
-2. 执行 navigate 打开目标页面，必要时指定 appId 和 windowLabel
-3. 执行 get_console_logs / get_info 确认页面状态与错误信息
-4. 执行 screenshot 截图，仅在需要视觉确认时使用（必须有明确目标）
-5. 执行 click / type 进行具体操作（指定 appId 定位到目标窗口）
-6. 使用 analyze_image 分析截图验证操作结果，或执行 get_content 提取内容
-7. 重复步骤 4-6 直到完成
-8. 不再需要的窗口执行 close 关闭释放资源
-
-## 关键注意事项
-- 多窗口操作时始终通过 appId 准确定位目标窗口
-- 截图前必须明确目的（例如"验证按钮是否出现"），禁止无目的连续截图
-- CSS 选择器应尽量使用稳定的标识（id、name、data-testid）
-- 页面跳转或异步加载后使用 wait 等待关键元素
-- 遇到错误时优先执行 get_console_logs，再决定是否截图
-- 表单填写时注意使用 clear: true 清空后再输入
-- 对于需要登录的页面，先完成登录流程再进行后续操作
-- 截图后如需分析截图内容，使用 analyze_image 工具，image 参数传 cloudUrl，goal 参数描述分析目的
-
-## 脚本速查
-所有脚本通过 run_skill_script('browser-use', '脚本名', {参数}) 执行。
-
-- **list**: 列出所有活跃浏览器窗口（含 appId、windowLabel、URL、标题）。参数: {}
-- **close**: 关闭指定浏览器窗口。参数: { appId: string }
-- **navigate**: 打开指定 URL。参数: { url: string, appId?: string, windowLabel?: string }
-- **screenshot**: 获取页面截图。参数: { appId?: string, goal?: string }
-- **click**: 点击页面元素。参数: { selector: string, appId?: string, x?: number, y?: number }
-- **type**: 向输入元素输入文本。参数: { selector: string, text: string, appId?: string, clear?: boolean }
-- **scroll**: 滚动页面。参数: { direction: 'up'|'down'|'left'|'right', appId?: string, amount?: number, selector?: string }
-- **get_content**: 读取页面内容。参数: { selector?: string, appId?: string, includeHtml?: boolean }
-- **wait**: 等待元素出现。参数: { selector: string, appId?: string, timeout?: number }
-- **evaluate**: 执行 JS 表达式。参数: { code: string, appId?: string }
-- **get_info**: 获取页面基础信息（URL/标题/视口）。参数: { appId?: string }
-- **get_console_logs**: 读取控制台日志；排查错误时优先使用。参数: { appId?: string, limit?: number, onlyErrors?: boolean }
-- **hover**: 鼠标悬停。参数: { selector: string, appId?: string, x?: number, y?: number }
-- **keypress**: 按键操作。参数: { appId?: string, key: string, modifiers?: string[] }
-- **drag**: 拖拽元素。参数: { from: {selector} or {x,y}, to: {selector} or {x,y}, appId?: string }
-- **select**: 操作下拉框。参数: { selector: string, appId?: string, value?: string, label?: string }`,
-  },
-  {
-    id: 'computer-use',
-    name: '电脑使用',
-    description: `执行电脑使用操作：屏幕截图、界面识别、鼠标点击、键盘输入、窗口交互。
-
-【核心原则】桌面操作必须先截图识别再行动，禁止不截图直接盲操作（你不知道屏幕当前状态）。
-
-【触发场景】以下任一情况，可查看此技能手册：
-- 用户要求截取桌面屏幕、查看桌面内容
-- 用户要求点击/操作桌面应用程序界面或系统 UI
-- 用户提到"桌面"、"屏幕"、"窗口"、"菜单栏"、"系统托盘"、"Dock"、"任务栏"
-- 用户要求执行桌面级键盘快捷键或鼠标操作
-- 用户要求操作系统设置、文件管理器等桌面应用`,
-    version: '1.0.0',
-    author: 'Taco',
-    source: 'builtin',
-    enabled: true,
-    tools: [],
-    instructions: `# Skill: 电脑使用
-
-你可以通过 run_skill_script 工具操控系统界面。
-
-## 核心铁律：必须先截图，禁止盲操作
-
-桌面环境没有 DOM 选择器、没有元素树、没有坐标参考系。你不知道屏幕上有什么、窗口是否切换、界面是否变化。不截图就操作等于蒙着眼睛点鼠标，99% 会点错位置。
-
-**即使你认为你知道坐标，也必须先截图确认。** 窗口位置可能变了、分辨率可能不同、系统可能有弹窗遮挡。
-
-## 强制操作流程
-
-每次桌面操作必须严格遵循以下循环，不得跳过任何步骤：
-
-1. 执行 screenshot 截取当前屏幕（第一步就必须截图，不截图不知道屏幕状态）
-2. 使用 analyze_image 视觉模型分析截图，确认目标元素是否存在、位置在哪
-3. 执行 action 根据分析结果进行点击、双击、输入、快捷键等操作
-4. 执行 screenshot 再次截图，确认操作结果是否符合预期
-5. 如果结果不符，从步骤 2 重新开始
-
-## 何时可以跳过截图
-
-只有以下情况可以不截图直接执行：
-- 全局快捷键（如 Cmd+Tab、Cmd+Space）：不受屏幕状态影响
-- 用户明确说"按 Cmd+S 保存"之类的全局组合键
-
-任何涉及鼠标点击或坐标的操作，一律必须先截图。
-
-## 关键注意事项
-- 用户说"点击保存按钮"→ 你不知道按钮在哪，必须截图找
-- 用户说"输入 xxx"→ 你不知道光标在哪，必须先截图确认焦点
-- analyze_image 的 image 参数传 cloudUrl（https 链接），视觉模型只支持 data: URL 和 https: 链接，不支持本地文件路径
-- 操作完成后必须截图验证，禁止只说"已执行"
-
-## 脚本速查
-所有脚本通过 run_skill_script('computer-use', '脚本名', {参数}) 执行。
-
-- **screenshot**: 截取当前桌面屏幕。返回 cloudUrl 与尺寸信息；截图后立即用 analyze_image 分析
-- **action**: 执行桌面动作。参数: { action: 'click'|'doubleClick'|'type'|'key'|'scroll'|... }, 以及对应的 x/y/text/key/direction 等`,
-  },
-  {
-    id: 'skill-creator',
-    name: '技能创建器',
-    description: '引导用户通过对话创建新的 Taco 技能。触发场景：用户想要创建、制作、新增一个技能（Skill），或提到"技能创建"、"创建一个技能"、"写个skill"、"制作技能"等。',
-    version: '1.0.0',
-    author: 'Taco',
-    source: 'builtin',
-    enabled: true,
-    tools: ['write_file', 'read_file', 'install_skill'],
-    instructions: `# Skill: 技能创建器
-
-你可以帮助用户通过对话创建新的 Taco 技能。技能是扩展 AI 能力的指令集，创建后会自动注入到每次对话的 system prompt 中。
-
-## 技能文件结构
-
-每个技能是一个 SKILL.md 文件，存放在系统主目录下的 \`.taco/skills/{技能ID}/SKILL.md\`（即 \`{主目录}/.taco/skills/{技能ID}/SKILL.md\`，注意不要用 \`~\`，Node.js 不认识 \`~\`，必须用系统上下文中的实际主目录路径拼出绝对路径），包含 YAML frontmatter 和 Markdown 指令正文。
-
-> ⚠️ 上述路径仅用于创建新技能时的 \`write_file\` 操作。**读取已有技能内容必须用 \`read_skill\` 工具，严禁用 \`read_file\` 直接读取技能目录下的 SKILL.md。**
-
-### Frontmatter 字段说明
-
-\`\`\`yaml
----
-name: 技能名称（必填，中文简短，如"API 文档生成器"）
-description: 一句话描述技能用途和触发场景（必填）
-version: 1.0.0
-author: 作者名
-enabled: true
-tools:
-  - read_file
-  - write_file
-  - run_command
-  # 可用的工具名: read_file, write_file, edit_file, delete_file, list_dir, find_file,
-  #              run_command, propose_plan, update_plan_progress, read_skill,
-  #              read_skill_resource, analyze_image, mcp_call, mcp_list_tools,
-  #              upload_file, terminal_create, terminal_run, terminal_list, terminal_close,
-  #              run_skill_script, recall_memories, search_skills, install_skill
-  # 也可用分组名: files（所有文件操作）, command（run_command）, planning（计划管理）
-requires:
-  bins:
-    - node        # 依赖的命令行工具
-  env:
-    - API_KEY     # 依赖的环境变量
-  config:
-    - some.key    # 依赖的配置项
-env:
-  CUSTOM_VAR: "value"  # 注入的环境变量
-resources:
-  - scripts/     # 附属资源目录（脚本、模板等）
----
-\`\`\`
-
-## 创建流程
-
-按以下步骤引导用户创建技能：
-
-### 步骤 1：了解需求
-
-向用户提问，收集以下信息：
-- **技能名称**：简短中文名，如"API 文档生成器"、"Docker 部署助手"
-- **用途描述**：一句话说清楚这个技能做什么、什么时候触发
-- **需要的工具**：列出这个技能需要用到哪些 agent 工具
-
-如果用户已经明确说了需求（如"我要一个自动生成 commit message 的技能"），直接从描述中提取信息，不必逐项提问。
-
-### 步骤 2：设计 skills 指令
-
-根据用户需求，编写详细的技能指令。指令应该包含：
-1. **标题**：\`# Skill: 名称\`
-2. **触发场景**：明确什么时候 AI 应该使用这个技能
-3. **执行流程**：AI 应该按什么步骤操作
-4. **输出格式**：最终产出的格式要求
-5. **注意事项**：关键限制和边界条件
-
-指令要具体、可操作，不要写泛泛而谈的建议。
-
-### 步骤 3：生成并安装
-
-1. 将上述内容组装成完整的 SKILL.md 文件
-2. 用 \`write_file\` 写入 \`{主目录}/.taco/skills/{技能ID}/SKILL.md\`（从系统上下文找到实际主目录路径拼出绝对路径，不要用 \`~\`）
-3. 用 \`install_skill\` 安装（source 参数传 \`{主目录}/.taco/skills/{技能ID}\`，同样是绝对路径）
-4. 告知用户安装完成，下次对话即可生效
-
-技能 ID 从名称自动生成：中文转拼音首字母或英文翻译 → 小写 → 空格替换为连字符。如"API 文档生成器" → "api-doc-generator"。
-
-## 示例
-
-以下是几个典型场景的技能指令模板：
-
-### 示例 1：Git 提交助手
-
-\`\`\`markdown
-# Skill: Git 提交助手
-
-## 触发场景
-用户说"提交"、"commit"、"推送"时自动触发。
-
-## 执行流程
-1. 先执行 \`git status\` 查看变更文件
-2. 执行 \`git diff --staged\` 查看暂存区差异（如无暂存则用 \`git diff\`）
-3. 分析变更内容，生成 Conventional Commits 格式的 commit message
-4. 展示给用户确认
-5. 确认后执行 \`git commit -m "message"\`
-
-## 输出格式
-\`\`\`
-type(scope): 简短描述
-
-详细说明（如有必要）
-\`\`\`
-
-## 注意事项
-- 每次只提交关联的变更（原子提交）
-- 不要自动 git push，需要用户确认
-- 不提交包含密钥/密码的文件
-\`\`\`
-
-### 示例 2：API 文档生成器
-
-\`\`\`markdown
-# Skill: API 文档生成器
-
-## 触发场景
-用户提到"生成 API 文档"、"接口文档"、"导出文档"时触发。
-
-## 执行流程
-1. 扫描项目中的路由/控制器文件
-2. 提取每个接口的：路径、方法、参数、返回值、错误码
-3. 生成 Markdown 格式的 API 文档
-4. 写入项目根目录的 API_DOC.md
-
-## 输出格式
-每个接口按以下结构输出：
-- 接口名称
-- 请求方法与路径
-- 请求参数（Query/Body/Path）
-- 响应格式（含示例）
-- 错误码说明
-\`\`\`
-
-## 关键原则
-
-- **一次只创建一个技能**。不要在用户没要求的情况下连续创建多个
-- **技能指令要具体**。不要写"要仔细检查代码"这种空话，要写"检查每个函数是否处理了 null 入参"
-- **先确认再写入**。生成 SKILL.md 内容后，向用户展示关键部分（名称、描述、工具列表），确认后再写入文件
-- **技能 ID 唯一性**。如果 ID 已存在（同名技能已安装），提示用户换个名字或覆盖
-- **不要帮用户做决策**。工具列表、环境变量等需要用户确认，不要擅自猜测
-- **读取已有技能必须用 \`read_skill\`**，禁止用 \`read_file\` 直接访问 \`.taco/skills/\` 下的文件。你只能通过 \`write_file\` 写入新 SKILL.md（创建时）和 \`install_skill\`（安装时）操作技能目录`,
-  },
-]
+export { setSkillsServiceLogger } from './utils'
 
 /* ------------------------------------------------------------------ */
-/*  类型与缓存                                                          */
+/*  模块状态                                                            */
 /* ------------------------------------------------------------------ */
-
-type PersistedSkill = Omit<SkillInfo, 'instructions'> & { instructionsFile?: string }
-
-type SkillRequires = {
-  bins: string[]
-  env: string[]
-  config: string[]
-}
-
-type ParsedSkillMeta = {
-  name?: string
-  description?: string
-  version?: string
-  author?: string
-  enabled?: boolean
-  requires: SkillRequires
-  env: Record<string, string>
-  tools: string[]
-  resources: string[]
-}
-
-type SkillScope = 'builtin' | 'global' | 'workspace'
-
-type SkillEntry = {
-  skill: SkillInfo
-  scope: SkillScope
-  requires: SkillRequires
-  env: Record<string, string>
-  rootDir?: string
-  tools: string[]
-  resources: string[]
-}
-
-type GitHubSkillSource = {
-  owner: string
-  repo: string
-  ref: string
-  skillRootPath: string
-  skillMdPath: string
-}
 
 let allSkills: SkillInfo[] = []
 let activeSkillInstructions: string[] = []
@@ -469,20 +61,8 @@ let activeSkillEntries = new Map<string, SkillEntry>()
 let lastWorkspaceForRefresh = ''
 let refreshSeq = 0
 
-const binCheckCache = new Map<string, boolean>()
-
-const EMPTY_REQUIRES: SkillRequires = { bins: [], env: [], config: [] }
-
-/** 将路径中的 ~ 展开为实际主目录路径（Node.js 不会自动展开 ~） */
-function expandTilde(filePath: string): string {
-  if (filePath.startsWith('~/') || filePath === '~') {
-    return path.join(HOME_DIR, filePath.slice(filePath.startsWith('~/') ? 2 : 1))
-  }
-  return filePath
-}
-
 /* ------------------------------------------------------------------ */
-/*  对外 API                                                            */
+/*  初始化 / 刷新                                                        */
 /* ------------------------------------------------------------------ */
 
 export async function initSkills() {
@@ -492,7 +72,9 @@ export async function initSkills() {
 
 export async function refreshSkills(workspace?: string): Promise<void> {
   const seq = ++refreshSeq
-  const normalizedWorkspace = normalizeWorkspace(workspace)
+  const normalizedWorkspace = workspace
+    ? path.resolve(String(workspace ?? '').trim())
+    : ''
   lastWorkspaceForRefresh = normalizedWorkspace
 
   const persisted = await loadPersistedSkills()
@@ -504,7 +86,7 @@ export async function refreshSkills(workspace?: string): Promise<void> {
   for (const builtin of BUILTIN_SKILLS) {
     const saved = persistedById.get(builtin.id)
     merged.set(builtin.id, {
-      scope: 'builtin',
+      scope: 'builtin' as const,
       requires: EMPTY_REQUIRES,
       env: {},
       skill: {
@@ -518,18 +100,25 @@ export async function refreshSkills(workspace?: string): Promise<void> {
     })
   }
 
-  const globalEntries = await loadSkillsFromDirs([SKILLS_DIR, OPENCLAW_SKILLS_DIR], 'global', persistedById)
+  const globalEntries = await loadSkillsFromDirs(
+    [SKILLS_DIR, path.join(os.homedir(), '.openclaw', 'skills')],
+    'global',
+    persistedById,
+  )
   for (const entry of globalEntries) merged.set(entry.skill.id, entry)
 
   if (normalizedWorkspace) {
-    const workspaceEntries = await loadSkillsFromDirs(resolveWorkspaceSkillDirs(normalizedWorkspace), 'workspace', persistedById)
-    for (const entry of workspaceEntries) merged.set(entry.skill.id, entry)
+    const wsEntries = await loadSkillsFromDirs(
+      resolveWorkspaceSkillDirs(normalizedWorkspace),
+      'workspace',
+      persistedById,
+    )
+    for (const entry of wsEntries) merged.set(entry.skill.id, entry)
   }
 
   for (const p of persisted) {
     if (p.source === 'builtin') continue
     if (merged.has(p.id)) continue
-    // 通过 instructionsFile 路径匹配：避免目录名/SKILL.md name 变更导致同一技能重复加载
     if (p.instructionsFile) {
       const resolvedPath = path.resolve(SKILLS_DIR, p.instructionsFile)
       const alreadyLoaded = Array.from(merged.values()).some(
@@ -599,6 +188,10 @@ export async function refreshSkills(workspace?: string): Promise<void> {
   activeSkillEntries = nextActiveEntries
 }
 
+/* ------------------------------------------------------------------ */
+/*  公共 API — 列表 / 访问器                                             */
+/* ------------------------------------------------------------------ */
+
 export async function listSkills(workspace?: string): Promise<SkillInfo[]> {
   await refreshSkills(workspace || lastWorkspaceForRefresh || undefined)
   return allSkills.map((s) => ({ ...s }))
@@ -616,111 +209,53 @@ export function getActiveSkills(): SkillInfo[] {
   return activeSkills.map((skill) => ({ ...skill }))
 }
 
-export function getSkillAllowedTools(skillId: string): string[] {
-  const normalizedId = String(skillId ?? '').trim()
-  if (!normalizedId) return []
-  const entry = activeSkillEntries.get(normalizedId)
-  if (!entry) return []
-  return resolveSkillToolNames(entry.tools ?? [])
-}
-
-/** 获取技能的根目录路径（用于执行脚本等） */
-export function getSkillRootDir(skillId: string): string | null {
-  const normalizedId = String(skillId ?? '').trim()
-  if (!normalizedId) return null
-  const entry = activeSkillEntries.get(normalizedId)
-  return entry?.rootDir ?? null
-}
+/* ------------------------------------------------------------------ */
+/*  公共 API — 运行时输出（委托 runtime.ts）                              */
+/* ------------------------------------------------------------------ */
 
 export function buildActiveSkillsCatalogBlock(): string {
-  if (activeSkills.length === 0) return ''
-
-  const lines: string[] = ['[SKILLS_CATALOG]']
-  for (const skill of activeSkills) {
-    const summary = buildSkillSummary(skill)
-    lines.push(`- id: ${skill.id}`)
-    lines.push(`  name: ${skill.name}`)
-    lines.push(`  summary: ${summary}`)
-  }
-  lines.push('[/SKILLS_CATALOG]')
-  lines.push('规则：以上只包含当前已开启且当前环境可用的技能目录。')
-  lines.push('当本轮任务需要使用某个技能时，先调用 `read_skill` 查看该技能的完整内容。')
-  lines.push('若技能详情提到了 references/scripts/assets/templates 等附属资源，请在读取该技能详情后使用 `read_skill_resource` 按需查看具体文件。')
-  lines.push('未读取完整技能内容前，不得按该技能协议执行。')
-  return lines.join('\n')
+  return buildCatalog(activeSkills)
 }
 
 export function readActiveSkillDetail(skillId: string): { content: string; skill: SkillInfo } | null {
-  const normalizedId = String(skillId ?? '').trim()
-  if (!normalizedId) return null
-  const skill = activeSkills.find((item) => item.id === normalizedId)
-  if (!skill) return null
-
-  const detailLines = [
-    `[SKILL_DETAIL id="${skill.id}"]`,
-    `name: ${skill.name}`,
-    `description: ${buildSkillSummary(skill)}`,
-    ...(skill.tools?.length ? ['', '[SKILL_ALLOWED_TOOLS]', ...skill.tools.map((tool) => `- ${tool}`), '[/SKILL_ALLOWED_TOOLS]'] : []),
-    ...(skill.resources?.length ? ['', '[SKILL_RESOURCES]', ...skill.resources.map((item) => `- ${item}`), '[/SKILL_RESOURCES]'] : []),
-    '',
-    skill.instructions.trim(),
-    '[/SKILL_DETAIL]',
-  ]
-
-  return {
-    skill: { ...skill },
-    content: detailLines.join('\n'),
-  }
+  return readDetail(skillId, activeSkills)
 }
 
 export async function readActiveSkillResource(
   skillId: string,
   relativePath: string,
 ): Promise<{ content: string; resolvedPath: string; skill: SkillInfo } | null> {
-  const normalizedId = String(skillId ?? '').trim()
-  const requested = normalizeSkillResourcePath(relativePath)
-  if (!normalizedId || !requested) return null
-
-  const entry = activeSkillEntries.get(normalizedId)
-  if (!entry?.rootDir) return null
-
-  if (!isSkillResourceAllowed(requested, entry.resources ?? [])) return null
-
-  const resolvedPath = path.resolve(entry.rootDir, requested)
-  const normalizedRoot = path.resolve(entry.rootDir)
-  if (!resolvedPath.startsWith(normalizedRoot + path.sep) && resolvedPath !== normalizedRoot) return null
-
-  try {
-    const stat = await fs.stat(resolvedPath)
-    if (!stat.isFile()) return null
-    if (stat.size > 256 * 1024) return null
-    const content = await fs.readFile(resolvedPath, 'utf-8')
-    return {
-      content,
-      resolvedPath,
-      skill: { ...entry.skill },
-    }
-  } catch {
-    return null
-  }
+  return readResource(skillId, relativePath, activeSkillEntries)
 }
 
 export function applySkillEnvironment(envVars: Record<string, string>): () => void {
-  const backups = new Map<string, string | undefined>()
-  for (const [rawKey, rawValue] of Object.entries(envVars ?? {})) {
-    const key = String(rawKey ?? '').trim()
-    if (!key) continue
-    backups.set(key, process.env[key])
-    process.env[key] = String(rawValue ?? '')
-  }
-
-  return () => {
-    for (const [key, value] of backups.entries()) {
-      if (typeof value === 'undefined') delete process.env[key]
-      else process.env[key] = value
-    }
-  }
+  return applyEnv(envVars)
 }
+
+export function getSkillAllowedTools(skillId: string): string[] {
+  return getAllowedTools(skillId, activeSkillEntries)
+}
+
+export function getSkillRootDir(skillId: string): string | null {
+  return getRootDir(skillId, activeSkillEntries)
+}
+
+/* ------------------------------------------------------------------ */
+/*  公共 API — 搜索 / 预览 / 详情（委托 search.ts）                       */
+/* ------------------------------------------------------------------ */
+
+export { searchSkills, previewSkill, getSkillDetail, getClawHubSkillDetail, getSkillHubDetail, getLocalSkillDetail }
+
+/* ------------------------------------------------------------------ */
+/*  公共 API — 外部引用（executor.ts 使用）                                */
+/* ------------------------------------------------------------------ */
+
+export { isClawHubSlug } from './utils'
+export { buildClawHubDownloadUrl, downloadAndExtractZip } from './install'
+
+/* ------------------------------------------------------------------ */
+/*  公共 API — 安装 / 卸载 / 切换                                        */
+/* ------------------------------------------------------------------ */
 
 export async function toggleSkill(id: string, enabled: boolean) {
   const current = allSkills.find((s) => s.id === id)
@@ -759,469 +294,56 @@ export async function uninstallSkill(id: string) {
   await refreshSkills(lastWorkspaceForRefresh || undefined)
 }
 
-export async function previewSkill(source: string): Promise<SkillPreview> {
+export async function installSkill(
+  source: string,
+  skipAudit?: boolean,
+  preferredId?: string,
+  authorOverride?: string,
+): Promise<SkillInfo> {
+  const _log = getLogger()
   let instructions: string
-  let meta: ParsedSkillMeta = {
-    requires: { ...EMPTY_REQUIRES },
-    env: {},
-    tools: [],
-    resources: [],
-  }
-  let remoteGitHubSource: GitHubSkillSource | null = null
-
-  if (source.startsWith('http://') || source.startsWith('https://')) {
-    remoteGitHubSource = parseGitHubSkillSource(source)
-    if (remoteGitHubSource) {
-      instructions = await downloadGitHubTextFile(remoteGitHubSource, remoteGitHubSource.skillMdPath)
-      meta = parseSkillMeta(instructions)
-    } else {
-      const rawUrl = toRawGitHubUrl(source)
-      const resp = await fetch(rawUrl)
-      if (!resp.ok) throw new Error(`Failed to fetch skill: ${resp.status} ${resp.statusText}`)
-      instructions = await resp.text()
-      meta = parseSkillMeta(instructions)
-    }
-  } else {
-    const filePath = source.endsWith('SKILL.md') ? source : path.join(source, 'SKILL.md')
-    const resolvedPath = expandTilde(filePath)
-    try {
-      instructions = await fs.readFile(resolvedPath, 'utf-8')
-      meta = parseSkillMeta(instructions)
-    } catch {
-      throw new Error(`Cannot read skill file: ${resolvedPath}`)
-    }
-  }
-
-  const id = isClawHubSlug(source) ? source : toSkillId(meta.name || `skill-${Date.now()}`)
-  const securityCheck = auditSkillSecurity(instructions, meta)
-
-  return {
-    id,
-    name: meta.name || id,
-    description: meta.description || '',
-    version: meta.version || '1.0.0',
-    author: meta.author || 'Unknown',
-    category: inferCategory(meta.name, meta.description, meta.tools),
-    tags: inferTags(meta.name, meta.description, meta.tools),
-    tools: meta.tools,
-    resources: meta.resources,
-    requiresBins: meta.requires.bins,
-    requiresEnv: meta.requires.env,
-    sourceUrl: source.startsWith('http') ? source : source,
-    security: {
-      riskLevel: securityCheck.riskLevel,
-      warnings: securityCheck.warnings,
-    },
-  }
-}
-
-/**
- * 获取技能的 SKILL.md 原文内容（按来源路由）
- */
-export async function getSkillDetail(source: string, slug: string): Promise<string> {
-  if (source === 'skillhub') return getSkillHubDetail(slug)
-  return getClawHubSkillDetail(slug)
-}
-
-/**
- * 获取 ClawHub 技能的 SKILL.md 原文内容
- */
-export async function getClawHubSkillDetail(slug: string): Promise<string> {
-  const normalizedSlug = String(slug ?? '').trim()
-  if (!normalizedSlug) return ''
-
-  try {
-    const apiUrl = `https://clawhub.ai/api/v1/skills/${encodeURIComponent(normalizedSlug)}/file?path=SKILL.md`
-    const resp = await fetch(apiUrl, {
-      headers: { Accept: 'text/plain', 'User-Agent': 'taco-ai-agent' },
-    })
-    if (!resp.ok) {
-      _log('SKILLS_GET_DETAIL_FAILED', { slug: normalizedSlug, status: resp.status }, 'skills')
-      return ''
-    }
-    const text = await resp.text()
-    _log('SKILLS_GET_DETAIL_SUCCESS', { slug: normalizedSlug, length: text.length }, 'skills')
-    return text
-  } catch (err) {
-    _log('SKILLS_GET_DETAIL_ERROR', { slug: normalizedSlug, error: String(err), source: 'clawhub' }, 'skills')
-    return ''
-  }
-}
-
-/**
- * 获取腾讯 SkillHub 技能的 SKILL.md 原文内容
- */
-export async function getSkillHubDetail(slug: string): Promise<string> {
-  const normalizedSlug = String(slug ?? '').trim()
-  if (!normalizedSlug) return ''
-
-  try {
-    const apiUrl = `https://api.skillhub.cn/api/v1/skills/${encodeURIComponent(normalizedSlug)}/file?path=SKILL.md`
-    const resp = await fetch(apiUrl, {
-      headers: { Accept: 'text/plain', 'User-Agent': 'taco-ai-agent' },
-    })
-    if (!resp.ok) {
-      _log('SKILLS_GET_DETAIL_FAILED', { slug: normalizedSlug, status: resp.status, source: 'skillhub' }, 'skills')
-      return ''
-    }
-    const text = await resp.text()
-    _log('SKILLS_GET_DETAIL_SUCCESS', { slug: normalizedSlug, length: text.length, source: 'skillhub' }, 'skills')
-    return text
-  } catch (err) {
-    _log('SKILLS_GET_DETAIL_ERROR', { slug: normalizedSlug, error: String(err), source: 'skillhub' }, 'skills')
-    return ''
-  }
-}
-
-/**
- * 获取本地已安装技能的 SKILL.md 原文内容
- */
-export async function getLocalSkillDetail(id: string): Promise<string> {
-  const normalizedId = String(id ?? '').trim()
-  if (!normalizedId) return ''
-
-  try {
-    const filePath = path.join(SKILLS_DIR, normalizedId, 'SKILL.md')
-    const content = await fs.readFile(filePath, 'utf-8')
-    return content
-  } catch (err) {
-    _log('SKILLS_GET_LOCAL_DETAIL_ERROR', { id: normalizedId, error: String(err) }, 'skills')
-    return ''
-  }
-}
-
-/**
- * 将 ClawHub 结果转换为统一格式
- */
-function normalizeClawHubResult(item: ClawHubSearchResult): SkillSearchResult {
-  return {
-    slug: item.slug,
-    displayName: item.displayName,
-    summary: item.summary,
-    downloads: item.downloads,
-    version: item.version,
-    authorName: item.owner?.displayName || item.ownerHandle || '未知',
-    authorAvatar: item.owner?.image,
-    source: 'clawhub',
-  }
-}
-
-/**
- * 将 SkillHub 结果转换为统一格式
- */
-function normalizeSkillHubResult(item: SkillHubSearchResult): SkillSearchResult {
-  return {
-    slug: item.slug,
-    displayName: item.name,
-    summary: item.description_zh || item.description,
-    downloads: item.downloads,
-    version: item.version,
-    authorName: item.ownerName || '未知',
-    authorAvatar: item.ownerAvatar,
-    source: 'skillhub',
-    stars: item.stars,
-    installs: item.installs,
-    category: item.category,
-    subCategories: item.subCategories?.map((c) => c.name),
-  }
-}
-
-/** 本地分类 ID → SkillHub API category key 映射 */
-const CATEGORY_TO_SKILLHUB_KEY: Record<string, string> = {
-  'office':    'office-efficiency',
-  'content':   'content-creation',
-  'dev':       'dev-programming',
-  'data':      'data-analysis',
-  'design':    'design-media',
-  'ai-agent':  'ai-agent',
-  'knowledge': 'knowledge-management',
-  'business':  'business-ops',
-  'edu':       'education',
-  'pro':       'professional',
-  'itops':     'it-ops-security',
-  'life':      'life-service',
-}
-
-/**
- * 搜索 ClawHub 技能市场（内部函数）
- */
-async function searchClawHub(query: string): Promise<ClawHubSearchResult[]> {
-  const q = String(query ?? '').trim()
-  if (!q) return []
-
-  try {
-    const apiUrl = `https://clawhub.ai/api/v1/search?q=${encodeURIComponent(q)}`
-    const resp = await fetch(apiUrl, {
-      headers: { Accept: 'application/json', 'User-Agent': 'taco-ai-agent' },
-    })
-    if (!resp.ok) {
-      _log('SKILLS_SEARCH_FAILED', { status: resp.status, statusText: resp.statusText, source: 'clawhub' }, 'skills')
-      return []
-    }
-    const data = await resp.json() as { results?: ClawHubSearchResult[] }
-    const results = Array.isArray(data?.results) ? data.results : []
-    _log('SKILLS_SEARCH_SUCCESS', { query: q, count: results.length, source: 'clawhub' }, 'skills')
-    return results
-  } catch (err) {
-    _log('SKILLS_SEARCH_ERROR', { error: String(err), source: 'clawhub' }, 'skills')
-    return []
-  }
-}
-
-/**
- * 搜索腾讯 SkillHub 技能市场（内部函数）
- */
-async function searchSkillHubApi(query: string, pageSize = 20, category?: string): Promise<SkillHubSearchResult[]> {
-  const q = String(query ?? '').trim()
-  if (!q && !category) return []
-
-  try {
-    let apiUrl = `https://api.skillhub.cn/api/skills?keyword=${encodeURIComponent(q)}&sortBy=score&pageSize=${pageSize}`
-    if (category) {
-      const skillHubKey = CATEGORY_TO_SKILLHUB_KEY[category] || category
-      apiUrl += `&category=${encodeURIComponent(skillHubKey)}`
-    }
-    const resp = await fetch(apiUrl, {
-      headers: { Accept: 'application/json', 'User-Agent': 'taco-ai-agent' },
-    })
-    if (!resp.ok) {
-      _log('SKILLS_SEARCH_FAILED', { status: resp.status, statusText: resp.statusText, source: 'skillhub' }, 'skills')
-      return []
-    }
-    const data = await resp.json() as { code?: number; data?: { skills?: SkillHubSearchResult[]; total?: number } }
-    const results = Array.isArray(data?.data?.skills) ? data.data.skills : []
-    _log('SKILLS_SEARCH_SUCCESS', { query: q, count: results.length, total: data?.data?.total, source: 'skillhub', category }, 'skills')
-    return results
-  } catch (err) {
-    _log('SKILLS_SEARCH_ERROR', { error: String(err), source: 'skillhub' }, 'skills')
-    return []
-  }
-}
-
-/**
- * 搜索技能市场（支持多源）
- *
- * @param query   搜索关键词
- * @param source  数据源：clawhub / skillhub / all（默认 all）
- * @param category 分类 ID（仅 SkillHub 支持服务端过滤，ClawHub 做客户端过滤）
- * @returns 统一格式的搜索结果
- */
-export async function searchSkills(
-  query: string,
-  source: 'clawhub' | 'skillhub' | 'all' = 'all',
-  category?: string,
-): Promise<SkillSearchResult[]> {
-  const q = String(query ?? '').trim()
-  if (!q && !category) return []
-
-  let unified: SkillSearchResult[] = []
-
-  if (source === 'clawhub') {
-    const clawhubResults = await searchClawHub(q)
-    unified = clawhubResults.map(normalizeClawHubResult)
-  } else if (source === 'skillhub') {
-    const skillHubResults = await searchSkillHubApi(q, 20, category)
-    unified = skillHubResults.map(normalizeSkillHubResult)
-  } else {
-    // all: 并行搜索两个源
-    const [clawhubResults, skillHubResults] = await Promise.all([
-      searchClawHub(q).catch(() => [] as ClawHubSearchResult[]),
-      searchSkillHubApi(q, 20, category).catch(() => [] as SkillHubSearchResult[]),
-    ])
-
-    const seen = new Set<string>()
-    const merged: SkillSearchResult[] = []
-
-    for (const item of clawhubResults) {
-      const r = normalizeClawHubResult(item)
-      if (!seen.has(r.slug)) {
-        seen.add(r.slug)
-        merged.push(r)
-      }
-    }
-    for (const item of skillHubResults) {
-      const r = normalizeSkillHubResult(item)
-      if (!seen.has(r.slug)) {
-        seen.add(r.slug)
-        merged.push(r)
-      }
-    }
-
-    merged.sort((a, b) => b.downloads - a.downloads)
-    unified = merged
-  }
-
-  _log('SKILLS_SEARCH_UNIFIED', { query: q, source, category, count: unified.length }, 'skills')
-  return unified
-}
-
-/* ------------------------------------------------------------------ */
-/*  ClawHub slug 安装辅助函数                                          */
-/* ------------------------------------------------------------------ */
-
-/** 判断一个 source 是否是 ClawHub slug（非 URL、非本地路径） */
-export function isClawHubSlug(source: string): boolean {
-  if (source.startsWith('http://') || source.startsWith('https://')) return false
-  if (source.startsWith('/') || source.startsWith('.') || source.startsWith('~')) return false
-  if (/^@?[\w-]+\/[\w-]+$/.test(source)) return true
-  if (/^[\w-]+$/.test(source)) return true
-  return false
-}
-
-/** 构建 ClawHub 下载 URL */
-export function buildClawHubDownloadUrl(slug: string): string {
-  const pureSlug = slug.replace(/^@/, '').split('/').pop() ?? slug
-  return `https://clawhub.ai/api/v1/download?slug=${encodeURIComponent(pureSlug)}`
-}
-
-/** 判断一个 source 是否是 SkillHub slug */
-function isSkillHubSlug(source: string): boolean {
-  // 与 ClawHub 相同的 slug 判断逻辑，但 SkillHub 也支持
-  if (source.startsWith('http://') || source.startsWith('https://')) return false
-  if (source.startsWith('/') || source.startsWith('.') || source.startsWith('~')) return false
-  if (/^@?[\w-]+\/[\w-]+$/.test(source)) return true
-  if (/^[\w-]+$/.test(source)) return true
-  return false
-}
-
-/** 构建 SkillHub 下载 URL */
-function buildSkillHubDownloadUrl(slug: string): string {
-  const pureSlug = slug.replace(/^@/, '').split('/').pop() ?? slug
-  return `https://api.skillhub.cn/api/v1/download?slug=${encodeURIComponent(pureSlug)}`
-}
-
-/** 下载 ZIP 并解压到目标目录（平台自适应） */
-export async function downloadAndExtractZip(
-  url: string,
-  destDir: string,
-  logger?: Logger,
-): Promise<void> {
-  const log = logger ?? _log
-  const zipPath = path.join(destDir, 'skill.zip')
-
-  log('CLAWHUB_DOWNLOAD_START', { url }, 'skills')
-  const resp = await fetch(url, { headers: { 'User-Agent': 'Taco-AI' } })
-  if (!resp.ok) {
-    throw new Error(`ClawHub 下载失败: ${resp.status} ${resp.statusText}`)
-  }
-
-  const buffer = Buffer.from(await resp.arrayBuffer())
-  await fs.writeFile(zipPath, buffer)
-  log('CLAWHUB_DOWNLOAD_DONE', { size: buffer.length }, 'skills')
-
-  try {
-    const platform = os.platform()
-    if (platform === 'win32') {
-      execSync(`powershell -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${destDir}' -Force"`, { stdio: 'pipe' })
-    } else {
-      execSync(`unzip -o "${zipPath}" -d "${destDir}"`, { stdio: 'pipe' })
-    }
-  } catch (err) {
-    throw new Error(`解压 ZIP 失败: ${err instanceof Error ? err.message : String(err)}`)
-  }
-
-  try { await fs.unlink(zipPath) } catch { /* ignore */ }
-
-  // 解压后内容都在一个子目录 → 上移一层
-  const entries = await fs.readdir(destDir)
-  const nonZipEntries = entries.filter(e => e !== 'skill.zip')
-  if (nonZipEntries.length === 1) {
-    const innerDir = path.join(destDir, nonZipEntries[0])
-    const stat = await fs.stat(innerDir)
-    if (stat.isDirectory()) {
-      const innerEntries = await fs.readdir(innerDir)
-      for (const entry of innerEntries) {
-        await fs.rename(path.join(innerDir, entry), path.join(destDir, entry))
-      }
-      await fs.rmdir(innerDir)
-    }
-  }
-
-  // ZIP slip 防护：递归检查所有解压文件是否越界
-  const resolvedDest = path.resolve(destDir)
-  await validateExtractionPaths(resolvedDest)
-}
-
-/** 递归检查解压目录中所有文件路径，确保没有路径穿越攻击（ZIP slip） */
-async function validateExtractionPaths(dir: string): Promise<void> {
-  const entries = await fs.readdir(dir, { withFileTypes: true })
-  for (const entry of entries) {
-    const fullPath = path.resolve(dir, entry.name)
-    const resolvedDest = path.resolve(dir)
-    // symbolic links 仍需 path.resolve 处理（会解析到实际路径），直接拒绝符号链接
-    if (entry.isSymbolicLink()) {
-      throw new Error(`安全风险：ZIP 包含符号链接 "${entry.name}"，已拒绝`)
-    }
-    if (!fullPath.startsWith(resolvedDest + path.sep) && fullPath !== resolvedDest) {
-      throw new Error(`安全风险：ZIP 包含越界路径 "${fullPath}"（目录: "${resolvedDest}"），已拒绝`)
-    }
-    if (entry.isDirectory()) {
-      await validateExtractionPaths(fullPath)
-    }
-  }
-}
-
-export async function installSkill(source: string, skipAudit?: boolean, preferredId?: string, authorOverride?: string): Promise<SkillInfo> {
-  let instructions: string
-  let meta: ParsedSkillMeta = {
-    requires: { ...EMPTY_REQUIRES },
-    env: {},
-    tools: [],
-    resources: [],
-  }
+  let meta = parseSkillMeta('')
   let localSkillRoot = ''
   let clawHubTempDir = ''
-  let remoteGitHubSource: GitHubSkillSource | null = null
+  let remoteGitHubSource: ReturnType<typeof parseGitHubSkillSource> = null
 
   if (source.startsWith('http://') || source.startsWith('https://')) {
     remoteGitHubSource = parseGitHubSkillSource(source)
     if (remoteGitHubSource) {
       instructions = await downloadGitHubTextFile(remoteGitHubSource, remoteGitHubSource.skillMdPath)
       meta = parseSkillMeta(instructions)
-      
+
       if (!skipAudit) {
-        // 安全审核: 检查远程 Skill 是否包含危险操作
         const securityCheck = auditSkillSecurity(instructions, meta)
         if (securityCheck.riskLevel === 'critical') {
           throw new Error(`拒绝安装高风险 Skill: ${securityCheck.warnings.join('; ')}`)
         }
         if (securityCheck.riskLevel === 'high') {
-          _log('SKILL_SECURITY_WARNING', {
-            source,
-            riskLevel: securityCheck.riskLevel,
-            warnings: securityCheck.warnings,
-          }, 'skills')
-          // 高风险 Skill 需要用户确认,此处仅记录警告
+          _log('SKILL_SECURITY_WARNING', { source, riskLevel: securityCheck.riskLevel, warnings: securityCheck.warnings }, 'skills')
         }
       }
     } else {
+      const { toRawGitHubUrl } = await import('./utils')
       const rawUrl = toRawGitHubUrl(source)
       const resp = await fetch(rawUrl)
       if (!resp.ok) throw new Error(`Failed to fetch skill: ${resp.status} ${resp.statusText}`)
       instructions = await resp.text()
       meta = parseSkillMeta(instructions)
-      
+
       if (!skipAudit) {
-        // 安全审核
         const securityCheck = auditSkillSecurity(instructions, meta)
         if (securityCheck.riskLevel === 'critical') {
           throw new Error(`拒绝安装高风险 Skill: ${securityCheck.warnings.join('; ')}`)
         }
         if (securityCheck.riskLevel === 'high') {
-          _log('SKILL_SECURITY_WARNING', {
-            source: rawUrl,
-            riskLevel: securityCheck.riskLevel,
-            warnings: securityCheck.warnings,
-          }, 'skills')
+          _log('SKILL_SECURITY_WARNING', { source: rawUrl, riskLevel: securityCheck.riskLevel, warnings: securityCheck.warnings }, 'skills')
         }
       }
     }
   } else if (isClawHubSlug(source)) {
-    // slug 安装：先尝试 ClawHub，失败后尝试 SkillHub
     clawHubTempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'taco-skill-'))
     let installed = false
 
-    // 尝试 ClawHub
     try {
       const downloadUrl = buildClawHubDownloadUrl(source)
       await downloadAndExtractZip(downloadUrl, clawHubTempDir)
@@ -1229,7 +351,6 @@ export async function installSkill(source: string, skipAudit?: boolean, preferre
       _log('SKILL_INSTALL_SOURCE', { source, sourceType: 'clawhub' }, 'skills')
     } catch (clawhubErr) {
       _log('SKILL_INSTALL_CLAWHUB_FAILED', { source, error: String(clawhubErr) }, 'skills')
-      // 清理后重试 SkillHub
       try { await fs.rm(clawHubTempDir, { recursive: true, force: true }) } catch { /* ignore */ }
       clawHubTempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'taco-skill-'))
       try {
@@ -1242,7 +363,6 @@ export async function installSkill(source: string, skipAudit?: boolean, preferre
       }
     }
 
-    // 找到解压后 SKILL.md 所在目录
     const findSkillMdDir = async (dir: string): Promise<string> => {
       try {
         await fs.access(path.join(dir, 'SKILL.md'))
@@ -1278,34 +398,25 @@ export async function installSkill(source: string, skipAudit?: boolean, preferre
         throw new Error(`拒绝安装高风险 Skill: ${securityCheck.warnings.join('; ')}`)
       }
       if (securityCheck.riskLevel === 'high') {
-        _log('SKILL_SECURITY_WARNING', {
-          source,
-          riskLevel: securityCheck.riskLevel,
-          warnings: securityCheck.warnings,
-        }, 'skills')
+        _log('SKILL_SECURITY_WARNING', { source, riskLevel: securityCheck.riskLevel, warnings: securityCheck.warnings }, 'skills')
       }
     }
   } else {
-    // 本地文件路径
+    const { expandTilde, toSkillId } = await import('./utils')
     const filePath = source.endsWith('SKILL.md') ? source : path.join(source, 'SKILL.md')
     const resolvedPath = expandTilde(filePath)
     try {
       instructions = await fs.readFile(resolvedPath, 'utf-8')
       meta = parseSkillMeta(instructions)
       localSkillRoot = path.dirname(resolvedPath)
-      
+
       if (!skipAudit) {
-        // 本地 Skill 也进行安全审核
         const securityCheck = auditSkillSecurity(instructions, meta)
         if (securityCheck.riskLevel === 'critical') {
           throw new Error(`拒绝安装高风险 Skill: ${securityCheck.warnings.join('; ')}`)
         }
         if (securityCheck.riskLevel === 'high') {
-          _log('SKILL_SECURITY_WARNING', {
-            source: filePath,
-            riskLevel: securityCheck.riskLevel,
-            warnings: securityCheck.warnings,
-          }, 'skills')
+          _log('SKILL_SECURITY_WARNING', { source: filePath, riskLevel: securityCheck.riskLevel, warnings: securityCheck.warnings }, 'skills')
         }
       }
     } catch {
@@ -1313,18 +424,18 @@ export async function installSkill(source: string, skipAudit?: boolean, preferre
     }
   }
 
+  const { toSkillId } = await import('./utils')
   const id = preferredId ?? (isClawHubSlug(source) ? source : toSkillId(meta.name || `skill-${Date.now()}`))
   const persisted = await loadPersistedSkills()
 
   if (localSkillRoot) {
     await installSkillPackageFromLocalRoot(id, localSkillRoot, instructions, meta.resources)
   } else if (remoteGitHubSource) {
-    await installSkillPackageFromGitHub(id, remoteGitHubSource, instructions, meta.resources)
+    await installSkillPackageFromGitHub(id, remoteGitHubSource, instructions, meta.resources, downloadGitHubPathToLocal)
   } else {
     await saveSkillInstructions(id, instructions)
   }
 
-  // ClawHub slug 安装后清理临时目录
   if (clawHubTempDir) {
     try { await fs.rm(clawHubTempDir, { recursive: true, force: true }) } catch { /* ignore */ }
   }
@@ -1389,1058 +500,11 @@ export async function checkSkillUpdate(id: string): Promise<{ hasUpdate: boolean
 }
 
 /* ------------------------------------------------------------------ */
-/*  加载流程辅助                                                        */
+/*  调试                                                                */
 /* ------------------------------------------------------------------ */
-
-async function ensureDirs() {
-  await fs.mkdir(SKILLS_DIR, { recursive: true })
-}
-
-async function loadPersistedSkills(): Promise<PersistedSkill[]> {
-  try {
-    const data = await fs.readFile(SKILLS_JSON, 'utf-8')
-    const parsed = JSON.parse(data)
-    return Array.isArray(parsed) ? parsed as PersistedSkill[] : []
-  } catch {
-    return []
-  }
-}
-
-async function savePersistedSkills(skills: PersistedSkill[]) {
-  await ensureDirs()
-  await fs.writeFile(SKILLS_JSON, JSON.stringify(skills, null, 2), 'utf-8')
-}
-
-function upsertPersistedSkill(items: PersistedSkill[], item: PersistedSkill): PersistedSkill[] {
-  const next = [...items]
-  const idx = next.findIndex((s) => s.id === item.id)
-  if (idx >= 0) next[idx] = item
-  else next.push(item)
-  return next
-}
-
-async function loadSkillInstructionsFromPersisted(skill: PersistedSkill): Promise<string> {
-  if (skill.instructionsFile) {
-    const p = path.resolve(SKILLS_DIR, skill.instructionsFile)
-    try {
-      return await fs.readFile(p, 'utf-8')
-    } catch {
-      // fall through
-    }
-  }
-  return loadSkillInstructions(skill.id)
-}
-
-async function loadSkillInstructions(skillId: string): Promise<string> {
-  const filePath = path.join(SKILLS_DIR, skillId, 'SKILL.md')
-  try {
-    return await fs.readFile(filePath, 'utf-8')
-  } catch {
-    return ''
-  }
-}
-
-async function saveSkillInstructions(skillId: string, content: string) {
-  const dir = path.join(SKILLS_DIR, skillId)
-  await fs.mkdir(dir, { recursive: true })
-  await fs.writeFile(path.join(dir, 'SKILL.md'), content, 'utf-8')
-}
-
-async function installSkillPackageFromLocalRoot(
-  skillId: string,
-  sourceRoot: string,
-  instructions: string,
-  declaredResources: string[],
-) {
-  const targetRoot = path.join(SKILLS_DIR, skillId)
-  await fs.rm(targetRoot, { recursive: true, force: true })
-  await fs.mkdir(targetRoot, { recursive: true })
-  await fs.writeFile(path.join(targetRoot, 'SKILL.md'), instructions, 'utf-8')
-
-  const copyTargets = new Set<string>(DEFAULT_SKILL_RESOURCE_DIRS)
-  for (const item of declaredResources) {
-    const normalized = normalizeSkillResourcePath(item)
-    const topLevel = normalized.split('/').filter(Boolean)[0]
-    if (topLevel && topLevel !== 'SKILL.md') copyTargets.add(topLevel)
-  }
-
-  for (const entryName of copyTargets) {
-    const sourcePath = path.join(sourceRoot, entryName)
-    if (!(await fileExists(sourcePath))) continue
-    await fs.cp(sourcePath, path.join(targetRoot, entryName), { recursive: true, force: true })
-  }
-}
-
-async function installSkillPackageFromGitHub(
-  skillId: string,
-  sourceInfo: GitHubSkillSource,
-  instructions: string,
-  declaredResources: string[],
-) {
-  const targetRoot = path.join(SKILLS_DIR, skillId)
-  await fs.rm(targetRoot, { recursive: true, force: true })
-  await fs.mkdir(targetRoot, { recursive: true })
-  await fs.writeFile(path.join(targetRoot, 'SKILL.md'), instructions, 'utf-8')
-
-  const copyTargets = new Set<string>(DEFAULT_SKILL_RESOURCE_DIRS)
-  for (const item of declaredResources) {
-    const normalized = normalizeSkillResourcePath(item)
-    const topLevel = normalized.split('/').filter(Boolean)[0]
-    if (topLevel && topLevel !== 'SKILL.md') copyTargets.add(topLevel)
-  }
-
-  for (const entryName of copyTargets) {
-    const remotePath = joinPosixPath(sourceInfo.skillRootPath, entryName)
-    await downloadGitHubPathToLocal(sourceInfo, remotePath, path.join(targetRoot, entryName), true)
-  }
-}
-
-function resolveWorkspaceSkillDirs(workspace: string): string[] {
-  const base = normalizeWorkspace(workspace)
-  if (!base) return []
-  return [
-    path.join(base, '.taco', 'skills'),
-    path.join(base, '.openclaw', 'skills'),
-  ]
-}
-
-async function loadSkillsFromDirs(
-  dirs: string[],
-  scope: SkillScope,
-  persistedById: Map<string, PersistedSkill>,
-): Promise<SkillEntry[]> {
-  const merged = new Map<string, SkillEntry>()
-
-  for (const dir of dirs) {
-    const files = await findSkillFiles(dir)
-    for (const filePath of files) {
-      let content = ''
-      try {
-        content = await fs.readFile(filePath, 'utf-8')
-      } catch {
-        continue
-      }
-      if (!content.trim()) continue
-
-      const parsed = parseSkillMeta(content)
-      const dirName = path.basename(path.dirname(filePath))
-      // 目录名作为主 ID（唯一可靠标识，不受 SKILL.md name 变化影响）；仅当无目录名时才回退到 parsed.name
-      const id = dirName && dirName !== 'skills' ? toSkillId(dirName) : toSkillId(parsed.name || `skill-${Date.now()}`)
-      const persisted = persistedById.get(id)
-
-      const source = resolveSkillSource(scope, filePath, persisted)
-      const enabled = typeof persisted?.enabled === 'boolean'
-        ? persisted.enabled
-        : (typeof parsed.enabled === 'boolean' ? parsed.enabled : true)
-
-      const skill: SkillInfo = {
-        id,
-        name: parsed.name || persisted?.name || id,
-        description: parsed.description || persisted?.description || '',
-        version: parsed.version || persisted?.version || '1.0.0',
-        author: parsed.author || persisted?.author || 'Unknown',
-        source,
-        sourceUrl: source === 'remote' ? persisted?.sourceUrl : undefined,
-        enabled,
-        instructions: content,
-        tools: resolveSkillToolNames(parsed.tools.length > 0 ? parsed.tools : (persisted?.tools ?? [])),
-        resources: dedupeList(parsed.resources.length > 0 ? parsed.resources : (persisted?.resources ?? [])),
-      }
-
-      merged.set(id, {
-        scope,
-        skill,
-        requires: parsed.requires,
-        env: parsed.env,
-        rootDir: path.dirname(filePath),
-        tools: resolveSkillToolNames(parsed.tools.length > 0 ? parsed.tools : (persisted?.tools ?? [])),
-        resources: dedupeList(parsed.resources.length > 0 ? parsed.resources : (persisted?.resources ?? [])),
-      })
-    }
-  }
-
-  return Array.from(merged.values())
-}
-
-function resolveSkillSource(scope: SkillScope, filePath: string, persisted?: PersistedSkill): SkillInfo['source'] {
-  if (scope === 'workspace') return 'remote'
-  const normalizedFile = path.resolve(filePath)
-  const normalizedBase = path.resolve(SKILLS_DIR)
-  if (normalizedFile.startsWith(normalizedBase) && persisted && persisted.source !== 'builtin') {
-    return persisted.source
-  }
-  return 'remote'
-}
-
-async function findSkillFiles(dir: string): Promise<string[]> {
-  try {
-    const st = await fs.stat(dir)
-    if (!st.isDirectory()) return []
-  } catch {
-    return []
-  }
-
-  const files: string[] = []
-  const directFile = path.join(dir, 'SKILL.md')
-  if (await fileExists(directFile)) files.push(directFile)
-
-  let entries: Dirent[] = []
-  try {
-    entries = await fs.readdir(dir, { withFileTypes: true })
-  } catch {
-    return files
-  }
-
-  const sorted = entries
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name)
-    .sort((a, b) => a.localeCompare(b, 'zh-CN'))
-
-  for (const name of sorted) {
-    const file = path.join(dir, name, 'SKILL.md')
-    if (await fileExists(file)) files.push(file)
-  }
-
-  return files
-}
-
-async function fileExists(p: string): Promise<boolean> {
-  try {
-    await fs.access(p)
-    return true
-  } catch {
-    return false
-  }
-}
-
-function sortSkillsForDisplay(entries: SkillEntry[]): SkillEntry[] {
-  const score = (entry: SkillEntry): number => {
-    if (entry.scope === 'workspace') return 0
-    if (entry.scope === 'global') return 1
-    return 2
-  }
-  return [...entries].sort((a, b) => {
-    const sa = score(a)
-    const sb = score(b)
-    if (sa !== sb) return sa - sb
-    return a.skill.name.localeCompare(b.skill.name, 'zh-CN')
-  })
-}
-
-/* ------------------------------------------------------------------ */
-/*  需求门控                                                            */
-/* ------------------------------------------------------------------ */
-
-async function loadRuntimeConfig(): Promise<Record<string, unknown>> {
-  try {
-    const raw = await fs.readFile(SKILLS_CONFIG_JSON, 'utf-8')
-    const parsed = JSON.parse(raw)
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>
-    }
-  } catch {
-    // ignore
-  }
-  return {}
-}
-
-async function resolveUnavailableReason(
-  requires: SkillRequires,
-  runtimeConfig: Record<string, unknown>,
-): Promise<string | null> {
-  const missingBins: string[] = []
-  const missingEnv: string[] = []
-  const missingConfig: string[] = []
-
-  for (const bin of requires.bins) {
-    if (!(await hasBinary(bin))) missingBins.push(bin)
-  }
-
-  for (const key of requires.env) {
-    if (!String(process.env[key] ?? '').trim()) missingEnv.push(key)
-  }
-
-  for (const key of requires.config) {
-    const value = getConfigValue(runtimeConfig, key)
-    if (!isTruthyConfigValue(value)) missingConfig.push(key)
-  }
-
-  if (missingBins.length === 0 && missingEnv.length === 0 && missingConfig.length === 0) return null
-  return [
-    missingBins.length > 0 ? `缺少命令: ${missingBins.join(', ')}` : '',
-    missingEnv.length > 0 ? `缺少环境变量: ${missingEnv.join(', ')}` : '',
-    missingConfig.length > 0 ? `缺少配置: ${missingConfig.join(', ')}` : '',
-  ].filter(Boolean).join(' | ')
-}
-
-async function hasBinary(bin: string): Promise<boolean> {
-  const key = String(bin ?? '').trim()
-  if (!key) return false
-  if (binCheckCache.has(key)) return Boolean(binCheckCache.get(key))
-
-  let ok = false
-  try {
-    if (isPathLikeCommand(key)) {
-      await fs.access(key, fsConstants.X_OK)
-      ok = true
-    } else {
-      const cmd = process.platform === 'win32' ? 'where' : 'which'
-      await execFile(cmd, [key], { windowsHide: true })
-      ok = true
-    }
-  } catch {
-    ok = false
-  }
-  binCheckCache.set(key, ok)
-  return ok
-}
-
-function isPathLikeCommand(input: string): boolean {
-  return input.includes('/') || input.includes('\\') || path.isAbsolute(input)
-}
-
-function getConfigValue(obj: Record<string, unknown>, keyPath: string): unknown {
-  const parts = String(keyPath ?? '').split('.').map((s) => s.trim()).filter(Boolean)
-  if (parts.length === 0) return undefined
-  let current: unknown = obj
-  for (const part of parts) {
-    if (!current || typeof current !== 'object' || Array.isArray(current)) return undefined
-    current = (current as Record<string, unknown>)[part]
-  }
-  return current
-}
-
-function isTruthyConfigValue(v: unknown): boolean {
-  if (typeof v === 'boolean') return v
-  if (typeof v === 'number') return v !== 0
-  if (typeof v === 'string') {
-    const t = v.trim().toLowerCase()
-    return t !== '' && t !== '0' && t !== 'false' && t !== 'off' && t !== 'no'
-  }
-  return Boolean(v)
-}
-
-/* ------------------------------------------------------------------ */
-/*  Frontmatter 解析                                                     */
-/* ------------------------------------------------------------------ */
-
-function parseSkillMeta(content: string): ParsedSkillMeta {
-  const meta: ParsedSkillMeta = {
-    requires: { bins: [], env: [], config: [] },
-    env: {},
-    tools: [],
-    resources: [],
-  }
-
-  const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---\s*(?:\n|$)/)
-  if (fmMatch) {
-    parseFrontmatterBlock(fmMatch[1], meta)
-  }
-
-  if (!meta.name) {
-    const titleMatch = content.match(/^#\s+(.+)$/m)
-    if (titleMatch) {
-      let name = titleMatch[1].trim()
-      // 去掉 "Skill: " 前缀（常见于 preset 和社区 skill 的标题格式）
-      name = name.replace(/^Skill:\s*/i, '')
-      meta.name = name
-    }
-  }
-
-  return meta
-}
-
-function parseGitHubSkillSource(source: string): GitHubSkillSource | null {
-  let url: URL
-  try {
-    url = new URL(source)
-  } catch {
-    return null
-  }
-
-  const host = url.hostname.toLowerCase()
-  const parts = url.pathname.split('/').filter(Boolean)
-
-  if (host === 'raw.githubusercontent.com') {
-    if (parts.length < 4) return null
-    const [owner, repo, ref, ...rest] = parts
-    const remotePath = rest.join('/')
-    if (!remotePath) return null
-    const skillMdPath = remotePath.endsWith('SKILL.md') ? remotePath : joinPosixPath(remotePath, 'SKILL.md')
-    return {
-      owner,
-      repo,
-      ref,
-      skillMdPath,
-      skillRootPath: dirnamePosix(skillMdPath),
-    }
-  }
-
-  if (host !== 'github.com') return null
-  if (parts.length < 2) return null
-
-  const [owner, repo, mode, ref, ...rest] = parts
-  if (!mode) {
-    return {
-      owner,
-      repo,
-      ref: 'main',
-      skillMdPath: 'SKILL.md',
-      skillRootPath: '',
-    }
-  }
-
-  if ((mode === 'blob' || mode === 'tree') && ref) {
-    const remotePath = rest.join('/')
-    const skillMdPath = mode === 'blob'
-      ? (remotePath.endsWith('SKILL.md') ? remotePath : '')
-      : (remotePath ? joinPosixPath(remotePath, 'SKILL.md') : 'SKILL.md')
-    if (!skillMdPath) return null
-    return {
-      owner,
-      repo,
-      ref,
-      skillMdPath,
-      skillRootPath: dirnamePosix(skillMdPath),
-    }
-  }
-
-  return {
-    owner,
-    repo,
-    ref: 'main',
-    skillMdPath: 'SKILL.md',
-    skillRootPath: '',
-  }
-}
-
-function parseFrontmatterBlock(block: string, out: ParsedSkillMeta) {
-  const lines = block.split(/\r?\n/)
-
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i]
-    const trimmed = raw.trim()
-    if (!trimmed || trimmed.startsWith('#')) continue
-
-    const indent = leadingSpaces(raw)
-    const kv = trimmed.match(/^([A-Za-z0-9_.-]+)\s*:\s*(.*)$/)
-    if (!kv) continue
-    const key = kv[1].toLowerCase()
-    const value = kv[2].trim()
-
-    if (key === 'metadata') {
-      if (value) {
-        extractClawHubRequires(value, out)
-      } else {
-        const consumed = consumeIndentedBlock(lines, i + 1, indent)
-        extractClawHubRequiresFromBlock(consumed.block, out)
-        i = consumed.nextIndex - 1
-      }
-      continue
-    }
-    if (key === 'env' && !value) {
-      const consumed = consumeIndentedBlock(lines, i + 1, indent)
-      mergeEnvMap(out.env, parseKeyValueBlock(consumed.block))
-      i = consumed.nextIndex - 1
-      continue
-    }
-    if (key === 'requires' && !value) {
-      const consumed = consumeIndentedBlock(lines, i + 1, indent)
-      mergeRequires(out.requires, parseRequiresBlock(consumed.block))
-      i = consumed.nextIndex - 1
-      continue
-    }
-    if (key === 'tools' && !value) {
-      const consumed = consumeIndentedBlock(lines, i + 1, indent)
-      out.tools = dedupeList([...out.tools, ...parseListBlock(consumed.block)])
-      i = consumed.nextIndex - 1
-      continue
-    }
-    if (key === 'resources' && !value) {
-      const consumed = consumeIndentedBlock(lines, i + 1, indent)
-      out.resources = dedupeList([...out.resources, ...parseListBlock(consumed.block)])
-      i = consumed.nextIndex - 1
-      continue
-    }
-
-    if (key === 'name') out.name = stripQuotes(value)
-    else if (key === 'description') out.description = stripQuotes(value)
-    else if (key === 'version') out.version = stripQuotes(value)
-    else if (key === 'author') out.author = stripQuotes(value)
-    else if (key === 'enabled') out.enabled = parseBoolean(value)
-    else if (key === 'requires_bins' || key === 'requires.bin' || key === 'requires.bins') out.requires.bins = dedupeList(parseStringList(value))
-    else if (key === 'requires_env' || key === 'requires.environment' || key === 'requires.env') out.requires.env = dedupeList(parseStringList(value))
-    else if (key === 'requires_config' || key === 'requires.config') out.requires.config = dedupeList(parseStringList(value))
-    else if (key === 'tools' || key === 'allowed_tools' || key === 'tool_names') out.tools = dedupeList([...out.tools, ...parseStringList(value)])
-    else if (key === 'resources' || key === 'resource_paths') out.resources = dedupeList([...out.resources, ...parseStringList(value)])
-    else if (key.startsWith('env.')) out.env[key.slice(4)] = stripQuotes(value)
-    else if (key === 'env_json') mergeEnvMap(out.env, parseInlineMap(value))
-  }
-}
-
-function consumeIndentedBlock(
-  lines: string[],
-  startIndex: number,
-  parentIndent: number,
-): { block: string[]; nextIndex: number } {
-  const block: string[] = []
-  let i = startIndex
-  while (i < lines.length) {
-    const line = lines[i]
-    const trimmed = line.trim()
-    const indent = leadingSpaces(line)
-    if (trimmed && indent <= parentIndent) break
-    if (!trimmed) {
-      block.push('')
-      i++
-      continue
-    }
-    const offset = Math.min(line.length, parentIndent + 2)
-    block.push(line.slice(offset))
-    i++
-  }
-  return { block, nextIndex: i }
-}
-
-function parseRequiresBlock(lines: string[]): SkillRequires {
-  const out: SkillRequires = { bins: [], env: [], config: [] }
-  let currentListKey: keyof SkillRequires | null = null
-  for (const raw of lines) {
-    const trimmed = raw.trim()
-    if (!trimmed) continue
-    const listItem = trimmed.match(/^-\s*(.+)$/)
-    if (listItem && currentListKey) {
-      const value = stripQuotes(listItem[1].trim())
-      if (value) out[currentListKey] = dedupeList([...out[currentListKey], value])
-      continue
-    }
-    const kv = trimmed.match(/^([A-Za-z0-9_.-]+)\s*:\s*(.*)$/)
-    if (!kv) {
-      currentListKey = null
-      continue
-    }
-    const key = kv[1].toLowerCase()
-    const value = kv[2].trim()
-    const normalizedKey: keyof SkillRequires | null =
-      key === 'bins' || key === 'bin'
-        ? 'bins'
-        : (key === 'env' || key === 'environment'
-            ? 'env'
-            : (key === 'config' ? 'config' : null))
-    if (!normalizedKey) {
-      currentListKey = null
-      continue
-    }
-    if (value) out[normalizedKey] = dedupeList(parseStringList(value))
-    currentListKey = normalizedKey
-  }
-  return out
-}
-
-function parseKeyValueBlock(lines: string[]): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const raw of lines) {
-    const trimmed = raw.trim()
-    if (!trimmed) continue
-    const kv = trimmed.match(/^([A-Za-z0-9_.-]+)\s*:\s*(.*)$/)
-    if (!kv) continue
-    out[kv[1]] = stripQuotes(kv[2].trim())
-  }
-  return out
-}
-
-function parseListBlock(lines: string[]): string[] {
-  const out: string[] = []
-  for (const raw of lines) {
-    const trimmed = raw.trim()
-    if (!trimmed) continue
-    const listItem = trimmed.match(/^-\s*(.+)$/)
-    if (listItem) {
-      const value = stripQuotes(listItem[1].trim())
-      if (value) out.push(value)
-      continue
-    }
-    const kv = trimmed.match(/^([A-Za-z0-9_.-]+)\s*:\s*(.*)$/)
-    if (!kv) continue
-    const inlineValues = parseStringList(kv[2].trim())
-    for (const value of inlineValues) out.push(value)
-  }
-  return dedupeList(out)
-}
-
-function parseInlineMap(raw: string): Record<string, string> {
-  const text = String(raw ?? '').trim()
-  if (!text) return {}
-  if (text.startsWith('{') && text.endsWith('}')) {
-    try {
-      const parsed = JSON.parse(text)
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        const out: Record<string, string> = {}
-        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-          out[k] = String(v ?? '')
-        }
-        return out
-      }
-    } catch {
-      // ignore
-    }
-  }
-  const out: Record<string, string> = {}
-  for (const pair of text.split(',')) {
-    const [k, ...rest] = pair.split('=')
-    const key = String(k ?? '').trim()
-    if (!key) continue
-    out[key] = stripQuotes(rest.join('=').trim())
-  }
-  return out
-}
-
-function mergeRequires(base: SkillRequires, next: SkillRequires) {
-  base.bins = dedupeList([...base.bins, ...next.bins])
-  base.env = dedupeList([...base.env, ...next.env])
-  base.config = dedupeList([...base.config, ...next.config])
-}
-
-/** 从 ClawHub metadata JSON 字符串中提取 requires */
-function extractClawHubRequires(raw: string, out: ParsedSkillMeta) {
-  try {
-    const parsed = JSON.parse(raw)
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      const ocl = (parsed as Record<string, unknown>).openclaw
-      if (ocl && typeof ocl === 'object' && !Array.isArray(ocl)) {
-        const req = (ocl as Record<string, unknown>).requires
-        if (req && typeof req === 'object' && !Array.isArray(req)) {
-          const r = req as Record<string, unknown>
-          if (Array.isArray(r.bins)) {
-            out.requires.bins = dedupeList([...out.requires.bins, ...r.bins.map((v) => String(v ?? '').trim()).filter(Boolean)])
-          }
-          if (Array.isArray(r.env)) {
-            out.requires.env = dedupeList([...out.requires.env, ...r.env.map((v) => String(v ?? '').trim()).filter(Boolean)])
-          }
-          if (Array.isArray(r.config)) {
-            out.requires.config = dedupeList([...out.requires.config, ...r.config.map((v) => String(v ?? '').trim()).filter(Boolean)])
-          }
-        }
-      }
-    }
-  } catch {
-    // not valid JSON, silently ignore
-  }
-}
-
-/** 从 ClawHub metadata 多行 YAML 块中提取 requires */
-function extractClawHubRequiresFromBlock(block: string[], out: ParsedSkillMeta) {
-  for (const raw of block) {
-    const trimmed = raw.trim()
-    if (!trimmed) continue
-    const kv = trimmed.match(/^([A-Za-z0-9_.-]+)\s*:\s*(.*)$/)
-    if (!kv) continue
-    const key = kv[1].toLowerCase()
-    const value = kv[2].trim()
-    if (key === 'openclaw' && value) {
-      extractClawHubRequires(value, out)
-    }
-  }
-}
-
-function mergeEnvMap(base: Record<string, string>, next: Record<string, string>) {
-  for (const [k, v] of Object.entries(next)) {
-    const key = String(k ?? '').trim()
-    if (!key) continue
-    base[key] = String(v ?? '')
-  }
-}
-
-function parseStringList(raw: string): string[] {
-  const text = String(raw ?? '').trim()
-  if (!text) return []
-  let body = text
-  if ((body.startsWith('[') && body.endsWith(']')) || (body.startsWith('(') && body.endsWith(')'))) {
-    body = body.slice(1, -1)
-  }
-  const parts = body.includes(',') ? body.split(',') : body.split(/\s+/)
-  return dedupeList(parts.map((s) => stripQuotes(s.trim())).filter(Boolean))
-}
-
-function dedupeList(items: string[]): string[] {
-  const out: string[] = []
-  for (const item of items) {
-    const val = String(item ?? '').trim()
-    if (!val || out.includes(val)) continue
-    out.push(val)
-  }
-  return out
-}
-
-function buildSkillSummary(skill: SkillInfo): string {
-  const description = String(skill.description ?? '').replace(/\s+/g, ' ').trim()
-  if (description) return description
-  const firstLine = String(skill.instructions ?? '')
-    .split('\n')
-    .map((line) => line.trim())
-    .find(Boolean)
-  return firstLine || skill.id
-}
-
-function normalizeSkillResourcePath(input: string): string {
-  const normalized = String(input ?? '')
-    .trim()
-    .replace(/\\/g, '/')
-    .replace(/^\/+/, '')
-    .replace(/\/+/g, '/')
-  return normalized
-}
-
-function isSkillResourceAllowed(relativePath: string, declared: string[]): boolean {
-  const normalized = normalizeSkillResourcePath(relativePath)
-  if (!normalized || normalized.includes('..')) return false
-  const prefixes = new Set<string>(DEFAULT_SKILL_RESOURCE_DIRS.map((item) => `${item}/`))
-  for (const item of dedupeList(declared)) {
-    const normalizedItem = normalizeSkillResourcePath(item).replace(/\*+$/, '')
-    if (!normalizedItem) continue
-    prefixes.add(normalizedItem.endsWith('/') ? normalizedItem : `${normalizedItem}${normalizedItem.includes('.') ? '' : '/'}`)
-  }
-  for (const prefix of prefixes) {
-    if (normalized === prefix.replace(/\/$/, '') || normalized.startsWith(prefix)) return true
-  }
-  return false
-}
-
-function resolveSkillToolNames(rawTools: string[]): string[] {
-  const out: string[] = []
-  for (const item of rawTools) {
-    const normalized = String(item ?? '').trim().toLowerCase()
-    if (!normalized) continue
-    if (SKILL_TOOL_GROUPS[normalized]) {
-      for (const toolName of SKILL_TOOL_GROUPS[normalized]) {
-        if (!out.includes(toolName)) out.push(toolName)
-      }
-      continue
-    }
-    const canonical = normalized === 'list_directory' ? 'list_dir' : normalized
-    if (!out.includes(canonical)) out.push(canonical)
-  }
-  return out
-}
-
-function joinPosixPath(...parts: string[]): string {
-  return parts
-    .map((part) => String(part ?? '').replace(/\\/g, '/'))
-    .filter(Boolean)
-    .join('/')
-    .replace(/\/+/g, '/')
-    .replace(/^\.\//, '')
-}
-
-function dirnamePosix(filePath: string): string {
-  const normalized = String(filePath ?? '').replace(/\\/g, '/')
-  const index = normalized.lastIndexOf('/')
-  return index >= 0 ? normalized.slice(0, index) : ''
-}
-
-function getGitHubAuthHeaders(): Record<string, string> {
-  const token = String(process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? '').trim()
-  const headers: Record<string, string> = {
-    Accept: 'application/vnd.github+json',
-    'User-Agent': 'taco-ai-agent',
-  }
-  if (token) headers.Authorization = `Bearer ${token}`
-  return headers
-}
-
-function buildGitHubContentsApiUrl(sourceInfo: GitHubSkillSource, remotePath: string): string {
-  const encodedPath = remotePath
-    .split('/')
-    .filter(Boolean)
-    .map((part) => encodeURIComponent(part))
-    .join('/')
-  const base = `https://api.github.com/repos/${sourceInfo.owner}/${sourceInfo.repo}/contents`
-  const pathPart = encodedPath ? `/${encodedPath}` : ''
-  return `${base}${pathPart}?ref=${encodeURIComponent(sourceInfo.ref)}`
-}
-
-async function fetchGitHubContents(
-  sourceInfo: GitHubSkillSource,
-  remotePath: string,
-): Promise<{ ok: true; payload: unknown } | { ok: false; status: number; statusText: string }> {
-  const resp = await fetch(buildGitHubContentsApiUrl(sourceInfo, remotePath), {
-    headers: getGitHubAuthHeaders(),
-  })
-  if (!resp.ok) {
-    return { ok: false, status: resp.status, statusText: resp.statusText }
-  }
-  return { ok: true, payload: await resp.json() }
-}
-
-async function downloadGitHubTextFile(sourceInfo: GitHubSkillSource, remotePath: string): Promise<string> {
-  const result = await fetchGitHubContents(sourceInfo, remotePath)
-  if (!result.ok) {
-    throw new Error(`Failed to fetch GitHub skill file: ${result.status} ${result.statusText}`)
-  }
-  const payload = result.payload as Record<string, unknown>
-  if (payload.type !== 'file') {
-    throw new Error(`GitHub path is not a file: ${remotePath}`)
-  }
-  return (await readGitHubFileBuffer(payload)).toString('utf-8')
-}
-
-async function downloadGitHubPathToLocal(
-  sourceInfo: GitHubSkillSource,
-  remotePath: string,
-  targetPath: string,
-  optional = false,
-): Promise<boolean> {
-  const result = await fetchGitHubContents(sourceInfo, remotePath)
-  if (!result.ok) {
-    if (optional && result.status === 404) return false
-    throw new Error(`Failed to fetch GitHub skill resource: ${remotePath} (${result.status} ${result.statusText})`)
-  }
-
-  const payload = result.payload
-  if (Array.isArray(payload)) {
-    await fs.mkdir(targetPath, { recursive: true })
-    for (const entry of payload) {
-      const item = entry as Record<string, unknown>
-      const childPath = String(item.path ?? '').trim()
-      const childName = String(item.name ?? '').trim()
-      const childType = String(item.type ?? '').trim()
-      if (!childPath || !childName || !childType || childType === 'symlink' || childType === 'submodule') continue
-      await downloadGitHubPathToLocal(sourceInfo, childPath, path.join(targetPath, childName), false)
-    }
-    return true
-  }
-
-  const item = payload as Record<string, unknown>
-  if (item.type !== 'file') {
-    if (optional) return false
-    throw new Error(`Unsupported GitHub skill resource type at ${remotePath}: ${String(item.type ?? 'unknown')}`)
-  }
-  await fs.mkdir(path.dirname(targetPath), { recursive: true })
-  await fs.writeFile(targetPath, await readGitHubFileBuffer(item))
-  return true
-}
-
-async function readGitHubFileBuffer(payload: Record<string, unknown>): Promise<Buffer> {
-  const content = payload.content
-  const encoding = String(payload.encoding ?? '').trim()
-  if (typeof content === 'string' && encoding === 'base64') {
-    return Buffer.from(content.replace(/\n/g, ''), 'base64')
-  }
-  const downloadUrl = String(payload.download_url ?? '').trim()
-  if (downloadUrl) {
-    const resp = await fetch(downloadUrl, {
-      headers: getGitHubAuthHeaders(),
-    })
-    if (!resp.ok) {
-      throw new Error(`Failed to download GitHub file: ${resp.status} ${resp.statusText}`)
-    }
-    return Buffer.from(await resp.arrayBuffer())
-  }
-  throw new Error('GitHub file payload does not contain readable content')
-}
-
-function parseBoolean(raw: string): boolean | undefined {
-  const text = String(raw ?? '').trim().toLowerCase()
-  if (text === 'true' || text === 'yes' || text === 'on' || text === '1') return true
-  if (text === 'false' || text === 'no' || text === 'off' || text === '0') return false
-  return undefined
-}
-
-function stripQuotes(input: string): string {
-  const text = String(input ?? '').trim()
-  if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith('\'') && text.endsWith('\''))) {
-    return text.slice(1, -1)
-  }
-  return text
-}
-
-function leadingSpaces(line: string): number {
-  const m = line.match(/^\s*/)
-  return m ? m[0].length : 0
-}
-
-function toSkillId(input: string): string {
-  const slug = String(input ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-  return slug || `skill-${Date.now()}`
-}
-
-function inferCategory(name?: string, description?: string, tools?: string[]): string {
-  const text = `${name ?? ''} ${description ?? ''} ${(tools ?? []).join(' ')}`.toLowerCase()
-  if (/\bdocker\b|\bcontainer\b|\bkubernetes\b|\bdevops\b/.test(text)) return 'devops'
-  if (/\bsecurity\b|\baudit\b|\bvulnerability\b|\bpenetration\b/.test(text)) return 'security'
-  if (/\btest\b|\bqa\b|\bquality\b|\bcoverage\b|\blint/.test(text)) return 'testing'
-  if (/\bdoc\b|\breadme\b|\bapi\s*doc|documentation/.test(text)) return 'documentation'
-  if (/\bgit\b|\bcommit\b|\bversion\s*control|\brepository/.test(text)) return 'development'
-  if (/\bapi\b|\brest\b|\bgraphql\b/.test(text)) return 'api'
-  if (/\bdatabase\b|\bsql\b|\bmongodb\b|\bredis\b/.test(text)) return 'database'
-  if (/\bdeploy\b|\bci\s*\/\s*cd|\bgithub\s*actions/.test(text)) return 'devops'
-  return 'development'
-}
-
-function inferTags(name?: string, description?: string, tools?: string[]): string[] {
-  const text = `${name ?? ''} ${description ?? ''}`.toLowerCase()
-  const tags: string[] = []
-  if (/\bgit\b/.test(text)) tags.push('git')
-  if (/\bcommit\b/.test(text)) tags.push('commit')
-  if (/\bdocker\b/.test(text)) tags.push('docker')
-  if (/\bsecurity\b|\baudit\b/.test(text)) tags.push('security')
-  if (/\btest\b/.test(text)) tags.push('testing')
-  if (/\bdoc\b|\breadme\b/.test(text)) tags.push('documentation')
-  if (/\bapi\b/.test(text)) tags.push('api')
-  return tags.length > 0 ? tags : ['utility']
-}
-
-/* ------------------------------------------------------------------ */
-/*  安全审核                                                            */
-/* ------------------------------------------------------------------ */
-
-type SkillSecurityCheck = {
-  safe: boolean
-  warnings: string[]
-  riskLevel: 'low' | 'medium' | 'high' | 'critical'
-}
-
-/**
- * 安全审核 Skill 内容
- * 
- * 检测潜在的危险操作:
- * - 执行任意命令
- * - 删除文件/目录
- * - 修改系统配置
- * - 网络请求
- * - 敏感文件访问
- */
-function auditSkillSecurity(instructions: string, meta: ParsedSkillMeta): SkillSecurityCheck {
-  const warnings: string[] = []
-  let riskScore = 0
-
-  const text = instructions.toLowerCase()
-  const combinedTools = [...meta.tools, ...meta.requires.bins].map(t => t.toLowerCase())
-
-  // 1. 检查危险命令执行
-  const dangerousCommands = [
-    { pattern: /rm\s+-rf|rm\s+-f|rm\s+-r\b(?!f)|rm\s+--recursive|rmdir\s+\/s|del\s+\/[sf]/g, weight: 10, msg: '包含强制删除命令' },
-    { pattern: /chmod\s+[0-7]{3,4}|chown|icacls/g, weight: 8, msg: '包含权限修改命令' },
-    { pattern: /sudo\s+|runas\s+/g, weight: 9, msg: '包含提权操作' },
-    { pattern: /mkfs|fdisk|diskpart|format\s+/g, weight: 10, msg: '包含磁盘格式化命令' },
-    { pattern: /curl\s.*\|.*sh|wget.*\|.*bash/g, weight: 10, msg: '包含管道执行网络脚本' },
-    { pattern: /eval\s*\(|exec\s*\(/g, weight: 9, msg: '包含动态代码执行' },
-  ]
-
-  for (const { pattern, weight, msg } of dangerousCommands) {
-    if (pattern.test(text)) {
-      warnings.push(msg)
-      riskScore += weight
-    }
-  }
-
-  // 2. 检查危险工具使用
-  const dangerousTools = {
-    run_command: 5,
-    delete_file: 6,
-    write_file: 4,
-    edit_file: 3,
-  }
-
-  for (const [tool, weight] of Object.entries(dangerousTools)) {
-    if (combinedTools.includes(tool.toLowerCase())) {
-      warnings.push(`使用了高危工具: ${tool}`)
-      riskScore += weight
-    }
-  }
-
-  // 3. 检查敏感文件路径访问
-  const sensitivePaths = [
-    { pattern: /\/etc\/passwd|\/etc\/shadow/g, weight: 8, msg: '尝试访问系统敏感文件' },
-    { pattern: /\.ssh\/|\.gitconfig|\.npmrc|\.pypirc/g, weight: 7, msg: '尝试访问凭证文件' },
-    { pattern: /\/root\/|\/home\/[^/]+\/Documents/g, weight: 6, msg: '尝试访问用户私有目录' },
-    { pattern: /node_modules\/.*\.env|\.env\.local/g, weight: 7, msg: '尝试访问环境变量文件' },
-  ]
-
-  for (const { pattern, weight, msg } of sensitivePaths) {
-    if (pattern.test(text)) {
-      warnings.push(msg)
-      riskScore += weight
-    }
-  }
-
-  // 4. 检查网络请求
-  const networkPatterns = [
-    { pattern: /https?:\/\/[^\s]+/g, weight: 2, msg: '包含外部网络请求' },
-    { pattern: /fetch\s*\(|axios\s*\(|request\s*\(/g, weight: 4, msg: '包含 HTTP 请求调用' },
-  ]
-
-  for (const { pattern, weight, msg } of networkPatterns) {
-    if (pattern.test(text)) {
-      warnings.push(msg)
-      riskScore += weight
-    }
-  }
-
-  // 5. 检查环境变量注入
-  if (Object.keys(meta.env).length > 5) {
-    warnings.push(`注入大量环境变量 (${Object.keys(meta.env).length} 个)`)
-    riskScore += 3
-  }
-
-  for (const [key, value] of Object.entries(meta.env)) {
-    if (key.toLowerCase().includes('token') || key.toLowerCase().includes('secret') || key.toLowerCase().includes('key')) {
-      warnings.push(`注入敏感环境变量: ${key}`)
-      riskScore += 5
-    }
-    if (value.includes('$(') || value.includes('`')) {
-      warnings.push(`环境变量包含命令替换（一票否决）: ${key}`)
-      riskScore += 15
-    }
-  }
-
-  // 确定风险等级
-  let riskLevel: 'low' | 'medium' | 'high' | 'critical'
-  if (riskScore >= 15) {
-    riskLevel = 'critical'
-  } else if (riskScore >= 10) {
-    riskLevel = 'high'
-  } else if (riskScore >= 5) {
-    riskLevel = 'medium'
-  } else {
-    riskLevel = 'low'
-  }
-
-  const safe = riskLevel !== 'critical' && riskLevel !== 'high'
-
-  return {
-    safe,
-    warnings,
-    riskLevel,
-  }
-}
-
-/* ------------------------------------------------------------------ */
-/*  其他                                                                */
-/* ------------------------------------------------------------------ */
-
-function normalizeWorkspace(workspace?: string): string {
-  const raw = String(workspace ?? '').trim()
-  if (!raw) return ''
-  return path.resolve(raw)
-}
-
-function interpolateEnv(value: string): string {
-  return String(value ?? '').replace(/\$\{([A-Za-z_]\w*)\}/g, (_, name: string) => {
-    return process.env[name] ?? ''
-  })
-}
-
-function toRawGitHubUrl(url: string): string {
-  const m = url.match(/github\.com\/([^/]+)\/([^/]+)\/(?:blob\/)?(.+)/)
-  if (m) return `https://raw.githubusercontent.com/${m[1]}/${m[2]}/${m[3]}`
-  return url
-}
 
 export function debugDumpSkillsState() {
+  const _log = getLogger()
   _log('SKILLS_STATE', {
     total: allSkills.length,
     activeCount: activeSkillInstructions.length,

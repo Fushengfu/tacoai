@@ -1,10 +1,79 @@
 /**
- * Provider 消息适配器 - 类型定义
+ * LLM 客户端 - 类型定义
  * 
- * 定义统一的标准消息格式，前端始终使用此格式
+ * 统一管理所有 LLM 相关的公共类型，避免循环依赖。
  */
 
-import type { ProviderKey } from './client'
+import type { IncomingHttpHeaders } from 'node:http'
+import type { ToolDefinition, ToolCall } from '../tools'
+
+/* ------------------------------------------------------------------ */
+/*  核心类型                                                            */
+/* ------------------------------------------------------------------ */
+
+/** 标准聊天消息 */
+export type ChatMessage = {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content: string | Array<
+    | { type: 'text'; text: string }
+    | { type: 'image_url'; image_url: { url: string } }
+    | { type: 'video_url'; video_url: { url: string } }
+    | { type: 'audio_url'; audio_url: { url: string } }
+  >
+  /** 用户消息可附带的图片（data URL / URL） */
+  images?: string[]
+  /** assistant 消息可能包含 tool_calls */
+  tool_calls?: ToolCall[]
+  /** DeepSeek 推理模型可携带的推理上下文字段 */
+  reasoning_content?: string
+  /** DeepSeek 前缀续写（beta） */
+  prefix?: boolean
+  /** 可选参与者名称（provider 透传） */
+  name?: string
+  /** tool 消息需要关联的 tool_call_id */
+  tool_call_id?: string
+}
+
+/** 流式事件：文本片段 or 工具调用 */
+export type StreamEvent =
+  | { type: 'text'; content: string }
+  | { type: 'reasoning'; content: string }
+  | { type: 'tool_calls'; toolCalls: ToolCall[] }
+  | { type: 'invalid_tool_calls'; names: string[] }
+  | { type: 'usage'; usage: TokenUsage }
+
+export type TokenUsage = {
+  promptTokens?: number
+  completionTokens?: number
+  totalTokens?: number
+  cachedTokens?: number
+}
+
+export type BuiltinProviderKey = 'deepseek' | 'kimi' | 'minimax' | 'glm' | 'qwen' | 'mimo'
+/** 支持内置 6 个 provider + 网关/自定义 provider（任意字符串） */
+export type ProviderKey = BuiltinProviderKey | (string & {})
+
+export type ProviderConfig = {
+  baseUrl: string
+  apiKey: string
+  model: string
+  temperature?: number
+  maxTokens?: number
+  headers?: IncomingHttpHeaders
+  supportsVision?: boolean
+  supportsReasoning?: boolean
+}
+
+export type ProviderOverrides = Record<string, Partial<ProviderConfig>>
+
+export type RequestOptions = {
+  tools?: ToolDefinition[]
+  toolChoice?: 'auto' | 'required'
+}
+
+/* ------------------------------------------------------------------ */
+/*  消息适配器类型（Provider 格式转换）                                   */
+/* ------------------------------------------------------------------ */
 
 /**
  * 统一的标准消息内容元素
