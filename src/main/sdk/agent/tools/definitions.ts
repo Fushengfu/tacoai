@@ -442,50 +442,6 @@ export const toolDefinitions: ToolDefinition[] = [
       },
     },
   },
-  {
-    type: 'function',
-    function: {
-      name: 'find_definition',
-      description: '查找代码中某个符号（函数/方法/类/接口/类型/枚举/结构体/变量）的定义位置。基于 tree-sitter AST 语义解析，精确匹配而非文本搜索。返回文件名、行号、列号、符号类型。支持 TypeScript、JavaScript、Python、Go、Rust、C、C++、Java、Ruby、PHP、Bash、Kotlin、Scala、Haskell、Elixir、C#、Perl、CSS、HTML、JSON、OCaml、F# 等语言。',
-      parameters: {
-        type: 'object',
-        properties: {
-          symbol: { type: 'string', description: '要查找的符号名称，如 "buildSystemPrompt"、"handleAgentStream"、"UserConfig"' },
-          filePath: { type: 'string', description: '符号所在的文件路径（绝对路径或相对路径）' },
-        },
-        required: ['symbol', 'filePath'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'find_references',
-      description: '查找代码中某个符号（函数/方法/类/接口/类型/枚举/结构体/变量）的所有引用位置（跨文件搜索）。基于 tree-sitter AST 语义解析，只返回真正的代码引用，不包含字符串、注释中的文本匹配。自动扫描工作空间下所有同语言源文件。返回每个引用位置的文件路径、行号、列号、上下文（所在行内容）。支持 TypeScript、JavaScript、Python、Go、Rust、C、C++、Java、Ruby、PHP、Bash、Kotlin、Scala、Haskell、Elixir、C#、Perl、CSS、HTML、JSON、OCaml、F# 等语言。',
-      parameters: {
-        type: 'object',
-        properties: {
-          symbol: { type: 'string', description: '要查找引用的符号名称' },
-          filePath: { type: 'string', description: '符号定义所在的文件路径（绝对路径或相对路径）' },
-        },
-        required: ['symbol', 'filePath'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'list_symbols',
-      description: '列出某个代码文件中所有命名符号：函数、方法、类、接口、类型别名、枚举、结构体、变量。返回每个符号的名称、类型、行号、列号。支持 TypeScript、JavaScript、Python、Go、Rust、C、C++、Java、Ruby、PHP、Bash、Kotlin、Scala、Haskell、Elixir、C#、Perl、CSS、HTML、JSON、OCaml、F# 等 22 种语言。',
-      parameters: {
-        type: 'object',
-        properties: {
-          filePath: { type: 'string', description: '要分析的代码文件路径（绝对路径或相对路径），支持 59 种文件扩展名（覆盖 TypeScript、JavaScript、Python、Go、Rust、C/C++、Java、Ruby、PHP、Bash、Kotlin、Scala、Haskell、Elixir、C#、Perl、CSS、HTML、JSON、OCaml、F# 等 22 种语言）' },
-        },
-        required: ['filePath'],
-      },
-    },
-  },
 ]
 
 /* ------------------------------------------------------------------ */
@@ -542,7 +498,7 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
     usage: [
       '用于快速理解目录结构，优先以较小 maxDepth 查看骨架。',
       '当只需目录骨架时将 includeFiles 设为 false，减少无关噪声。',
-      '定位目标后再配合 find_file/read_file 深入；符号查找（函数/类/变量定义和引用）优先使用 find_definition / find_references / list_symbols，grep 仅用于代码理解工具不支持的文件类型或纯文本搜索。',
+      '定位目标后再配合 find_file/read_file 深入；内容搜索统一优先 run_command + grep。',
     ],
     cautions: [
       '禁止用 list_dir 浏览技能目录（~/.taco/skills/），已安装的技能信息通过 技能目录 获取。',
@@ -552,7 +508,7 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
     usage: [
       '用于构建、测试、运行和验证真实结果，优先执行最小必要命令。',
       '明确设置 cwd 到目标项目目录，避免在错误目录执行。',
-      '代码符号搜索（函数/类/变量的定义和引用）优先使用 find_definition / find_references / list_symbols；grep 仅用于这些工具不支持的语言或纯文本搜索。',
+      '代码搜索默认优先使用 grep。',
       '命令失败时返回关键 stdout/stderr，并给出下一步处理动作。',
       '注意：在同一轮询中，避免连续执行同一个命令，如果尝试执行失败请更换别的方式或者别的命令。',
     ],
@@ -743,43 +699,6 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
       '卸载前应先告知用户并等待确认，不要擅自卸载。',
       '内置技能不可卸载，如果用户要求卸载内置技能，直接告知不可卸载。',
       '卸载后相关技能目录会被删除，不可恢复。',
-    ],
-  },
-  /* ---- 代码智能理解 ---- */
-  find_definition: {
-    usage: [
-      '基于 tree-sitter AST 语义解析，精确查找符号（函数/方法/类/接口/类型/枚举/结构体/变量）的定义位置。',
-      '当需要定位某个符号的声明位置时优先使用，比 grep/find 精确得多：不会匹配注释、字符串中的同名文本。',
-      'symbol 参数传符号名称，filePath 传该符号所在的文件路径（相对或绝对均可）。',
-      '返回定义位置的文件名、行号、列号和符号类型（function/method/class/interface/type/enum/struct/variable）。',
-    ],
-    cautions: [
-      '仅支持已安装 tree-sitter 语言包的文件类型（23 种编程/标记语言，60 个文件扩展名）。',
-      '跨文件的定义查找需要符号在当前文件中可见（同文件定义或通过 import 引入）。',
-    ],
-  },
-  find_references: {
-    usage: [
-      '基于 tree-sitter AST 语义解析，精确查找符号的所有引用位置（跨文件扫描）。',
-      '当需要了解"这个函数在哪些地方被调用"或"这个变量在哪里被使用"时优先使用，比 grep 精确得多：只返回真正的代码引用，不含注释和字符串中的文本匹配。',
-      'symbol 参数传符号名称，filePath 传定义所在的文件路径。',
-      '返回每个引用位置的文件名、行号、列号、上下文行内容。',
-    ],
-    cautions: [
-      '仅支持已安装 tree-sitter 语言包的文件类型（23 种语言）。',
-      '跨文件引用自动扫描工作空间下同语言源文件，大项目可能耗时较长。',
-    ],
-  },
-  list_symbols: {
-    usage: [
-      '基于 tree-sitter AST 语义解析，列出文件中所有命名符号（函数/方法/类/接口/类型/枚举/结构体/变量）。',
-      '当需要快速了解文件结构、查看有哪些函数和类时优先使用，比 grep 等文本搜索更结构化。',
-      'filePath 参数传要分析的代码文件路径。',
-      '返回每个符号的名称、类型、行号、列号。',
-    ],
-    cautions: [
-      '仅支持已安装 tree-sitter 语言包的文件类型（23 种语言）。',
-      '某些语言的嵌套符号可能不会被顶层查询捕获。',
     ],
   },
   /* ---- 文件上传到云存储 ---- */

@@ -138,30 +138,26 @@ grep -rnE "TODO|FIXME" .              # 扩展正则
   return `## 代码搜索优化
 定位代码/内容时的工具选择策略：
 
-### 符号搜索（函数/类/变量/接口 的定义和引用）
-- **优先使用** \`find_definition\`、\`find_references\`、\`list_symbols\`——基于 tree-sitter AST 语义解析，精确匹配，不会误匹配注释或字符串中的同名文本
-- 支持 22 种语言：TS/TSX、JS/JSX、Python、Go、Rust、C、C++、Java、Ruby、PHP、Bash、Kotlin、Scala、Haskell、Elixir、C#、Perl、CSS、HTML、JSON、OCaml、F#
-
-### 文本搜索（grep，代码理解工具不支持时使用）
+### 工具选择（按环境自适应）
 - **macOS / Linux**：优先 \`grep -rn\`（系统自带，行为稳定，无需额外安装）
 - **通用兜底**：\`grep -rn\`（所有 Unix 系统自带）
 
 ### 正确用法示例
 \`\`\`bash
-# grep 搜索关键字（纯文本搜索、不支持的语言、搜索注释/字符串中的内容时使用）
+# grep 搜索关键字
 grep -rn "关键字" .                  # 递归搜索，显示行号
 grep -rn "关键字" --include="*.ts" . # 按文件类型过滤
 grep -rnE "TODO|FIXME" .             # 多关键词正则（ERE 方式）
+grep -rn "function buildSystemPrompt" .  # 搜索函数定义
 
 # find 按文件名查找
 find . -name "*.ts" -path "*/renderer/*"
 \`\`\`
 
 ### 降级策略
-1. 符号搜索优先 \`find_definition\` / \`find_references\` / \`list_symbols\`
-2. 不支持的语言或纯文本搜索用 \`grep -rn\`
-3. 搜索不到时拆分关键词、扩大搜索范围再试
-4. 最后才 \`read_file\` 整文件（尽量避免）
+1. 优先 \`grep -rn\`，始终可用无需降级
+2. 搜索不到时拆分关键词、扩大搜索范围再试
+3. 最后才 \`read_file\` 整文件（尽量避免）
 
 大文件必须分块读取：先定位，再用 \`read_file(path, startLine, endLine)\``
 }
@@ -321,7 +317,7 @@ function buildAgentSystemPrompt(env: SystemEnv): string {
 
 **当 intent 为 code-analysis 或 code-modify 时，本轮必须立即调用工具获取真实信息。**
 
-- **强制动作**：第一个输出句后，必须立刻发起 read_file / find_definition / find_references / list_symbols / grep / run_command 调用
+- **强制动作**：第一个输出句后，必须立刻发起 read_file / grep / run_command 调用
 - **禁止话术**：不允许只输出"我来排查""先找到相关代码""看起来是……"而不调工具
 - **没有工具调用证据的分析等同编造**
 
@@ -348,7 +344,7 @@ function buildAgentSystemPrompt(env: SystemEnv): string {
 
 code-analysis 或 code-modify 任务中，在给出任何分析结论、设计方案或修改建议之前，必须先完成以下全面检查。**这不是可选的"建议"，而是强制执行步骤。** 违反本条 → 结论不可信，方案不可执行。
 
-1. **全局搜索，不遗漏**：用 find_definition 和 find_references 精确搜索所有相关函数/类/变量/接口的定义和引用方（grep 仅作为兜底，用于代码理解工具不支持的语言或纯文本搜索）。禁止只搜当前文件就下结论。
+1. **全局搜索，不遗漏**：用 grep 搜索所有相关函数/类/变量/接口的定义，以及所有引用方（调用方、实现方、导入方、配置引用）。禁止只搜当前文件就下结论。
 2. **调用链追踪**：从入口到目标代码，逐层追踪完整调用链路。理解每一步的输入输出和数据变换。
 3. **接口/签名影响**：如果要改函数签名、类型定义、接口，必须先列出所有受影响的位置。
 4. **数据流理解**：理解数据从源头（用户输入/API 响应/文件读取）到消费端（UI 渲染/存储/网络发送）的完整流动路径。
@@ -400,7 +396,7 @@ code-analysis 或 code-modify 任务中，在给出任何分析结论、设计�
 
 1. **需求对照**：重新审视用户原始需求，逐条对照修改内容。是否完整覆盖？是否遗漏需求？是否多做了需求之外的事？
 2. **逻辑完整性**：每个修改的函数/模块，从头到尾走一遍逻辑流。输入→处理→输出每个环节是否正确？边界条件（空值、极值、并发）是否处理？
-3. **关联影响复查**：之前列出的所有受影响方（调用方、实现方、导入方、配置引用）是否已全部更新？再次用 find_references（或 grep 兜底）确认无遗漏引用。
+3. **关联影响复查**：之前列出的所有受影响方（调用方、实现方、导入方、配置引用）是否已全部更新？再次 global grep 确认无遗漏引用。
 4. **死代码清理**：是否因本次修改产生了未使用的 import、废弃函数、冗余变量、注释掉的旧代码？清理干净。
 5. **安全复查**：再次检查 1.5 节四项安全风险（注入攻击、密钥泄露、路径穿越、硬编码凭证），确认未引入新安全问题。
 

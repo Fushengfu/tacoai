@@ -120,11 +120,6 @@ import {
   handleVoiceRecognize,
 } from './handlers/voice-handlers'
 
-import {
-  execFindDefinition,
-  execFindReferences,
-} from '../sdk/agent/tools/exec-code-intel'
-
 /* ------------------------------------------------------------------ */
 /*  Registration                                                       */
 /* ------------------------------------------------------------------ */
@@ -346,32 +341,6 @@ export function registerIpcHandlers() {
 
   // Voice
   ipcMain.handle(IpcChannel.VOICE_RECOGNIZE, handleVoiceRecognize)
-
-  // Code Intelligence
-  ipcMain.handle(IpcChannel.CODE_INTEL_FIND_DEFINITION, async (_e, workspace: string, filePath: string, symbol: string) => {
-    try {
-      const result = await execFindDefinition({ symbol, filePath }, workspace)
-      if (result.success) {
-        const data = JSON.parse(result.content)
-        return { success: true, data }
-      }
-      return { success: false, error: result.content }
-    } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) }
-    }
-  })
-  ipcMain.handle(IpcChannel.CODE_INTEL_FIND_REFERENCES, async (_e, workspace: string, filePath: string, symbol: string) => {
-    try {
-      const result = await execFindReferences({ symbol, filePath }, workspace)
-      if (result.success) {
-        const data = JSON.parse(result.content)
-        return { success: true, data }
-      }
-      return { success: false, error: result.content }
-    } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) }
-    }
-  })
 }
 
 function buildLogScope(projectId?: string, workspace?: string): string | undefined {

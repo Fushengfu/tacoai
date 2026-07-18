@@ -207,71 +207,43 @@ export function FileEditor({
     if (!model) return
     const language = model.getLanguageId()
 
-    // TS/JS → Monaco TypeScript worker
-    if (language === 'typescript' || language === 'javascript') {
-      try {
-        const getWorker = language === 'typescript'
-          ? await monaco.languages.typescript.getTypeScriptWorker()
-          : await monaco.languages.typescript.getJavaScriptWorker()
-        const worker = await getWorker(model.uri)
-        const offset = model.getOffsetAt(position)
-        const definitions = await worker.getDefinitionAtPosition(model.uri.toString(), offset)
-        if (!definitions || definitions.length === 0) return
+    // 仅 TS/JS 支持 Monaco TypeScript worker 跳转定义
+    if (language !== 'typescript' && language !== 'javascript') return
 
-        const target = definitions[0]
-        const targetUri = toUri(monaco, target.fileName)
-        const targetModel = await ensureModelLoaded(monaco, targetUri)
-        const targetPosition = targetModel
-          ? targetModel.getPositionAt(target.textSpan.start)
-          : { lineNumber: 1, column: 1 }
-
-        const sameModel = targetUri.toString() === model.uri.toString()
-        if (sameModel) {
-          editor.setPosition(targetPosition)
-          editor.revealPositionInCenter(targetPosition)
-          editor.focus()
-          return
-        }
-
-        if (onNavigateToFile) {
-          const relPath = workspaceRelativePath(targetUri.fsPath, workspace)
-          if (relPath) {
-            onNavigateToFile(relPath, targetPosition.lineNumber, targetPosition.column)
-          }
-        }
-      } catch {
-        // 忽略跳转失败
-      }
-      return
-    }
-
-    // 其他语言 → tree-sitter 代码理解工具
     try {
-      const word = model.getWordAtPosition(position)
-      if (!word) return
-      const symbol = word.word
+      const getWorker = language === 'typescript'
+        ? await monaco.languages.typescript.getTypeScriptWorker()
+        : await monaco.languages.typescript.getJavaScriptWorker()
+      const worker = await getWorker(model.uri)
+      const offset = model.getOffsetAt(position)
+      const definitions = await worker.getDefinitionAtPosition(model.uri.toString(), offset)
+      if (!definitions || definitions.length === 0) return
 
-      const result = await window.taco.codeIntel.findDefinition(workspace, filePath, symbol)
-      if (!result.success || !result.data) return
+      const target = definitions[0]
+      const targetUri = toUri(monaco, target.fileName)
+      const targetModel = await ensureModelLoaded(monaco, targetUri)
+      const targetPosition = targetModel
+        ? targetModel.getPositionAt(target.textSpan.start)
+        : { lineNumber: 1, column: 1 }
 
-      const def = result.data
-
-      // 同一文件中跳转
-      if (def.file === filePath || def.file === absPath) {
-        editor.setPosition({ lineNumber: def.line, column: def.column })
-        editor.revealPositionInCenter({ lineNumber: def.line, column: def.column })
+      const sameModel = targetUri.toString() === model.uri.toString()
+      if (sameModel) {
+        editor.setPosition(targetPosition)
+        editor.revealPositionInCenter(targetPosition)
         editor.focus()
         return
       }
 
-      // 跨文件跳转
       if (onNavigateToFile) {
-        onNavigateToFile(def.file, def.line, def.column)
+        const relPath = workspaceRelativePath(targetUri.fsPath, workspace)
+        if (relPath) {
+          onNavigateToFile(relPath, targetPosition.lineNumber, targetPosition.column)
+        }
       }
     } catch {
       // 忽略跳转失败
     }
-  }, [ensureModelLoaded, onNavigateToFile, workspace, filePath, absPath])
+  }, [ensureModelLoaded, onNavigateToFile, workspace])
 
   /** 保存文件 */
   const handleSave = useCallback(async () => {
