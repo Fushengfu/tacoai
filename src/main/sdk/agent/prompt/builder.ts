@@ -140,7 +140,7 @@ grep -rnE "TODO|FIXME" .              # 扩展正则
 
 ### 符号搜索（函数/类/变量/接口 的定义和引用）
 - **优先使用** \`find_definition\`、\`find_references\`、\`list_symbols\`——基于 tree-sitter AST 语义解析，精确匹配，不会误匹配注释或字符串中的同名文本
-- 支持 16 种语言：TS/TSX、JS/JSX、Python、Go、Rust、C、C++、Java、Ruby、PHP、Swift、Bash、Kotlin、Scala、Haskell、Elixir
+- 支持 22 种语言：TS/TSX、JS/JSX、Python、Go、Rust、C、C++、Java、Ruby、PHP、Bash、Kotlin、Scala、Haskell、Elixir、C#、Perl、CSS、HTML、JSON、OCaml、F#
 
 ### 文本搜索（grep，代码理解工具不支持时使用）
 - **macOS / Linux**：优先 \`grep -rn\`（系统自带，行为稳定，无需额外安装）

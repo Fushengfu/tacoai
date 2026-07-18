@@ -446,7 +446,7 @@ export const toolDefinitions: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'find_definition',
-      description: '查找代码中某个符号（函数/方法/类/接口/类型/枚举/结构体/变量）的定义位置。基于 tree-sitter AST 语义解析，精确匹配而非文本搜索。返回文件名、行号、列号、符号类型。支持 TypeScript、JavaScript、Python、Go、Rust、C、C++、Java、Ruby、PHP、Swift、Bash、Kotlin、Scala、Haskell、Elixir、C#、Perl、CSS、HTML、JSON、OCaml、F# 等语言。',
+      description: '查找代码中某个符号（函数/方法/类/接口/类型/枚举/结构体/变量）的定义位置。基于 tree-sitter AST 语义解析，精确匹配而非文本搜索。返回文件名、行号、列号、符号类型。支持 TypeScript、JavaScript、Python、Go、Rust、C、C++、Java、Ruby、PHP、Bash、Kotlin、Scala、Haskell、Elixir、C#、Perl、CSS、HTML、JSON、OCaml、F# 等语言。',
       parameters: {
         type: 'object',
         properties: {
@@ -461,7 +461,7 @@ export const toolDefinitions: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'find_references',
-      description: '查找代码中某个符号（函数/方法/类/接口/类型/枚举/结构体/变量）的所有引用位置（跨文件搜索）。基于 tree-sitter AST 语义解析，只返回真正的代码引用，不包含字符串、注释中的文本匹配。自动扫描工作空间下所有同语言源文件。返回每个引用位置的文件路径、行号、列号、上下文（所在行内容）。支持 TypeScript、JavaScript、Python、Go、Rust、C、C++、Java、Ruby、PHP、Swift、Bash、Kotlin、Scala、Haskell、Elixir、C#、Perl、CSS、HTML、JSON、OCaml、F# 等语言。',
+      description: '查找代码中某个符号（函数/方法/类/接口/类型/枚举/结构体/变量）的所有引用位置（跨文件搜索）。基于 tree-sitter AST 语义解析，只返回真正的代码引用，不包含字符串、注释中的文本匹配。自动扫描工作空间下所有同语言源文件。返回每个引用位置的文件路径、行号、列号、上下文（所在行内容）。支持 TypeScript、JavaScript、Python、Go、Rust、C、C++、Java、Ruby、PHP、Bash、Kotlin、Scala、Haskell、Elixir、C#、Perl、CSS、HTML、JSON、OCaml、F# 等语言。',
       parameters: {
         type: 'object',
         properties: {
@@ -476,11 +476,11 @@ export const toolDefinitions: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'list_symbols',
-      description: '列出某个代码文件中所有命名符号：函数、方法、类、接口、类型别名、枚举、结构体、变量。返回每个符号的名称、类型、行号、列号。支持 TypeScript、JavaScript、Python、Go、Rust、C、C++、Java、Ruby、PHP、Swift、Bash、Kotlin、Scala、Haskell、Elixir、C#、Perl、CSS、HTML、JSON、OCaml、F# 等 23 种语言。',
+      description: '列出某个代码文件中所有命名符号：函数、方法、类、接口、类型别名、枚举、结构体、变量。返回每个符号的名称、类型、行号、列号。支持 TypeScript、JavaScript、Python、Go、Rust、C、C++、Java、Ruby、PHP、Bash、Kotlin、Scala、Haskell、Elixir、C#、Perl、CSS、HTML、JSON、OCaml、F# 等 22 种语言。',
       parameters: {
         type: 'object',
         properties: {
-          filePath: { type: 'string', description: '要分析的代码文件路径（绝对路径或相对路径），支持 60 种文件扩展名（覆盖 TypeScript、JavaScript、Python、Go、Rust、C/C++、Java、Ruby、PHP、Swift、Bash、Kotlin、Scala、Haskell、Elixir、C#、Perl、CSS、HTML、JSON、OCaml、F# 等 23 种语言）' },
+          filePath: { type: 'string', description: '要分析的代码文件路径（绝对路径或相对路径），支持 59 种文件扩展名（覆盖 TypeScript、JavaScript、Python、Go、Rust、C/C++、Java、Ruby、PHP、Bash、Kotlin、Scala、Haskell、Elixir、C#、Perl、CSS、HTML、JSON、OCaml、F# 等 22 种语言）' },
         },
         required: ['filePath'],
       },

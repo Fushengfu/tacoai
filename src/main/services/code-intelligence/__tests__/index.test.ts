@@ -256,26 +256,6 @@ $g->greet("world");
 hello("test");
 `
 
-// ===== Swift sample =====
-
-const SAMPLE_SWIFT = `
-class Animal {
-    func speak() {}
-}
-
-struct Point {
-    var x: Int
-    var y: Int
-}
-
-enum Color {
-    case red, green, blue
-}
-
-let a = Animal()
-a.speak()
-`
-
 // ===== Bash sample =====
 
 const SAMPLE_BASH = `
@@ -914,22 +894,6 @@ describe('findDefinition', () => {
     expect(result?.kind).toBe('method')
   })
 
-  it('finds a Swift function definition', () => {
-    const fp = '/test.swift'
-    const tree = parseFile(fp, SAMPLE_SWIFT)
-    const result = findDefinition(tree.rootNode, 'speak', fp, getLanguageInfo(fp)!)
-    expect(result).not.toBeNull()
-    expect(result?.kind).toBe('function')
-  })
-
-  it('finds a Swift class definition', () => {
-    const fp = '/test.swift'
-    const tree = parseFile(fp, SAMPLE_SWIFT)
-    const result = findDefinition(tree.rootNode, 'Animal', fp, getLanguageInfo(fp)!)
-    expect(result).not.toBeNull()
-    expect(result?.kind).toBe('class')
-  })
-
   it('finds a Bash function definition', () => {
     const fp = '/test.sh'
     const tree = parseFile(fp, SAMPLE_BASH)
@@ -1120,15 +1084,6 @@ describe('findReferences', () => {
     expect(contexts.some((c) => c.includes('greet('))).toBe(true)
   })
 
-  it('finds Swift references to a method (simple_identifier)', () => {
-    const fp = '/test.swift'
-    const tree = parseFile(fp, SAMPLE_SWIFT)
-    const refs = findReferences(tree.rootNode, 'speak', 'function', getLanguageInfo(fp)!)
-    expect(refs.length).toBeGreaterThanOrEqual(1)
-    const contexts = refs.map((r) => r.context)
-    expect(contexts.some((c) => c.includes('speak('))).toBe(true)
-  })
-
   it('finds Bash references to a function (word node)', () => {
     const fp = '/test.sh'
     const tree = parseFile(fp, SAMPLE_BASH)
@@ -1208,11 +1163,6 @@ describe('parser (new languages)', () => {
     expect(tree.rootNode).toBeDefined()
   })
 
-  it('parses Swift', () => {
-    const tree = parseFile('/test.swift', SAMPLE_SWIFT)
-    expect(tree.rootNode).toBeDefined()
-  })
-
   it('parses Bash', () => {
     const tree = parseFile('/test.sh', SAMPLE_BASH)
     expect(tree.rootNode).toBeDefined()
@@ -1263,11 +1213,6 @@ describe('getLanguageInfo (new languages)', () => {
   it('detects PHP (.php)', () => {
     parseFile('/test.php', SAMPLE_PHP)
     expect(getLanguageInfo('/test.php')?.id).toBe('php')
-  })
-
-  it('detects Swift (.swift)', () => {
-    parseFile('/test.swift', SAMPLE_SWIFT)
-    expect(getLanguageInfo('/test.swift')?.id).toBe('swift')
   })
 
   it('detects Bash (.sh)', () => {
@@ -1375,14 +1320,6 @@ describe('findAllSymbols (new languages)', () => {
     const symbols = findAllSymbols(tree.rootNode, fp, getLanguageInfo(fp)!)
     const methods = symbols.filter((s) => s.kind === 'method')
     expect(methods.some((m) => m.name === 'greet')).toBe(true)
-  })
-
-  it('finds Swift functions', () => {
-    const fp = '/test.swift'
-    const tree = parseFile(fp, SAMPLE_SWIFT)
-    const symbols = findAllSymbols(tree.rootNode, fp, getLanguageInfo(fp)!)
-    const funcs = symbols.filter((s) => s.kind === 'function')
-    expect(funcs.some((f) => f.name === 'speak')).toBe(true)
   })
 
   it('finds Bash functions', () => {

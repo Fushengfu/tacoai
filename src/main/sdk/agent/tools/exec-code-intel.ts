@@ -3,9 +3,9 @@
  *
  * 处理 find_definition / find_references / list_symbols 三个工具。
  * 基于 tree-sitter AST 解析实现多语言语义级代码搜索。
- * 支持 18 种语言（TypeScript / JavaScript / Python / Go / Rust
- * / C / C++ / Java / Ruby / PHP / Swift / Bash / Kotlin / Scala
- * / Haskell / Elixir / C# / Perl）。
+ * 支持 22 种语言（TypeScript / JavaScript / Python / Go / Rust
+ * / C / C++ / Java / Ruby / PHP / Bash / Kotlin / Scala
+ * / Haskell / Elixir / C# / Perl / CSS / HTML / JSON / OCaml / F#）。
  *
  * find_references 跨目录引用：
  *   - 先在定义文件中确认符号存在

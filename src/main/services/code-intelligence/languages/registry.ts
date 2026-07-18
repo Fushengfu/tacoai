@@ -4,7 +4,7 @@
  * 扩展名 → 语言 ID 映射，以及语言查询模式加载。
  * 每个语言定义自己的 AST 查询模式，统一通过 LanguageQueries 接口暴露。
  *
- * 支持 23 种编程/标记语言，覆盖 60 个文件扩展名。
+ * 支持 22 种编程/标记语言，覆盖 59 个文件扩展名。
  */
 
 import type Parser from 'tree-sitter'
@@ -79,8 +79,7 @@ const EXTENSION_MAP: Record<string, string> = {
   '.phtml': 'php',
   '.phps': 'php',
   '.phpt': 'php',
-  // Swift
-  '.swift': 'swift',
+  // Swift removed (tree-sitter-swift depends on tree-sitter-cli which fails on Windows)
   // Bash
   '.sh': 'bash',
   '.bash': 'bash',
@@ -157,10 +156,6 @@ const LANGUAGE_LOADERS: Record<string, () => { lang: any; queries: LanguageQueri
     const PHP = require('tree-sitter-php')
     return { lang: PHP.php, queries: phpQueries }
   },
-  swift: () => {
-    const lang = require('tree-sitter-swift')
-    return { lang, queries: swiftQueries }
-  },
   bash: () => {
     const lang = require('tree-sitter-bash')
     return { lang, queries: bashQueries }
@@ -214,7 +209,6 @@ import { queries as cppQueries } from './cpp'
 import { queries as javaQueries } from './java'
 import { queries as rubyQueries } from './ruby'
 import { queries as phpQueries } from './php'
-import { queries as swiftQueries } from './swift'
 import { queries as bashQueries } from './bash'
 import { queries as kotlinQueries } from './kotlin'
 import { queries as scalaQueries } from './scala'

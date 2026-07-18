@@ -18,7 +18,7 @@
   "main": "dist-main/main.cjs",
   "scripts": {
     "postinstall": "node -e \"if(process.platform!=='win32'){try{require('fs').chmodSync('node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper',0o755)}catch(e){}}\"",
-    "build:main": "esbuild src/main/main.ts --bundle --platform=node --format=cjs --minify --legal-comments=none --outfile=dist-main/main.cjs --external:electron --external:node-pty --external:tree-sitter --external:tree-sitter-typescript --external:tree-sitter-javascript --external:tree-sitter-python --external:tree-sitter-go --external:tree-sitter-rust --external:tree-sitter-c --external:tree-sitter-cpp --external:tree-sitter-java --external:tree-sitter-ruby --external:tree-sitter-php --external:tree-sitter-swift --external:tree-sitter-bash --external:tree-sitter-kotlin --external:tree-sitter-scala --external:tree-sitter-haskell --external:tree-sitter-elixir --external:tree-sitter-c-sharp --external:tree-sitter-perl --external:tree-sitter-css --external:tree-sitter-html --external:tree-sitter-json --external:tree-sitter-ocaml --external:tree-sitter-fsharp",
+    "build:main": "esbuild src/main/main.ts --bundle --platform=node --format=cjs --minify --legal-comments=none --outfile=dist-main/main.cjs --external:electron --external:node-pty --external:tree-sitter --external:tree-sitter-typescript --external:tree-sitter-javascript --external:tree-sitter-python --external:tree-sitter-go --external:tree-sitter-rust --external:tree-sitter-c --external:tree-sitter-cpp --external:tree-sitter-java --external:tree-sitter-ruby --external:tree-sitter-php --external:tree-sitter-bash --external:tree-sitter-kotlin --external:tree-sitter-scala --external:tree-sitter-haskell --external:tree-sitter-elixir --external:tree-sitter-c-sharp --external:tree-sitter-perl --external:tree-sitter-css --external:tree-sitter-html --external:tree-sitter-json --external:tree-sitter-ocaml --external:tree-sitter-fsharp",
     "build:preload": "esbuild src/preload/index.ts --bundle --platform=node --format=cjs --minify --legal-comments=none --outfile=dist-preload/index.cjs --external:electron",
     "build:renderer": "vite build",
     "build:obfuscate:optional": "node scripts/obfuscate-optional.mjs",
@@ -59,7 +59,6 @@
       "node_modules/tree-sitter-java/**/*",
       "node_modules/tree-sitter-ruby/**/*",
       "node_modules/tree-sitter-php/**/*",
-      "node_modules/tree-sitter-swift/**/*",
       "node_modules/tree-sitter-bash/**/*",
       "node_modules/tree-sitter-kotlin/**/*",
       "node_modules/tree-sitter-scala/**/*",
@@ -133,7 +132,6 @@
       "node_modules/tree-sitter-java/**/*",
       "node_modules/tree-sitter-ruby/**/*",
       "node_modules/tree-sitter-php/**/*",
-      "node_modules/tree-sitter-swift/**/*",
       "node_modules/tree-sitter-bash/**/*",
       "node_modules/tree-sitter-kotlin/**/*",
       "node_modules/tree-sitter-scala/**/*",
@@ -164,7 +162,6 @@
     "tree-sitter-ruby": { "tree-sitter": "^0.25.0" },
     "tree-sitter-rust": { "tree-sitter": "^0.25.0" },
     "tree-sitter-scala": { "tree-sitter": "^0.25.0" },
-    "tree-sitter-swift": { "tree-sitter": "^0.25.0" },
     "tree-sitter-typescript": { "tree-sitter": "^0.25.0" }
   },
   "dependencies": {
@@ -207,7 +204,6 @@
     "tree-sitter-ruby": "^0.23.1",
     "tree-sitter-rust": "^0.24.0",
     "tree-sitter-scala": "^0.24.0",
-    "tree-sitter-swift": "^0.7.1",
     "tree-sitter-typescript": "^0.23.2",
     "ws": "^8.18.3"
   },
