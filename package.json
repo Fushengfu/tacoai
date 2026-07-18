@@ -148,6 +148,25 @@
       "node_modules/tree-sitter-fsharp/**/*"
     ]
   },
+  "overrides": {
+    "tree-sitter-c": { "tree-sitter": "^0.25.0" },
+    "tree-sitter-cpp": { "tree-sitter": "^0.25.0" },
+    "tree-sitter-elixir": { "tree-sitter": "^0.25.0" },
+    "tree-sitter-fsharp": { "tree-sitter": "^0.25.0" },
+    "tree-sitter-haskell": { "tree-sitter": "^0.25.0" },
+    "tree-sitter-html": { "tree-sitter": "^0.25.0" },
+    "tree-sitter-java": { "tree-sitter": "^0.25.0" },
+    "tree-sitter-json": { "tree-sitter": "^0.25.0" },
+    "tree-sitter-kotlin": { "tree-sitter": "^0.25.0" },
+    "tree-sitter-ocaml": { "tree-sitter": "^0.25.0" },
+    "tree-sitter-perl": { "tree-sitter": "^0.25.0" },
+    "tree-sitter-php": { "tree-sitter": "^0.25.0" },
+    "tree-sitter-ruby": { "tree-sitter": "^0.25.0" },
+    "tree-sitter-rust": { "tree-sitter": "^0.25.0" },
+    "tree-sitter-scala": { "tree-sitter": "^0.25.0" },
+    "tree-sitter-swift": { "tree-sitter": "^0.25.0" },
+    "tree-sitter-typescript": { "tree-sitter": "^0.25.0" }
+  },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "@nut-tree-fork/nut-js": "^4.2.6",
