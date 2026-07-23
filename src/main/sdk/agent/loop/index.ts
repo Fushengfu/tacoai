@@ -9,25 +9,25 @@
  * 通过 callback 向调用方推送事件（文本流、工具调用、工具结果、确认请求）。
  */
 
-import type { ChatMessage, ProviderOverrides, TokenUsage } from './llm/client'
-import type { ProviderKey } from './llm/client'
-import { requestStreamWithTools } from './llm/client'
+import type { ChatMessage, ProviderOverrides, TokenUsage } from '../llm/client'
+import type { ProviderKey } from '../llm/client'
+import { requestStreamWithTools } from '../llm/client'
 import {
   getFilteredToolDefinitions,
   buildAllowedToolNamesForRequest,
   loadAuthLevel,
   isAutoCommitEnabled,
-} from './tools'
-import type { ToolCall, ToolResult, RiskInfo } from './tools'
-import type { AgentServices } from './services'
-import type { AgentEvent } from './types'
-import type { PlanStepStatus } from './types'
-import type { RecallMeta } from './memory/memory-recall'
-import { gitEnsureRepo } from './git/service'
+} from '../tools'
+import type { ToolCall, ToolResult, RiskInfo } from '../tools'
+import type { AgentServices } from '../services'
+import type { AgentEvent } from '../types'
+import type { PlanStepStatus } from '../types'
+import type { RecallMeta } from '../memory/memory-recall'
+import { gitEnsureRepo } from '../git/service'
 import {
   extractUserQueryText,
   extractUserAssetsBlock,
-} from './shared/user-assets'
+} from '../shared/user-assets'
 import {
   stripInternalContextTags,
   stripPseudoToolCallArtifacts,
@@ -35,11 +35,11 @@ import {
   sanitizeReasoningForContext,
   sanitizeReplayRawText,
   containsPseudoToolCallSyntax,
-} from './shared/sanitize'
-import { inferIntentTypeFromQuery } from './shared/intent'
-import { extractTextFromContent } from './llm/adapter'
-import { waitForConfirm, isAbortError } from './error-handler'
-import { compressAgentContext } from './context/compressor'
+} from '../shared/sanitize'
+import { inferIntentTypeFromQuery } from '../shared/intent'
+import { extractTextFromContent } from '../llm/adapter'
+import { waitForConfirm, isAbortError } from '../error-handler'
+import { compressAgentContext } from '../context/compressor'
 
 // ─── 子模块导入 ────────────────────────────────────────────────────────────
 
@@ -54,10 +54,10 @@ import {
   AUTO_RETRY_BASE_DELAY_MS,
   AUTO_RETRY_MAX_DELAY_MS,
   STREAM_SANITIZE_HOLD_BACK,
-} from './loop-utils'
+} from './utils'
 
-export { bootstrapAgentMemory } from './loop-utils'
-export { resolveConfirm, resolveRetry, isAbortError } from './loop-utils'
+export { bootstrapAgentMemory } from './utils'
+export { resolveConfirm, resolveRetry, isAbortError } from './utils'
 
 import {
   buildRuntimeToolPrompt,
@@ -66,21 +66,21 @@ import {
   injectSystemPrompts,
   refreshSkillsWithEnv,
   buildUserId,
-} from './loop-context'
+} from './context'
 
 import {
   createTrackState,
   trackToolCallsInputs,
   trackToolResultsCore,
   trackFileChanges,
-} from './loop-track'
-import type { TrackState } from './loop-track'
+} from './track'
+import type { TrackState } from './track'
 
 import {
   persistTaskCoreLogWithOutcome,
   finalizeAndDone,
   finalizePendingPlanStepsIfNeeded,
-} from './loop-persist'
+} from './persist'
 
 import {
   filterNoteTools,
@@ -93,14 +93,14 @@ import {
   handleRiskAssessment,
   executeAndTrackTools,
   pushAssistantToolCallMessage,
-} from './loop-exec'
-import type { CurrentPlan } from './loop-exec'
+} from './exec'
+import type { CurrentPlan } from './exec'
 
 /* ------------------------------------------------------------------ */
 /*  Agent 事件类型                                                     */
 /* ------------------------------------------------------------------ */
 
-export type { AgentEvent } from './types'
+export type { AgentEvent } from '../types'
 
 /* ------------------------------------------------------------------ */
 /*  runAgent 主入口                                                    */
@@ -656,6 +656,7 @@ export async function runAgent(
       const results = await executeAndTrackTools(
         toolCalls, workspace, signal, logScope, projectId,
         allowedToolNames, overrides, services, onEvent, workingMessages,
+        provider, userId,
       )
       if (signal?.aborted) {
         log('AGENT_ABORTED', { round, reason: 'signal aborted during tool execution' }, logScope)

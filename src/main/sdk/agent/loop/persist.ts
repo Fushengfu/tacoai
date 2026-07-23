@@ -5,29 +5,29 @@
  * 所有函数通过参数接收状态，不持有模块级可变状态。
  */
 
-import type { ChatMessage, ProviderOverrides } from './llm/client'
-import type { ProviderKey } from './llm/client'
-import type { ToolCall, ToolResult } from './tools'
-import type { AgentEvent } from './types'
-import type { PlanStepStatus } from './types'
-import type { RecallMeta } from './memory/memory-recall'
-import { gitCommit, gitEnsureRepo } from './git/service'
-import { isAutoCommitEnabled } from './tools'
-import { maintainTaskMemoriesByAI, recordTaskLog } from './memory/'
-import { applyRewardScore } from './reward'
-import { extractTextFromContent } from './llm/adapter'
+import type { ChatMessage, ProviderOverrides } from '../llm/client'
+import type { ProviderKey } from '../llm/client'
+import type { ToolCall, ToolResult } from '../tools'
+import type { AgentEvent } from '../types'
+import type { PlanStepStatus } from '../types'
+import type { RecallMeta } from '../memory/memory-recall'
+import { gitCommit, gitEnsureRepo } from '../git/service'
+import { isAutoCommitEnabled } from '../tools'
+import { maintainTaskMemoriesByAI, recordTaskLog } from '../memory/'
+import { applyRewardScore } from '../reward'
+import { extractTextFromContent } from '../llm/adapter'
 import {
   extractUserQueryText,
   collectUserMediaRefsFromContent,
   collectUserMediaRefsFromMessages,
   appendMediaRefsToSummary,
-} from './shared/user-assets'
+} from '../shared/user-assets'
 import {
   stripInternalContextTags,
   stripPseudoToolCallArtifacts,
-} from './shared/sanitize'
-import type { TrackState } from './loop-track'
-import { isVerificationPlanStep } from './loop-track'
+} from '../shared/sanitize'
+import type { TrackState } from './track'
+import { isVerificationPlanStep } from './track'
 
 /* ------------------------------------------------------------------ */
 /*  工具函数                                                           */

@@ -6,23 +6,23 @@
  */
 
 import { createHash } from 'node:crypto'
-import type { AgentServices } from './services'
-import { setLLMLogger } from './llm/client'
-import { setCompressorLogger } from './context/compressor'
-import { setMaintainLogger } from './memory/memory-maintain'
-import { setMemoryMigrationLogger, setMemoryMigrationDatabase, setMemoryMigrationNotes } from './memory/memory-migration'
-import { setMemoryStatsDatabase, setMemoryStatsNotes } from './memory/memory-stats'
-import { setMemoryStoreDatabase } from './memory/store'
-import { setSnapshotStore } from './memory/snapshot'
-import { setMemoryRecallLogger, setMemoryRecallNotes } from './memory/memory-recall'
-import { setSkillsServiceLogger } from './skills/service'
-import { setErrorHandlerLogger } from './error-handler'
+import type { AgentServices } from '../services'
+import { setLLMLogger } from '../llm/client'
+import { setCompressorLogger } from '../context/compressor'
+import { setMaintainLogger } from '../memory/memory-maintain'
+import { setMemoryMigrationLogger, setMemoryMigrationDatabase, setMemoryMigrationNotes } from '../memory/memory-migration'
+import { setMemoryStatsDatabase, setMemoryStatsNotes } from '../memory/memory-stats'
+import { setMemoryStoreDatabase } from '../memory/store'
+import { setSnapshotStore } from '../memory/snapshot'
+import { setMemoryRecallLogger, setMemoryRecallNotes } from '../memory/memory-recall'
+import { setSkillsServiceLogger } from '../skills/service'
+import { setErrorHandlerLogger } from '../error-handler'
 import {
   sanitizeContextArtifacts,
   sanitizeUserFacingText,
   sanitizeReasoningForContext,
   sanitizeReplayRawText,
-} from './shared/sanitize'
+} from '../shared/sanitize'
 
 /* ------------------------------------------------------------------ */
 /*  常量                                                               */
@@ -40,7 +40,7 @@ export const STREAM_SANITIZE_HOLD_BACK = 24
 /*  确认等待机制（从 error-handler.ts 重导出）                           */
 /* ------------------------------------------------------------------ */
 
-export { resolveConfirm, resolveRetry, isAbortError } from './error-handler'
+export { resolveConfirm, resolveRetry, isAbortError } from '../error-handler'
 
 /* ------------------------------------------------------------------ */
 /*  纯工具函数                                                         */

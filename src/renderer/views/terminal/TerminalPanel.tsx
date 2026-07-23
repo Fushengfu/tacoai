@@ -128,7 +128,7 @@ export function TerminalPanel({ cwd, onClose }: Readonly<TerminalPanelProps>) {
       termRef.current = null
       fitAddonRef.current = null
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [])
 
   // 监听容器大小变化，自动 fit + resize PTY
   const handleResize = useCallback(() => {

@@ -5,16 +5,16 @@
  * 所有函数通过参数接收状态，不持有模块级可变状态。
  */
 
-import type { ChatMessage, ProviderOverrides } from './llm/client'
-import type { ProviderKey } from './llm/client'
-import type { ToolCall, ToolResult, RiskInfo } from './tools'
-import type { AgentEvent } from './types'
-import type { PlanStepStatus } from './types'
-import { executeToolCalls, assessToolCallsRisk, setBrowserAutoApproved, setDesktopAutoApproved, getGlobalAuthLevel } from './tools'
-import { sanitizeReasoningForContext } from './shared/sanitize'
-import { waitForConfirm, isAbortError } from './error-handler'
-import { truncateToolResultForContext } from './context/compressor'
-import { extractTextFromContent } from './llm/adapter'
+import type { ChatMessage, ProviderOverrides } from '../llm/client'
+import type { ProviderKey } from '../llm/client'
+import type { ToolCall, ToolResult, RiskInfo } from '../tools'
+import type { AgentEvent } from '../types'
+import type { PlanStepStatus } from '../types'
+import { executeToolCalls, assessToolCallsRisk, setBrowserAutoApproved, setDesktopAutoApproved, getGlobalAuthLevel } from '../tools'
+import { sanitizeReasoningForContext } from '../shared/sanitize'
+import { waitForConfirm, isAbortError } from '../error-handler'
+import { truncateToolResultForContext } from '../context/compressor'
+import { extractTextFromContent } from '../llm/adapter'
 
 /* ------------------------------------------------------------------ */
 /*  笔记工具优先执行（不经过确认）                                      */
@@ -322,11 +322,15 @@ export async function executeAndTrackTools(
   services: any,
   onEvent: ((event: AgentEvent) => void) | undefined,
   workingMessages: ChatMessage[],
+  provider?: string,
+  userId?: string,
 ): Promise<ToolResult[]> {
   const results = await executeToolCalls(toolCalls, workspace, signal, logScope, projectId, {
     allowedToolNames,
     overrides,
     services,
+    provider,
+    userId,
   })
   if (signal?.aborted) return results
 

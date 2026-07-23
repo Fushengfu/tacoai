@@ -36,6 +36,8 @@ interface AgentStepBodyProps {
   openFile: (filePath: string) => void
   /** 图片预览 */
   setPreviewImageUrl: (url: string | null) => void
+  /** 在内置 webview 中打开链接 */
+  onOpenWebview?: (url: string) => void
 }
 
 export function AgentStepBody({
@@ -55,6 +57,7 @@ export function AgentStepBody({
   workspace,
   openFile,
   setPreviewImageUrl,
+  onOpenWebview,
 }: AgentStepBodyProps) {
   return (
     <div className="agent-step-body">
@@ -88,7 +91,7 @@ export function AgentStepBody({
         </button>
         {isThinkOpen && (
           <div className="step-thinking-body">
-            <MarkdownBubble content={cleaned} workspace={workspace} onOpenProjectFile={(path) => openFile(path)} onImagePreview={setPreviewImageUrl} />
+            <MarkdownBubble content={cleaned} workspace={workspace} onOpenProjectFile={(path) => openFile(path)} onOpenWebview={onOpenWebview} onImagePreview={setPreviewImageUrl} />
           </div>
         )}
       </div>

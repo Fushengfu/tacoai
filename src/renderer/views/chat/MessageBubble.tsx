@@ -4,6 +4,7 @@ import { MarkdownBubble } from './MarkdownBubble'
 import { PlanTracker, formatTaskTimingLabel } from './PlanTracker'
 import { AgentStepBody } from './AgentSteps'
 import { sanitizeAssistantContentForDisplay, stepStatusIcon, stepHeaderSummary, stepGroupOperationSummary, collectMessageScreenshotUrls } from './agent-helpers'
+import { renderReplyToImage } from '../../utils/generate-image'
 
 /* ------------------------------------------------------------------ */
 /*  MessageBubble — 单条消息气泡（用户 / AI）                             */
@@ -48,6 +49,8 @@ interface MessageBubbleProps {
   onOpenFileView?: (filePath: string, forceDiff?: boolean, selection?: { line: number; column: number } | null) => void
   /** 打开文件 */
   openFile: (filePath: string) => void
+  /** 在内置 webview 中打开链接 */
+  onOpenWebview?: (url: string) => void
   /** 编辑器 ID */
   editor: string
   /** 图片预览 */
@@ -95,6 +98,7 @@ export function MessageBubble({
   workspace,
   onOpenFileView,
   openFile,
+  onOpenWebview,
   editor: _editor,
   setPreviewImageUrl,
   editingText,
@@ -142,10 +146,63 @@ export function MessageBubble({
               content={visibleContent}
               workspace={workspace}
               onOpenProjectFile={(path) => openFile(path)}
+              onOpenWebview={onOpenWebview}
               onImagePreview={setPreviewImageUrl}
             />
           ) : null
         })()}
+        {/* 复制 + 生成图片按钮（仅 assistant 且有内容时显示） */}
+        {msg.content?.trim() && (
+          <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
+            <button
+              type="button"
+              className="msg-copy-btn"
+              title="复制回复"
+              onClick={async (e) => {
+                e.stopPropagation()
+                const btn = e.currentTarget
+                try {
+                  await navigator.clipboard.writeText(msg.content)
+                } catch {
+                  // Electron file:// 协议下 navigator.clipboard 可能不可用，降级到 IPC
+                  try { await window.taco.clipboard.writeText(msg.content) } catch { /* 静默失败 */ }
+                }
+                btn.classList.add('copied')
+                btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>'
+                setTimeout(() => {
+                  btn.classList.remove('copied')
+                  btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>'
+                }, 1500)
+              }}
+              dangerouslySetInnerHTML={{ __html: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>' }}
+            />
+            <button
+              type="button"
+              className="msg-img-btn"
+              title="生成图片并复制"
+              onClick={async (e) => {
+                e.stopPropagation()
+                const btn = e.currentTarget
+                btn.classList.add('generating')
+                try {
+                  const { dataUrl } = await renderReplyToImage(msg.content)
+                  if (dataUrl) {
+                    await window.taco.clipboard.writeImage(dataUrl)
+                    btn.classList.add('done')
+                    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>'
+                    setTimeout(() => {
+                      btn.classList.remove('done', 'generating')
+                      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3" ry="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>'
+                    }, 1500)
+                  }
+                } catch {
+                  btn.classList.remove('generating')
+                }
+              }}
+              dangerouslySetInnerHTML={{ __html: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3" ry="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>' }}
+            />
+          </div>
+        )}
         {/* 自动化截图缩略图 */}
         {(() => {
           const screenshotUrls = collectMessageScreenshotUrls(msg)
@@ -472,6 +529,7 @@ export function MessageBubble({
                         workspace={workspace}
                         openFile={openFile}
                         setPreviewImageUrl={setPreviewImageUrl}
+                        onOpenWebview={onOpenWebview}
                       />
                     )}
                   </div>

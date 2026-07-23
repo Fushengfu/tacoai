@@ -6,6 +6,7 @@ import { DiffView } from '../DiffView'
 import { MarkdownBubble } from './MarkdownBubble'
 import { useLanguage } from '../../hooks/useLanguage'
 import { useVoiceInput } from '../../hooks/useVoiceInput'
+import { stripMarkdown } from '../../hooks/useTts'
 import { INITIAL_VISIBLE_MESSAGE_COUNT, LOAD_MORE_MESSAGE_BATCH, LOAD_MORE_SCROLL_THRESHOLD_PX, formatTaskTimingLabel } from './PlanTracker'
 import { MessageBubble } from './MessageBubble'
 import { InputArea } from './InputArea'
@@ -63,6 +64,8 @@ type ChatPanelProps = {
   supportsVision?: boolean
   projectId?: string
   onOpenFileView?: (filePath: string, forceDiff?: boolean, selection?: { line: number; column: number } | null) => void
+  /** 在内置 webview 中打开链接 */
+  onOpenWebview?: (url: string) => void
   onOpenModels?: () => void
   activeConfirmIds: Set<string>
   activeRetryIds: Set<string>
@@ -113,6 +116,7 @@ export function ChatPanel({
   contextPercent,
   supportsVision,
   onOpenFileView,
+  onOpenWebview,
   projectTokenStats,
   runTokenStats,
   projectId,
@@ -155,6 +159,90 @@ export function ChatPanel({
   }, [])
 
   const { isRecording, elapsedSeconds, toggleRecording } = useVoiceInput({ onTextReady: handleVoiceTextReady })
+
+  // ── 语音朗读（自动 TTS 队列）──
+  // 朗读状态（控制 AI Voice Avatar 显隐）
+  const [isSpeaking, setIsSpeaking] = useState(false)
+
+  // ── TTS 队列系统 ──
+  const ttsQueueRef = useRef<string[]>([])
+  const ttsPlayingRef = useRef(false)
+
+  /** 构建 SpeechSynthesisUtterance（共用配置） */
+  const buildUtterance = useCallback((text: string) => {
+    const u = new SpeechSynthesisUtterance(text)
+    u.rate = parseFloat(localStorage.getItem('taco-tts-rate') || '1.0')
+    u.pitch = parseFloat(localStorage.getItem('taco-tts-pitch') || '1.0')
+    u.volume = 1.0
+    const voiceUri = localStorage.getItem('taco-tts-voice') || ''
+    const voices = window.speechSynthesis.getVoices()
+    if (voiceUri) {
+      const v = voices.find(vo => vo.voiceURI === voiceUri)
+      if (v) u.voice = v
+    } else if (/[\u4e00-\u9fff]/.test(text)) {
+      const zh = voices.find(vo => vo.lang.startsWith('zh') || vo.name.includes('Tingting'))
+      if (zh) u.voice = zh
+    }
+    return u
+  }, [])
+
+  /** 播放队列中下一条 */
+  const playNextInQueue = useCallback(() => {
+    if (ttsPlayingRef.current || ttsQueueRef.current.length === 0 || !('speechSynthesis' in window)) {
+      console.log('[TTS] playNextInQueue skipped', { playing: ttsPlayingRef.current, qLen: ttsQueueRef.current.length, hasApi: 'speechSynthesis' in window })
+      return
+    }
+    const text = ttsQueueRef.current.shift()!
+    if (!text.trim()) { playNextInQueue(); return }
+    ttsPlayingRef.current = true
+    setIsSpeaking(true)
+    console.log('[TTS] setIsSpeaking(true), text length=', text.length)
+    const u = buildUtterance(text)
+    u.onstart = () => { console.log('[TTS] utterance.onstart fired') }
+    u.onend = () => { console.log('[TTS] utterance.onend fired, qLen=', ttsQueueRef.current.length); ttsPlayingRef.current = false; ttsQueueRef.current.length > 0 ? playNextInQueue() : setTimeout(() => setIsSpeaking(false), 600) }
+    u.onerror = (e) => { console.log('[TTS] utterance.onerror fired', e.error); ttsPlayingRef.current = false; ttsQueueRef.current.length > 0 ? playNextInQueue() : setTimeout(() => setIsSpeaking(false), 600) }
+    window.speechSynthesis.speak(u)
+  }, [buildUtterance])
+
+  // ── 切换项目时停止 TTS ──
+  useEffect(() => {
+    window.speechSynthesis?.cancel()
+    ttsQueueRef.current = []
+    ttsPlayingRef.current = false
+    setIsSpeaking(false)
+  }, [projectId])
+
+  // ── 发送状态变更 → 控制 TTS ──
+  const prevSendingRef = useRef(false)
+  useEffect(() => {
+    const was = prevSendingRef.current
+    prevSendingRef.current = sending
+
+    if (sending && !was) {
+      // 发送开始 → 停止旧朗读、清空队列
+      window.speechSynthesis?.cancel()
+      ttsQueueRef.current = []
+      ttsPlayingRef.current = false
+      setIsSpeaking(false)
+      return
+    }
+
+    // 仅当 sending 从 true 变为 false（刚完成回复）才朗读，不会在组件挂载时误触发
+    if (!sending && was) {
+      if (localStorage.getItem('taco-tts-auto') !== '1') return
+      window.speechSynthesis?.cancel()
+      ttsQueueRef.current = []
+      ttsPlayingRef.current = false
+      const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant')
+      if (lastAssistant?.content?.trim()) {
+        const clean = stripMarkdown(lastAssistant.content)
+        if (clean) {
+          ttsQueueRef.current.push(clean)
+          setTimeout(() => playNextInQueue(), 100)
+        }
+      }
+    }
+  }, [sending])
 
   // ── 授权级别 ──
   const [authLevel, setAuthLevel] = useState<'auto' | 'standard'>(() => {
@@ -891,6 +979,7 @@ export function ChatPanel({
                   workspace={workspace}
                   onOpenFileView={onOpenFileView}
                   openFile={openFile}
+                  onOpenWebview={onOpenWebview}
                   editor={editor}
                   setPreviewImageUrl={setPreviewImageUrl}
                   editingText={editingText}
@@ -919,7 +1008,7 @@ export function ChatPanel({
                 {activeTaskStartedAt && <div className="assistant-task-meta">{formatTaskTimingLabel({ startedAt: activeTaskStartedAt }, nowTs)}</div>}
                 {streamingContent ? (
                   <MarkdownBubble content={streamingContent} streaming workspace={workspace}
-                    onOpenProjectFile={(path) => openFile(path)} onImagePreview={setPreviewImageUrl} />
+                    onOpenProjectFile={(path) => openFile(path)} onOpenWebview={onOpenWebview} onImagePreview={setPreviewImageUrl} />
                 ) : (
                   <div className="typing-indicator"><span /><span /><span /></div>
                 )}
@@ -986,6 +1075,16 @@ export function ChatPanel({
               </div>
             )
           })}
+        </div>
+      )}
+
+      {/* AI 语音头像 — 科幻能量核心特效（fixed 居中，无遮罩） */}
+      {isSpeaking && (
+        <div className="ai-voice-avatar">
+          <div className="ava-energy-core" />
+          <div className="ava-shockwave ava-shockwave-1" />
+          <div className="ava-shockwave ava-shockwave-2" />
+          <div className="ava-shockwave ava-shockwave-3" />
         </div>
       )}
 

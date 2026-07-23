@@ -2797,3 +2797,46 @@
 :root[data-theme='light'] .context-menu-item:hover {
   background: rgba(0,0,0,0.06);
 }
+
+/* ---- Confirm risk card (亮色补充) ---- */
+:root[data-theme='light'] .agent-confirm-risk-reason {
+  color: rgba(0,0,0,0.65);
+}
+:root[data-theme='light'] .agent-confirm-risk-detail {
+  background: rgba(0,0,0,0.04);
+  color: rgba(0,0,0,0.5);
+}
+
+/* ---- Scrollbar 亮色补充 ---- */
+:root[data-theme='light'] .step-thinking-body::-webkit-scrollbar-thumb,
+:root[data-theme='light'] .thinking-block-body::-webkit-scrollbar-thumb,
+:root[data-theme='light'] .agent-step-result-content::-webkit-scrollbar-thumb,
+:root[data-theme='light'] .tool-result-command-output::-webkit-scrollbar-thumb,
+:root[data-theme='light'] .tool-result-diff-body::-webkit-scrollbar-thumb,
+:root[data-theme='light'] .tool-result-file-body::-webkit-scrollbar-thumb {
+  background: rgba(0,0,0,0.12);
+}
+:root[data-theme='light'] .step-thinking-body,
+:root[data-theme='light'] .thinking-block-body,
+:root[data-theme='light'] .agent-step-result-content,
+:root[data-theme='light'] .tool-result-command-output,
+:root[data-theme='light'] .tool-result-diff-body,
+:root[data-theme='light'] .tool-result-file-body {
+  scrollbar-color: rgba(0,0,0,0.1) transparent;
+}
+
+/* ---- Agent step section label ---- */
+:root[data-theme='light'] .agent-step-section-label {
+  color: var(--muted);
+}
+
+/* ---- Thinking block expanded scrollbar ---- */
+:root[data-theme='light'] .step-thinking-body,
+:root[data-theme='light'] .thinking-block-body {
+  scrollbar-color: rgba(0,0,0,0.1) transparent;
+}
+
+/* ---- Confirm bar risk badge ---- */
+:root[data-theme='light'] .agent-confirm-risk-badge {
+  color: var(--text);
+}

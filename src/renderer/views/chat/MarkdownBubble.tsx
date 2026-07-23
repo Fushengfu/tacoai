@@ -199,11 +199,13 @@ type MarkdownBubbleProps = {
   streaming?: boolean
   workspace?: string
   onOpenProjectFile?: (filePath: string) => void
+  /** 点击链接时在内置 webview 面板中打开（http/https/file://） */
+  onOpenWebview?: (url: string) => void
   /** 点击图片时触发预览回调（传入图片 src） */
   onImagePreview?: (src: string) => void
 }
 
-export function MarkdownBubble({ content, streaming, workspace, onOpenProjectFile, onImagePreview }: Readonly<MarkdownBubbleProps>) {
+export function MarkdownBubble({ content, streaming, workspace, onOpenProjectFile, onOpenWebview, onImagePreview }: Readonly<MarkdownBubbleProps>) {
   const parsed = useMemo(() => parseThinkTag(content), [content])
 
   // 思考完成状态：如果没有思考内容则忽略；流式中跟随 thinkingDone
@@ -225,13 +227,40 @@ export function MarkdownBubble({ content, streaming, workspace, onOpenProjectFil
                   rel="noopener noreferrer"
                   onClick={(e) => {
                     e.preventDefault()
-                    const resolvedPath = href
-                      ? toWorkspaceRelativePath(decodeFileHrefPath(href) ?? '', workspace)
+                    // 1. 尝试解析为项目文件
+                    const decodedPath = href ? decodeFileHrefPath(href) ?? '' : ''
+                    const resolvedPath = decodedPath
+                      ? toWorkspaceRelativePath(decodedPath, workspace)
                       : null
                     if (resolvedPath && onOpenProjectFile) {
                       onOpenProjectFile(resolvedPath)
                       return
                     }
+                    // 2. http/https → 内置 webview
+                    if (href && isHttpLikeUrl(href)) {
+                      if (onOpenWebview) {
+                        onOpenWebview(href)
+                      } else {
+                        window.taco.browser.openExternal(href)
+                      }
+                      return
+                    }
+                    // 3. 本地文件路径（非项目文件）→ file:// → webview
+                    if (decodedPath) {
+                      let absPath = decodedPath
+                      // 相对路径 → 拼接工作空间
+                      if (!absPath.startsWith('/') && !isWindowsAbsolutePath(absPath) && workspace) {
+                        absPath = `${workspace.replace(/\/+$/, '')}/${absPath}`
+                      }
+                      const fileUrl = `file://${absPath}`
+                      if (onOpenWebview) {
+                        onOpenWebview(fileUrl)
+                      } else {
+                        window.taco.browser.openExternal(fileUrl)
+                      }
+                      return
+                    }
+                    // 4. 其他 URL（mailto 等）→ 系统浏览器
                     if (href) {
                       window.taco.browser.openExternal(href)
                     }
@@ -289,6 +318,60 @@ export function MarkdownBubble({ content, streaming, workspace, onOpenProjectFil
                       />
                     </pre>
                   </div>
+                )
+              }
+              // 行内代码 → 检测是否为 URL 或文件路径
+              // AI 回复中常把链接包在反引号里（如 `http://localhost:8765/file.html`）
+              // Markdown 解析为 <code> 而非 <a>，这里把它还原为可点击链接
+              const inlineCode = extractText(children)
+              const looksLikeUrl =
+                /^(https?|ftp|file):\/\/\S+$/i.test(inlineCode) ||
+                /^\/\S+/.test(inlineCode) ||
+                /^[a-zA-Z]:[\\/]/.test(inlineCode) ||
+                (workspace && inlineCode.startsWith(workspace))
+              if (looksLikeUrl) {
+                const url = /^(https?|ftp|file):\/\//i.test(inlineCode)
+                  ? inlineCode
+                  : inlineCode.startsWith('/') || isWindowsAbsolutePath(inlineCode)
+                    ? `file://${inlineCode}`
+                    : workspace
+                      ? `file://${workspace.replace(/\/+$/, '')}/${inlineCode}`
+                      : `file://${inlineCode}`
+                return (
+                  <a
+                    href={url}
+                    rel="noopener noreferrer"
+                    className="inline-code-link"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      // 尝试项目文件路径
+                      const decodedPath = decodeFileHrefPath(url) ?? ''
+                      const resolvedPath = decodedPath
+                        ? toWorkspaceRelativePath(decodedPath, workspace)
+                        : null
+                      if (resolvedPath && onOpenProjectFile) {
+                        onOpenProjectFile(resolvedPath)
+                        return
+                      }
+                      // http/https → webview 或外部浏览器
+                      if (isHttpLikeUrl(url)) {
+                        if (onOpenWebview) {
+                          onOpenWebview(url)
+                        } else {
+                          window.taco.browser.openExternal(url)
+                        }
+                        return
+                      }
+                      // 本地文件 → webview 或外部浏览器
+                      if (onOpenWebview) {
+                        onOpenWebview(url)
+                      } else {
+                        window.taco.browser.openExternal(url)
+                      }
+                    }}
+                  >
+                    {children}
+                  </a>
                 )
               }
               return (

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { buildRuntimeToolPrompt, buildUserId } from '../loop-context'
-import { shouldPersistTaskCoreLog } from '../loop-persist'
+import { buildRuntimeToolPrompt, buildUserId } from '../loop/context'
+import { shouldPersistTaskCoreLog } from '../loop/persist'
 
 describe('loop-context', () => {
   /* ------------------------------------------------------------------ */

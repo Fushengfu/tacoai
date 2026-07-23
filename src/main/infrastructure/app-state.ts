@@ -15,7 +15,7 @@ import {
   loadAppThreadsStateFromDb,
   saveAppProvidersStateToDb,
   saveAppThreadsStateToDb,
-} from '../data/memory-db'
+} from '../repositories/memory-db/index'
 
 const TACO_DIR = path.join(app.getPath('home'), '.taco')
 const LEGACY_APP_STATE_FILE = path.join(TACO_DIR, 'app-state.json')

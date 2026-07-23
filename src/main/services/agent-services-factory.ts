@@ -16,9 +16,10 @@ import fs from 'node:fs'
 import { log as infraLog } from '../infrastructure/logger'
 import { loadAuthFromFile } from '../infrastructure/auth-store'
 import { getBridgeManager } from '../bridge/bridge-manager'
-import { executeBrowserAction, getBrowserConsoleSnapshot, listBrowserInstances, closeExternalBrowser } from '../infrastructure/browser'
+import { executeBrowserAction, getBrowserConsoleSnapshot, listBrowserInstances, closeExternalBrowser, getNetworkRequests, getNetworkRequestBody, clearNetworkRequests, getCookies, setCookie, clearCookies } from '../infrastructure/browser'
 import { getActiveMcpTools, callMcpTool, saveScreenshot } from '../infrastructure/mcp'
 import { callDesktopService } from '../infrastructure/desktop-service'
+import { recognizeImage } from '../infrastructure/ocr'
 import {
   createAITerminal,
   runInAITerminal,
@@ -42,7 +43,7 @@ import {
   importMemorySnapshots,
   listMemorySnapshotsForScope,
   replaceMemorySnapshots,
-} from '../data/memory-db'
+} from '../repositories/memory-db/index'
 import { listNotes } from './notes/notes-crud'
 import { getGatewayModelListCache } from '../ipc/handlers/gateway-handlers'
 import type { AgentServices, BrowserService, McpService, DesktopAutomationService, TerminalService, DatabaseService, MemorySnapshotStore, NotesService, FsProvider, GatewayModelCache } from '../sdk/agent/services'
@@ -100,6 +101,24 @@ function createBrowserService(): BrowserService {
     },
     closeInstance(appId) {
       closeExternalBrowser(appId)
+    },
+    async getNetworkRequests(appId, limit) {
+      return getNetworkRequests(appId, limit)
+    },
+    async getNetworkRequestBody(appId, requestId) {
+      return getNetworkRequestBody(appId, requestId)
+    },
+    async getCookies(appId, urls) {
+      return getCookies(appId, urls)
+    },
+    async setCookie(appId, cookie) {
+      return setCookie(appId, cookie as any)
+    },
+    async clearCookies(appId) {
+      return clearCookies(appId)
+    },
+    clearNetworkRequests(appId) {
+      clearNetworkRequests(appId)
     },
   }
 }
@@ -262,6 +281,30 @@ function createDesktopAutomationService(): DesktopAutomationService {
       if (process.platform === 'darwin') {
         shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')
       }
+    },
+    async ocr(image) {
+      // 如果没传 image，先截图再识别
+      let imageSource = image
+      if (!imageSource) {
+        const ssDir = path.join(app.getPath('temp'), 'taco-ocr')
+        if (!fs.existsSync(ssDir)) {
+          fs.mkdirSync(ssDir, { recursive: true })
+        }
+        const screenshotPath = path.join(ssDir, `ocr-${Date.now()}.png`)
+
+        if (process.platform === 'darwin') {
+          execSync(`screencapture -x "${screenshotPath}"`, { timeout: 10000 })
+        } else if (process.platform === 'win32') {
+          const safePath = screenshotPath.replace(/\\/g, '/')
+          const psCmd = `Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $s=[System.Windows.Forms.Screen]::PrimaryScreen; $b=New-Object System.Drawing.Bitmap($s.Bounds.Width,$s.Bounds.Height); $g=[System.Drawing.Graphics]::FromImage($b); $g.CopyFromScreen($s.Bounds.X,$s.Bounds.Y,0,0,$b.Size); $b.Save('${safePath}',[System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $b.Dispose()`
+          execSync(`powershell -NoProfile -Command "${psCmd}"`, { timeout: 15000 })
+        } else {
+          execSync(`import -window root "${screenshotPath}"`, { timeout: 10000 })
+        }
+        const buf = fs.readFileSync(screenshotPath)
+        imageSource = 'data:image/png;base64,' + buf.toString('base64')
+      }
+      return recognizeImage(imageSource)
     },
   }
 }

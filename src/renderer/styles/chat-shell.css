@@ -509,6 +509,120 @@ body.is-dragging * {
   color: #f59e0b;
 }
 
+/* 复制按钮（AI 消息气泡内） */
+.msg-copy-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: 0.15s ease;
+  vertical-align: middle;
+}
+
+.msg-copy-btn:hover {
+  background: rgba(86, 217, 197, 0.12);
+  border-color: rgba(86, 217, 197, 0.3);
+  color: var(--accent);
+}
+
+.msg-copy-btn.copied {
+  background: rgba(72, 187, 120, 0.15);
+  border-color: rgba(72, 187, 120, 0.3);
+  color: #48bb78;
+}
+
+/* 生成图片按钮 */
+.msg-img-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: 0.15s ease;
+  vertical-align: middle;
+}
+
+.msg-img-btn:hover {
+  background: rgba(135, 149, 255, 0.12);
+  border-color: rgba(135, 149, 255, 0.3);
+  color: #8795ff;
+}
+
+.msg-img-btn.generating {
+  opacity: 0.5;
+  pointer-events: none;
+  animation: img-btn-spin 0.6s linear infinite;
+}
+
+@keyframes img-btn-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.msg-img-btn.done {
+  background: rgba(72, 187, 120, 0.15);
+  border-color: rgba(72, 187, 120, 0.3);
+  color: #48bb78;
+  animation: none;
+  opacity: 1;
+}
+
+/* 亮色主题 */
+[data-theme='light'] .msg-copy-btn {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: rgba(0, 0, 0, 0.03);
+  color: var(--muted);
+}
+
+[data-theme='light'] .msg-copy-btn:hover {
+  background: rgba(44, 154, 142, 0.10);
+  border-color: rgba(44, 154, 142, 0.25);
+  color: var(--accent);
+}
+
+[data-theme='light'] .msg-copy-btn.copied {
+  background: rgba(72, 187, 120, 0.12);
+  border-color: rgba(72, 187, 120, 0.3);
+  color: #2d8a5e;
+}
+
+/* 亮色主题 - 生成图片按钮 */
+[data-theme='light'] .msg-img-btn {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: rgba(0, 0, 0, 0.03);
+  color: var(--muted);
+}
+
+[data-theme='light'] .msg-img-btn:hover {
+  background: rgba(99, 102, 241, 0.10);
+  border-color: rgba(99, 102, 241, 0.25);
+  color: #6366f1;
+}
+
+[data-theme='light'] .msg-img-btn.generating {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+[data-theme='light'] .msg-img-btn.done {
+  background: rgba(72, 187, 120, 0.12);
+  border-color: rgba(72, 187, 120, 0.3);
+  color: #2d8a5e;
+}
+
 /* 用户消息编辑模式 */
 .chat-row.user .bubble.editing {
   background: rgba(86, 217, 197, 0.06);
@@ -2267,4 +2381,251 @@ body.is-dragging * {
 :root[data-theme='light'] .assistant-task-meta {
   color: rgba(0,0,0,0.5);
 }
+
+/* ---- New session button ---- */
+:root[data-theme='light'] .new-session-btn {
+  color: var(--accent-2);
+  background: rgba(59,110,246,0.08);
+  border-color: rgba(59,110,246,0.18);
+}
+:root[data-theme='light'] .new-session-btn:hover {
+  background: rgba(59,110,246,0.14);
+  border-color: rgba(59,110,246,0.3);
+}
+
+/* ---- Update pill ---- */
+:root[data-theme='light'] .update-pill {
+  color: #b45309;
+  background: rgba(245,158,11,0.15);
+}
+
+/* ---- Session tabs ---- */
+:root[data-theme='light'] .session-tab.active {
+  background: rgba(59,110,246,0.08);
+  color: var(--text);
+}
+:root[data-theme='light'] .session-tab.sending {
+  background: rgba(86,217,197,0.08);
+}
+
+/* ---- Code copy button copied state ---- */
+:root[data-theme='light'] .code-copy-btn.copied {
+  color: #15803d;
+  background: rgba(72,187,120,0.12);
+}
+
+/* ---- Input queue ---- */
+:root[data-theme='light'] .queue-item {
+  background: rgba(0,0,0,0.04);
+  border-color: rgba(0,0,0,0.08);
+}
+:root[data-theme='light'] .queue-remove:hover {
+  color: #b91c1c;
+  background: rgba(248,113,113,0.12);
+}
+
+/* ---- Message asset chips ---- */
+:root[data-theme='light'] .msg-asset-chip {
+  border-color: rgba(30,64,175,0.3);
+  background: rgba(59,110,246,0.08);
+}
+:root[data-theme='light'] .msg-asset-name {
+  color: var(--text);
+}
+:root[data-theme='light'] .msg-asset-remove {
+  color: var(--muted);
+}
+
+/* ---- File attachment chip ---- */
+:root[data-theme='light'] .file-attachment-chip {
+  background: rgba(0,0,0,0.06);
+  border-color: rgba(0,0,0,0.12);
+  color: var(--text);
+}
+
+/* ---- Bottom bar items ---- */
+:root[data-theme='light'] .bottom-bar-item.workspace-item {
+  color: #15803d;
+  background: rgba(74,222,128,0.1);
+}
+:root[data-theme='light'] .bottom-bar-lang-btn {
+  background: rgba(0,0,0,0.04);
+  color: var(--muted);
+}
+:root[data-theme='light'] .bottom-bar-lang-btn:hover {
+  background: rgba(0,0,0,0.08);
+}
+:root[data-theme='light'] .bottom-bar-lang-item.active {
+  background: rgba(59,110,246,0.08);
+  color: var(--accent-2);
+}
+
+/* ---- Provider select ---- */
+:root[data-theme='light'] .provider-select-option.selected {
+  background: rgba(59,110,246,0.08);
+  color: var(--accent-2);
+}
+
+/* ---- Token stats in composer ---- */
+:root[data-theme='light'] .token-stat-total {
+  color: var(--muted);
+}
+:root[data-theme='light'] .token-stat-group-label {
+  color: var(--muted);
+}
+
+/* ================================================================ */
+/* ================================================================ */
+/*  AI Voice Avatar — 朗读中顶部科技感头像                              */
+/* ================================================================ */
+/*  AI Voice Avatar — 居中浮动光环（朗读中显示，无遮罩）                */
+/* ================================================================ */
+/* AI Voice Avatar — 科幻能量核心 */
+/* ================================================================ */
+
+.ai-voice-avatar {
+  position: fixed;
+  left: 50%;
+  top: 38%;
+  transform: translate(-50%, -50%);
+  z-index: 100;
+  width: 180px;
+  height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  filter: drop-shadow(0 0 40px rgba(60, 130, 255, 0.25));
+}
+
+/* ---- 中心能量球（等离子体核心） ---- */
+.ava-energy-core {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  position: absolute;
+  z-index: 3;
+  background:
+    radial-gradient(circle at 36% 34%, #d0e4ff 0%, rgba(80, 150, 255, 0.9) 6%, rgba(50, 110, 240, 0.55) 22%, rgba(20, 70, 200, 0.12) 50%, transparent 68%);
+  box-shadow:
+    0 0 20px rgba(80, 150, 255, 1),
+    0 0 50px rgba(60, 130, 240, 0.6),
+    0 0 90px rgba(40, 100, 220, 0.35),
+    0 0 150px rgba(20, 60, 180, 0.18),
+    inset 0 0 14px rgba(200, 225, 255, 0.7);
+  animation: ava-core-breath 2s ease-in-out infinite;
+}
+
+@keyframes ava-core-breath {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow:
+      0 0 20px rgba(80, 150, 255, 1),
+      0 0 50px rgba(60, 130, 240, 0.6),
+      0 0 90px rgba(40, 100, 220, 0.35),
+      0 0 150px rgba(20, 60, 180, 0.18),
+      inset 0 0 14px rgba(200, 225, 255, 0.7);
+  }
+  35% {
+    transform: scale(1.3);
+    box-shadow:
+      0 0 28px rgba(80, 150, 255, 1),
+      0 0 70px rgba(60, 130, 240, 0.8),
+      0 0 120px rgba(40, 100, 220, 0.5),
+      0 0 200px rgba(40, 100, 220, 0.3),
+      inset 0 0 20px rgba(220, 235, 255, 0.9);
+  }
+  70% {
+    transform: scale(0.85);
+    box-shadow:
+      0 0 16px rgba(50, 110, 240, 0.8),
+      0 0 35px rgba(30, 80, 220, 0.45),
+      0 0 60px rgba(20, 60, 200, 0.25),
+      0 0 100px rgba(10, 40, 160, 0.12),
+      inset 0 0 10px rgba(180, 210, 255, 0.5);
+  }
+}
+
+/* ---- 能量冲击波（从核心向外扩散） ---- */
+.ava-shockwave {
+  position: absolute;
+  border-radius: 50%;
+  border: 2px solid;
+  pointer-events: none;
+  opacity: 0;
+  top: 50%;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  transform: translate(-50%, -50%);
+}
+
+.ava-shockwave-1 {
+  border-color: rgba(80, 150, 255, 0.7);
+  box-shadow: 0 0 12px rgba(80, 150, 255, 0.5), 0 0 30px rgba(60, 130, 240, 0.25);
+  animation: ava-shockwave 2.6s ease-out infinite;
+}
+
+.ava-shockwave-2 {
+  border-color: rgba(60, 180, 255, 0.55);
+  box-shadow: 0 0 10px rgba(60, 180, 255, 0.4), 0 0 25px rgba(40, 160, 240, 0.2);
+  animation: ava-shockwave 2.6s ease-out infinite 0.8s;
+}
+
+.ava-shockwave-3 {
+  border-color: rgba(100, 160, 255, 0.45);
+  box-shadow: 0 0 8px rgba(100, 160, 255, 0.3), 0 0 20px rgba(60, 130, 240, 0.15);
+  animation: ava-shockwave 2.6s ease-out infinite 1.6s;
+}
+
+@keyframes ava-shockwave {
+  0% {
+    width: 10px;
+    height: 10px;
+    opacity: 0.9;
+  }
+  40% {
+    opacity: 0.4;
+  }
+  100% {
+    width: 170px;
+    height: 170px;
+    opacity: 0;
+  }
+}
+
+
+
+/* ---- 亮色主题适配 ---- */
+:root[data-theme='light'] .ava-energy-core {
+  background:
+    radial-gradient(circle at 36% 34%, #e8f2ff 0%, rgba(60, 130, 240, 0.85) 8%, rgba(40, 100, 210, 0.45) 28%, rgba(20, 60, 160, 0.08) 55%, transparent 72%);
+  box-shadow:
+    0 0 16px rgba(60, 130, 240, 0.9),
+    0 0 40px rgba(50, 110, 220, 0.5),
+    0 0 75px rgba(30, 80, 200, 0.3),
+    0 0 120px rgba(20, 50, 160, 0.12),
+    inset 0 0 12px rgba(200, 225, 255, 0.6);
+}
+
+:root[data-theme='light'] .ava-shockwave-1 {
+  border-color: rgba(60, 130, 240, 0.6);
+  box-shadow: 0 0 10px rgba(60, 130, 240, 0.4), 0 0 25px rgba(50, 110, 220, 0.2);
+}
+
+:root[data-theme='light'] .ava-shockwave-2 {
+  border-color: rgba(40, 160, 230, 0.5);
+  box-shadow: 0 0 8px rgba(40, 160, 230, 0.3), 0 0 20px rgba(30, 140, 210, 0.15);
+}
+
+:root[data-theme='light'] .ava-shockwave-3 {
+  border-color: rgba(80, 150, 240, 0.4);
+  box-shadow: 0 0 6px rgba(80, 150, 240, 0.25), 0 0 15px rgba(50, 110, 220, 0.12);
+}
+
+:root[data-theme='light'] .ai-voice-avatar {
+  filter: drop-shadow(0 0 30px rgba(50, 110, 220, 0.12));
+}
+
+
 

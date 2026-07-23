@@ -38,6 +38,7 @@ import { useBridgeInit } from './hooks/useBridgeInit'
 import { useFileViewer } from './hooks/useFileViewer'
 import type { WorkspaceTreeHandle } from './components/WorkspaceTree'
 import { TerminalPanel } from './views/terminal/TerminalPanel'
+import { WebviewPanel } from './views/WebviewPanel'
 import { Topbar } from './views/Topbar'
 import { useSaveOnExit } from './hooks/useSaveOnExit'
 import { useProjectRules } from './hooks/useProjectRules'
@@ -78,6 +79,7 @@ export default function App() {
   const [showBridgePanel, setShowBridgePanel] = useState(false)
   const [showMobileDownloadPanel, setShowMobileDownloadPanel] = useState(false)
   const [showWorkspaceTree, setShowWorkspaceTree] = useState(false)
+  const [webviewUrl, setWebviewUrl] = useState<string | null>(null)
   const workspaceTreeRef = useRef<WorkspaceTreeHandle>(null)
   const closeOverlay = useCallback(() => setActiveOverlay(null), [])
   const [editor, setEditor] = useState<EditorId>(() =>
@@ -353,6 +355,17 @@ export default function App() {
     return thread.sessions.some((s) => chat.isCompleted(s.id))
   }
 
+  const sortedThreads = useMemo(() => {
+    const list = [...threadStore.threads]
+    list.sort((a, b) => {
+      const aSending = isThreadSending(a.id)
+      const bSending = isThreadSending(b.id)
+      if (aSending !== bSending) return aSending ? -1 : 1
+      return (b.updatedAt ?? 0) - (a.updatedAt ?? 0)
+    })
+    return list
+  }, [threadStore.threads, chat])
+
   /* ---- 消息发送 ---- */
   const notifyTaskCompleted = useCallback((threadTitle?: string) => {
     const title = 'Taco AI 任务完成'
@@ -584,11 +597,11 @@ export default function App() {
         <PaneErrorBoundary
           pane="sidebar"
           title="项目侧栏"
-          resetKey={`${tid}:${threadStore.sortedThreads.length}:${layout.sidebarVisible ? '1' : '0'}`}
+          resetKey={`${tid}:${sortedThreads.length}:${layout.sidebarVisible ? '1' : '0'}`}
           onError={reportPaneRenderError}
         >
           <Sidebar
-            sortedThreads={threadStore.sortedThreads}
+            sortedThreads={sortedThreads}
             activeThreadId={tid}
             editingThreadId={threadStore.editingThreadId}
             editingTitle={threadStore.editingTitle}
@@ -634,7 +647,7 @@ export default function App() {
         <div className="resize-handle-line" />
       </div>
 
-      <div className="middle-area" style={{ gridColumn: '3 / 4', gridRow: '2 / 3', width: '100%', minWidth: 0 }}>
+      <div className="middle-area" style={{ gridColumn: '3 / 4', gridRow: '2 / 3', display: 'flex', flexDirection: 'column', width: '100%', minWidth: 0, minHeight: 0 }}>
         {browser.browserWindows.size > 0 && (
           <div className="middle-tabs">
             {Array.from(browser.browserWindows.entries()).map(([appId, url]) => (
@@ -658,86 +671,99 @@ export default function App() {
           </div>
         )}
 
-        <div className="middle-view" style={{ display: 'flex' }}>
-          <PaneErrorBoundary
-            key={tid}
-            pane="chat"
-            title="聊天面板"
-            resetKey={`${sessionId}:${messages.length}`}
-            onError={reportPaneRenderError}
-          >
-            <ChatPanel
-              messages={messages}
-              showStreamBubble={false}
-              streamingContent={sessionStreamingContent}
-              draft={draft}
-              onDraftChange={setDraft}
-              attachedImages={attachedImages}
-              onAttachedImagesChange={setAttachedImages}
-              attachedAssets={attachedAssets}
-              onAttachedAssetsChange={setAttachedAssets}
-              sending={sessionSending}
-              onSend={(contentParts) => handleSend(contentParts)}
-              onStop={() => sessionId && chat.stopSending(sessionId)}
-              onSwitchSession={handleSwitchSession}
-              onDeleteSession={handleDeleteSession}
-              sessions={sessions}
-              activeSessionId={sessionId}
-              onResend={handleResend}
-              onEditResend={(msgId, newContent) => handleResend(msgId, newContent)}
-              workspace={currentWorkspace}
-              onSelectWorkspace={handleSelectWorkspace}
-              provider={currentModelConfigId}
-              onProviderChange={handleProviderChange}
-              configuredProviders={mergedModels}
-              scrollRef={scrollRef}
-              totalMessageCount={totalSessionMessageCount}
-              hasOlderStoredMessages={chat.hasOlderMessages(sessionId)}
-              loadingOlderMessages={chat.isLoadingOlderMessages(sessionId)}
-              onLoadOlderMessages={() => chat.loadOlderMessages(sessionId)}
-              queue={sessionQueue}
-              onRemoveFromQueue={(id) => chat.removeFromQueue(sessionId, id)}
-              editor={editor}
-              isSessionSending={(sid) => chat.isSending(sid)}
-              selectedFileChange={null}
-              onCloseDiff={() => fileViewer.reset()}
-              selectedFileStatus={undefined}
-              onAcceptFile={async () => {}}
-              onRejectFile={async () => {}}
-              showTerminal={terminalOpenMap[tid] || false}
-              onToggleTerminal={() => setTerminalOpenMap((prev) => ({ ...prev, [tid]: false }))}
-              onRollbackBeforeMsg={async () => {}}
-              supportsVision={Boolean(currentModelConfig?.supportsVision)}
-              onOpenFileView={(path) => {
-                setShowWorkspaceTree(true)
-                workspaceTreeRef.current?.openFile(path)
-              }}
-              contextPercent={contextPercent}
-              projectTokenStats={projectTokenStats}
-              runTokenStats={runTokenStats}
-              activeTaskStartedAt={activeTaskStartedAt}
-              projectId={tid}
-              onOpenModels={() => setActiveOverlay('models')}
-              activeConfirmIds={activeConfirmIds}
-              activeRetryIds={activeRetryIds}
-            />
-          </PaneErrorBoundary>
-
-          {/* 各项目独立终端：仅活跃项目可见，其余隐藏但保持挂载（PTY 进程存活） */}
-          {Object.keys(terminalOpenMap).filter((k) => terminalOpenMap[k]).map((projectId) => (
-            <div
-              key={`terminal-wrapper-${projectId}`}
-              style={{
-                display: projectId === tid ? undefined : 'none',
-                flex: '0 0 auto',
-              }}
+        <div style={{ display: 'flex', flex: 1, minHeight: 0, minWidth: 0 }}>
+          {/* 左侧：聊天 + 终端（纵向排列的整体） */}
+          <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, minHeight: 0 }}>
+            <div className="middle-view" style={{ display: 'flex', flex: 1, minWidth: 0, minHeight: 0 }}>
+              <PaneErrorBoundary
+              key={tid}
+              pane="chat"
+              title="聊天面板"
+              resetKey={`${sessionId}:${messages.length}`}
+              onError={reportPaneRenderError}
             >
-              <TerminalPanel
-                cwd={projectWorkspaces[projectId]}
-                onClose={() => setTerminalOpenMap((prev) => ({ ...prev, [projectId]: false }))}
+              <ChatPanel
+                messages={messages}
+                showStreamBubble={false}
+                streamingContent={sessionStreamingContent}
+                draft={draft}
+                onDraftChange={setDraft}
+                attachedImages={attachedImages}
+                onAttachedImagesChange={setAttachedImages}
+                attachedAssets={attachedAssets}
+                onAttachedAssetsChange={setAttachedAssets}
+                sending={sessionSending}
+                onSend={(contentParts) => handleSend(contentParts)}
+                onStop={() => sessionId && chat.stopSending(sessionId)}
+                onSwitchSession={handleSwitchSession}
+                onDeleteSession={handleDeleteSession}
+                sessions={sessions}
+                activeSessionId={sessionId}
+                onResend={handleResend}
+                onEditResend={(msgId, newContent) => handleResend(msgId, newContent)}
+                workspace={currentWorkspace}
+                onSelectWorkspace={handleSelectWorkspace}
+                provider={currentModelConfigId}
+                onProviderChange={handleProviderChange}
+                configuredProviders={mergedModels}
+                scrollRef={scrollRef}
+                totalMessageCount={totalSessionMessageCount}
+                hasOlderStoredMessages={chat.hasOlderMessages(sessionId)}
+                loadingOlderMessages={chat.isLoadingOlderMessages(sessionId)}
+                onLoadOlderMessages={() => chat.loadOlderMessages(sessionId)}
+                queue={sessionQueue}
+                onRemoveFromQueue={(id) => chat.removeFromQueue(sessionId, id)}
+                editor={editor}
+                isSessionSending={(sid) => chat.isSending(sid)}
+                selectedFileChange={null}
+                onCloseDiff={() => fileViewer.reset()}
+                selectedFileStatus={undefined}
+                onAcceptFile={async () => {}}
+                onRejectFile={async () => {}}
+                showTerminal={terminalOpenMap[tid] || false}
+                onToggleTerminal={() => setTerminalOpenMap((prev) => ({ ...prev, [tid]: false }))}
+                onRollbackBeforeMsg={async () => {}}
+                supportsVision={Boolean(currentModelConfig?.supportsVision)}
+                onOpenFileView={(path) => {
+                  setShowWorkspaceTree(true)
+                  workspaceTreeRef.current?.openFile(path)
+                }}
+                onOpenWebview={(url) => setWebviewUrl(url)}
+                contextPercent={contextPercent}
+                projectTokenStats={projectTokenStats}
+                runTokenStats={runTokenStats}
+                activeTaskStartedAt={activeTaskStartedAt}
+                projectId={tid}
+                onOpenModels={() => setActiveOverlay('models')}
+                activeConfirmIds={activeConfirmIds}
+                activeRetryIds={activeRetryIds}
               />
+            </PaneErrorBoundary>
             </div>
-          ))}
+
+            {/* 各项目独立终端：在聊天下方 */}
+            {Object.keys(terminalOpenMap).filter((k) => terminalOpenMap[k]).map((projectId) => (
+              <div
+                key={`terminal-wrapper-${projectId}`}
+                style={{
+                  display: projectId === tid ? 'block' : 'none',
+                }}
+              >
+                <TerminalPanel
+                  cwd={projectWorkspaces[projectId]}
+                  onClose={() => setTerminalOpenMap((prev) => ({ ...prev, [projectId]: false }))}
+                />
+              </div>
+            ))}
+          </div>
+
+          {/* 内置浏览器面板（右侧弹出） */}
+          {webviewUrl && (
+            <WebviewPanel
+              url={webviewUrl}
+              onClose={() => setWebviewUrl(null)}
+            />
+          )}
         </div>
 
         {activeOverlay && (

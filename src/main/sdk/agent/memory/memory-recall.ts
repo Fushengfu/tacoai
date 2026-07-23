@@ -66,8 +66,6 @@ export type RecallMeta = {
   intentGoal?: string
   candidateCount: number
   selectedCount: number
-  budgetChars: number
-  droppedByBudget: number
   selectionMethod?: 'tool_call' | 'heuristic'
   toolSelectionReason?: string
   toolSelectedCount?: number
@@ -150,20 +148,6 @@ function tokenize(text: string): string[] {
   const zh = lower.match(/[\u4e00-\u9fff]{2,}/g) ?? []
   zh.forEach((token) => set.add(token))
   return Array.from(set).slice(0, 120)
-}
-
-function estimateBudgetChars(contextLength?: number, usageTotalTokens?: number): { budgetChars: number; mode: 'normal' | 'high_pressure'; ratio?: number } {
-  if (typeof contextLength !== 'number' || !Number.isFinite(contextLength) || contextLength <= 0) {
-    return { budgetChars: 12000, mode: 'normal' }
-  }
-  const usage = (typeof usageTotalTokens === 'number' && Number.isFinite(usageTotalTokens) && usageTotalTokens > 0)
-    ? usageTotalTokens
-    : undefined
-  if (!usage) return { budgetChars: 12000, mode: 'normal' }
-  const ratio = usage / contextLength
-  if (ratio >= 0.8) return { budgetChars: 8000, mode: 'high_pressure', ratio }
-  if (ratio >= 0.6) return { budgetChars: 12000, mode: 'normal', ratio }
-  return { budgetChars: 18000, mode: 'normal', ratio }
 }
 
 function toCandidateKey(source: RecallSource, id: string): string {
@@ -558,27 +542,15 @@ export async function recallBackgroundContext(
     }
   }
 
-  // 预算裁剪
-  const pressure = estimateBudgetChars(options?.contextLength, options?.usageTotalTokens)
+  // 取前 24 条
   const selected: RecalledItem[] = []
   const selectedKeys = new Set<string>()
-  const droppedByBudgetKeys = new Set<string>()
-  let usedChars = 0
-  let droppedByBudget = 0
 
   for (const candidate of candidates) {
     const key = `${candidate.source}:${candidate.id}`
     const item = toRecalledItem(candidate)
-    const size = JSON.stringify(item).length
-    const fits = usedChars + size <= pressure.budgetChars
-    if (!fits && selected.length > 0) {
-      droppedByBudget++
-      droppedByBudgetKeys.add(key)
-      continue
-    }
     selected.push(item)
     selectedKeys.add(key)
-    usedChars += size
     if (selected.length >= 24) break
   }
 
@@ -604,7 +576,7 @@ export async function recallBackgroundContext(
       score: candidate.score,
       reason: candidate.reason,
       selected: selectedKeys.has(key),
-      droppedByBudget: droppedByBudgetKeys.has(key),
+      droppedByBudget: false,
     }
   })
 
@@ -614,18 +586,16 @@ export async function recallBackgroundContext(
     recalled: selected,
     debugCandidates,
     meta: {
-      mode: pressure.mode,
+      mode: 'normal',
       usageTotalTokens: options?.usageTotalTokens,
       contextLength: options?.contextLength,
-      pressureRatio: pressure.ratio,
+      pressureRatio: undefined,
       intentSource,
       intentType,
       intentSummary,
       intentGoal,
       candidateCount: candidates.length,
       selectedCount: selected.length,
-      budgetChars: pressure.budgetChars,
-      droppedByBudget,
       selectionMethod,
       ...(selectionMethod === 'tool_call' ? { toolSelectionReason } : {}),
       ...(selectionMethod === 'tool_call' ? { toolSelectedCount } : {}),

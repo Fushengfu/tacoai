@@ -21,6 +21,8 @@ export type ToolRuntimeContext = {
   allowedToolNames?: Set<string>
   overrides?: any // ProviderOverrides
   services?: AgentServices
+  provider?: string // ProviderKey for tools that need LLM calls
+  userId?: string
 }
 
 /* ------------------------------------------------------------------ */

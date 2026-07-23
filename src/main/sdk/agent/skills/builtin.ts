@@ -91,9 +91,9 @@ export const BUILTIN_SKILLS: SkillInfo[] = [
 你可以通过 run_skill_script 工具操控 Taco 内置浏览器面板，执行以下类型的任务。
 
 ## 多浏览器窗口管理
-Taco 支持同时打开多个独立浏览器窗口，每个窗口有独立的会话（cookie / localStorage / sessionStorage 隔离）。
+Taco 支持同一个项目内同时打开多个独立浏览器窗口，每个窗口有独立的会话（cookie / localStorage / sessionStorage 隔离）。不同项目的浏览器窗口完全隔离，无法互相访问。
 
-- **appId**（必需）：系统标识，所有操作通过 appId 定位窗口。不传则使用项目默认窗口（\`default\`）。
+- **appId**（可选）：窗口短标识，如 \`"admin"\`、\`"shop"\`。不传则使用项目默认窗口。AI 只需传短名，系统自动限定在当前项目下，不同项目的浏览器完全隔离。
 - **windowLabel**（可选）：备注标签，仅在 list 时用于辨认窗口用途。不参与窗口定位。
 
 使用场景：多端后台管理（平台端 + 客户端）、多账号登录、多环境对比测试。
@@ -113,11 +113,13 @@ Taco 支持同时打开多个独立浏览器窗口，每个窗口有独立的会
 |------|------|------|
 | 验证 UI 显示效果 | 截图 + analyze_image | 视觉确认布局、样式是否正确 |
 | 复刻/还原网站结构 | 代码读取分析 | 用 evaluate 提取 DOM 树、CSS 规则、组件结构，效率远高于截图 |
-| 分析网络请求/接口 | evaluate + network requests | 拦截 XHR/fetch，分析 API 参数和响应 |
+| 分析网络请求/接口 | get_network_requests | 拦截 XHR/fetch，查看请求/响应详情 |
 | 提取文本/数据内容 | get_content / evaluate | 直接读取 DOM 内容，无需截图 |
 | 排查 JS 错误 | get_console_logs | 查看控制台报错和警告 |
+| 读/写/清除 Cookie | get_cookies / set_cookie / clear_cookies | 管理浏览器 Cookie（含 HttpOnly） |
+| 识别页面文字坐标 | ocr | 截取当前页面后用 OCR 识别所有文字及其精确像素坐标 |
 
-**原则**: 截图适合"看一眼"验证，代码分析适合"逆向理解"。复刻网站时优先用 evaluate 提取 HTML 结构、CSS 样式、JS 逻辑，再配合 network requests 分析接口，最后才用截图确认视觉效果。
+**原则**: 截图适合"看一眼"验证，代码分析适合"逆向理解"。复刻网站时优先用 evaluate 提取 HTML 结构、CSS 样式、JS 逻辑，再配合 get_network_requests 分析接口，最后才用截图确认视觉效果。
 
 ## 操作流程模式
 典型的浏览器操作应遵循"目标-操作-验证"的循环：
@@ -144,8 +146,8 @@ Taco 支持同时打开多个独立浏览器窗口，每个窗口有独立的会
 ## 脚本速查
 所有脚本通过 run_skill_script('browser-use', '脚本名', {参数}) 执行。
 
-- **list**: 列出所有活跃浏览器窗口（含 appId、windowLabel、URL、标题）。参数: {}
-- **close**: 关闭指定浏览器窗口。参数: { appId: string }
+- **list**: 列出当前项目的所有活跃浏览器窗口（含 appId 短名、windowLabel、URL、标题）。参数: {}
+- **close**: 关闭当前项目的指定浏览器窗口。参数: { appId: string }（短名，如 "admin"；传 "default" 关闭默认窗口）
 - **navigate**: 打开指定 URL。参数: { url: string, appId?: string, windowLabel?: string }
 - **screenshot**: 获取页面截图。参数: { appId?: string, goal?: string }
 - **click**: 点击页面元素。参数: { selector: string, appId?: string, x?: number, y?: number }
@@ -156,6 +158,11 @@ Taco 支持同时打开多个独立浏览器窗口，每个窗口有独立的会
 - **evaluate**: 执行 JS 表达式。参数: { code: string, appId?: string }
 - **get_info**: 获取页面基础信息（URL/标题/视口）。参数: { appId?: string }
 - **get_console_logs**: 读取控制台日志；排查错误时优先使用。参数: { appId?: string, limit?: number, onlyErrors?: boolean }
+- **get_network_requests**: 获取网络请求列表（URL、method、状态码、请求/响应头）。首次调用自动启用 CDP Network 域监听，返回最近 N 条请求。参数: { appId?: string, limit?: number }
+- **get_cookies**: 读取当前页面所有 Cookie（含 HttpOnly）。参数: { appId?: string, urls?: string[] }
+- **set_cookie**: 设置 Cookie。参数: { appId?: string, name: string, value: string, url?: string, domain?: string, path?: string, secure?: boolean, httpOnly?: boolean, sameSite?: string, expires?: number }
+- **clear_cookies**: 清除浏览器所有 Cookie。参数: { appId?: string }
+- **ocr**: OCR 文字识别，截取当前浏览器页面后识别所有文字及其精确像素坐标。参数: { appId?: string }。返回 words[{text, bbox:{x0,y0,x1,y1}, confidence}]，每个 bbox 中心点即精确点击坐标
 - **hover**: 鼠标悬停。参数: { selector: string, appId?: string, x?: number, y?: number }
 - **keypress**: 按键操作。参数: { appId?: string, key: string, modifiers?: string[] }
 - **drag**: 拖拽元素。参数: { from: {selector} or {x,y}, to: {selector} or {x,y}, appId?: string }
@@ -194,7 +201,9 @@ Taco 支持同时打开多个独立浏览器窗口，每个窗口有独立的会
 每次桌面操作必须严格遵循以下循环，不得跳过任何步骤：
 
 1. 执行 screenshot 截取当前屏幕（第一步就必须截图，不截图不知道屏幕状态）
-2. 使用 analyze_image 视觉模型分析截图，确认目标元素是否存在、位置在哪
+2. 根据目标类型选择分析方式：
+   - **目标带文字**（按钮、菜单项、标签页等）→ 优先用 ocr 识别，返回精确文字+坐标，无需视觉模型猜位置
+   - **纯图标/图片** → 使用 analyze_image 视觉模型分析截图
 3. 执行 action 根据分析结果进行点击、双击、输入、快捷键等操作
 4. 执行 screenshot 再次截图，确认操作结果是否符合预期
 5. 如果结果不符，从步骤 2 重新开始
@@ -216,7 +225,8 @@ Taco 支持同时打开多个独立浏览器窗口，每个窗口有独立的会
 ## 脚本速查
 所有脚本通过 run_skill_script('computer-use', '脚本名', {参数}) 执行。
 
-- **screenshot**: 截取当前桌面屏幕。返回 cloudUrl 与尺寸信息；截图后立即用 analyze_image 分析
+- **screenshot**: 截取当前桌面屏幕。返回 cloudUrl 与尺寸信息
+- **ocr**: OCR 文字识别，识别截图中所有文字及其精确像素坐标。参数: { image?: string }（cloudUrl/dataUrl，不传则自动截屏）。返回 words[{text, bbox:{x0,y0,x1,y1}, confidence}]，每个 bbox 中心点即精确点击坐标。文字类 UI 元素优先用此脚本定位
 - **action**: 执行桌面动作。参数: { action: 'click'|'doubleClick'|'type'|'key'|'scroll'|... }, 以及对应的 x/y/text/key/direction 等`,
   },
   {

@@ -190,3 +190,49 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ── 亮色主题 ── */
+[data-theme='light'] .login-modal-panel {
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme='light'] .login-modal-tab {
+  color: rgba(0, 0, 0, 0.45);
+}
+[data-theme='light'] .login-modal-tab:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text);
+}
+[data-theme='light'] .login-modal-tab.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+[data-theme='light'] .login-modal-close:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text);
+}
+
+[data-theme='light'] .login-modal-error {
+  background: rgba(220, 38, 38, 0.06);
+  border-color: rgba(220, 38, 38, 0.2);
+  color: #c53030;
+}
+
+[data-theme='light'] .login-modal-input {
+  background: rgba(0, 0, 0, 0.03);
+  border-color: rgba(0, 0, 0, 0.12);
+}
+
+[data-theme='light'] .login-modal-input::placeholder {
+  color: rgba(0, 0, 0, 0.3);
+}
+
+[data-theme='light'] .login-modal-actions .ghost-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+[data-theme='light'] .login-modal-actions .primary-btn {
+  background: var(--accent-2);
+  color: #fff;
+}

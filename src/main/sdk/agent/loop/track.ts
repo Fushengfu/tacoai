@@ -6,8 +6,8 @@
  */
 
 import path from 'node:path'
-import type { ToolCall, ToolResult } from './tools'
-import { compactLine, summarizeRunCommand, extractIdentifiers } from './context/compressor'
+import type { ToolCall, ToolResult } from '../tools'
+import { compactLine, summarizeRunCommand, extractIdentifiers } from '../context/compressor'
 
 /* ------------------------------------------------------------------ */
 /*  路径处理                                                           */
@@ -77,7 +77,7 @@ export function pushMemoryEvidenceFact(state: TrackState, value: string) {
   state.memoryEvidenceFacts.push(fact)
 }
 
-import { safeParseObject } from './loop-utils'
+import { safeParseObject } from './utils'
 
 export function trackToolCallsInputs(state: TrackState, calls: ToolCall[]) {
   const { toolUsageCount, runCommandSummaryByToolCallId, toolInputContextByToolCallId, touchedFiles, touchedIdentifiers } = state

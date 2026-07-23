@@ -21,6 +21,10 @@
   --border-color: var(--border);
   --bg-tertiary: var(--panel-3);
   --bg-hover: rgba(255, 255, 255, 0.1);
+  --bg-secondary: #15171b;
+  --hover: rgba(255, 255, 255, 0.08);
+  --accent-hover: #45c0b0;
+  --mono: 'SF Mono', Menlo, Monaco, 'Cascadia Code', 'Consolas', monospace;
   --bg-radial-1: #111827;
   --bg-radial-2: #0b0c0e;
   --bg-radial-3: #070809;
@@ -52,6 +56,10 @@
   --border-color: var(--border);
   --bg-tertiary: var(--panel-3);
   --bg-hover: rgba(0, 0, 0, 0.05);
+  --bg-secondary: #eeeeef;
+  --hover: rgba(0, 0, 0, 0.05);
+  --accent-hover: #228075;
+  --mono: 'SF Mono', Menlo, Monaco, 'Cascadia Code', 'Consolas', monospace;
   --bg-radial-1: #f0f0f5;
   --bg-radial-2: #fafafc;
   --bg-radial-3: #f5f5fa;

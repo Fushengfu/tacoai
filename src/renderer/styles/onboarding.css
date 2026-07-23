@@ -199,3 +199,56 @@
     display: none;
   }
 }
+
+/* ── 亮色主题 ── */
+[data-theme='light'] .onboarding-overlay {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+[data-theme='light'] .onboarding-spotlight {
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.35);
+}
+
+[data-theme='light'] .onboarding-tooltip {
+  background: #fff;
+  border-color: rgba(0, 0, 0, 0.1);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.04) inset;
+}
+
+[data-theme='light'] .onboarding-tooltip-step {
+  color: var(--accent-2);
+}
+
+[data-theme='light'] .onboarding-dot {
+  background: rgba(0, 0, 0, 0.12);
+}
+[data-theme='light'] .onboarding-dot.active {
+  background: var(--accent-2);
+  box-shadow: 0 0 8px rgba(59, 110, 255, 0.4);
+}
+[data-theme='light'] .onboarding-dot.done {
+  background: rgba(59, 110, 255, 0.4);
+}
+
+[data-theme='light'] .onboarding-btn-primary {
+  background: var(--accent-2);
+  color: #fff;
+}
+[data-theme='light'] .onboarding-btn-primary:hover {
+  background: #2e5ce6;
+  box-shadow: 0 4px 16px rgba(59, 110, 255, 0.3);
+}
+
+[data-theme='light'] .onboarding-btn-skip:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+[data-theme='light'] .onboarding-btn-prev {
+  background: rgba(0, 0, 0, 0.04);
+  border-color: rgba(0, 0, 0, 0.1);
+  color: rgba(0, 0, 0, 0.45);
+}
+[data-theme='light'] .onboarding-btn-prev:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--text);
+}

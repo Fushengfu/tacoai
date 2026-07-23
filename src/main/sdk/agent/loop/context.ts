@@ -8,17 +8,17 @@
  */
 
 import { createHash } from 'node:crypto'
-import type { ChatMessage, ProviderOverrides } from './llm/client'
-import type { ProviderKey } from './llm/client'
-import { extractTextFromContent } from './llm/adapter'
-import { getWorkspaceTree, getToolDesignPromptBlock, buildAllowedToolNamesForRequest } from './tools'
-import { refreshSkills, buildActiveSkillsCatalogBlock, getActiveSkillEnv, applySkillEnvironment } from './skills/service'
-import { buildBackgroundContextConversationMessages } from './memory/'
-import type { RecallMeta } from './memory/memory-recall'
+import type { ChatMessage, ProviderOverrides } from '../llm/client'
+import type { ProviderKey } from '../llm/client'
+import { extractTextFromContent } from '../llm/adapter'
+import { getWorkspaceTree, getToolDesignPromptBlock, buildAllowedToolNamesForRequest } from '../tools'
+import { refreshSkills, buildActiveSkillsCatalogBlock, getActiveSkillEnv, applySkillEnvironment } from '../skills/service'
+import { buildBackgroundContextConversationMessages } from '../memory/'
+import type { RecallMeta } from '../memory/memory-recall'
 import {
   extractUserQueryText,
   extractUserAssetsBlock,
-} from './shared/user-assets'
+} from '../shared/user-assets'
 
 /* ------------------------------------------------------------------ */
 /*  Runtime Tool Prompt 构建                                           */
@@ -156,7 +156,6 @@ export async function injectBackgroundContext(
         replayedTurns: injected.replayedTaskMemories.length,
         droppedReplayCount: injected.droppedReplayCount,
         droppedReplayByLimitCount: injected.droppedReplayByLimitCount,
-        droppedReplayByBudgetCount: injected.droppedReplayByBudgetCount,
         notesCount: injected.notes.length,
         noteMessagesCount: injected.noteMessages.length,
         recalledCount: injected.recalled.length,

@@ -18,14 +18,15 @@ interface ProviderSelectProps {
 /** 大脑 SVG 图标（系统内置模型标识） */
 function BrainIcon() {
   return (
-    <svg className="brain-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 2C9.5 2 7.5 3 6.5 4.5C5 4.5 3.5 6 3.5 8C3.5 9.5 4 10.5 5 11.5C4 12.5 3.5 14 4 15.5C4.5 17 6 18 7.5 18C8 19.5 9.5 21 12 21"/>
-      <path d="M12 2C14.5 2 16.5 3 17.5 4.5C19 4.5 20.5 6 20.5 8C20.5 9.5 20 10.5 19 11.5C20 12.5 20.5 14 20 15.5C19.5 17 18 18 16.5 18C16 19.5 14.5 21 12 21"/>
-      <line x1="12" y1="2" x2="12" y2="21"/>
-      <path d="M7 8C8.5 8 10 9 12 9"/>
-      <path d="M6 13C8 12.5 10 13 12 14"/>
-      <path d="M17 8C15.5 8 14 9 12 9"/>
-      <path d="M18 13C16 12.5 14 13 12 14"/>
+    <svg className="brain-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 18V5" />
+      <path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4" />
+      <path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5" />
+      <path d="M17.997 5.125a4 4 0 0 1 2.526 5.77" />
+      <path d="M18 18a4 4 0 0 0 2-7.464" />
+      <path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517" />
+      <path d="M6 18a4 4 0 0 1-2-7.464" />
+      <path d="M6.003 5.125a4 4 0 0 0-2.526 5.77" />
     </svg>
   )
 }

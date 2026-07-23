@@ -403,6 +403,65 @@
   color: var(--text);
 }
 
+/* ── TTS 语速/音高滑块 ── */
+.settings-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-slider-label {
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 18px;
+  text-align: center;
+}
+
+.settings-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.12);
+  outline: none;
+  cursor: pointer;
+}
+
+.settings-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent-2);
+  cursor: pointer;
+  border: 2px solid var(--bg);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  transition: transform 0.1s ease;
+}
+
+.settings-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+
+.settings-slider:focus {
+  outline: none;
+}
+
+.settings-slider:focus::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px rgba(76, 123, 255, 0.3);
+}
+
+[data-theme='light'] .settings-slider {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='light'] .settings-slider::-webkit-slider-thumb {
+  border-color: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+
 .api-key-row {
   display: flex;
   gap: 8px;
@@ -2445,5 +2504,40 @@
   /* ── Note card category badge (other) ── */
   .note-card-category.other {
     background: rgba(0, 0, 0, 0.06);
+  }
+
+  /* ── MCP status badges ── */
+  .mcp-status.running {
+    color: #1a7540;
+  }
+  .mcp-status.error {
+    color: #b91c1c;
+  }
+  .mcp-badge.builtin {
+    color: #2350c0;
+    background: rgba(59,110,246,0.08);
+  }
+  .mcp-card-hint {
+    color: #b45309;
+  }
+  .mcp-card-error {
+    color: #b91c1c;
+  }
+
+  /* ── Skill plugin chip / hint ── */
+  .skill-plugin-chip {
+    color: #b45309;
+    border-color: rgba(180,120,20,0.3);
+    background: rgba(180,120,20,0.1);
+  }
+
+  /* ── Settings page no-results / empty state ── */
+  .settings-empty-text {
+    color: rgba(0,0,0,0.35);
+  }
+
+  /* ── MCP form label ── */
+  .mcp-form-label {
+    color: var(--text);
   }
 }

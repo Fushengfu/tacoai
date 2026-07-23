@@ -11,11 +11,16 @@ import type { ExecResult, ToolRuntimeContext } from './exec-utils'
 /*  scopedBrowserAppId                                                 */
 /* ------------------------------------------------------------------ */
 
-export function scopedBrowserAppId(projectId?: string): string | undefined {
+export function scopedBrowserAppId(projectId?: string, appId?: string): string | undefined {
   const raw = String(projectId ?? '').trim()
   if (!raw) return undefined
   const safe = raw.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 64)
-  return safe ? `project-${safe}` : undefined
+  if (!safe) return undefined
+  const base = `project-${safe}`
+  if (!appId) return base
+  const safeAppId = String(appId).replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 32)
+  if (!safeAppId) return base
+  return `${base}::${safeAppId}`
 }
 
 /* ------------------------------------------------------------------ */
@@ -32,7 +37,7 @@ export async function execBrowserAction(
 ): Promise<ExecResult> {
   if (!services?.browser) return { content: 'Error: browser service not available', success: false }
 
-  const appId = args.appId ? String(args.appId) : scopedBrowserAppId(projectId)
+  const appId = scopedBrowserAppId(projectId, args.appId ? String(args.appId) : undefined)
   const mergedArgs = appId ? { ...args, appId } : args
   services.logger(`Browser action: ${action} [appId=${appId || 'default'}]`, mergedArgs)
   const result = await services.browser.executeAction({ action, params: mergedArgs }, appId)
@@ -104,7 +109,7 @@ export async function execBrowserGetConsoleLogs(
 ): Promise<ExecResult> {
   if (!services?.browser) return { content: 'Error: browser service not available', success: false }
 
-  const appId = args.appId ? String(args.appId) : (scopedBrowserAppId(projectId) ?? 'default')
+  const appId = scopedBrowserAppId(projectId, args.appId ? String(args.appId) : undefined) ?? 'default'
   const limit = Number.isFinite(Number(args.limit)) ? Number(args.limit) : undefined
   const onlyErrors = args.onlyErrors === true
   const devOnly = args.devOnly !== false
@@ -127,4 +132,135 @@ export async function execBrowserGetConsoleLogs(
   })
 
   return { content: JSON.stringify(snapshot, null, 2), success: true }
+}
+
+/* ------------------------------------------------------------------ */
+/*  execBrowserGetNetworkRequests                                      */
+/* ------------------------------------------------------------------ */
+
+export async function execBrowserGetNetworkRequests(
+  args: Record<string, unknown>,
+  projectId?: string,
+  services?: AgentServices,
+): Promise<ExecResult> {
+  if (!services?.browser) return { content: 'Error: browser service not available', success: false }
+
+  const appId = scopedBrowserAppId(projectId, args.appId ? String(args.appId) : undefined) ?? 'default'
+  const limit = Number.isFinite(Number(args.limit)) ? Number(args.limit) : undefined
+
+  const result = await services.browser.getNetworkRequests(appId, limit)
+  return { content: JSON.stringify(result, null, 2), success: true }
+}
+
+/* ------------------------------------------------------------------ */
+/*  execBrowserGetCookies                                              */
+/* ------------------------------------------------------------------ */
+
+export async function execBrowserGetCookies(
+  args: Record<string, unknown>,
+  projectId?: string,
+  services?: AgentServices,
+): Promise<ExecResult> {
+  if (!services?.browser) return { content: 'Error: browser service not available', success: false }
+
+  const appId = scopedBrowserAppId(projectId, args.appId ? String(args.appId) : undefined) ?? 'default'
+  const urls = Array.isArray(args.urls) ? args.urls.map(String) : undefined
+
+  const result = await services.browser.getCookies(appId, urls)
+  return { content: JSON.stringify(result, null, 2), success: true }
+}
+
+/* ------------------------------------------------------------------ */
+/*  execBrowserSetCookie                                               */
+/* ------------------------------------------------------------------ */
+
+export async function execBrowserSetCookie(
+  args: Record<string, unknown>,
+  projectId?: string,
+  services?: AgentServices,
+): Promise<ExecResult> {
+  if (!services?.browser) return { content: 'Error: browser service not available', success: false }
+
+  const appId = scopedBrowserAppId(projectId, args.appId ? String(args.appId) : undefined) ?? 'default'
+  const cookie = {
+    name: String(args.name ?? ''),
+    value: String(args.value ?? ''),
+    url: args.url ? String(args.url) : undefined,
+    domain: args.domain ? String(args.domain) : undefined,
+    path: args.path ? String(args.path) : undefined,
+    secure: args.secure === true,
+    httpOnly: args.httpOnly === true,
+    sameSite: args.sameSite as any,
+    expires: Number.isFinite(Number(args.expires)) ? Number(args.expires) : undefined,
+  }
+
+  if (!cookie.name) return { content: 'Error: name is required', success: false }
+
+  const result = await services.browser.setCookie(appId, cookie)
+  return { content: JSON.stringify(result, null, 2), success: result.success }
+}
+
+/* ------------------------------------------------------------------ */
+/*  execBrowserClearCookies                                            */
+/* ------------------------------------------------------------------ */
+
+export async function execBrowserClearCookies(
+  args: Record<string, unknown>,
+  projectId?: string,
+  services?: AgentServices,
+): Promise<ExecResult> {
+  if (!services?.browser) return { content: 'Error: browser service not available', success: false }
+
+  const appId = scopedBrowserAppId(projectId, args.appId ? String(args.appId) : undefined) ?? 'default'
+
+  const result = await services.browser.clearCookies(appId)
+  return { content: JSON.stringify(result, null, 2), success: result.success }
+}
+
+/* ------------------------------------------------------------------ */
+/*  execBrowserOcr                                                     */
+/* ------------------------------------------------------------------ */
+
+export async function execBrowserOcr(
+  args: Record<string, unknown>,
+  projectId?: string,
+  services?: AgentServices,
+  runtimeContext?: ToolRuntimeContext,
+): Promise<ExecResult> {
+  if (!services?.browser) return { content: 'Error: browser service not available', success: false }
+  if (!services?.desktop) return { content: 'Error: OCR service not available', success: false }
+
+  const appId = scopedBrowserAppId(projectId, args.appId ? String(args.appId) : undefined) ?? 'default'
+
+  // 1. 截取浏览器页面
+  const screenshotResult = await services.browser.executeAction(
+    { action: 'screenshot', params: {} },
+    appId,
+  )
+  if (!screenshotResult.success || !screenshotResult.data) {
+    return { content: `截图失败: ${screenshotResult.error ?? 'no data'}`, success: false }
+  }
+
+  // 2. 提取 dataUrl
+  let dataUrl: string | undefined
+  try {
+    const parsed = JSON.parse(screenshotResult.data)
+    dataUrl = parsed.screenshot || parsed.dataUrl
+  } catch {
+    dataUrl = screenshotResult.data
+  }
+  if (!dataUrl) {
+    return { content: '截图结果中未找到图片数据', success: false }
+  }
+
+  // 3. OCR 识别
+  try {
+    const ocrResult = await services.desktop.ocr(dataUrl)
+    return { content: JSON.stringify(ocrResult, null, 2), success: true }
+  } catch (err) {
+    return {
+      content: `OCR 识别失败: ${err instanceof Error ? err.message : String(err)}`,
+      success: false,
+    }
+  }
 }

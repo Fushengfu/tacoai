@@ -35,6 +35,17 @@ import { log } from '../infrastructure/logger'
 import { handleTerminalSpawn, handleTerminalInput, handleTerminalResize, handleTerminalKill } from '../infrastructure/terminal'
 import { openExternalBrowser, closeExternalBrowser, navigateExternalBrowser, focusExternalBrowser } from '../infrastructure/browser'
 import { checkAndPromptForUpdate, getLastUpdateCheckResult, fetchMobileApkInfo } from '../infrastructure/app-updater'
+import {
+  createBrowserView,
+  destroyBrowserView,
+  setBrowserViewBounds,
+  browserViewLoadURL,
+  browserViewGoBack,
+  browserViewGoForward,
+  browserViewReload,
+  browserViewStop,
+} from '../infrastructure/browser-view-panel'
+import type { BrowserViewBounds } from '../infrastructure/browser-view-panel'
 import type { FileTreeEntry } from '../../shared/ipc'
 
 // Import from split modules
@@ -118,7 +129,14 @@ import {
 
 import {
   handleVoiceRecognize,
+  handleVoiceSpeak,
+  handleVoiceStop,
 } from './handlers/voice-handlers'
+
+import {
+  handleClipboardWriteImage,
+  handleClipboardWriteText,
+} from './handlers/clipboard-handlers'
 
 /* ------------------------------------------------------------------ */
 /*  Registration                                                       */
@@ -341,6 +359,32 @@ export function registerIpcHandlers() {
 
   // Voice
   ipcMain.handle(IpcChannel.VOICE_RECOGNIZE, handleVoiceRecognize)
+  ipcMain.on(IpcChannel.VOICE_SPEAK, (_e, text: string) => handleVoiceSpeak(text))
+  ipcMain.on(IpcChannel.VOICE_STOP, () => handleVoiceStop())
+
+  // BrowserView (内嵌浏览器面板)
+  ipcMain.handle(IpcChannel.BROWSER_VIEW_CREATE, (_e, payload: { url: string; bounds: BrowserViewBounds }) => {
+    const win = BrowserWindow.fromWebContents(_e.sender)
+    if (!win) return
+    createBrowserView(win, payload.url, payload.bounds)
+  })
+  ipcMain.handle(IpcChannel.BROWSER_VIEW_DESTROY, () => {
+    destroyBrowserView()
+  })
+  ipcMain.handle(IpcChannel.BROWSER_VIEW_SET_BOUNDS, (_e, bounds: BrowserViewBounds) => {
+    setBrowserViewBounds(bounds)
+  })
+  ipcMain.handle(IpcChannel.BROWSER_VIEW_LOAD_URL, (_e, url: string) => {
+    browserViewLoadURL(url)
+  })
+  ipcMain.on(IpcChannel.BROWSER_VIEW_GO_BACK, () => browserViewGoBack())
+  ipcMain.on(IpcChannel.BROWSER_VIEW_GO_FORWARD, () => browserViewGoForward())
+  ipcMain.on(IpcChannel.BROWSER_VIEW_RELOAD, () => browserViewReload())
+  ipcMain.on(IpcChannel.BROWSER_VIEW_STOP, () => browserViewStop())
+
+  // Clipboard
+  ipcMain.handle(IpcChannel.CLIPBOARD_WRITE_IMAGE, handleClipboardWriteImage)
+  ipcMain.handle(IpcChannel.CLIPBOARD_WRITE_TEXT, handleClipboardWriteText)
 }
 
 function buildLogScope(projectId?: string, workspace?: string): string | undefined {

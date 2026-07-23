@@ -309,3 +309,28 @@ export async function execDesktopAction(
 
   return { content: JSON.stringify(result), success: true }
 }
+
+/* ------------------------------------------------------------------ */
+/*  execDesktopOcr                                                    */
+/* ------------------------------------------------------------------ */
+
+export async function execDesktopOcr(
+  args: Record<string, unknown>,
+  services?: AgentServices,
+): Promise<ExecResult> {
+  if (!services?.desktop) return { content: 'Error: desktop service not available', success: false }
+
+  try {
+    const image = typeof args.image === 'string' && args.image.trim() ? args.image.trim() : undefined
+    const result = await services.desktop.ocr(image)
+    return {
+      content: JSON.stringify(result, null, 2),
+      success: true,
+    }
+  } catch (err) {
+    return {
+      content: `Error: OCR 识别失败: ${err instanceof Error ? err.message : String(err)}`,
+      success: false,
+    }
+  }
+}

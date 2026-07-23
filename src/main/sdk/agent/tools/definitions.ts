@@ -385,15 +385,17 @@ export const toolDefinitions: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'recall_memories',
-      description: '搜索历史任务记忆。当你需要回忆之前是否处理过类似问题、查找历史修复方案、或理解项目演进上下文时使用。纯关键词匹配，返回相关记忆的标题、时间、涉及文件、工具和摘要。',
+      description: '搜索历史任务记忆。当你需要回忆之前是否处理过类似问题、查找历史修复方案、或理解项目演进上下文时使用。纯关键词匹配，返回相关记忆的标题、时间、涉及文件、工具和摘要。如果需要总结大量记忆，可传入 summaryPrompt 让工具内部调 LLM 做分页总结。',
       parameters: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: '搜索关键词，如"bridge 通信遗漏"、"语音识别 bug"、"版本号". 支持中英文混合' },
-          limit: { type: 'number', description: '最多返回条数，默认 5，最大 50' },
-          timeRange: { type: 'string', description: '时间范围，AI 自由描述，如"昨天"、"上周"、"上个月"、"最近3天"、"2025年6月"等。不传则搜索全部时间。' },
+          query: { type: 'string', description: '搜索关键词，如"bridge 通信遗漏"、"语音识别 bug"、"版本号". 支持中英文混合。不传则只按时间范围返回' },
+          from: { type: 'string', description: '起始日期，ISO 格式如 "2026-07-20"。不传则不限制起始时间' },
+          to: { type: 'string', description: '截止日期，ISO 格式如 "2026-07-21"。不传则不限制截止时间' },
+          limit: { type: 'number', description: '最多返回条数，默认 5，最大 200' },
+          summaryPrompt: { type: 'string', description: '总结方向提示词，告诉 LLM 如何总结记忆。例如"聚焦代码修改"、"列出所有 bug 及修复方式"、"总结每个任务的核心决策"。记忆超过 50 条时自动分页总结。不传则返回原始记忆列表' },
+          page: { type: 'number', description: '分页页码，从 1 开始。仅在传了 summaryPrompt 且记忆超过一页时生效，默认返回第 1 页的总结' },
         },
-        required: ['query'],
       },
     },
   },
@@ -650,14 +652,16 @@ const TOOL_GUIDE_MANUAL: Record<string, ToolGuideManual> = {
     usage: [
       '当需要回忆之前是否处理过类似问题、查找历史修复方案时调用。',
       'query 参数传入搜索关键词，如"bridge 遗漏"、"语音识别"、"版本号"等。',
-      'limit 参数控制返回条数，默认 5，最大 50。',
-      'timeRange 参数自由描述时间范围，如"昨天"、"上周"、"上个月"、"最近3天"、"去年"等。不传则搜索全部时间。',
+      'limit 参数控制返回条数，默认 5，最大 200。',
+      'from 和 to 参数传入 ISO 日期格式（如 "2026-07-20"），不传则不限制时间范围。',
       '结果按相关性降序排列，同分按时间降序。',
       '纯关键词匹配，不需要额外 LLM 调用。',
+      '如果需要总结大量记忆（如周报、月报、工作总结），传入 summaryPrompt 指定总结方向，工具内部会自动分页并调 LLM 总结后返回。',
     ],
     cautions: [
       '此工具只搜索任务记忆（成功/失败/中止的任务记录），不包含项目规则。',
       '不要在一次对话中连续调用多次——先用一个精准的 query 试试。',
+      'summaryPrompt 仅用于总结大量记忆，查询少量记忆时不要传。',
     ],
   },
   search_skills: {

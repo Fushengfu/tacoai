@@ -610,3 +610,175 @@
   background: rgba(86, 217, 197, 0.15);
   color: #56d9c5;
 }
+
+/* ==================================================================== */
+/*  亮色主题                                                             */
+/* ==================================================================== */
+
+[data-theme='light'] .file-editor {
+  background: #fafafc;
+}
+
+[data-theme='light'] .file-editor-header {
+  background: #f0f0f2;
+}
+
+[data-theme='light'] .file-editor-modified {
+  color: #b45309;
+}
+
+[data-theme='light'] .file-editor-lang {
+  background: rgba(44, 154, 142, 0.1);
+  color: #1a7568;
+}
+
+[data-theme='light'] .file-editor-truncated {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.2);
+  color: #b45309;
+}
+
+[data-theme='light'] .file-editor-btn.close:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text);
+}
+
+[data-theme='light'] .file-editor-btn.diff {
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.2);
+  color: #b45309;
+}
+[data-theme='light'] .file-editor-btn.diff:hover {
+  background: rgba(245, 158, 11, 0.16);
+}
+
+[data-theme='light'] .file-editor-btn.save {
+  background: rgba(34, 197, 94, 0.08);
+  border-color: rgba(34, 197, 94, 0.25);
+  color: #15803d;
+}
+[data-theme='light'] .file-editor-btn.save:hover:not(:disabled) {
+  background: rgba(34, 197, 94, 0.16);
+}
+
+[data-theme='light'] .file-editor-saved {
+  color: #15803d;
+}
+
+[data-theme='light'] .file-editor-status.error {
+  color: #dc2626;
+}
+
+[data-theme='light'] .file-editor-image-preview {
+  background: #e8e8ec;
+}
+
+[data-theme='light'] .file-editor-line-numbers {
+  background: #f0f0f2;
+  border-right-color: rgba(0, 0, 0, 0.08);
+}
+
+[data-theme='light'] .file-editor-line-no {
+  color: rgba(0, 0, 0, 0.18);
+}
+[data-theme='light'] .file-editor-line-no.active {
+  color: rgba(0, 0, 0, 0.6);
+}
+
+[data-theme='light'] .file-editor-active-line {
+  background: rgba(0, 0, 0, 0.03);
+  border-color: rgba(0, 0, 0, 0.04);
+}
+
+[data-theme='light'] .file-editor-textarea {
+  caret-color: #1c1c1e;
+}
+[data-theme='light'] .file-editor-textarea::selection {
+  background: rgba(44, 154, 142, 0.2);
+}
+[data-theme='light'] .file-editor-textarea::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+}
+[data-theme='light'] .file-editor-textarea::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+/* ── Diff 编辑模式亮色 ── */
+[data-theme='light'] .diff-edit-mode-badge {
+  background: rgba(59, 110, 255, 0.1);
+  color: #2350c0;
+}
+
+[data-theme='light'] .diff-action-btn.edit.active {
+  background: rgba(59, 110, 255, 0.2);
+  border-color: rgba(59, 110, 255, 0.35);
+}
+
+[data-theme='light'] .diff-edit-gutter {
+  background: #f0f0f2;
+  border-right-color: rgba(0, 0, 0, 0.08);
+}
+
+[data-theme='light'] .diff-edit-gutter-no {
+  color: rgba(0, 0, 0, 0.18);
+}
+[data-theme='light'] .diff-edit-gutter-line.active .diff-edit-gutter-no {
+  color: rgba(0, 0, 0, 0.6);
+}
+[data-theme='light'] .diff-edit-gutter-line.add {
+  background: rgba(72, 187, 120, 0.08);
+}
+[data-theme='light'] .diff-edit-gutter-line.add .diff-edit-gutter-no {
+  color: rgba(21, 128, 61, 0.6);
+}
+[data-theme='light'] .diff-edit-gutter-line.add .diff-edit-gutter-marker {
+  color: #15803d;
+}
+
+[data-theme='light'] .diff-edit-active-line {
+  background: rgba(0, 0, 0, 0.03);
+  border-color: rgba(0, 0, 0, 0.04);
+}
+
+[data-theme='light'] .diff-edit-bg-line.add {
+  background: rgba(72, 187, 120, 0.04);
+}
+
+[data-theme='light'] .diff-edit-textarea {
+  caret-color: #1c1c1e;
+}
+[data-theme='light'] .diff-edit-textarea::selection {
+  background: rgba(44, 154, 142, 0.2);
+}
+[data-theme='light'] .diff-edit-textarea::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+}
+[data-theme='light'] .diff-edit-textarea::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+/* ── Markdown 预览亮色 ── */
+[data-theme='light'] .file-editor-markdown-preview a {
+  color: #1a7568;
+}
+
+[data-theme='light'] .file-editor-markdown-preview code {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+[data-theme='light'] .file-editor-markdown-preview pre {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+[data-theme='light'] .file-editor-markdown-preview blockquote {
+  border-left-color: #2c9a8e;
+}
+
+[data-theme='light'] .file-editor-markdown-preview th {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+[data-theme='light'] .file-editor-btn.preview.active {
+  background: rgba(44, 154, 142, 0.12);
+  color: #1a7568;
+}

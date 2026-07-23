@@ -23,7 +23,7 @@ import type {
 } from '../../../shared/ipc'
 import type { ProviderKey, ProviderOverrides } from '../../sdk/agent/llm/client'
 import { runAgent, resolveConfirm, resolveRetry } from '../../sdk/agent'
-import { listChatStoreSessions, loadChatStoreSessionPage, saveChatStoreSessionPatch, deleteChatStoreSession, initMemoryDb } from '../../data/memory-db'
+import { listChatStoreSessions, loadChatStoreSessionPage, saveChatStoreSessionPatch, deleteChatStoreSession, initMemoryDb } from '../../repositories/memory-db/index'
 import {
   sanitizeUserFacingText,
 } from '../../../shared/sanitize'

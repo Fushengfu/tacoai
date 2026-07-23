@@ -1,3 +1,5 @@
+import { useMemo, useCallback } from 'react'
+
 type GeneralSettingsPanelProps = {
   browserDebugMode: boolean
   browserHiddenMode: boolean
@@ -13,6 +15,19 @@ type GeneralSettingsPanelProps = {
   onProjectRulesChange?: (rules: string) => void
   onOpenLogDir: () => void
   onUpdateAutoApproveCategories: (categories: Set<string>) => void
+  /** TTS 自动朗读 */
+  autoTtsEnabled: boolean
+  onAutoTtsChange: (val: boolean) => void
+  /** TTS 语速 (0.5-2.0) */
+  ttsRate: number
+  onTtsRateChange: (val: number) => void
+  /** TTS 音高 (0.5-2.0) */
+  ttsPitch: number
+  onTtsPitchChange: (val: number) => void
+  /** TTS 音色选择 */
+  availableVoices: SpeechSynthesisVoice[]
+  selectedVoiceUri: string
+  onSelectedVoiceChange: (uri: string) => void
 }
 
 export function GeneralSettingsPanel({
@@ -30,7 +45,44 @@ export function GeneralSettingsPanel({
   onProjectRulesChange,
   onOpenLogDir,
   onUpdateAutoApproveCategories,
+  autoTtsEnabled,
+  onAutoTtsChange,
+  ttsRate,
+  onTtsRateChange,
+  ttsPitch,
+  onTtsPitchChange,
+  availableVoices,
+  selectedVoiceUri,
+  onSelectedVoiceChange,
 }: GeneralSettingsPanelProps) {
+  // 按语言分组 voices
+  const voiceGroups = useMemo(() => {
+    const groups: Record<string, SpeechSynthesisVoice[]> = {}
+    for (const v of availableVoices) {
+      const lang = v.lang.split('-')[0] || v.lang || 'other'
+      if (!groups[lang]) groups[lang] = []
+      groups[lang].push(v)
+    }
+    return groups
+  }, [availableVoices])
+
+  // 试听当前选中音色（使用当前设置的语速和音高）
+  const previewVoice = useCallback(() => {
+    if (!('speechSynthesis' in window)) return
+    const voice = availableVoices.find(v => v.voiceURI === selectedVoiceUri)
+    window.speechSynthesis.cancel()
+    const u = new SpeechSynthesisUtterance(
+      selectedVoiceUri
+        ? voice?.lang?.startsWith('zh') ? '你好，这是语音朗读效果，语速和音高已按当前设置。' : 'Hello, this is a voice sample with the current rate and pitch settings.'
+        : '你好'
+    )
+    u.rate = ttsRate
+    u.pitch = ttsPitch
+    u.volume = 0.8
+    if (voice) u.voice = voice
+    window.speechSynthesis.speak(u)
+  }, [selectedVoiceUri, availableVoices, ttsRate, ttsPitch])
+
   const handleAutoApproveChange = (catId: string, checked: boolean, level?: string) => {
     // danger 级别勾选时二次确认
     if (checked && level === 'danger') {
@@ -75,6 +127,88 @@ export function GeneralSettingsPanel({
             disabled={!onProjectRulesChange || projectRulesLoading}
           >
             保存项目规则
+          </button>
+        </div>
+      </div>
+
+      {/* 语音朗读设置 */}
+      <div className="settings-card">
+        <div className="settings-card-title">语音朗读</div>
+        <div className="settings-card-desc">
+          AI 回复消息自动语音朗读。开启后每条 AI 回复完成后自动播放，无需手动点击。
+        </div>
+
+        <label className="settings-toggle-row">
+          <span className="settings-toggle-label">
+            <strong>自动朗读 AI 回复</strong>
+            <small>开启后，AI 回复完成时自动语音朗读。</small>
+          </span>
+          <input type="checkbox" className="settings-toggle" checked={autoTtsEnabled} onChange={(e) => onAutoTtsChange(e.target.checked)} />
+        </label>
+
+        <hr className="settings-card-divider" />
+
+        <label className="settings-field">
+          <span>朗读音色</span>
+          <select
+            value={selectedVoiceUri}
+            onChange={(e) => onSelectedVoiceChange(e.target.value)}
+          >
+            <option value="">系统默认</option>
+            {Object.keys(voiceGroups).sort().map(lang => (
+              <optgroup key={lang} label={lang === 'zh' ? '中文' : lang === 'en' ? 'English' : lang}>
+                {voiceGroups[lang].map(v => (
+                  <option key={v.voiceURI} value={v.voiceURI}>
+                    {v.name} {v.lang?.startsWith('zh') ? '' : `(${v.lang})`}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+        </label>
+
+        <hr className="settings-card-divider" />
+
+        <label className="settings-field">
+          <span>语速（{ttsRate.toFixed(2)}）</span>
+          <div className="settings-slider-row">
+            <span className="settings-slider-label">慢</span>
+            <input
+              type="range"
+              min="0.5"
+              max="2.0"
+              step="0.05"
+              value={ttsRate}
+              onChange={(e) => onTtsRateChange(parseFloat(e.target.value))}
+              className="settings-slider"
+            />
+            <span className="settings-slider-label">快</span>
+          </div>
+        </label>
+
+        <label className="settings-field">
+          <span>音高（{ttsPitch.toFixed(2)}）</span>
+          <div className="settings-slider-row">
+            <span className="settings-slider-label">低</span>
+            <input
+              type="range"
+              min="0.5"
+              max="2.0"
+              step="0.05"
+              value={ttsPitch}
+              onChange={(e) => onTtsPitchChange(parseFloat(e.target.value))}
+              className="settings-slider"
+            />
+            <span className="settings-slider-label">高</span>
+          </div>
+        </label>
+
+        <div className="settings-action-row">
+          <div className="settings-action-info">
+            <small>选择后点击试听按钮可以预览音色效果。</small>
+          </div>
+          <button type="button" className="settings-action-btn" onClick={previewVoice}>
+            试听
           </button>
         </div>
       </div>
