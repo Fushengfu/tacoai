@@ -464,6 +464,12 @@ const tacoApi: TacoApi = {
     /** 语音识别：发送 base64 音频到主进程，通过网关代理调用 ASR */
     recognize: (audioBase64: string, apiKey?: string): Promise<{ text: string; error?: string }> =>
       ipcRenderer.invoke(IpcChannel.VOICE_RECOGNIZE, { audioBase64, apiKey }),
+    /** 系统 TTS 朗读（降级方案，当 speechSynthesis 不可用时使用） */
+    speak: (text: string) =>
+      ipcRenderer.send(IpcChannel.VOICE_SPEAK, text),
+    /** 停止系统 TTS 朗读 */
+    stop: () =>
+      ipcRenderer.send(IpcChannel.VOICE_STOP),
   },
   bridge: {
     /** 获取手机端 APK 下载信息（从版本检查 API 获取 download_url） */
@@ -588,7 +594,39 @@ const tacoApi: TacoApi = {
         ipcRenderer.removeListener('bridge:auto-commit-changed', handler)
       }
     },
-  }
+  },
+  /** 内嵌浏览器面板（BrowserView 模式） */
+  browserView: {
+    create: (url: string, bounds: { x: number; y: number; width: number; height: number }) =>
+      ipcRenderer.invoke(IpcChannel.BROWSER_VIEW_CREATE, { url, bounds }),
+    destroy: () =>
+      ipcRenderer.invoke(IpcChannel.BROWSER_VIEW_DESTROY),
+    setBounds: (bounds: { x: number; y: number; width: number; height: number }) =>
+      ipcRenderer.invoke(IpcChannel.BROWSER_VIEW_SET_BOUNDS, bounds),
+    loadURL: (url: string) =>
+      ipcRenderer.invoke(IpcChannel.BROWSER_VIEW_LOAD_URL, url),
+    goBack: () =>
+      ipcRenderer.send(IpcChannel.BROWSER_VIEW_GO_BACK),
+    goForward: () =>
+      ipcRenderer.send(IpcChannel.BROWSER_VIEW_GO_FORWARD),
+    reload: () =>
+      ipcRenderer.send(IpcChannel.BROWSER_VIEW_RELOAD),
+    stop: () =>
+      ipcRenderer.send(IpcChannel.BROWSER_VIEW_STOP),
+    onNavigate: (callback: (data: { url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean; title?: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: { url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean; title?: string }) => callback(data)
+      ipcRenderer.on(IpcChannel.BROWSER_VIEW_NAVIGATE, handler)
+      return () => {
+        ipcRenderer.removeListener(IpcChannel.BROWSER_VIEW_NAVIGATE, handler)
+      }
+    },
+  },
+  clipboard: {
+    writeImage: (dataUrl: string) =>
+      ipcRenderer.invoke(IpcChannel.CLIPBOARD_WRITE_IMAGE, dataUrl),
+    writeText: (text: string) =>
+      ipcRenderer.invoke(IpcChannel.CLIPBOARD_WRITE_TEXT, text),
+  },
 }
 
 contextBridge.exposeInMainWorld('taco', tacoApi)

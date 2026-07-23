@@ -96,7 +96,6 @@ export async function buildBackgroundContextConversationMessages(
   replayedTaskMemories: TaskMemoryEntry[]
   droppedReplayCount: number
   droppedReplayByLimitCount: number
-  droppedReplayByBudgetCount: number
   recallMeta: RecallMeta
   recallDebug: RecallDebugCandidate[]
 }> {
@@ -137,7 +136,6 @@ export async function buildBackgroundContextConversationMessages(
   
   const recalled = await recallBackgroundContext(workspace, projectId, normalizedQuery, options)
   const replayMode = options?.replayMode ?? (options?.reason === 'post_compress' ? 'compact' : 'full')
-  const replayBudgetChars = estimateReplayBudgetChars(options?.contextLength, replayMode)
   const safeUserQuery = extractUserQueryText(normalizedQuery)
   const userAssetsBlock = extractUserAssetsBlock(normalizedQuery)
 
@@ -156,11 +154,8 @@ export async function buildBackgroundContextConversationMessages(
     taskCandidates.unshift(item)
   }
 
-  let usedChars = safeUserQuery.length + (userAssetsBlock ? userAssetsBlock.length + 32 : 0)
-
   const selectedFromEnd: TaskMemoryEntry[] = []
   let droppedReplayByLimitCount = 0
-  let droppedReplayByBudgetCount = 0
 
   for (let i = taskCandidates.length - 1; i >= 0; i--) {
     if (selectedFromEnd.length >= taskLimit) {
@@ -177,16 +172,10 @@ export async function buildBackgroundContextConversationMessages(
     if (!hasUserMessage || !hasAssistantMessage) continue
     
     if (!userText && !assistantText && !userAssets) continue
-    const pairSize = userText.length + assistantText.length + userAssets.length + 48
-    if (usedChars + pairSize > replayBudgetChars && selectedFromEnd.length > 0) {
-      droppedReplayByBudgetCount++
-      continue
-    }
     selectedFromEnd.push(item)
-    usedChars += pairSize
   }
 
-  const droppedReplayCount = droppedReplayByLimitCount + droppedReplayByBudgetCount
+  const droppedReplayCount = droppedReplayByLimitCount
   const replayedTaskMemories = selectedFromEnd.reverse()
 
   const noteMessages: ChatMessage[] = []
@@ -244,7 +233,6 @@ export async function buildBackgroundContextConversationMessages(
     replayedTaskMemories,
     droppedReplayCount,
     droppedReplayByLimitCount,
-    droppedReplayByBudgetCount,
     recallMeta: recalled.meta,
     recallDebug: recalled.debugCandidates,
   }

@@ -16,7 +16,7 @@
 import type {
   BrowserActionPayload,
   BrowserActionResult,
-} from '../../shared/ipc-types'
+} from '../../../shared/ipc-types'
 import {
   DEFAULT_APP_ID,
   browserHiddenMode,
@@ -24,8 +24,8 @@ import {
   getExternalBrowserWin,
   getBrowserInstance,
   isSameOriginUrl,
-} from './browser-state'
-import { focusExternalBrowser, openExternalBrowser } from './browser-window'
+} from './state'
+import { focusExternalBrowser, openExternalBrowser } from './window'
 
 /* ------------------------------------------------------------------ */
 /*  工具函数                                                           */

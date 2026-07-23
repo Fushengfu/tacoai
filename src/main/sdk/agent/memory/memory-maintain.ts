@@ -364,7 +364,7 @@ export async function maintainTaskMemoriesByAI(
       saveTaskMemoryArchive(workspace, repartitioned.archive, projectId),
     ])
 
-    const { insertMemoryMaintainRun } = await import('../../../data/memory-db')
+    const { insertMemoryMaintainRun } = await import('../../../repositories/memory-db/index')
     insertMemoryMaintainRun(
       { workspace, projectId },
       {

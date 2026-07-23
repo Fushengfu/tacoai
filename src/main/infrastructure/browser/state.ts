@@ -6,14 +6,14 @@
  * - CDP debugger 附加与 Stealth 注入
  *
  * 设计原则：此模块被所有子模块导入，不导入任何兄弟子模块（避免循环）。
- * 仅导入叶子模块（browser-console、browser-stealth）和外部依赖。
+ * 仅导入叶子模块（console、stealth）和外部依赖。
  */
 
 import { BrowserWindow, ipcMain } from 'electron'
-import { mainWindow } from '../window/window-manager'
-import { IpcChannel } from '../../shared/ipc-channels'
-import type { ExternalBrowserStatus } from '../../shared/ipc-types'
-import { buildStealthJS, generateChromeUA, generateFingerprintSeed } from './browser-stealth'
+import { mainWindow } from '../../window/window-manager'
+import { IpcChannel } from '../../../shared/ipc-channels'
+import type { ExternalBrowserStatus } from '../../../shared/ipc-types'
+import { buildStealthJS, generateChromeUA, generateFingerprintSeed } from './stealth'
 
 /* ------------------------------------------------------------------ */
 /*  类型定义                                                           */
@@ -53,7 +53,7 @@ export function setForceCloseAllBrowsers(value: boolean) {
 export const DEFAULT_APP_ID = 'default'
 
 /* ------------------------------------------------------------------ */
-/*  CDP debugger 附加与 Stealth 注入（放在 state 中以打破 browser-cdp ↔ browser-window 循环依赖） */
+/*  CDP debugger 附加与 Stealth 注入（放在 state 中以打破 cdp ↔ window 循环依赖） */
 /* ------------------------------------------------------------------ */
 
 /** 确保 CDP debugger 已附加到浏览器窗口，并执行反检测 CDP 命令 */

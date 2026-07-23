@@ -23,6 +23,40 @@ export function SettingsPage({
   const [recallDebugEnabled, setRecallDebugEnabled] = useState<boolean>(() =>
     localStorage.getItem('taco.recallDebugEnabled') === 'true'
   )
+  // TTS 语音朗读设置
+  const [autoTtsEnabled, setAutoTtsEnabled] = useState<boolean>(() =>
+    localStorage.getItem('taco-tts-auto') === '1'
+  )
+  const [selectedVoiceUri, setSelectedVoiceUri] = useState<string>(() =>
+    localStorage.getItem('taco-tts-voice') || ''
+  )
+  const [ttsRate, setTtsRate] = useState<number>(() => {
+    const saved = localStorage.getItem('taco-tts-rate')
+    return saved ? parseFloat(saved) : 1.0
+  })
+  const [ttsPitch, setTtsPitch] = useState<number>(() => {
+    const saved = localStorage.getItem('taco-tts-pitch')
+    return saved ? parseFloat(saved) : 1.0
+  })
+  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>(() => {
+    if ('speechSynthesis' in window) {
+      return window.speechSynthesis.getVoices()
+    }
+    return []
+  })
+
+  // 监听 voices 变化（首次可能异步加载）
+  useEffect(() => {
+    if (!('speechSynthesis' in window)) return
+    const voices = window.speechSynthesis.getVoices()
+    if (voices.length > 0) {
+      setAvailableVoices(voices)
+    }
+    const handler = () => setAvailableVoices(window.speechSynthesis.getVoices())
+    window.speechSynthesis.addEventListener('voiceschanged', handler)
+    return () => window.speechSynthesis.removeEventListener('voiceschanged', handler)
+  }, [])
+
   // 自动授权分类
   const [autoApproveCategories, setAutoApproveCategoriesState] = useState<Set<string>>(() => {
     try {
@@ -145,6 +179,27 @@ export function SettingsPage({
           onProjectRulesChange={handleSaveProjectRules}
           onOpenLogDir={() => window.taco.shell.openLogDir({ projectId, workspace: workspace || undefined })}
           onUpdateAutoApproveCategories={updateAutoApproveCategories}
+          autoTtsEnabled={autoTtsEnabled}
+          onAutoTtsChange={(val) => {
+            setAutoTtsEnabled(val)
+            localStorage.setItem('taco-tts-auto', val ? '1' : '0')
+          }}
+          ttsRate={ttsRate}
+          onTtsRateChange={(val) => {
+            setTtsRate(val)
+            localStorage.setItem('taco-tts-rate', String(val))
+          }}
+          ttsPitch={ttsPitch}
+          onTtsPitchChange={(val) => {
+            setTtsPitch(val)
+            localStorage.setItem('taco-tts-pitch', String(val))
+          }}
+          availableVoices={availableVoices}
+          selectedVoiceUri={selectedVoiceUri}
+          onSelectedVoiceChange={(uri) => {
+            setSelectedVoiceUri(uri)
+            localStorage.setItem('taco-tts-voice', uri)
+          }}
         />
       </div>
     </main>

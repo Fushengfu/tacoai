@@ -17,7 +17,7 @@ import { llmLog } from './providers'
 /* ------------------------------------------------------------------ */
 
 /** 默认模型温度（未显式配置时使用）。 */
-export const FIXED_MODEL_TEMPERATURE = 0.05
+export const FIXED_MODEL_TEMPERATURE = 0.0
 const MIN_MODEL_TEMPERATURE = 0
 const MAX_MODEL_TEMPERATURE = 2
 export const RATE_LIMIT_MAX_ATTEMPTS = 5

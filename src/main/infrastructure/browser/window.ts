@@ -19,9 +19,10 @@ import {
   syncMainWindowPriority,
   isSameOriginUrl,
   ensureCdpAttached,
-} from './browser-state'
-import { rememberBrowserConsole } from './browser-console'
-import { loadOrCreateProfile } from './browser-profile'
+} from './state'
+import { rememberBrowserConsole } from './console'
+import { destroyBrowserNetworkMonitoring } from './network'
+import { loadOrCreateProfile } from './profile'
 
 /** 打开浏览器窗口（指定 appId），如已存在则复用。windowLabel 仅作备注，不影响 appId 定位 */
 export function openExternalBrowser(
@@ -270,6 +271,7 @@ export function closeExternalBrowser(appId: string = DEFAULT_APP_ID) {
   }
   // 无论窗口状态如何，清理实例并通知渲染进程
   browserInstances.delete(appId)
+  destroyBrowserNetworkMonitoring(appId)
   syncMainWindowPriority()
   // 始终通知渲染进程清除标签（不再依赖 closed 事件可能送达）
   sendExternalStatus({ type: 'closed', appId })

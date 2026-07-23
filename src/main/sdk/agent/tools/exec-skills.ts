@@ -23,8 +23,8 @@ import {
   buildClawHubDownloadUrl,
   downloadAndExtractZip,
 } from '../skills/service'
-import { execBrowserAction, execBrowserGetConsoleLogs } from './exec-browser'
-import { execDesktopScreenshot, execDesktopAction } from './exec-desktop'
+import { execDesktopScreenshot, execDesktopAction, execDesktopOcr } from './exec-desktop'
+import { execBrowserAction, execBrowserGetConsoleLogs, execBrowserGetNetworkRequests, execBrowserGetCookies, execBrowserSetCookie, execBrowserClearCookies, execBrowserOcr, scopedBrowserAppId } from './exec-browser'
 
 /* ------------------------------------------------------------------ */
 /*  浏览器动作映射表                                                    */
@@ -71,22 +71,58 @@ export async function execRunSkillScript(
     if (scriptName === 'get_console_logs') {
       return await execBrowserGetConsoleLogs(params, projectId, services)
     }
+    if (scriptName === 'get_network_requests') {
+      return await execBrowserGetNetworkRequests(params, projectId, services)
+    }
+    if (scriptName === 'get_cookies') {
+      return await execBrowserGetCookies(params, projectId, services)
+    }
+    if (scriptName === 'set_cookie') {
+      return await execBrowserSetCookie(params, projectId, services)
+    }
+    if (scriptName === 'clear_cookies') {
+      return await execBrowserClearCookies(params, projectId, services)
+    }
     if (scriptName === 'list') {
       if (!services?.browser) return { content: 'Error: browser service not available', success: false }
       const instances = services.browser.listInstances()
-      return { content: JSON.stringify(instances, null, 2), success: true }
+      // 按当前项目过滤，只返回本项目的窗口
+      const projectKey = scopedBrowserAppId(projectId) // "project-{safe}"
+      const prefix = projectKey ? projectKey + '::' : ''
+      const filtered = instances
+        .filter((inst: any) => {
+          if (!projectKey) return true
+          return inst.appId === projectKey || inst.appId.startsWith(prefix)
+        })
+        .map((inst: any) => {
+          let shortAppId: string
+          if (inst.appId === projectKey) {
+            shortAppId = 'default' // 项目默认窗口
+          } else if (prefix && inst.appId.startsWith(prefix)) {
+            shortAppId = inst.appId.slice(prefix.length)
+          } else {
+            shortAppId = inst.appId
+          }
+          return { ...inst, appId: shortAppId }
+        })
+      return { content: JSON.stringify(filtered, null, 2), success: true }
     }
     if (scriptName === 'close') {
       if (!services?.browser) return { content: 'Error: browser service not available', success: false }
       if (!params.appId) return { content: 'Error: appId is required. Use list to get all browser window IDs, then close them one by one.', success: false }
-      const appId = String(params.appId)
-      services.browser.closeInstance(appId)
-      return { content: `浏览器窗口 [${appId}] 已关闭`, success: true }
+      const shortAppId = String(params.appId)
+      // 'default' 或空 → 项目默认窗口；其余 → project::appId
+      const fullAppId = scopedBrowserAppId(projectId, (shortAppId === 'default' || !shortAppId) ? undefined : shortAppId) ?? 'default'
+      services.browser.closeInstance(fullAppId)
+      return { content: `浏览器窗口 [${shortAppId}] 已关闭`, success: true }
+    }
+    if (scriptName === 'ocr') {
+      return await execBrowserOcr(params, projectId, services, runtimeContext)
     }
     const action = BROWSER_SCRIPT_TO_ACTION[scriptName]
     if (!action) {
       return {
-        content: `浏览器技能不支持此脚本: ${scriptName}。可用脚本: ${Object.keys(BROWSER_SCRIPT_TO_ACTION).join(', ')}, get_console_logs, list, close`,
+        content: `浏览器技能不支持此脚本: ${scriptName}。可用脚本: ${Object.keys(BROWSER_SCRIPT_TO_ACTION).join(', ')}, get_console_logs, get_network_requests, get_cookies, set_cookie, clear_cookies, ocr, list, close`,
         success: false,
       }
     }
@@ -100,8 +136,11 @@ export async function execRunSkillScript(
     if (scriptName === 'action') {
       return await execDesktopAction(params, signal, logScope, services)
     }
+    if (scriptName === 'ocr') {
+      return await execDesktopOcr(params, services)
+    }
     return {
-      content: `电脑使用技能不支持此脚本: ${scriptName}。可用脚本: screenshot, action`,
+      content: `电脑使用技能不支持此脚本: ${scriptName}。可用脚本: screenshot, action, ocr`,
       success: false,
     }
   }

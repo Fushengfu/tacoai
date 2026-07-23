@@ -3,13 +3,14 @@
  *
  * 定义 Agent SDK 所需的所有外部服务接口。
  * SDK 内部模块通过 AgentServices 容器获取服务，
- * 不再直接 import 基础设施模块（electron、infrastructure、data/memory-db 等）。
+ * 不再直接 import 基础设施模块（electron、infrastructure、repositories/memory-db 等）。
  *
  * 应用层（桌面端/CLI/其他项目）实现这些接口并注入到 SDK，
  * 使 SDK 可以在不同环境下独立复用。
  */
 
 import type { ToolCall } from './tools'
+import type { OcrResult } from '../../infrastructure/ocr'
 
 /* ------------------------------------------------------------------ */
 /*  Logger                                                             */
@@ -65,8 +66,14 @@ export interface BrowserInstance {
 export interface BrowserService {
   executeAction(params: BrowserActionParams, appId?: string): Promise<BrowserActionResult>
   getConsoleSnapshot(options: BrowserConsoleOptions): BrowserConsoleSnapshot
+  getNetworkRequests(appId: string, limit?: number): Promise<any>
+  getNetworkRequestBody(appId: string, requestId: string): Promise<any>
+  getCookies(appId: string, urls?: string[]): Promise<any>
+  setCookie(appId: string, cookie: Record<string, unknown>): Promise<any>
+  clearCookies(appId: string): Promise<any>
   listInstances(): BrowserInstance[]
   closeInstance(appId: string): void
+  clearNetworkRequests(appId: string): void
 }
 
 /* ------------------------------------------------------------------ */
@@ -130,6 +137,8 @@ export interface DesktopAutomationService {
   captureScreen(options: ScreenCaptureOptions): Promise<ScreenCaptureResult>
   checkScreenRecordingPermission(): Promise<'granted' | 'denied' | 'unknown'>
   openScreenRecordingSettings(): void
+  /** OCR 文字识别：输入图片 dataUrl/cloudUrl/路径，返回文字块及坐标。不传 image 则自动截屏后识别 */
+  ocr(image?: string): Promise<OcrResult>
 }
 
 /* ------------------------------------------------------------------ */
@@ -156,7 +165,7 @@ export interface TerminalService {
 }
 
 /* ------------------------------------------------------------------ */
-/*  数据库服务（封装 data/memory-db）                                    */
+/*  数据库服务（封装 repositories/memory-db）                               */
 /* ------------------------------------------------------------------ */
 
 export interface DatabaseService {

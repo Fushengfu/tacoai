@@ -258,6 +258,33 @@ export type TacoApi = {
     /** 监听外部浏览器状态变化 (opened/closed/navigated) */
     onExternalStatus: (callback: (status: ExternalBrowserStatus) => void) => () => void
   }
+  /** 内嵌浏览器面板（BrowserView 模式，替代 webview 标签） */
+  browserView: {
+    /** 创建 BrowserView 并加载 URL */
+    create: (url: string, bounds: { x: number; y: number; width: number; height: number }) => Promise<void>
+    /** 销毁 BrowserView */
+    destroy: () => Promise<void>
+    /** 更新 BrowserView 位置/大小 */
+    setBounds: (bounds: { x: number; y: number; width: number; height: number }) => Promise<void>
+    /** 导航到新 URL */
+    loadURL: (url: string) => Promise<void>
+    /** 后退 */
+    goBack: () => void
+    /** 前进 */
+    goForward: () => void
+    /** 刷新 */
+    reload: () => void
+    /** 停止加载 */
+    stop: () => void
+    /** 监听 BrowserView 导航状态变更 */
+    onNavigate: (callback: (data: { url: string; canGoBack: boolean; canGoForward: boolean; loading: boolean; title?: string }) => void) => () => void
+  }
+  clipboard: {
+    /** 将 dataURL（PNG）写入系统剪切板 */
+    writeImage: (dataUrl: string) => Promise<void>
+    /** 将文本写入系统剪切板（Electron file:// 降级方案） */
+    writeText: (text: string) => Promise<void>
+  }
   appState: {
     get: () => Promise<AppStateSnapshot>
     saveThreads: (payload: AppStateThreadsPayload) => Promise<AppStateThreadsPayload>
@@ -276,6 +303,10 @@ export type TacoApi = {
     onToggle: (callback: () => void) => () => void
     /** 语音识别：base64 编码的 PCM 音频 → 识别文本 */
     recognize: (audioBase64: string, apiKey?: string) => Promise<{ text: string; error?: string }>
+    /** 系统 TTS 朗读（降级方案，首选 speechSynthesis） */
+    speak: (text: string) => void
+    /** 停止系统 TTS 朗读 */
+    stop: () => void
   }
   bridge: {
     /** 获取手机端 APK 下载信息（从版本检查 API 获取 download_url，失败返回 null） */

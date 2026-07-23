@@ -219,6 +219,35 @@ export const IpcChannel = {
   /** renderer → main, 语音识别请求（base64 音频 → 文本） */
   VOICE_RECOGNIZE: 'voice:recognize',
 
+  /** renderer → main, 系统 TTS 朗读 */
+  VOICE_SPEAK: 'voice:speak',
+  /** renderer → main, 停止系统 TTS 朗读 */
+  VOICE_STOP: 'voice:stop',
+
   /** main → renderer, 自动检查发现有新版本可用 */
   APP_UPDATE_AVAILABLE: 'app:update-available',
+
+  /** renderer → main, 创建内嵌 BrowserView（替代 webview 标签） */
+  BROWSER_VIEW_CREATE: 'browser-view:create',
+  /** renderer → main, 销毁 BrowserView */
+  BROWSER_VIEW_DESTROY: 'browser-view:destroy',
+  /** renderer → main, 设置 BrowserView 位置/大小 */
+  BROWSER_VIEW_SET_BOUNDS: 'browser-view:set-bounds',
+  /** renderer → main, 导航到指定 URL */
+  BROWSER_VIEW_LOAD_URL: 'browser-view:load-url',
+  /** renderer → main, 后退 */
+  BROWSER_VIEW_GO_BACK: 'browser-view:go-back',
+  /** renderer → main, 前进 */
+  BROWSER_VIEW_GO_FORWARD: 'browser-view:go-forward',
+  /** renderer → main, 刷新 */
+  BROWSER_VIEW_RELOAD: 'browser-view:reload',
+  /** renderer → main, 停止加载 */
+  BROWSER_VIEW_STOP: 'browser-view:stop',
+  /** main → renderer, 导航状态变更（URL/前进后退/加载中） */
+  BROWSER_VIEW_NAVIGATE: 'browser-view:navigate',
+
+  /** renderer → main, 将图片写入系统剪切板 */
+  CLIPBOARD_WRITE_IMAGE: 'clipboard:write-image',
+  /** renderer → main, 将文本写入系统剪切板（Electron file:// 降级） */
+  CLIPBOARD_WRITE_TEXT: 'clipboard:write-text',
 } as const

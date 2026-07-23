@@ -187,7 +187,7 @@ export async function listTaskMemories(workspace: string, projectId?: string): P
 
 /** 删除任务执行记忆(硬删除) */
 export async function deleteTaskMemory(workspace: string, memoryId: string, projectId?: string): Promise<void> {
-  const { deleteTaskMemoryById } = await import('../../../data/memory-db')
+  const { deleteTaskMemoryById } = await import('../../../repositories/memory-db/index')
   
   // 直接按ID删除(storage_tier不限,active和archive都会被检查)
   deleteTaskMemoryById({ workspace, projectId }, memoryId)

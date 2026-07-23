@@ -5,7 +5,7 @@
  * - 按 appId 隔离存储 + 限流
  */
 
-import type { BrowserConsoleLevel } from '../../shared/ipc-types'
+import type { BrowserConsoleLevel } from '../../../shared/ipc-types'
 
 /* ------------------------------------------------------------------ */
 /*  类型定义                                                           */

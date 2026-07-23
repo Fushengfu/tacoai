@@ -3,20 +3,41 @@
  *
  * Agent 对话中途主动搜索历史任务记忆。
  * SQL 层 LIKE 粗筛 + 内存精排，不再全量加载。
+ * 支持分页 + LLM 总结（由调用方 orchestrate）。
  */
 
 import type { DatabaseService } from '../services'
 import type { TaskMemoryEntry } from './memory-normalize'
 import { normalizeTaskMemoryEntry } from './memory-normalize'
-import { shortText, compactJoin } from './memory-utils'
+import { shortText } from './memory-utils'
+
+/* ------------------------------------------------------------------ */
+/*  类型                                                               */
+/* ------------------------------------------------------------------ */
+
+export type RecallResult = {
+  /** 格式化后的文本（用于直接返回给 agent） */
+  text: string
+  /** 原始候选记忆列表（调用方用于 LLM 总结） */
+  candidates: TaskMemoryEntry[]
+  /** 当前页的记忆列表 */
+  pageItems: TaskMemoryEntry[]
+  /** 候选记忆总数 */
+  totalCandidates: number
+  /** 当前页码（1-based） */
+  page: number
+  /** 总页数 */
+  totalPages: number
+}
 
 /* ------------------------------------------------------------------ */
 /*  常量                                                               */
 /* ------------------------------------------------------------------ */
 
-const MAX_LIMIT = 50
+const MAX_LIMIT = 200
 const DEFAULT_LIMIT = 5
 const CANDIDATE_LIMIT = 200
+const PER_PAGE = 50
 
 /* ------------------------------------------------------------------ */
 /*  分词                                                               */
@@ -77,14 +98,17 @@ function scoreMemory(memory: TaskMemoryEntry, tokens: string[]): number {
 function formatMemoryOutput(
   memories: TaskMemoryEntry[],
   totalCandidateCount: number,
-  query: string,
+  query: string = '',
   truncated: boolean,
   timeRangeLabel?: string,
 ): string {
-  const timeHint = timeRangeLabel ? ` (时间范围: ${timeRangeLabel})` : ''
+  const timeHint = timeRangeLabel ? ` (${timeRangeLabel})` : ''
+  const queryPart = query ? `与"${shortText(query, 60)}"相关的` : ''
   const header = totalCandidateCount > 0
-    ? `找到 ${totalCandidateCount} 条与"${shortText(query, 60)}"相关的记忆${timeHint}：`
-    : `未找到与"${shortText(query, 60)}"相关的记忆${timeHint}。`
+    ? `找到 ${totalCandidateCount} 条${queryPart}记忆${timeHint}：`
+    : query
+      ? `未找到与"${shortText(query, 60)}"相关的记忆${timeHint}。`
+      : `未${timeHint ? `在 ${timeRangeLabel} 内` : ''}找到任何记忆。`
 
   const lines = [header]
 
@@ -123,8 +147,12 @@ export async function recallMemoriesByKeywords(
   limit: number = DEFAULT_LIMIT,
   timeFrom?: string,
   timeTo?: string,
-): Promise<string> {
+  page: number = 1,
+  perPage: number = PER_PAGE,
+): Promise<RecallResult> {
   const safeLimit = Math.max(1, Math.min(Math.floor(limit) || DEFAULT_LIMIT, MAX_LIMIT))
+  const safePage = Math.max(1, Math.floor(page) || 1)
+  const safePerPage = Math.max(1, Math.min(Math.floor(perPage) || PER_PAGE, MAX_LIMIT))
 
   // 1. 分词
   const tokens = tokenize(query)
@@ -133,24 +161,30 @@ export async function recallMemoriesByKeywords(
   const rawCandidates = database.searchTaskMemories(workspace, tokens, timeFrom, timeTo, CANDIDATE_LIMIT, projectId) as Array<Partial<TaskMemoryEntry>>
   const candidates = rawCandidates.map((item, idx) => normalizeTaskMemoryEntry(item, idx))
 
-  if (candidates.length === 0) {
+  const totalCandidates = candidates.length
+
+  if (totalCandidates === 0) {
     const timeHint = timeFrom || timeTo ? '在指定时间范围内 ' : ''
-    return `未${timeHint}找到任何任务记忆。`
+    return {
+      text: `未${timeHint}找到任何任务记忆。`,
+      candidates: [],
+      pageItems: [],
+      totalCandidates: 0,
+      page: 1,
+      totalPages: 0,
+    }
   }
 
   // 3. 内存精排
-  let results: TaskMemoryEntry[]
+  let sorted: TaskMemoryEntry[]
 
   if (tokens.length === 0) {
-    // 无有效关键词：按时间排序，返回最近 N 条
-    const sorted = [...candidates].sort((a, b) => {
+    sorted = [...candidates].sort((a, b) => {
       const ta = Date.parse(a.updatedAt || a.createdAt || '')
       const tb = Date.parse(b.updatedAt || b.createdAt || '')
       return (Number.isFinite(tb) ? tb : 0) - (Number.isFinite(ta) ? ta : 0)
     })
-    results = sorted.slice(0, safeLimit)
   } else {
-    // 打分排序
     const scored = candidates.map((m) => ({
       memory: m,
       score: scoreMemory(m, tokens),
@@ -163,11 +197,18 @@ export async function recallMemoriesByKeywords(
       return (Number.isFinite(tb) ? tb : 0) - (Number.isFinite(ta) ? ta : 0)
     })
 
-    // 取 top N（过滤掉 0 分的除非总数不够）
     const matched = scored.filter((s) => s.score > 0)
-    const top = matched.length > 0 ? matched : scored
-    results = top.slice(0, safeLimit).map((s) => s.memory)
+    sorted = (matched.length > 0 ? matched : scored).map((s) => s.memory)
   }
+
+  // 4. 分页
+  const totalPages = Math.ceil(sorted.length / safePerPage)
+  const actualPage = Math.min(safePage, totalPages)
+  const startIdx = (actualPage - 1) * safePerPage
+  const pageItems = sorted.slice(startIdx, startIdx + safePerPage)
+
+  // 5. 格式化（无总结时使用）
+  const topResults = sorted.slice(0, safeLimit)
 
   // 构建时间范围标签
   let timeRangeLabel: string | undefined
@@ -179,5 +220,7 @@ export async function recallMemoriesByKeywords(
     else timeRangeLabel = `截止 ${to}`
   }
 
-  return formatMemoryOutput(results, candidates.length, query, candidates.length > safeLimit, timeRangeLabel)
+  const text = formatMemoryOutput(topResults, totalCandidates, query, candidates.length > safeLimit, timeRangeLabel)
+
+  return { text, candidates: sorted, pageItems, totalCandidates, page: actualPage, totalPages }
 }

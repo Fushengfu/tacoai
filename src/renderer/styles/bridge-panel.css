@@ -232,3 +232,48 @@ a.bridge-btn {
   background: rgba(239, 68, 68, 0.08);
   border-radius: 8px;
 }
+
+/* ── 亮色主题 ── */
+[data-theme='light'] .bridge-panel {
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme='light'] .bridge-panel-close:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+[data-theme='light'] .bridge-status-dot.disconnected {
+  background: #9ca3af;
+}
+
+[data-theme='light'] .bridge-peer-badge {
+  background: rgba(44, 154, 142, 0.12);
+  color: #1a7568;
+}
+
+[data-theme='light'] .bridge-pairing-code {
+  background: #f0f0f0;
+}
+
+[data-theme='light'] .bridge-qr-code {
+  background: #fff;
+}
+
+[data-theme='light'] .bridge-btn-primary:hover:not(:disabled) {
+  background: #2e5ce6;
+}
+
+[data-theme='light'] .bridge-btn-danger {
+  background: rgba(239, 68, 68, 0.08);
+  color: #c53030;
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
+[data-theme='light'] .bridge-btn-danger:hover {
+  background: rgba(239, 68, 68, 0.15);
+}
+
+[data-theme='light'] .bridge-error {
+  background: rgba(239, 68, 68, 0.06);
+  color: #c53030;
+}

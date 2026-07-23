@@ -4,7 +4,7 @@ import {
   filterNonNoteTools,
   filterPlanProgressTools,
   filterNonPlanProgressTools,
-} from '../loop-exec'
+} from '../loop/exec'
 import type { ToolCall } from '../tools/definitions'
 
 function tc(id: string, name: string, args = '{}'): ToolCall {

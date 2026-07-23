@@ -11,7 +11,7 @@ import { getAppState } from '../../infrastructure/app-state'
 import {
   loadChatStoreSessionPage,
   loadChatStoreMessageById,
-} from '../../data/memory-db'
+} from '../../repositories/memory-db/index'
 import { log, logError } from '../../infrastructure/logger'
 import { handleGatewayGetModels } from './gateway-handlers'
 import { setGlobalAuthLevel, saveAuthLevel, loadAuthLevel, isAutoCommitEnabled, saveAutoCommitEnabled } from '../../sdk/agent/tools'

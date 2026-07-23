@@ -9,7 +9,7 @@ import {
   AUTO_RETRY_BASE_DELAY_MS,
   AUTO_RETRY_MAX_DELAY_MS,
   STREAM_SANITIZE_HOLD_BACK,
-} from '../loop-utils'
+} from '../loop/utils'
 
 describe('loop-utils', () => {
   /* ------------------------------------------------------------------ */

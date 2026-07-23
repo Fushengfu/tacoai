@@ -1,0 +1,222 @@
+/* WebviewPanel — 右侧滑出内嵌浏览器面板 */
+
+.webview-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 300px;
+  max-width: 85vw;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  animation: webview-slide-in 0.2s ease-out;
+  flex-shrink: 0;
+  /* 不设置 will-change / GPU 合成层，拖拽时由 JS 直接操作 DOM width，避免 GPU 层尺寸变化开销 */
+}
+
+@keyframes webview-slide-in {
+  from {
+    transform: translateX(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* 拖拽分割线 */
+.webview-panel-resize-handle {
+  position: absolute;
+  left: -4px;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.webview-panel-resize-handle:hover .webview-panel-resize-line,
+.webview-panel-resize-handle:active .webview-panel-resize-line {
+  background: var(--accent);
+  opacity: 0.6;
+}
+
+.webview-panel-resize-line {
+  width: 2px;
+  height: 40px;
+  background: var(--muted);
+  opacity: 0.2;
+  border-radius: 1px;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+/* 导航栏 */
+.webview-panel-navbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.webview-nav-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+
+.webview-nav-btn:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.webview-nav-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.webview-nav-btn.webview-nav-close:hover {
+  background: rgba(255, 59, 48, 0.15);
+  color: #ff3b30;
+}
+
+/* 地址栏 */
+.webview-address-bar {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 8px;
+  gap: 6px;
+  min-width: 0;
+  height: 28px;
+}
+
+.webview-address-favicon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border-radius: 2px;
+}
+
+.webview-address-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  min-width: 0;
+  padding: 0;
+}
+
+.webview-address-input::selection {
+  background: var(--accent);
+  color: #fff;
+}
+
+.webview-loading-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: webview-spin 0.6s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes webview-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* webview 容器 — 占位 div，BrowserView 浮在其上方 */
+.webview-container {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: #fff; /* 页面加载前显示 */
+}
+
+/* 行内代码中的可点击链接（AI 回复中链接被反引号包裹时） */
+.inline-code-link {
+  color: var(--accent);
+  background: var(--bg-secondary);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: var(--mono) !important;
+  font-size: 0.9em;
+  text-decoration: none;
+  transition: background 0.15s, color 0.15s;
+}
+
+.inline-code-link:hover {
+  color: var(--accent-hover);
+  background: var(--hover);
+  text-decoration: underline;
+}
+
+/* ── 亮色主题 ── */
+[data-theme='light'] .webview-panel-navbar {
+  background: var(--bg-secondary);
+  border-bottom-color: rgba(0, 0, 0, 0.08);
+}
+
+[data-theme='light'] .webview-nav-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+[data-theme='light'] .webview-nav-btn.webview-nav-close:hover {
+  background: rgba(255, 59, 48, 0.1);
+  color: #cc241a;
+}
+
+[data-theme='light'] .webview-address-bar {
+  background: rgba(0, 0, 0, 0.03);
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='light'] .webview-address-input {
+  color: var(--text);
+}
+
+[data-theme='light'] .webview-address-input::selection {
+  background: var(--accent);
+  color: #fff;
+}
+
+[data-theme='light'] .webview-loading-spinner {
+  border-color: rgba(0, 0, 0, 0.1);
+  border-top-color: var(--accent);
+}
+
+[data-theme='light'] .webview-container {
+  background: #fafafa;
+}
+
+[data-theme='light'] .inline-code-link {
+  color: var(--accent);
+  background: rgba(0, 0, 0, 0.05);
+}
+
+[data-theme='light'] .inline-code-link:hover {
+  color: var(--accent-hover);
+  background: rgba(0, 0, 0, 0.1);
+}

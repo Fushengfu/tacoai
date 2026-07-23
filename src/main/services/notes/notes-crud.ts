@@ -19,7 +19,7 @@ import {
   listProjectNotesForScope,
   replaceProjectNotes,
   importProjectNotes,
-} from '../../data/memory-db'
+} from '../../repositories/memory-db/index'
 import { TACO_HOME, projectScope, workspaceHash } from '../../../shared/paths'
 import { shortText, normalizeIso, pathExists, readJsonArray } from '../../sdk/agent/memory/memory-utils'
 

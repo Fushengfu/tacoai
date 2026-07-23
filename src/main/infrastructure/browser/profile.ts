@@ -8,7 +8,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import * as nodePath from 'node:path'
 import { app } from 'electron'
-import { generateFingerprintSeed, generateChromeUA } from './browser-stealth'
+import { generateFingerprintSeed, generateChromeUA } from './stealth'
 
 /* ------------------------------------------------------------------ */
 /*  常量                                                               */

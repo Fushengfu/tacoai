@@ -8,7 +8,7 @@ import {
   buildReadFileFact,
   buildFileChangeFact,
   isVerificationPlanStep,
-} from '../loop-track'
+} from '../loop/track'
 
 describe('loop-track', () => {
   /* ------------------------------------------------------------------ */
