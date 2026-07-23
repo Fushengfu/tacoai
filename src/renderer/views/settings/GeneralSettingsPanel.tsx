@@ -28,6 +28,12 @@ type GeneralSettingsPanelProps = {
   availableVoices: SpeechSynthesisVoice[]
   selectedVoiceUri: string
   onSelectedVoiceChange: (uri: string) => void
+  /** AI 智能润色朗读 */
+  ttsRewriteEnabled: boolean
+  onTtsRewriteEnabledChange: (val: boolean) => void
+  ttsRewriteModelId: string
+  ttsRewriteModelOptions: { id: string; label: string }[]
+  onTtsRewriteModelIdChange: (id: string) => void
 }
 
 export function GeneralSettingsPanel({
@@ -54,6 +60,11 @@ export function GeneralSettingsPanel({
   availableVoices,
   selectedVoiceUri,
   onSelectedVoiceChange,
+  ttsRewriteEnabled,
+  onTtsRewriteEnabledChange,
+  ttsRewriteModelId,
+  ttsRewriteModelOptions,
+  onTtsRewriteModelIdChange,
 }: GeneralSettingsPanelProps) {
   // 按语言分组 voices
   const voiceGroups = useMemo(() => {
@@ -202,6 +213,31 @@ export function GeneralSettingsPanel({
             <span className="settings-slider-label">高</span>
           </div>
         </label>
+
+        <hr className="settings-card-divider" />
+
+        <label className="settings-toggle-row">
+          <span className="settings-toggle-label">
+            <strong>AI 智能润色朗读文本</strong>
+            <small>朗读前使用 AI 将文本改写为自然口语，朗读更流畅。关闭则原文朗读。</small>
+          </span>
+          <input type="checkbox" className="settings-toggle" checked={ttsRewriteEnabled} onChange={(e) => onTtsRewriteEnabledChange(e.target.checked)} />
+        </label>
+
+        {ttsRewriteEnabled && (
+          <label className="settings-field">
+            <span>改写模型</span>
+            <select
+              value={ttsRewriteModelId}
+              onChange={(e) => onTtsRewriteModelIdChange(e.target.value)}
+            >
+              <option value="">选择改写用的模型</option>
+              {ttsRewriteModelOptions.map(opt => (
+                <option key={opt.id} value={opt.id}>{opt.label}</option>
+              ))}
+            </select>
+          </label>
+        )}
 
         <div className="settings-action-row">
           <div className="settings-action-info">

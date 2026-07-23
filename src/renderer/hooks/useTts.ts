@@ -67,6 +67,8 @@ export function stripMarkdown(text: string): string {
   result = result.replace(/\|/g, '、')
   // 去掉 FILE 标签
   result = result.replace(/\[FILE\][^\[]*\[\/FILE\]/g, '')
+  // 去掉 thinking 思考块（AI 推理过程，不适合朗读）— 必须跑在 HTML 标签移除前面
+  result = result.replace(/<think\b[\s\S]*?<\/think>/gi, '')
   // 去掉 HTML 标签
   result = result.replace(/<[^>]+>/g, '')
   // 去掉 emoji 和特殊图标符号（保留中文、英文、数字、基础标点）

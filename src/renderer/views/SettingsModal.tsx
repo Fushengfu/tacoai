@@ -6,12 +6,14 @@ type SettingsPageProps = {
   onClose: () => void
   workspace?: string | null
   projectId?: string
+  rewriteModelOptions: { id: string; label: string }[]
 }
 
 export function SettingsPage({
   onClose,
   workspace,
   projectId,
+  rewriteModelOptions,
 }: Readonly<SettingsPageProps>) {
   const [browserDebugMode, setBrowserDebugMode] = useState<boolean>(() =>
     localStorage.getItem('taco.browserDebugMode') === 'true'
@@ -44,6 +46,14 @@ export function SettingsPage({
     }
     return []
   })
+
+  // TTS AI 润色设置
+  const [ttsRewriteEnabled, setTtsRewriteEnabled] = useState<boolean>(() =>
+    localStorage.getItem('taco-tts-rewrite-enabled') === '1'
+  )
+  const [ttsRewriteModelId, setTtsRewriteModelId] = useState<string>(() =>
+    localStorage.getItem('taco-tts-rewrite-model') || ''
+  )
 
   // 监听 voices 变化（首次可能异步加载）
   useEffect(() => {
@@ -199,6 +209,17 @@ export function SettingsPage({
           onSelectedVoiceChange={(uri) => {
             setSelectedVoiceUri(uri)
             localStorage.setItem('taco-tts-voice', uri)
+          }}
+          ttsRewriteEnabled={ttsRewriteEnabled}
+          onTtsRewriteEnabledChange={(val) => {
+            setTtsRewriteEnabled(val)
+            localStorage.setItem('taco-tts-rewrite-enabled', val ? '1' : '0')
+          }}
+          ttsRewriteModelId={ttsRewriteModelId}
+          ttsRewriteModelOptions={rewriteModelOptions}
+          onTtsRewriteModelIdChange={(id) => {
+            setTtsRewriteModelId(id)
+            localStorage.setItem('taco-tts-rewrite-model', id)
           }}
         />
       </div>

@@ -308,6 +308,10 @@ export type TacoApi = {
     /** 停止系统 TTS 朗读 */
     stop: () => void
   }
+  tts: {
+    /** AI 口语化改写文本（用于朗读前润色） */
+    rewriteText: (text: string, modelConfigId?: string) => Promise<string>
+  }
   bridge: {
     /** 获取手机端 APK 下载信息（从版本检查 API 获取 download_url，失败返回 null） */
     getMobileApkInfo: (packageName: string) => Promise<MobileApkInfo | null>

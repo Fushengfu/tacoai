@@ -22,6 +22,7 @@ import type {
   AgentEventChunkData,
 } from '../../../shared/ipc'
 import type { ProviderKey, ProviderOverrides } from '../../sdk/agent/llm/client'
+import { requestChatCompletionWithConfig } from '../../sdk/agent/llm/client'
 import { runAgent, resolveConfirm, resolveRetry } from '../../sdk/agent'
 import { listChatStoreSessions, loadChatStoreSessionPage, saveChatStoreSessionPatch, deleteChatStoreSession, initMemoryDb } from '../../repositories/memory-db/index'
 import {
@@ -448,4 +449,129 @@ export async function handleAppStateSaveProviders(
 export function handleAppStateSaveComplete(): void {
   const { resolveQuitSave } = require('../../main')
   resolveQuitSave()
+}
+
+/* ------------------------------------------------------------------ */
+/*  TTS Rewrite Text — AI 口语化改写                                    */
+/* ------------------------------------------------------------------ */
+
+const TTS_REWRITE_SYSTEM_PROMPT = `你是文本口语化助手。将以下文本改写为适合语音朗读的自然口语：
+- 保留所有关键信息，不要省略任何实质内容
+- 长句拆短句，每句不超过 25 个字
+- 特殊符号用口语表达（✅→已完成，❌→不可用，→→然后，⚠️→注意）
+- 去掉所有 markdown 标记（**、*、\`、#、- 等）
+- 像朋友聊天一样自然流畅
+- 代码/数字/文件名照读不省略
+
+直接输出改写后的文本，不要加任何解释、前缀或后缀。`
+
+export async function handleTtsRewriteText(
+  _event: IpcMainInvokeEvent,
+  payload: { text: string; modelConfigId?: string },
+): Promise<string> {
+  const { text, modelConfigId } = payload
+  if (!text?.trim()) return text
+
+  // 查找模型配置
+  let providerConfig: { provider: string; baseUrl: string; apiKey: string; model: string } | null = null
+
+  if (modelConfigId) {
+    try {
+      const { getAppState } = await import('../../infrastructure/app-state')
+      const state = await getAppState()
+      const modelConfig = state.providersState.modelConfigs.find(c => c.id === modelConfigId)
+      if (modelConfig?.apiKey && modelConfig?.model) {
+        providerConfig = {
+          provider: modelConfig.provider,
+          baseUrl: modelConfig.baseUrl,
+          apiKey: modelConfig.apiKey,
+          model: modelConfig.model,
+        }
+      }
+    } catch (err) {
+      logError('TTS_REWRITE_CONFIG_FAIL', String(err))
+    }
+  }
+
+  // 本地配置找不到 → 搜索网关系统模型（如 deepseek-v4-flash）
+  if (!providerConfig && modelConfigId) {
+    try {
+      const { getGatewayModelListCache } = await import('./gateway-handlers')
+      const gwModels = getGatewayModelListCache()
+      const gw = gwModels?.find(m => m.id === modelConfigId)
+      if (gw?.apiKey && gw?.model) {
+        providerConfig = {
+          provider: gw.provider,
+          baseUrl: gw.baseUrl,
+          apiKey: gw.apiKey,
+          model: gw.model,
+        }
+      }
+    } catch (_) { /* ignore */ }
+  }
+
+  // 都没有 → fallback：本地第一个可用 → 网关第一个可用
+  if (!providerConfig) {
+    try {
+      const { getAppState } = await import('../../infrastructure/app-state')
+      const state = await getAppState()
+      const firstConfig = state.providersState.modelConfigs.find(c => c.apiKey && c.model)
+      if (firstConfig) {
+        providerConfig = {
+          provider: firstConfig.provider,
+          baseUrl: firstConfig.baseUrl,
+          apiKey: firstConfig.apiKey,
+          model: firstConfig.model,
+        }
+      }
+    } catch (_) { /* ignore */ }
+  }
+
+  if (!providerConfig) {
+    try {
+      const { getGatewayModelListCache } = await import('./gateway-handlers')
+      const gwModels = getGatewayModelListCache()
+      const firstGw = gwModels?.find(m => m.apiKey && m.model)
+      if (firstGw) {
+        providerConfig = {
+          provider: firstGw.provider,
+          baseUrl: firstGw.baseUrl,
+          apiKey: firstGw.apiKey,
+          model: firstGw.model,
+        }
+      }
+    } catch (_) { /* ignore */ }
+  }
+
+  if (!providerConfig) {
+    throw new Error('没有可用的模型配置，请先在设置中配置至少一个模型')
+  }
+
+  // 规范化 baseUrl：去除尾部 /chat/completions（buildRequest 会自动追加）
+  const baseUrl = providerConfig.baseUrl.replace(/\/chat\/completions\/?$/, '').replace(/\/+$/, '')
+
+  log('TTS_REWRITE_REQUEST', {
+    provider: providerConfig.provider,
+    model: providerConfig.model,
+    baseUrl,
+    textLength: text.length,
+  })
+
+  const result = await requestChatCompletionWithConfig(
+    providerConfig.provider as ProviderKey,
+    {
+      baseUrl,
+      apiKey: providerConfig.apiKey,
+      model: providerConfig.model,
+    },
+    [
+      { role: 'system', content: TTS_REWRITE_SYSTEM_PROMPT },
+      { role: 'user', content: text },
+    ],
+    undefined,
+    'tts-rewrite',
+    undefined,
+  )
+
+  return result?.trim() || text
 }

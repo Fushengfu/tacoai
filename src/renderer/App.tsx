@@ -781,6 +781,7 @@ export default function App() {
                     onClose={closeOverlay}
                     workspace={currentWorkspace}
                     projectId={tid}
+                    rewriteModelOptions={mergedModels}
                   />
                 </PaneErrorBoundary>
               )}
