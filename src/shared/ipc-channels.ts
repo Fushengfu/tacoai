@@ -250,4 +250,7 @@ export const IpcChannel = {
   CLIPBOARD_WRITE_IMAGE: 'clipboard:write-image',
   /** renderer → main, 将文本写入系统剪切板（Electron file:// 降级） */
   CLIPBOARD_WRITE_TEXT: 'clipboard:write-text',
+
+  /** renderer → main, AI 口语化改写 TTS 朗读文本 */
+  TTS_REWRITE_TEXT: 'tts:rewrite-text',
 } as const

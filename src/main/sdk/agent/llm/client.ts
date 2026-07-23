@@ -175,13 +175,96 @@ export async function requestChatCompletion(
     throw new Error(`Request failed: ${response.status} ${response.statusText} ${finalRawText}`)
   }
 
-  const data = JSON.parse(finalRawText)
+  const raw = JSON.parse(finalRawText)
+  // 网关响应有 {code, data: {choices: [...]}} 格式包装，需要解一层
+  const data = raw?.data?.choices !== undefined ? raw.data : raw
   const isAnthropic = provider === 'anthropic' || (!isBuiltinProvider(provider) && config.baseUrl.includes('anthropic'))
-  const content = isAnthropic
+  let content = isAnthropic
     ? (Array.isArray(data?.content) ? data.content.find((c: any) => c.type === 'text')?.text : undefined)
     : data?.choices?.[0]?.message?.content
-  if (!content) {
-    throw new Error('Empty response from provider')
+
+  // content 为 undefined（路径不存在）→ 真正的解析失败，抛出错误
+  if (content === undefined || content === null) {
+    const preview = finalRawText.length > 800 ? finalRawText.slice(0, 800) + '...' : finalRawText
+    throw new Error(
+      `Empty response from provider. ` +
+      `Provider: ${provider}, Model: ${config.model}, ` +
+      `isAnthropic: ${isAnthropic}, ` +
+      `Response body preview: ${preview}`
+    )
   }
+
+  // content 为空字符串（模型确实没输出）→ 不抛错，返回空字符串让调用方降级
+  return content as string
+}
+
+/* ------------------------------------------------------------------ */
+/*  requestChatCompletionWithConfig：使用完整配置的非流式调用              */
+/* ------------------------------------------------------------------ */
+
+/** Non-streaming chat completion with explicit ProviderConfig (no global lookup) */
+export async function requestChatCompletionWithConfig(
+  provider: ProviderKey,
+  config: ProviderConfig,
+  messages: ChatMessage[],
+  signal?: AbortSignal,
+  logScope?: string,
+  userId?: string,
+) {
+  if (!config.apiKey || !config.model) {
+    throw new Error(`Missing API key or model for ${provider}`)
+  }
+
+  const { url, init } = await buildRequest(provider, config, messages, false, undefined, signal, logScope, userId)
+  const startTime = Date.now()
+
+  llmLog('REQUEST', {
+    url,
+    method: init.method,
+    headers: fullHeadersForLog(init.headers),
+    body: parseJsonBodyForLog(init.body),
+  }, logScope)
+
+  let response: Response
+  try {
+    response = await fetchWith429Retry(url, init, signal, logScope)
+  } catch (err) {
+    llmLog('ERROR', { url, error: String(err), durationMs: Date.now() - startTime }, logScope)
+    throw err
+  }
+
+  const finalRawText = await response.text()
+
+  llmLog('RESPONSE', {
+    url,
+    status: response.status,
+    statusText: response.statusText,
+    headers: Object.fromEntries(response.headers.entries()),
+    durationMs: Date.now() - startTime,
+    body: finalRawText,
+  }, logScope)
+
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status} ${response.statusText} ${finalRawText}`)
+  }
+
+  const raw = JSON.parse(finalRawText)
+  // 网关响应有 {code, data: {choices: [...]}} 格式包装，需要解一层
+  const data = raw?.data?.choices !== undefined ? raw.data : raw
+  const isAnthropic = provider === 'anthropic' || (!isBuiltinProvider(provider) && config.baseUrl.includes('anthropic'))
+  let content = isAnthropic
+    ? (Array.isArray(data?.content) ? data.content.find((c: any) => c.type === 'text')?.text : undefined)
+    : data?.choices?.[0]?.message?.content
+
+  if (content === undefined || content === null) {
+    const preview = finalRawText.length > 800 ? finalRawText.slice(0, 800) + '...' : finalRawText
+    throw new Error(
+      `Empty response from provider. ` +
+      `Provider: ${provider}, Model: ${config.model}, ` +
+      `isAnthropic: ${isAnthropic}, ` +
+      `Response body preview: ${preview}`
+    )
+  }
+
   return content as string
 }

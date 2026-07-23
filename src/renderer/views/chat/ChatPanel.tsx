@@ -235,10 +235,28 @@ export function ChatPanel({
       ttsPlayingRef.current = false
       const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant')
       if (lastAssistant?.content?.trim()) {
-        const clean = stripMarkdown(lastAssistant.content)
+        let clean = stripMarkdown(lastAssistant.content)
         if (clean) {
-          ttsQueueRef.current.push(clean)
-          setTimeout(() => playNextInQueue(), 100)
+          const rewriteEnabled = localStorage.getItem('taco-tts-rewrite-enabled') === '1'
+          const rewriteModelId = localStorage.getItem('taco-tts-rewrite-model') || ''
+          if (rewriteEnabled && rewriteModelId && clean.length > 10) {
+            // AI 智能润色：异步改写后入队朗读
+            window.taco.tts.rewriteText(clean, rewriteModelId).then(rewritten => {
+              if (rewritten?.trim()) {
+                ttsQueueRef.current.push(rewritten.trim())
+              } else {
+                ttsQueueRef.current.push(clean)
+              }
+              setTimeout(() => playNextInQueue(), 100)
+            }).catch(err => {
+              console.warn('[TTS] AI rewrite failed, using original text:', err)
+              ttsQueueRef.current.push(clean)
+              setTimeout(() => playNextInQueue(), 100)
+            })
+          } else {
+            ttsQueueRef.current.push(clean)
+            setTimeout(() => playNextInQueue(), 100)
+          }
         }
       }
     }

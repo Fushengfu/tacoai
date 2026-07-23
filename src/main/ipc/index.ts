@@ -65,6 +65,7 @@ import {
   handleAppStateSaveThreads,
   handleAppStateSaveProviders,
   handleAppStateSaveComplete,
+  handleTtsRewriteText,
 } from './handlers/chat-handlers'
 
 import {
@@ -385,6 +386,9 @@ export function registerIpcHandlers() {
   // Clipboard
   ipcMain.handle(IpcChannel.CLIPBOARD_WRITE_IMAGE, handleClipboardWriteImage)
   ipcMain.handle(IpcChannel.CLIPBOARD_WRITE_TEXT, handleClipboardWriteText)
+
+  // TTS Rewrite
+  ipcMain.handle(IpcChannel.TTS_REWRITE_TEXT, handleTtsRewriteText)
 }
 
 function buildLogScope(projectId?: string, workspace?: string): string | undefined {

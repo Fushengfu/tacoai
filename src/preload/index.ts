@@ -471,6 +471,11 @@ const tacoApi: TacoApi = {
     stop: () =>
       ipcRenderer.send(IpcChannel.VOICE_STOP),
   },
+  tts: {
+    /** AI 口语化改写文本（用于朗读前润色） */
+    rewriteText: (text: string, modelConfigId?: string): Promise<string> =>
+      ipcRenderer.invoke(IpcChannel.TTS_REWRITE_TEXT, { text, modelConfigId }),
+  },
   bridge: {
     /** 获取手机端 APK 下载信息（从版本检查 API 获取 download_url） */
     getMobileApkInfo: (packageName: string): Promise<MobileApkInfo | null> =>
