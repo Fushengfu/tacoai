@@ -84,23 +84,23 @@ function isStatusConfirmationIntent(goal: string): boolean {
   return patterns.some((keyword) => lower.includes(keyword))
 }
 
-export function inferIntentType(goal: string): 'qa' | 'code' | 'browser' | 'desktop' | 'mixed' {
+export function inferIntentType(goal: string): 'qa' | 'code' | 'browser' | 'computer' | 'mixed' {
   if (isStatusConfirmationIntent(goal)) return 'qa'
   const text = extractUserGoalText(goal).toLowerCase()
   if (!text.trim()) return 'qa'
 
   const browserKeywords = ['浏览器', '页面', 'dom', 'selector', 'browser_', 'url', '网页', '截图页面', 'console', 'click', 'type']
-  const desktopKeywords = ['桌面', '鼠标', '键盘', 'desktop_', '拖动', '双击', '坐标', '系统窗口']
+  const computerKeywords = ['桌面', '鼠标', '键盘', 'computer_', '拖动', '双击', '坐标', '系统窗口']
   const codeKeywords = ['代码', '文件', '函数', '变量', '编译', '构建', '测试', '修复', 'read_file', 'edit_file', 'write_file', 'run_command']
 
   const hasBrowser = browserKeywords.some((k) => text.includes(k))
-  const hasDesktop = desktopKeywords.some((k) => text.includes(k))
+  const hasComputer = computerKeywords.some((k) => text.includes(k))
   const hasCode = codeKeywords.some((k) => text.includes(k))
 
-  const hitCount = Number(hasBrowser) + Number(hasDesktop) + Number(hasCode)
+  const hitCount = Number(hasBrowser) + Number(hasComputer) + Number(hasCode)
   if (hitCount >= 2) return 'mixed'
   if (hasBrowser) return 'browser'
-  if (hasDesktop) return 'desktop'
+  if (hasComputer) return 'computer'
   if (hasCode) return 'code'
   return 'qa'
 }

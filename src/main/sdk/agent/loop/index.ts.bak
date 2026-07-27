@@ -130,14 +130,9 @@ export async function runAgent(
   if (projectId && services?.database) loadAuthLevel(projectId, services.database)
 
   // 超时保护
-  const loopTimeoutController = new AbortController()
   const loopTimeoutTimer = setTimeout(() => {
-    log('AGENT_TIMEOUT_WARNING', { timeout: AGENT_LOOP_TIMEOUT_MS, message: 'Agent 运行时间过长,强制中止' }, logScope)
-    loopTimeoutController.abort()
+    log('AGENT_TIMEOUT_WARNING', { timeout: AGENT_LOOP_TIMEOUT_MS, message: 'Agent 运行时间过长,可能存在无限循环' }, logScope)
   }, AGENT_LOOP_TIMEOUT_MS)
-  const effectiveSignal = signal
-    ? AbortSignal.any([signal, loopTimeoutController.signal])
-    : loopTimeoutController.signal
 
   const { catalogBlock, restoreEnv } = await refreshSkillsWithEnv(workspace, log, logScope)
 
@@ -166,7 +161,7 @@ export async function runAgent(
     let latestRecallMeta: Pick<RecallMeta, 'intentSource' | 'intentType' | 'intentSummary' | 'intentGoal'> | null = null
     const bgResult = await injectBackgroundContext(
       workingMessages, workspace, projectId, contextLength,
-      provider, overrides, effectiveSignal, logScope, log, recallDebug,
+      provider, overrides, signal, logScope, log, recallDebug,
     )
     let currentTaskStartIndex = bgResult.currentTaskStartIndex
     latestRecallMeta = bgResult.latestRecallMeta
@@ -224,7 +219,7 @@ export async function runAgent(
         state, workspace, projectId, services?.database,
         lastUserGoal, plainUserQuery, userAssetsBlock,
         normalizedMemorySessionId, normalizedSourceUserMessageId, normalizedSourceAssistantMessageId,
-        lastUsageTotalTokens, provider, overrides, contextLength, effectiveSignal, logScope, log,
+        lastUsageTotalTokens, provider, overrides, contextLength, signal, logScope, log,
         messages, round, onEvent, taskStartedAt, services,
         finalText, 'success', finalText,
       )
@@ -234,13 +229,13 @@ export async function runAgent(
     // ─── 主循环 ──────────────────────────────────────────────────────
 
     while (round < MAX_TOOL_ROUNDS) {
-      if (effectiveSignal?.aborted) {
+      if (signal?.aborted) {
         log('AGENT_ABORTED', { round, reason: 'signal aborted before round start' }, logScope)
         await finalizeAndDone(
           state, workspace, projectId, services?.database,
           lastUserGoal, plainUserQuery, userAssetsBlock,
           normalizedMemorySessionId, normalizedSourceUserMessageId, normalizedSourceAssistantMessageId,
-          lastUsageTotalTokens, provider, overrides, contextLength, effectiveSignal, logScope, log,
+          lastUsageTotalTokens, provider, overrides, contextLength, signal, logScope, log,
           messages, round, onEvent, taskStartedAt, services,
           lastAssistantText, 'aborted',
         )
@@ -263,19 +258,19 @@ export async function runAgent(
             failures: state.failureLogs,
             currentPlan,
           },
-          lastUsageTotalTokens, effectiveSignal, logScope, onEvent,
+          lastUsageTotalTokens, signal, logScope, onEvent,
           (meta) => { latestRecallMeta = meta },
           userId,
         )
         currentTaskStartIndex = compressed.nextCurrentTaskStartIndex
       } catch (err) {
-        if (isAbortError(err) || effectiveSignal?.aborted) {
+        if (isAbortError(err) || signal?.aborted) {
           log('AGENT_ABORTED', { round, reason: 'signal aborted during context compress' }, logScope)
           await finalizeAndDone(
             state, workspace, projectId, services?.database,
             lastUserGoal, plainUserQuery, userAssetsBlock,
             normalizedMemorySessionId, normalizedSourceUserMessageId, normalizedSourceAssistantMessageId,
-            lastUsageTotalTokens, provider, overrides, contextLength, effectiveSignal, logScope, log,
+            lastUsageTotalTokens, provider, overrides, contextLength, signal, logScope, log,
             messages, round, onEvent, taskStartedAt, services,
             lastAssistantText, 'aborted',
           )
@@ -286,7 +281,7 @@ export async function runAgent(
           state, workspace, projectId, services?.database,
           lastUserGoal, plainUserQuery, userAssetsBlock,
           normalizedMemorySessionId, normalizedSourceUserMessageId, normalizedSourceAssistantMessageId,
-          lastUsageTotalTokens, provider, overrides, contextLength, effectiveSignal, logScope, log,
+          lastUsageTotalTokens, provider, overrides, contextLength, signal, logScope, log,
           messages, round, onEvent, taskStartedAt, services,
           lastAssistantText, 'error', msg,
         )
@@ -315,15 +310,15 @@ export async function runAgent(
         for await (const event of requestStreamWithTools(
           provider, requestMessages, overrides,
           { tools: getFilteredToolDefinitions(allowedToolNames), toolChoice: 'auto' },
-          effectiveSignal, logScope, userId,
+          signal, logScope, userId,
         )) {
-          if (effectiveSignal?.aborted) {
+          if (signal?.aborted) {
             log('AGENT_ABORTED', { round, reason: 'signal aborted during stream' }, logScope)
             await finalizeAndDone(
               state, workspace, projectId, services?.database,
               lastUserGoal, plainUserQuery, userAssetsBlock,
               normalizedMemorySessionId, normalizedSourceUserMessageId, normalizedSourceAssistantMessageId,
-              lastUsageTotalTokens, provider, overrides, contextLength, effectiveSignal, logScope, log,
+              lastUsageTotalTokens, provider, overrides, contextLength, signal, logScope, log,
               messages, round, onEvent, taskStartedAt, services,
               textContent || lastAssistantText, 'aborted',
             )
@@ -375,13 +370,13 @@ export async function runAgent(
           sanitizeReplayRawText(rawTextContent)
         lastAssistantText = assistantContextContent || textContent || lastAssistantText
       } catch (err) {
-        if (isAbortError(err) || effectiveSignal?.aborted) {
+        if (isAbortError(err) || signal?.aborted) {
           log('AGENT_ABORTED', { round, reason: 'signal aborted during stream request' }, logScope)
           await finalizeAndDone(
             state, workspace, projectId, services?.database,
             lastUserGoal, plainUserQuery, userAssetsBlock,
             normalizedMemorySessionId, normalizedSourceUserMessageId, normalizedSourceAssistantMessageId,
-            lastUsageTotalTokens, provider, overrides, contextLength, effectiveSignal, logScope, log,
+            lastUsageTotalTokens, provider, overrides, contextLength, signal, logScope, log,
             messages, round, onEvent, taskStartedAt, services,
             textContent || lastAssistantText, 'aborted',
           )
@@ -408,7 +403,7 @@ export async function runAgent(
               failures: state.failureLogs,
               currentPlan,
             },
-            lastUsageTotalTokens, effectiveSignal, logScope, onEvent,
+            lastUsageTotalTokens, signal, logScope, onEvent,
             (meta) => { latestRecallMeta = meta },
             userId,
           )
@@ -444,16 +439,16 @@ export async function runAgent(
           log('AGENT_RETRYABLE_ERROR', { round, retryId, errorType, error: msg, autoRetriesExhausted: true }, logScope)
           onEvent?.({ type: 'retry_confirm', retryId, errorType, errorMessage: `自动重试 ${autoNetworkRetryCount} 次后仍失败：${msg}`, round })
 
-          const shouldRetry = await waitForRetry(retryId, effectiveSignal)
+          const shouldRetry = await waitForRetry(retryId, signal)
           log('AGENT_RETRY_DECISION', { retryId, shouldRetry }, logScope)
 
-          if (effectiveSignal?.aborted) {
+          if (signal?.aborted) {
             log('AGENT_ABORTED', { round, reason: 'signal aborted during retry confirm' }, logScope)
             await finalizeAndDone(
               state, workspace, projectId, services?.database,
               lastUserGoal, plainUserQuery, userAssetsBlock,
               normalizedMemorySessionId, normalizedSourceUserMessageId, normalizedSourceAssistantMessageId,
-              lastUsageTotalTokens, provider, overrides, contextLength, effectiveSignal, logScope, log,
+              lastUsageTotalTokens, provider, overrides, contextLength, signal, logScope, log,
               messages, round, onEvent, taskStartedAt, services,
               lastAssistantText, 'aborted',
             )
@@ -465,7 +460,7 @@ export async function runAgent(
             state, workspace, projectId, services?.database,
             lastUserGoal, plainUserQuery, userAssetsBlock,
             normalizedMemorySessionId, normalizedSourceUserMessageId, normalizedSourceAssistantMessageId,
-            lastUsageTotalTokens, provider, overrides, contextLength, effectiveSignal, logScope, log,
+            lastUsageTotalTokens, provider, overrides, contextLength, signal, logScope, log,
             messages, round, onEvent, taskStartedAt, services,
             textContent || lastAssistantText, 'error', msg,
           )
@@ -478,7 +473,7 @@ export async function runAgent(
           state, workspace, projectId, services?.database,
           lastUserGoal, plainUserQuery, userAssetsBlock,
           normalizedMemorySessionId, normalizedSourceUserMessageId, normalizedSourceAssistantMessageId,
-          lastUsageTotalTokens, provider, overrides, contextLength, effectiveSignal, logScope, log,
+          lastUsageTotalTokens, provider, overrides, contextLength, signal, logScope, log,
           messages, round, onEvent, taskStartedAt, services,
           textContent || lastAssistantText, 'error', msg,
         )
@@ -518,7 +513,7 @@ export async function runAgent(
               state, workspace, projectId, services?.database,
               lastUserGoal, plainUserQuery, userAssetsBlock,
               normalizedMemorySessionId, normalizedSourceUserMessageId, normalizedSourceAssistantMessageId,
-              lastUsageTotalTokens, provider, overrides, contextLength, effectiveSignal, logScope, log,
+              lastUsageTotalTokens, provider, overrides, contextLength, signal, logScope, log,
               messages, round, onEvent, taskStartedAt, services,
               textContent || lastAssistantText, 'error', reason,
             )
@@ -544,16 +539,16 @@ export async function runAgent(
         log('AGENT_EMPTY_RESPONSE', { round, retryId, rawPreview: rawTextContent.slice(0, 200), autoRetriesExhausted: true }, logScope)
         onEvent?.({ type: 'retry_confirm', retryId, errorType: 'empty_response', errorMessage: `自动重试 ${autoEmptyRetryCount} 次后仍失败：${reason}`, round })
 
-        const shouldRetry = await waitForRetry(retryId, effectiveSignal)
+        const shouldRetry = await waitForRetry(retryId, signal)
         log('AGENT_RETRY_DECISION', { retryId, shouldRetry }, logScope)
 
-        if (effectiveSignal?.aborted) {
+        if (signal?.aborted) {
           log('AGENT_ABORTED', { round, reason: 'signal aborted during retry confirm' }, logScope)
           await finalizeAndDone(
             state, workspace, projectId, services?.database,
             lastUserGoal, plainUserQuery, userAssetsBlock,
             normalizedMemorySessionId, normalizedSourceUserMessageId, normalizedSourceAssistantMessageId,
-            lastUsageTotalTokens, provider, overrides, contextLength, effectiveSignal, logScope, log,
+            lastUsageTotalTokens, provider, overrides, contextLength, signal, logScope, log,
             messages, round, onEvent, taskStartedAt, services,
             lastAssistantText, 'aborted',
           )
@@ -565,7 +560,7 @@ export async function runAgent(
           state, workspace, projectId, services?.database,
           lastUserGoal, plainUserQuery, userAssetsBlock,
           normalizedMemorySessionId, normalizedSourceUserMessageId, normalizedSourceAssistantMessageId,
-          lastUsageTotalTokens, provider, overrides, contextLength, effectiveSignal, logScope, log,
+          lastUsageTotalTokens, provider, overrides, contextLength, signal, logScope, log,
           messages, round, onEvent, taskStartedAt, services,
           textContent || lastAssistantText, 'error', reason,
         )
@@ -584,13 +579,13 @@ export async function runAgent(
       // 笔记工具优先执行（不经过确认）
       const noteToolCalls = filterNoteTools(toolCalls)
       if (noteToolCalls.length > 0) {
-        const shouldAbort = await executeNoteTools(noteToolCalls, workspace, effectiveSignal, logScope, projectId, log, onEvent, workingMessages)
+        const shouldAbort = await executeNoteTools(noteToolCalls, workspace, signal, logScope, projectId, log, onEvent, workingMessages)
         if (shouldAbort) {
           await finalizeAndDone(
             state, workspace, projectId, services?.database,
             lastUserGoal, plainUserQuery, userAssetsBlock,
             normalizedMemorySessionId, normalizedSourceUserMessageId, normalizedSourceAssistantMessageId,
-            lastUsageTotalTokens, provider, overrides, contextLength, effectiveSignal, logScope, log,
+            lastUsageTotalTokens, provider, overrides, contextLength, signal, logScope, log,
             messages, round, onEvent, taskStartedAt, services,
             lastAssistantText, 'aborted',
           )
@@ -611,14 +606,14 @@ export async function runAgent(
       // propose_plan 确认流程
       if (toolCalls.some((tc) => tc.function.name === 'propose_plan')) {
         const planRef: { value: CurrentPlan } = { value: currentPlan }
-        const result = await handleProposePlan(toolCalls, workingMessages, workspace, effectiveSignal, logScope, log, onEvent, planRef)
+        const result = await handleProposePlan(toolCalls, workingMessages, workspace, signal, logScope, log, onEvent, planRef)
         currentPlan = planRef.value
         if (result === 'abort') {
           await finalizeAndDone(
             state, workspace, projectId, services?.database,
             lastUserGoal, plainUserQuery, userAssetsBlock,
             normalizedMemorySessionId, normalizedSourceUserMessageId, normalizedSourceAssistantMessageId,
-            lastUsageTotalTokens, provider, overrides, contextLength, effectiveSignal, logScope, log,
+            lastUsageTotalTokens, provider, overrides, contextLength, signal, logScope, log,
             messages, round, onEvent, taskStartedAt, services,
             lastAssistantText, 'aborted',
           )
@@ -628,13 +623,13 @@ export async function runAgent(
       }
 
       // 风险评估
-      const riskResult = await handleRiskAssessment(toolCalls, workspace, effectiveSignal, logScope, log, onEvent, workingMessages)
+      const riskResult = await handleRiskAssessment(toolCalls, workspace, signal, logScope, log, onEvent, workingMessages)
       if (riskResult === 'abort') {
         await finalizeAndDone(
           state, workspace, projectId, services?.database,
           lastUserGoal, plainUserQuery, userAssetsBlock,
           normalizedMemorySessionId, normalizedSourceUserMessageId, normalizedSourceAssistantMessageId,
-          lastUsageTotalTokens, provider, overrides, contextLength, effectiveSignal, logScope, log,
+          lastUsageTotalTokens, provider, overrides, contextLength, signal, logScope, log,
           messages, round, onEvent, taskStartedAt, services,
           lastAssistantText, 'aborted',
         )
@@ -643,13 +638,13 @@ export async function runAgent(
       if (riskResult === 'skip') continue // 用户拒绝 → 进入下一轮让 LLM 处理
 
       // 中断检查
-      if (effectiveSignal?.aborted) {
+      if (signal?.aborted) {
         log('AGENT_ABORTED', { round, reason: 'signal aborted before tool execution' }, logScope)
         await finalizeAndDone(
           state, workspace, projectId, services?.database,
           lastUserGoal, plainUserQuery, userAssetsBlock,
           normalizedMemorySessionId, normalizedSourceUserMessageId, normalizedSourceAssistantMessageId,
-          lastUsageTotalTokens, provider, overrides, contextLength, effectiveSignal, logScope, log,
+          lastUsageTotalTokens, provider, overrides, contextLength, signal, logScope, log,
           messages, round, onEvent, taskStartedAt, services,
           lastAssistantText, 'aborted',
         )
@@ -659,17 +654,17 @@ export async function runAgent(
       // 执行工具
       trackToolCallsInputs(state, toolCalls)
       const results = await executeAndTrackTools(
-        toolCalls, workspace, effectiveSignal, logScope, projectId,
+        toolCalls, workspace, signal, logScope, projectId,
         allowedToolNames, overrides, services, onEvent, workingMessages,
         provider, userId,
       )
-      if (effectiveSignal?.aborted) {
+      if (signal?.aborted) {
         log('AGENT_ABORTED', { round, reason: 'signal aborted during tool execution' }, logScope)
         await finalizeAndDone(
           state, workspace, projectId, services?.database,
           lastUserGoal, plainUserQuery, userAssetsBlock,
           normalizedMemorySessionId, normalizedSourceUserMessageId, normalizedSourceAssistantMessageId,
-          lastUsageTotalTokens, provider, overrides, contextLength, effectiveSignal, logScope, log,
+          lastUsageTotalTokens, provider, overrides, contextLength, signal, logScope, log,
           messages, round, onEvent, taskStartedAt, services,
           lastAssistantText, 'aborted',
         )
@@ -684,7 +679,7 @@ export async function runAgent(
       state, workspace, projectId, services?.database,
       lastUserGoal, plainUserQuery, userAssetsBlock,
       normalizedMemorySessionId, normalizedSourceUserMessageId, normalizedSourceAssistantMessageId,
-      lastUsageTotalTokens, provider, overrides, contextLength, effectiveSignal, logScope, log,
+      lastUsageTotalTokens, provider, overrides, contextLength, signal, logScope, log,
       messages, round, onEvent, taskStartedAt, services,
       lastAssistantText, 'error', `Agent exceeded max tool rounds (${MAX_TOOL_ROUNDS})`,
     )

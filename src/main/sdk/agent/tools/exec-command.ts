@@ -122,7 +122,9 @@ export async function execUploadFile(args: Record<string, unknown>, workspace: s
   const rawPath = String(args.filePath ?? '').trim()
   if (!rawPath) return { content: 'Error: filePath is required', success: false }
 
-  const resolved = path.resolve(workspace, rawPath)
+  const safeCheck = resolveSafe(workspace, rawPath)
+  if ('error' in safeCheck) return { content: `Error: ${safeCheck.error}`, success: false }
+  const resolved = safeCheck.resolved
 
   try {
     await fs.access(resolved)

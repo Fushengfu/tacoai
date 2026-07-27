@@ -2,7 +2,7 @@
  * Agent 服务工厂
  *
  * 将现有基础设施模块（infrastructure/browser、infrastructure/mcp、
- * infrastructure/desktop-service、services/terminal/ 等）适配为
+ * infrastructure/computer-service、services/terminal/ 等）适配为
  * AgentServices 接口，注入到 Agent SDK。
  *
  * 桌面端主进程入口：chat-handlers.ts 调用 buildAgentServices()，
@@ -18,7 +18,7 @@ import { loadAuthFromFile } from '../infrastructure/auth-store'
 import { getBridgeManager } from '../bridge/bridge-manager'
 import { executeBrowserAction, getBrowserConsoleSnapshot, listBrowserInstances, closeExternalBrowser, getNetworkRequests, getNetworkRequestBody, clearNetworkRequests, getCookies, setCookie, clearCookies } from '../infrastructure/browser'
 import { getActiveMcpTools, callMcpTool, saveScreenshot } from '../infrastructure/mcp'
-import { callDesktopService } from '../infrastructure/desktop-service'
+import { callComputerService } from '../infrastructure/computer-service'
 import { recognizeImage } from '../infrastructure/ocr'
 import {
   createAITerminal,
@@ -46,7 +46,7 @@ import {
 } from '../repositories/memory-db/index'
 import { listNotes } from './notes/notes-crud'
 import { getGatewayModelListCache } from '../ipc/handlers/gateway-handlers'
-import type { AgentServices, BrowserService, McpService, DesktopAutomationService, TerminalService, DatabaseService, MemorySnapshotStore, NotesService, FsProvider, GatewayModelCache } from '../sdk/agent/services'
+import type { AgentServices, BrowserService, McpService, ComputerAutomationService, TerminalService, DatabaseService, MemorySnapshotStore, NotesService, FsProvider, GatewayModelCache } from '../sdk/agent/services'
 
 /* ------------------------------------------------------------------ */
 /*  Logger                                                            */
@@ -86,8 +86,11 @@ function createBrowserService(): BrowserService {
         clearAfterRead: options.clearAfterRead,
       })
       return {
-        entries: (snapshot as any).entries ?? [],
-        count: (snapshot as any).count ?? 0,
+        logs: (snapshot as any).logs ?? [],
+        totalStored: (snapshot as any).totalStored ?? 0,
+        returned: (snapshot as any).returned ?? 0,
+        filters: (snapshot as any).filters ?? {},
+        topCandidates: (snapshot as any).topCandidates ?? [],
       }
     },
     listInstances() {
@@ -142,16 +145,16 @@ function createMcpService(): McpService {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Desktop Automation Service                                         */
+/*  Computer Automation Service                                         */
 /* ------------------------------------------------------------------ */
 
 // 缓存屏幕录制权限状态，避免频繁调用 systemPreferences
 let _screenPermissionCache: 'granted' | 'denied' | 'unknown' | null = null
 
-function createDesktopAutomationService(): DesktopAutomationService {
+function createComputerAutomationService(): ComputerAutomationService {
   return {
     async call(payload, signal) {
-      const result = await callDesktopService(
+      const result = await callComputerService(
         { action: payload.action as any, ...payload },
         signal,
       )
@@ -474,7 +477,7 @@ export function buildAgentServices(): AgentServices {
     logger: createLogger(),
     browser: createBrowserService(),
     mcp: createMcpService(),
-    desktop: createDesktopAutomationService(),
+    computer: createComputerAutomationService(),
     terminal: createTerminalService(),
     database: createDatabaseService(),
     snapshotStore: createSnapshotStore(),

@@ -124,11 +124,11 @@ export function ChatPanel({
   activeConfirmIds,
   activeRetryIds,
 }: Readonly<ChatPanelProps>) {
-  const hasProviders = configuredProviders.length > 0
+  const hasProviders = (configuredProviders ?? []).length > 0
   const isNearBottomRef = useRef<boolean>(true)
   const lastScrollHeightRef = useRef<number>(0)
   const BOTTOM_THRESHOLD = 240
-  const [visibleMessageCount, setVisibleMessageCount] = useState(() => Math.min(messages.length, INITIAL_VISIBLE_MESSAGE_COUNT))
+  const [visibleMessageCount, setVisibleMessageCount] = useState(() => Math.min((messages ?? []).length, INITIAL_VISIBLE_MESSAGE_COUNT))
   const prependAnchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
   const prevSessionIdRef = useRef<string | null>(activeSessionId ?? null)
   const attachedImagesRef = useRef<AttachedImage[]>(attachedImages)
@@ -163,6 +163,8 @@ export function ChatPanel({
   // ── 语音朗读（自动 TTS 队列）──
   // 朗读状态（控制 AI Voice Avatar 显隐）
   const [isSpeaking, setIsSpeaking] = useState(false)
+  // TTS 改写进行中（改写完成前保持发送按钮禁用）
+  const [isTtsRewriting, setIsTtsRewriting] = useState(false)
 
   // ── TTS 队列系统 ──
   const ttsQueueRef = useRef<string[]>([])
@@ -213,8 +215,10 @@ export function ChatPanel({
   }, [projectId])
 
   // ── 发送状态变更 → 控制 TTS ──
+  // 使用 useLayoutEffect（而非 useEffect）确保 isTtsRewriting 在浏览器绘制前更新，
+  // 从而与 InputArea 的 sending || isTtsRewriting 配合，避免按钮在 TTS 改写完成前恢复。
   const prevSendingRef = useRef(false)
-  useEffect(() => {
+  useLayoutEffect(() => {
     const was = prevSendingRef.current
     prevSendingRef.current = sending
 
@@ -240,17 +244,20 @@ export function ChatPanel({
           const rewriteEnabled = localStorage.getItem('taco-tts-rewrite-enabled') === '1'
           const rewriteModelId = localStorage.getItem('taco-tts-rewrite-model') || ''
           if (rewriteEnabled && rewriteModelId && clean.length > 10) {
-            // AI 智能润色：异步改写后入队朗读
+            // AI 智能润色：改写完成前保持发送按钮禁用
+            setIsTtsRewriting(true)
             window.taco.tts.rewriteText(clean, rewriteModelId).then(rewritten => {
               if (rewritten?.trim()) {
                 ttsQueueRef.current.push(rewritten.trim())
               } else {
                 ttsQueueRef.current.push(clean)
               }
+              setIsTtsRewriting(false)
               setTimeout(() => playNextInQueue(), 100)
             }).catch(err => {
               console.warn('[TTS] AI rewrite failed, using original text:', err)
               ttsQueueRef.current.push(clean)
+              setIsTtsRewriting(false)
               setTimeout(() => playNextInQueue(), 100)
             })
           } else {
@@ -977,7 +984,7 @@ export function ChatPanel({
                 <MessageBubble
                   msg={msg}
                   isEditing={isEditing}
-                  sending={sending}
+                  sending={sending || isTtsRewriting}
                   activeTaskStartedAt={activeTaskStartedAt}
                   lastAssistantMessageId={lastAssistantMessageId}
                   nowTs={nowTs}
@@ -1120,7 +1127,7 @@ export function ChatPanel({
         attachedAssets={attachedAssets}
         draft={draft}
         onDraftChange={onDraftChange}
-        sending={sending}
+        sending={sending || isTtsRewriting}
         hasProviders={hasProviders}
         workspace={workspace}
         onSendClick={handleSend}

@@ -43,7 +43,7 @@ export type RiskCategory =
   | 'git_ops'          // Git 常规操作
   | 'docker_ops'       // Docker 操作
   | 'browser_ops'      // 浏览器操作
-  | 'desktop_ops'      // 电脑操作
+  | 'computer_ops'      // 电脑操作
 
 /** 风险分类信息（供 UI 展示用） */
 export const RISK_CATEGORY_INFO: { id: RiskCategory; label: string; description: string; level: 'danger' | 'warning' }[] = [
@@ -56,7 +56,7 @@ export const RISK_CATEGORY_INFO: { id: RiskCategory; label: string; description:
   { id: 'git_ops', label: 'Git 操作', description: 'git push, git merge, git rebase 等', level: 'warning' },
   { id: 'docker_ops', label: 'Docker 操作', description: 'docker run, docker build 等容器操作', level: 'warning' },
   { id: 'browser_ops', label: '浏览器操作', description: 'AI 操控浏览器执行操作', level: 'warning' },
-  { id: 'desktop_ops', label: '电脑操作', description: 'AI 操控鼠标/键盘/输入等电脑操作', level: 'warning' },
+  { id: 'computer_ops', label: '电脑操作', description: 'AI 操控鼠标/键盘/输入等电脑操作', level: 'warning' },
 ]
 
 /** 危险命令关键词匹配表：[正则, 描述, 分类] */
@@ -147,12 +147,12 @@ const WARNING_PATTERNS: [RegExp, string, RiskCategory][] = [
 /** 浏览器操作工具名前缀 */
 const BROWSER_TOOL_PREFIX = 'browser_'
 /** 电脑操作工具名前缀 */
-const DESKTOP_TOOL_PREFIX = 'desktop_'
+const COMPUTER_TOOL_PREFIX = 'computer_'
 
 /** 是否已在本次会话中确认过浏览器接管 */
 let browserAutoApproved = false
 /** 是否已在本次会话中确认过电脑接管 */
-let desktopAutoApproved = false
+let computerAutoApproved = false
 
 /** 外部可调用：设置浏览器全局接管（从设置页面调用） */
 export function setBrowserAutoApproved(approved: boolean) {
@@ -164,12 +164,12 @@ export function isBrowserAutoApproved() {
   return browserAutoApproved
 }
 
-export function setDesktopAutoApproved(approved: boolean) {
-  desktopAutoApproved = approved
+export function setComputerAutoApproved(approved: boolean) {
+  computerAutoApproved = approved
 }
 
-export function isDesktopAutoApproved() {
-  return desktopAutoApproved
+export function isComputerAutoApproved() {
+  return computerAutoApproved
 }
 
 /** 已自动授权的风险分类集合 */
@@ -181,8 +181,8 @@ export function setAutoApproveCategories(categories: RiskCategory[]) {
   for (const cat of categories) autoApproveCategories.add(cat)
   // browser_ops 同步到 browserAutoApproved（添加/移除均需同步）
   browserAutoApproved = autoApproveCategories.has('browser_ops')
-  // desktop_ops 同步到 desktopAutoApproved（添加/移除均需同步）
-  desktopAutoApproved = autoApproveCategories.has('desktop_ops')
+  // computer_ops 同步到 computerAutoApproved（添加/移除均需同步）
+  computerAutoApproved = autoApproveCategories.has('computer_ops')
 }
 
 /** 获取当前自动授权分类列表 */
@@ -367,14 +367,14 @@ export function assessToolCallsRisk(toolCalls: ToolCall[], workspace?: string): 
       }
     }
 
-    if (toolName.startsWith(DESKTOP_TOOL_PREFIX)) {
-      if (ignoreAutoApprove || (!desktopAutoApproved && !autoApproveCategories.has('desktop_ops'))) {
+    if (toolName.startsWith(COMPUTER_TOOL_PREFIX)) {
+      if (ignoreAutoApprove || (!computerAutoApproved && !autoApproveCategories.has('computer_ops'))) {
         const info = String(args.action ?? args.key ?? args.text ?? '')
         risks.push({
           toolCallId: tc.id,
           toolName,
           level: 'warning',
-          reason: `电脑操作: ${toolName.replace(DESKTOP_TOOL_PREFIX, '')}`,
+          reason: `电脑操作: ${toolName.replace(COMPUTER_TOOL_PREFIX, '')}`,
           detail: info || '(无参数)',
         })
         continue

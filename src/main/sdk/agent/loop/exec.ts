@@ -10,7 +10,7 @@ import type { ProviderKey } from '../llm/client'
 import type { ToolCall, ToolResult, RiskInfo } from '../tools'
 import type { AgentEvent } from '../types'
 import type { PlanStepStatus } from '../types'
-import { executeToolCalls, assessToolCallsRisk, setBrowserAutoApproved, setDesktopAutoApproved, getGlobalAuthLevel } from '../tools'
+import { executeToolCalls, assessToolCallsRisk, setBrowserAutoApproved, setComputerAutoApproved, getGlobalAuthLevel } from '../tools'
 import { sanitizeReasoningForContext } from '../shared/sanitize'
 import { waitForConfirm, isAbortError } from '../error-handler'
 import { truncateToolResultForContext } from '../context/compressor'
@@ -268,14 +268,14 @@ export async function handleRiskAssessment(
 
   if (!approved) {
     const deniedBrowserOps = toolCalls.some((tc) => tc.function.name.startsWith('browser_'))
-    const deniedDesktopOps = toolCalls.some((tc) => tc.function.name.startsWith('desktop_'))
+    const deniedComputerOps = toolCalls.some((tc) => tc.function.name.startsWith('computer_'))
     if (deniedBrowserOps) {
       setBrowserAutoApproved(false)
       log('BROWSER_AUTO_APPROVED_RESET', { reason: 'user denied browser operation' }, logScope)
     }
-    if (deniedDesktopOps) {
-      setDesktopAutoApproved(false)
-      log('DESKTOP_AUTO_APPROVED_RESET', { reason: 'user denied desktop operation' }, logScope)
+    if (deniedComputerOps) {
+      setComputerAutoApproved(false)
+      log('COMPUTER_AUTO_APPROVED_RESET', { reason: 'user denied computer operation' }, logScope)
     }
 
     const deniedResults: ToolResult[] = toolCalls.map((tc) => ({
@@ -298,10 +298,10 @@ export async function handleRiskAssessment(
     setBrowserAutoApproved(true)
     log('BROWSER_AUTO_APPROVED', { msg: '用户已确认浏览器操作，后续自动放行' }, logScope)
   }
-  const hasDesktopRisk = risks.some((r) => r.toolName.startsWith('desktop_'))
-  if (hasDesktopRisk) {
-    setDesktopAutoApproved(true)
-    log('DESKTOP_AUTO_APPROVED', { msg: '用户已确认电脑操作，后续自动放行' }, logScope)
+  const hasComputerRisk = risks.some((r) => r.toolName.startsWith('computer_'))
+  if (hasComputerRisk) {
+    setComputerAutoApproved(true)
+    log('COMPUTER_AUTO_APPROVED', { msg: '用户已确认电脑操作，后续自动放行' }, logScope)
   }
 
   return 'execute'
@@ -331,6 +331,7 @@ export async function executeAndTrackTools(
     services,
     provider,
     userId,
+    signal,
   })
   if (signal?.aborted) return results
 

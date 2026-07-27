@@ -153,6 +153,25 @@ export async function execBrowserGetNetworkRequests(
 }
 
 /* ------------------------------------------------------------------ */
+/*  execBrowserGetNetworkRequestBody                                   */
+/* ------------------------------------------------------------------ */
+
+export async function execBrowserGetNetworkRequestBody(
+  args: Record<string, unknown>,
+  projectId?: string,
+  services?: AgentServices,
+): Promise<ExecResult> {
+  if (!services?.browser) return { content: 'Error: browser service not available', success: false }
+
+  const appId = scopedBrowserAppId(projectId, args.appId ? String(args.appId) : undefined) ?? 'default'
+  const requestId = String(args.requestId ?? '').trim()
+  if (!requestId) return { content: 'Error: requestId is required', success: false }
+
+  const result = await services.browser.getNetworkRequestBody(appId, requestId)
+  return { content: JSON.stringify(result, null, 2), success: true }
+}
+
+/* ------------------------------------------------------------------ */
 /*  execBrowserGetCookies                                              */
 /* ------------------------------------------------------------------ */
 
@@ -228,7 +247,7 @@ export async function execBrowserOcr(
   runtimeContext?: ToolRuntimeContext,
 ): Promise<ExecResult> {
   if (!services?.browser) return { content: 'Error: browser service not available', success: false }
-  if (!services?.desktop) return { content: 'Error: OCR service not available', success: false }
+  if (!services?.computer) return { content: 'Error: OCR service not available', success: false }
 
   const appId = scopedBrowserAppId(projectId, args.appId ? String(args.appId) : undefined) ?? 'default'
 
@@ -255,7 +274,7 @@ export async function execBrowserOcr(
 
   // 3. OCR 识别
   try {
-    const ocrResult = await services.desktop.ocr(dataUrl)
+    const ocrResult = await services.computer.ocr(dataUrl)
     return { content: JSON.stringify(ocrResult, null, 2), success: true }
   } catch (err) {
     return {

@@ -8,6 +8,7 @@ import type { AgentServices } from '../services'
 import type { ProviderKey } from '../llm/client'
 import type { ChatMessage, ProviderOverrides } from '../llm/client'
 import { uploadDataUrlToStorage, requestChatCompletionStream } from '../llm/client'
+import { resolveSafe } from './exec-utils'
 import type { ExecResult, ToolRuntimeContext } from './exec-utils'
 
 /* ------------------------------------------------------------------ */
@@ -66,7 +67,11 @@ export async function execAnalyzeImage(
     dataUrl = image
   } else {
     try {
-      const resolvedPath = path.isAbsolute(image) ? image : path.resolve(workspace, image)
+      const safeCheck = resolveSafe(workspace, image)
+      if ('error' in safeCheck) {
+        return { content: `Error: ${safeCheck.error}`, success: false }
+      }
+      const resolvedPath = safeCheck.resolved
       const buffer = await fs.readFile(resolvedPath)
       const ext = path.extname(resolvedPath).toLowerCase()
       const mimeTypes: Record<string, string> = {
@@ -100,7 +105,7 @@ export async function execAnalyzeImage(
 
   if (!selectedProvider && services) {
     try {
-      const providersState = services.database.getAppProviders()
+      const providersState = services.database?.getAppProviders()
       if (providersState?.data) {
         for (const cfg of providersState.data.modelConfigs) {
           if (cfg.supportsVision && cfg.apiKey && cfg.model) {
@@ -170,7 +175,7 @@ export async function execAnalyzeImage(
       } as ChatMessage,
     ]
 
-    const stream = requestChatCompletionStream(selectedProvider, messages, effectiveOverrides)
+    const stream = requestChatCompletionStream(selectedProvider, messages, effectiveOverrides, runtimeContext?.signal)
     let accumulated = ''
     for await (const chunk of stream) {
       accumulated += chunk

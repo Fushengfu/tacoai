@@ -23,6 +23,7 @@ export type ToolRuntimeContext = {
   services?: AgentServices
   provider?: string // ProviderKey for tools that need LLM calls
   userId?: string
+  signal?: AbortSignal
 }
 
 /* ------------------------------------------------------------------ */
