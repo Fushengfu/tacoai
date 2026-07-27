@@ -10,7 +10,7 @@
  * - exec-mcp.ts: MCP 协议
  * - exec-recall.ts: 记忆回想
  * - exec-browser.ts: 浏览器使用
- * - exec-desktop.ts: 电脑使用
+ * - exec-computer.ts: 电脑使用
  * - exec-skills.ts: 技能（搜索/安装/卸载/脚本执行）
  */
 
@@ -184,6 +184,6 @@ export async function executeToolCalls(
 // Re-exports
 export { assessToolCallsRisk }
 export type { RiskInfo, RiskCategory, RiskLevel }
-export { setBrowserAutoApproved, setDesktopAutoApproved, setAutoApproveCategories, getAutoApproveCategories, isBrowserAutoApproved, isDesktopAutoApproved } from './risk'
+export { setBrowserAutoApproved, setComputerAutoApproved, setAutoApproveCategories, getAutoApproveCategories, isBrowserAutoApproved, isComputerAutoApproved } from './risk'
 export { getWorkspaceTree } from './workspace-tree'
 export { buildAllowedToolNamesForRequest } from './registry'

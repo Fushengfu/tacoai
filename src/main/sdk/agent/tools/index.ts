@@ -43,11 +43,11 @@ export {
   executeToolCalls,
   getWorkspaceTree,
   setBrowserAutoApproved,
-  setDesktopAutoApproved,
+  setComputerAutoApproved,
   setAutoApproveCategories,
   getAutoApproveCategories,
   isBrowserAutoApproved,
-  isDesktopAutoApproved,
+  isComputerAutoApproved,
 } from './executor'
 
 // Risk assessor

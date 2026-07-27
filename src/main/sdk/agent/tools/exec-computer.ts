@@ -21,10 +21,10 @@ function parseBool(value: unknown): boolean {
 }
 
 /* ------------------------------------------------------------------ */
-/*  execDesktopScreenshot                                              */
+/*  execComputerScreenshot                                              */
 /* ------------------------------------------------------------------ */
 
-export async function execDesktopScreenshot(
+export async function execComputerScreenshot(
   args: Record<string, unknown>,
   logScope?: string,
   services?: AgentServices,
@@ -36,7 +36,7 @@ export async function execDesktopScreenshot(
   const width = rawWidth === undefined ? undefined : Number(rawWidth)
   const height = rawHeight === undefined ? undefined : Number(rawHeight)
   const displayId = typeof args.displayId === 'string' ? args.displayId : undefined
-  const appId = typeof args.appId === 'string' && args.appId.trim() ? args.appId.trim() : 'desktop'
+  const appId = typeof args.appId === 'string' && args.appId.trim() ? args.appId.trim() : 'computer'
 
   if ((width !== undefined && !Number.isFinite(width)) || (height !== undefined && !Number.isFinite(height))) {
     return { content: 'Error: width/height must be numbers', success: false }
@@ -45,11 +45,11 @@ export async function execDesktopScreenshot(
     return { content: 'Error: width/height must be positive', success: false }
   }
 
-  if (!services?.desktop) return { content: 'Error: desktop service not available', success: false }
+  if (!services?.computer) return { content: 'Error: computer service not available', success: false }
 
   // macOS 屏幕录制权限检查
-  if (await services.desktop.checkScreenRecordingPermission() === 'denied') {
-    services.desktop.openScreenRecordingSettings()
+  if (await services.computer.checkScreenRecordingPermission() === 'denied') {
+    services.computer.openScreenRecordingSettings()
     return {
       content: 'Error: Screen Recording permission is denied. Please allow Taco AI in System Settings > Privacy & Security > Screen Recording, then restart the app.',
       success: false,
@@ -57,7 +57,7 @@ export async function execDesktopScreenshot(
   }
 
   try {
-    const result = await services.desktop.captureScreen({
+    const result = await services.computer.captureScreen({
       width: width !== undefined && Number.isFinite(width) ? width : undefined,
       height: height !== undefined && Number.isFinite(height) ? height : undefined,
       displayId,
@@ -65,7 +65,7 @@ export async function execDesktopScreenshot(
       workspacePath: workspace,
     })
 
-    services.logger('DESKTOP_SCREENSHOT_RESULT', {
+    services.logger('COMPUTER_SCREENSHOT_RESULT', {
       success: true,
       displayId: result.displayId,
       screenshotPath: result.screenshotPath,
@@ -85,13 +85,13 @@ export async function execDesktopScreenshot(
       try {
         cloudUrl = await uploadScreenshotToCloud(result.dataUrl, services) || undefined
       } catch (err) {
-        services.logger('DESKTOP_SCREENSHOT_UPLOAD_FAIL', { error: err instanceof Error ? err.message : String(err) })
+        services.logger('COMPUTER_SCREENSHOT_UPLOAD_FAIL', { error: err instanceof Error ? err.message : String(err) })
         // 重试一次
         try {
           cloudUrl = await uploadScreenshotToCloud(result.dataUrl, services) || undefined
-          services.logger('DESKTOP_SCREENSHOT_UPLOAD_RETRY_OK')
+          services.logger('COMPUTER_SCREENSHOT_UPLOAD_RETRY_OK')
         } catch (retryErr) {
-          services.logger('DESKTOP_SCREENSHOT_UPLOAD_RETRY_FAIL', { error: retryErr instanceof Error ? retryErr.message : String(retryErr) })
+          services.logger('COMPUTER_SCREENSHOT_UPLOAD_RETRY_FAIL', { error: retryErr instanceof Error ? retryErr.message : String(retryErr) })
         }
       }
     }
@@ -120,10 +120,10 @@ export async function execDesktopScreenshot(
 }
 
 /* ------------------------------------------------------------------ */
-/*  execDesktopAction                                                  */
+/*  execComputerAction                                                  */
 /* ------------------------------------------------------------------ */
 
-export async function execDesktopAction(
+export async function execComputerAction(
   args: Record<string, unknown>,
   signal?: AbortSignal,
   logScope?: string,
@@ -253,9 +253,9 @@ export async function execDesktopAction(
     delay_ms: Number.isFinite(Number(args.delay_ms)) ? Number(args.delay_ms) : undefined,
   }
 
-  if (!services?.desktop) return { content: 'Error: desktop service not available', success: false }
+  if (!services?.computer) return { content: 'Error: computer service not available', success: false }
 
-  services.logger('DESKTOP_ACTION_REQUEST', {
+  services.logger('COMPUTER_ACTION_REQUEST', {
     action: payload.action,
     x: payload.x,
     y: payload.y,
@@ -272,8 +272,8 @@ export async function execDesktopAction(
     textLength: payload.text ? payload.text.length : 0,
   }, logScope)
 
-  const result = await services.desktop.call(payload, signal)
-  services.logger('DESKTOP_ACTION_RESULT', {
+  const result = await services.computer.call(payload, signal)
+  services.logger('COMPUTER_ACTION_RESULT', {
     ok: result.ok,
     error: result.error,
     message: result.message,
@@ -295,12 +295,12 @@ export async function execDesktopAction(
   }, logScope)
 
   if (!result.ok) {
-    return { content: `Error: ${result.error ?? 'desktop action failed'}`, success: false }
+    return { content: `Error: ${result.error ?? 'computer action failed'}`, success: false }
   }
 
   const needsEnter = Boolean(args.needs_enter)
-  if (action === 'type' && needsEnter && services.desktop) {
-    const enterResult = await services.desktop.call({ action: 'key', key: 'enter' }, signal)
+  if (action === 'type' && needsEnter && services.computer) {
+    const enterResult = await services.computer.call({ action: 'key', key: 'enter' }, signal)
     if (!enterResult.ok) {
       return { content: `Error: ${enterResult.error ?? 'enter key failed'}`, success: false }
     }
@@ -311,18 +311,18 @@ export async function execDesktopAction(
 }
 
 /* ------------------------------------------------------------------ */
-/*  execDesktopOcr                                                    */
+/*  execComputerOcr                                                    */
 /* ------------------------------------------------------------------ */
 
-export async function execDesktopOcr(
+export async function execComputerOcr(
   args: Record<string, unknown>,
   services?: AgentServices,
 ): Promise<ExecResult> {
-  if (!services?.desktop) return { content: 'Error: desktop service not available', success: false }
+  if (!services?.computer) return { content: 'Error: computer service not available', success: false }
 
   try {
     const image = typeof args.image === 'string' && args.image.trim() ? args.image.trim() : undefined
-    const result = await services.desktop.ocr(image)
+    const result = await services.computer.ocr(image)
     return {
       content: JSON.stringify(result, null, 2),
       success: true,

@@ -61,7 +61,53 @@
 | 功能 | 说明 |
 |------|------|
 | 分页功能全面修复 | 修复后台管理 19 个页面中 12 个页面的分页 bug：`pageSize` 参数传递、state 同步、前后端默认值统一（10 条/页） |
-| 分页页面覆盖 | Members / Accounts / Agents / Roles / Messages / AppVersions / Plans / Models / TokenStats / Sessions / Orders / Logs 全链路验证 |---
+| 分页页面覆盖 | Members / Accounts / Agents / Roles / Messages / AppVersions / Plans / Models / TokenStats / Sessions / Orders / Logs 全链路验证 |
+
+---
+
+## v0.5.2 更新内容
+
+### 语音朗读（TTS）
+
+| 功能 | 说明 |
+|------|------|
+| 只读最终回复 | 简化朗读逻辑，AI 处理任务过程中不再流式朗读中间内容，只播报最终回复 |
+| 切项目自动停止 | 切换到其他项目时自动停止当前朗读，避免跨项目语音串扰 |
+| 文本智能清洗 | 朗读前自动过滤 Markdown 表格分隔线、无意义符号碎片、纯英文短词，输出更自然流畅 |
+| 设置面板完善 | 自动朗读开关、按语言分组的音色选择、语速调节（0.5x-2.0x）、音高调节、试听预览 |
+
+### AI 语音头像特效
+
+| 功能 | 说明 |
+|------|------|
+| 科幻能量核心 | 蓝色等离子能量球呼吸脉冲动画（三阶段：扩张→收缩→恢复），配合六层发光光晕 |
+| 冲击波扩散 | 三层冲击波从核心依次向外扩散消失，间隔 0.8s 错峰播放 |
+| 窗口居中 | 特效显示在窗口正中央，无遮罩、不阻挡任何交互操作 |
+| 双主题适配 | 暗色/亮色主题独立配色方案，自动跟随系统主题切换 |
+
+### 复制为图片
+
+| 功能 | 说明 |
+|------|------|
+| Markdown 真实渲染 | 使用 `html2canvas` + `react-markdown` 技术方案，输出效果与聊天界面完全一致 |
+| 格式完整保留 | 粗体、斜体、行内代码、代码块（含语言标签）、表格边框、引用块、链接颜色全部保留 |
+| 2x 高清输出 | 720px 宽度 2 倍渲染，图片清晰锐利 |
+| 双主题 | 自动跟随当前暗色/亮色主题配色 |
+
+### 复制按钮增强
+
+| 功能 | 说明 |
+|------|------|
+| IPC 降级通道 | `navigator.clipboard.writeText` 在 Electron `file://` 协议下可能不可用，失败时自动降级为 Electron 原生剪切板 API |
+| 剪切板图片通道 | 新增 `CLIPBOARD_WRITE_TEXT` / `CLIPBOARD_WRITE_IMAGE` 双通道 IPC，覆盖文本和图片复制场景 |
+
+### Bug 修复
+
+| 功能 | 说明 |
+|------|------|
+| 亮色主题特效失效 | 修复语音头像在亮色主题下仍显示暗色配色的 bug（`.theme-light` class 选择器改为 `:root[data-theme='light']` 属性选择器） |
+
+---
 
 ## 多模型支持
 
@@ -182,14 +228,14 @@ AI 完成网页开发后自动截图验证界面。左上方列出 5 项功能�
 
 | 平台 | 下载链接 | 安装说明 |
 |------|---------|---------|
-| **macOS** (Apple Silicon) | [Taco AI-0.5.1-arm64.dmg](https://store.bjctykj.com/app-versions/macOS/1784263710_Taco_AI-0.5.1-arm64.dmg) | 双击 `.dmg` 挂载后拖入 `Applications` 文件夹 |
-| **Windows** (x64) | [Taco AI-0.5.1-x64.exe](https://store.bjctykj.com/app-versions/Windows/1784264609_Taco_AI-0.5.1-x64.exe) | 双击 `.exe` 按安装向导完成安装 |
+| **macOS** (Apple Silicon) | [Taco AI-0.5.2-arm64.dmg](https://store.bjctykj.com/app-versions/macOS/1784263710_Taco_AI-0.5.2-arm64.dmg) | 双击 `.dmg` 挂载后拖入 `Applications` 文件夹 |
+| **Windows** (x64) | [Taco AI-0.5.2-x64.exe](https://store.bjctykj.com/app-versions/Windows/1784264609_Taco_AI-0.5.2-x64.exe) | 双击 `.exe` 按安装向导完成安装 |
 
 ### 海外用户
 
 海外用户请从 [GitHub Releases](https://github.com/Fushengfu/tacoai/releases) 页面下载对应平台的安装包。
 
-当前版本：**v0.5.1**
+当前版本：**v0.5.2**
 
 > 源码构建请参考下方 [快速开始](#快速开始)。
 
@@ -290,4 +336,4 @@ taco/
 
 ## 版本
 
-当前版本：**v0.5.1**
+当前版本：**v0.5.2**

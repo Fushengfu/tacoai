@@ -61,7 +61,53 @@
 | Feature | Description |
 |---------|-------------|
 | Comprehensive Pagination Fix | Fixed pagination bugs across 12 of 19 admin panel pages: `pageSize` parameter passing, state synchronization, unified defaults (10/page) |
-| Pages Covered | Members / Accounts / Agents / Roles / Messages / AppVersions / Plans / Models / TokenStats / Sessions / Orders / Logs — full-chain verification |---
+| Pages Covered | Members / Accounts / Agents / Roles / Messages / AppVersions / Plans / Models / TokenStats / Sessions / Orders / Logs — full-chain verification |
+
+---
+
+## What's New in v0.5.2
+
+### Text-to-Speech (TTS)
+
+| Feature | Description |
+|---------|-------------|
+| Final Reply Only | Simplified reading logic — AI no longer streams intermediate content during task execution; only the final reply is read aloud |
+| Auto-stop on Project Switch | Switching to another project immediately stops current TTS, preventing cross-project audio interference |
+| Smart Text Cleaning | Automatically filters Markdown table separators, meaningless symbol fragments, and short English-only words before reading for more natural output |
+| Settings Panel | Auto-read toggle, voice selection grouped by language, speed control (0.5x–2.0x), pitch control, and preview button |
+
+### AI Voice Avatar Visual Effect
+
+| Feature | Description |
+|---------|-------------|
+| Sci-Fi Energy Core | Blue plasma energy sphere with breathing pulse animation (3-stage: expand → contract → restore), with 6-layer glow |
+| Shockwave Diffusion | 3-layer shockwaves expanding outward sequentially with 0.8s staggered playback |
+| Window-centered | Effect displayed at window center, no overlay or mask, zero interaction blocking |
+| Dual-theme Support | Independent dark/light color schemes, auto-following system theme |
+
+### Copy as Image
+
+| Feature | Description |
+|---------|-------------|
+| True Markdown Rendering | Uses `html2canvas` + `react-markdown` — output matches the chat interface exactly |
+| Full Format Preservation | Bold, italic, inline code, code blocks (with language labels), table borders, blockquotes, link colors — all preserved |
+| 2x High-res Output | 720px width rendered at 2x resolution for crisp, sharp images |
+| Dual-theme | Auto-follows current dark/light color scheme |
+
+### Copy Button Enhancement
+
+| Feature | Description |
+|---------|-------------|
+| IPC Fallback | `navigator.clipboard.writeText` may be unavailable under Electron's `file://` protocol; automatically falls back to Electron's native clipboard API on failure |
+| Clipboard Image Channel | Added `CLIPBOARD_WRITE_TEXT` / `CLIPBOARD_WRITE_IMAGE` dual IPC channels covering both text and image clipboard scenarios |
+
+### Bug Fixes
+
+| Feature | Description |
+|---------|-------------|
+| Light Theme Avatar Colors | Fixed bug where voice avatar showed dark color scheme in light theme (`.theme-light` class selector → `:root[data-theme='light']` attribute selector) |
+
+---
 
 ## Multi-Model Support
 
@@ -182,14 +228,14 @@ The following links are hosted on servers in mainland China for high-speed downl
 
 | Platform | Download Link | Installation |
 |----------|---------------|--------------|
-| **macOS** (Apple Silicon) | [Taco AI-0.5.1-arm64.dmg](https://store.bjctykj.com/app-versions/macOS/1784263710_Taco_AI-0.5.1-arm64.dmg) | Double-click the `.dmg`, then drag into the `Applications` folder |
-| **Windows** (x64) | [Taco AI-0.5.1-x64.exe](https://store.bjctykj.com/app-versions/Windows/1784264609_Taco_AI-0.5.1-x64.exe) | Double-click the `.exe` and follow the installation wizard |
+| **macOS** (Apple Silicon) | [Taco AI-0.5.2-arm64.dmg](https://store.bjctykj.com/app-versions/macOS/1784263710_Taco_AI-0.5.2-arm64.dmg) | Double-click the `.dmg`, then drag into the `Applications` folder |
+| **Windows** (x64) | [Taco AI-0.5.2-x64.exe](https://store.bjctykj.com/app-versions/Windows/1784264609_Taco_AI-0.5.2-x64.exe) | Double-click the `.exe` and follow the installation wizard |
 
 ### International Users
 
 International users should download the installer for your platform from the [GitHub Releases](https://github.com/Fushengfu/tacoai/releases) page.
 
-Current version: **v0.5.1**
+Current version: **v0.5.2**
 
 > For building from source, see [Quick Start](#quick-start) below.
 
@@ -290,4 +336,4 @@ taco/
 
 ## Version
 
-Current version: **v0.5.1**
+Current version: **v0.5.2**

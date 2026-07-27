@@ -13,7 +13,7 @@ import {
   setGlobalAuthLevel,
   setAutoApproveCategories,
   setBrowserAutoApproved,
-  setDesktopAutoApproved,
+  setComputerAutoApproved,
   getAutoApproveCategories,
   getGlobalAuthLevel,
   AuthLevel,
@@ -38,7 +38,7 @@ beforeEach(() => {
   setGlobalAuthLevel('standard')
   setAutoApproveCategories([])
   setBrowserAutoApproved(false)
-  setDesktopAutoApproved(false)
+  setComputerAutoApproved(false)
 })
 
 /* ================================================================== */
@@ -86,7 +86,7 @@ describe('setAutoApproveCategories / getAutoApproveCategories', () => {
     expect(getAutoApproveCategories()).toEqual([])
   })
 
-  it('设置分类后同步 browser/desktop 状态', () => {
+  it('设置分类后同步 browser/computer 状态', () => {
     setAutoApproveCategories(['browser_ops', 'package_install'])
     expect(getAutoApproveCategories()).toContain('browser_ops')
     expect(getAutoApproveCategories()).toContain('package_install')
@@ -153,31 +153,31 @@ describe('assessToolCallsRisk', () => {
     })
   })
 
-  /* ----- desktop_ops ----- */
+  /* ----- computer_ops ----- */
   describe('电脑操作', () => {
     it('standard 模式下首次电脑操作标记为 warning', () => {
       setGlobalAuthLevel('standard')
       const risks = assessToolCallsRisk([
-        makeTc('1', 'desktop_click', { action: 'click' }),
+        makeTc('1', 'computer_click', { action: 'click' }),
       ])
       expect(risks).toHaveLength(1)
       expect(risks[0].reason).toContain('电脑操作')
     })
 
-    it('desktopAutoApproved 后放行', () => {
+    it('computerAutoApproved 后放行', () => {
       setGlobalAuthLevel('standard')
-      setDesktopAutoApproved(true)
+      setComputerAutoApproved(true)
       const risks = assessToolCallsRisk([
-        makeTc('1', 'desktop_move', { x: 100, y: 200 }),
+        makeTc('1', 'computer_move', { x: 100, y: 200 }),
       ])
       expect(risks).toHaveLength(0)
     })
 
     it('manual 模式始终拦截', () => {
       setGlobalAuthLevel('manual')
-      setDesktopAutoApproved(true)
+      setComputerAutoApproved(true)
       const risks = assessToolCallsRisk([
-        makeTc('1', 'desktop_type', { text: 'hello' }),
+        makeTc('1', 'computer_type', { text: 'hello' }),
       ])
       expect(risks).toHaveLength(1)
     })

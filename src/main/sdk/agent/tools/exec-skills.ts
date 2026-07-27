@@ -23,8 +23,8 @@ import {
   buildClawHubDownloadUrl,
   downloadAndExtractZip,
 } from '../skills/service'
-import { execDesktopScreenshot, execDesktopAction, execDesktopOcr } from './exec-desktop'
-import { execBrowserAction, execBrowserGetConsoleLogs, execBrowserGetNetworkRequests, execBrowserGetCookies, execBrowserSetCookie, execBrowserClearCookies, execBrowserOcr, scopedBrowserAppId } from './exec-browser'
+import { execComputerScreenshot, execComputerAction, execComputerOcr } from './exec-computer'
+import { execBrowserAction, execBrowserGetConsoleLogs, execBrowserGetNetworkRequests, execBrowserGetNetworkRequestBody, execBrowserGetCookies, execBrowserSetCookie, execBrowserClearCookies, execBrowserOcr, scopedBrowserAppId } from './exec-browser'
 
 /* ------------------------------------------------------------------ */
 /*  浏览器动作映射表                                                    */
@@ -74,6 +74,9 @@ export async function execRunSkillScript(
     if (scriptName === 'get_network_requests') {
       return await execBrowserGetNetworkRequests(params, projectId, services)
     }
+    if (scriptName === 'get_network_request_body') {
+      return await execBrowserGetNetworkRequestBody(params, projectId, services)
+    }
     if (scriptName === 'get_cookies') {
       return await execBrowserGetCookies(params, projectId, services)
     }
@@ -122,7 +125,7 @@ export async function execRunSkillScript(
     const action = BROWSER_SCRIPT_TO_ACTION[scriptName]
     if (!action) {
       return {
-        content: `浏览器技能不支持此脚本: ${scriptName}。可用脚本: ${Object.keys(BROWSER_SCRIPT_TO_ACTION).join(', ')}, get_console_logs, get_network_requests, get_cookies, set_cookie, clear_cookies, ocr, list, close`,
+        content: `浏览器技能不支持此脚本: ${scriptName}。可用脚本: ${Object.keys(BROWSER_SCRIPT_TO_ACTION).join(', ')}, get_console_logs, get_network_requests, get_network_request_body, get_cookies, set_cookie, clear_cookies, ocr, list, close`,
         success: false,
       }
     }
@@ -131,13 +134,13 @@ export async function execRunSkillScript(
 
   if (skillId === 'computer-use') {
     if (scriptName === 'screenshot') {
-      return await execDesktopScreenshot(params, logScope, services, runtimeContext, workspace)
+      return await execComputerScreenshot(params, logScope, services, runtimeContext, workspace)
     }
     if (scriptName === 'action') {
-      return await execDesktopAction(params, signal, logScope, services)
+      return await execComputerAction(params, signal, logScope, services)
     }
     if (scriptName === 'ocr') {
-      return await execDesktopOcr(params, services)
+      return await execComputerOcr(params, services)
     }
     return {
       content: `电脑使用技能不支持此脚本: ${scriptName}。可用脚本: screenshot, action, ocr`,

@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module'
 
-type DesktopAction = 'move' | 'click' | 'mouse_down' | 'drag' | 'scroll' | 'type' | 'key'
-type DesktopCursor = { x: number; y: number } | null
+type ComputerAction = 'move' | 'click' | 'mouse_down' | 'drag' | 'scroll' | 'type' | 'key'
+type ComputerCursor = { x: number; y: number } | null
 
 type NutPoint = unknown
 
@@ -31,8 +31,8 @@ type NutModule = {
   Key: Record<string, unknown>
 }
 
-export type DesktopActionRequest = {
-  action: DesktopAction
+export type ComputerActionRequest = {
+  action: ComputerAction
   x?: number
   y?: number
   toX?: number
@@ -50,19 +50,19 @@ export type DesktopActionRequest = {
   delay_ms?: number
 }
 
-type DesktopActionResponse = {
+type ComputerActionResponse = {
   ok: boolean
   message?: string
   error?: string
-  cursorBefore?: DesktopCursor
-  cursorAfter?: DesktopCursor
+  cursorBefore?: ComputerCursor
+  cursorAfter?: ComputerCursor
 }
 
 let nutModule: NutModule | null = null
 let loadingNut: Promise<NutModule> | null = null
 let lastMousePos: { x: number; y: number } | null = null
-let lastDesktopClickAt = 0
-let activeMouseButton: DesktopActionRequest['button'] | null = null
+let lastComputerClickAt = 0
+let activeMouseButton: ComputerActionRequest['button'] | null = null
 const runtimeRequire = createRequire(__filename)
 
 function sleep(ms: number): Promise<void> {
@@ -82,7 +82,7 @@ async function loadNutJs(): Promise<NutModule> {
   if (loadingNut) return loadingNut
 
   loadingNut = (async () => {
-    const preferred = process.env.TACO_DESKTOP_LIB?.trim()
+    const preferred = process.env.TACO_COMPUTER_LIB?.trim()
     const candidates = [
       preferred,
       '@nut-tree-fork/nut-js',
@@ -102,7 +102,7 @@ async function loadNutJs(): Promise<NutModule> {
 
     const reason = lastErr instanceof Error ? lastErr.message : String(lastErr)
     throw new Error(
-      `desktop library not available. Install: @nut-tree-fork/nut-js. (${reason})`
+      `computer library not available. Install: @nut-tree-fork/nut-js. (${reason})`
     )
   })().finally(() => {
     loadingNut = null
@@ -111,14 +111,14 @@ async function loadNutJs(): Promise<NutModule> {
   return loadingNut
 }
 
-function mapButton(btn: DesktopActionRequest['button'], Button: Record<string, unknown>): unknown {
+function mapButton(btn: ComputerActionRequest['button'], Button: Record<string, unknown>): unknown {
   const key = (btn ?? 'left').toLowerCase()
   if (key === 'right') return Button.RIGHT ?? Button.Right ?? Button.right
   if (key === 'middle') return Button.MIDDLE ?? Button.Middle ?? Button.middle
   return Button.LEFT ?? Button.Left ?? Button.left
 }
 
-function mapModifierKeys(modifiers: DesktopActionRequest['modifiers'], Key: Record<string, unknown>): unknown[] {
+function mapModifierKeys(modifiers: ComputerActionRequest['modifiers'], Key: Record<string, unknown>): unknown[] {
   const modSet = new Set((modifiers ?? []).map((m) => m.toLowerCase()))
   const result: unknown[] = []
   if (modSet.has('cmd')) result.push(Key.LeftCmd ?? Key.Cmd ?? Key.Command)
@@ -267,8 +267,8 @@ function resolveMouseUpApi(mouse: NutModule['mouse']): ((button?: unknown) => Pr
   return null
 }
 
-export async function callDesktopService(payload: DesktopActionRequest, signal?: AbortSignal): Promise<DesktopActionResponse> {
-  let cursorBefore: DesktopCursor = null
+export async function callComputerService(payload: ComputerActionRequest, signal?: AbortSignal): Promise<ComputerActionResponse> {
+  let cursorBefore: ComputerCursor = null
   try {
     throwIfAborted(signal)
 
@@ -303,7 +303,7 @@ export async function callDesktopService(payload: DesktopActionRequest, signal?:
           // 双击/多击时保留短间隔，提升系统识别率
           if (i < clicks - 1) await sleep(40)
         }
-        lastDesktopClickAt = Date.now()
+        lastComputerClickAt = Date.now()
         const cursorAfter = await getCurrentMousePos(mouse)
         return { ok: true, message: 'mouse clicked', cursorBefore, cursorAfter }
       }
@@ -314,7 +314,7 @@ export async function callDesktopService(payload: DesktopActionRequest, signal?:
         }
         const mouseDown = resolveMouseDownApi(mouse)
         if (!mouseDown) {
-          return { ok: false, error: 'desktop library does not support mouse down API', cursorBefore }
+          return { ok: false, error: 'computer library does not support mouse down API', cursorBefore }
         }
         const button = mapButton(payload.button, Button)
         await mouseDown(button)
@@ -330,7 +330,7 @@ export async function callDesktopService(payload: DesktopActionRequest, signal?:
         const mouseDown = resolveMouseDownApi(mouse)
         const mouseUp = resolveMouseUpApi(mouse)
         if (!mouseDown || !mouseUp) {
-          return { ok: false, error: 'desktop library does not support drag (mouse down/up API missing)', cursorBefore }
+          return { ok: false, error: 'computer library does not support drag (mouse down/up API missing)', cursorBefore }
         }
         if (!Number.isFinite(payload.toX) || !Number.isFinite(payload.toY)) {
           return { ok: false, error: 'toX and toY are required for drag action', cursorBefore }
@@ -388,7 +388,7 @@ export async function callDesktopService(payload: DesktopActionRequest, signal?:
         const text = String(payload.text ?? '')
         if (!text) return { ok: false, error: 'text is required for type action', cursorBefore }
         // 点击后给系统留出焦点切换时间，避免输入丢失
-        const elapsed = Date.now() - lastDesktopClickAt
+        const elapsed = Date.now() - lastComputerClickAt
         if (elapsed >= 0 && elapsed < 1000) await sleep(1000 - elapsed)
         await keyboard.type(text)
         const cursorAfter = await getCurrentMousePos(mouse)

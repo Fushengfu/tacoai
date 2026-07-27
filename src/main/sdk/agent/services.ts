@@ -46,13 +46,21 @@ export interface BrowserConsoleOptions {
 }
 
 export interface BrowserConsoleSnapshot {
-  entries: Array<{
+  appId?: string
+  totalStored: number
+  returned: number
+  filters?: Record<string, unknown>
+  logs: Array<{
+    id: number
     level: string
-    text: string
-    timestamp: number
+    message: string
     source?: string
+    line?: number
+    pageUrl?: string
+    timestamp: number
+    fromDevEnv: boolean
   }>
-  count: number
+  topCandidates?: Array<Record<string, unknown>>
 }
 
 export interface BrowserInstance {
@@ -102,7 +110,7 @@ export interface McpService {
 /*  电脑使用服务                                                      */
 /* ------------------------------------------------------------------ */
 
-export interface DesktopActionResult {
+export interface ComputerActionResult {
   ok: boolean
   error?: string
   message?: string
@@ -132,8 +140,8 @@ export interface ScreenCaptureResult {
   displayScaleFactor: number
 }
 
-export interface DesktopAutomationService {
-  call(payload: Record<string, unknown>, signal?: AbortSignal): Promise<DesktopActionResult>
+export interface ComputerAutomationService {
+  call(payload: Record<string, unknown>, signal?: AbortSignal): Promise<ComputerActionResult>
   captureScreen(options: ScreenCaptureOptions): Promise<ScreenCaptureResult>
   checkScreenRecordingPermission(): Promise<'granted' | 'denied' | 'unknown'>
   openScreenRecordingSettings(): void
@@ -246,7 +254,7 @@ export interface AgentServices {
   logger: Logger
   browser?: BrowserService
   mcp?: McpService
-  desktop?: DesktopAutomationService
+  computer?: ComputerAutomationService
   terminal?: TerminalService
   database: DatabaseService
   snapshotStore?: MemorySnapshotStore
